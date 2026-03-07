@@ -62,7 +62,6 @@ function parseTrifectaOddsMap(html) {
 
       const secondCell = tds.eq(cursor++);
       const oddsCell = tds.eq(cursor++);
-
       rowSpanRemain[block] -= 1;
 
       const first = firstByBlock[block];
@@ -76,8 +75,7 @@ function parseTrifectaOddsMap(html) {
         Number.isInteger(third) &&
         Number.isFinite(odds)
       ) {
-        const combo = `${first}-${second}-${third}`;
-        oddsMap.set(combo, odds);
+        oddsMap.set(`${first}-${second}-${third}`, odds);
       }
     }
   });
@@ -122,11 +120,7 @@ function mapToList(map) {
 async function fetchSafely(url, parser) {
   try {
     const html = await fetchHtml(url);
-    return {
-      ok: true,
-      url,
-      map: parser(html)
-    };
+    return { ok: true, url, map: parser(html) };
   } catch (err) {
     return {
       ok: false,
@@ -184,12 +178,7 @@ export async function analyzeExpectedValue({ date, venueId, raceNo, simulation }
     const prob = Number(x.prob);
     const oddsValue = oddsMap.get(combo) ?? null;
     const ev = oddsValue !== null ? prob * oddsValue : null;
-    return {
-      combo,
-      prob,
-      odds: oddsValue,
-      ev
-    };
+    return { combo, prob, odds: oddsValue, ev };
   });
 
   const best_ev_bets = base

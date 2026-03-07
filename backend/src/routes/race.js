@@ -103,6 +103,44 @@ function finalizeBucket(bucket) {
   };
 }
 
+function enrichRecommendedTickets({ recommendedBets, probabilities, oddsData, evAnalysis }) {
+  const probMap = new Map();
+  (Array.isArray(probabilities) ? probabilities : []).forEach((p) => {
+    const prob = Number(p?.p ?? p?.prob);
+    if (p?.combo && Number.isFinite(prob)) probMap.set(String(p.combo), prob);
+  });
+
+  const oddsMap = new Map();
+  (Array.isArray(oddsData?.trifecta) ? oddsData.trifecta : []).forEach((o) => {
+    const odds = Number(o?.odds);
+    if (o?.combo && Number.isFinite(odds)) oddsMap.set(String(o.combo), odds);
+  });
+
+  const evMap = new Map();
+  (Array.isArray(evAnalysis?.best_ev_bets) ? evAnalysis.best_ev_bets : []).forEach((e) => {
+    const ev = Number(e?.ev);
+    if (e?.combo && Number.isFinite(ev)) evMap.set(String(e.combo), ev);
+  });
+
+  return (Array.isArray(recommendedBets) ? recommendedBets : []).map((row) => {
+    const combo = String(row?.combo || "");
+    const prob = probMap.get(combo);
+    const odds = oddsMap.get(combo);
+    const ev = evMap.has(combo)
+      ? evMap.get(combo)
+      : Number.isFinite(prob) && Number.isFinite(odds)
+        ? prob * odds
+        : null;
+
+    return {
+      ...row,
+      prob: Number.isFinite(prob) ? Number(prob.toFixed(4)) : null,
+      odds: Number.isFinite(odds) ? Number(odds.toFixed(1)) : null,
+      ev: Number.isFinite(ev) ? Number(ev.toFixed(4)) : null
+    };
+  });
+}
+
 raceRouter.get("/race", async (req, res, next) => {
   try {
     const { date, venueId, raceNo, participationMode } = req.query;
@@ -198,7 +236,16 @@ raceRouter.get("/race", async (req, res, next) => {
     } catch (oddsErr) {
       console.warn("[ODDS] fetch failed:", oddsErr?.message || oddsErr);
     }
-    const bet_plan = buildBetPlan(evData.ev_analysis, 10000);
+    const rawBetPlan = buildBetPlan(evData.ev_analysis, 10000);
+    const bet_plan = {
+      ...rawBetPlan,
+      recommended_bets: enrichRecommendedTickets({
+        recommendedBets: rawBetPlan.recommended_bets,
+        probabilities,
+        oddsData: evData.oddsData,
+        evAnalysis: evData.ev_analysis
+      })
+    };
     const motorAnalysis = ranking.map((r) => ({
       rank: r.rank,
       lane: r.racer.lane,
