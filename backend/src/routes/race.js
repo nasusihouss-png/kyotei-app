@@ -39,6 +39,7 @@ import { analyzeRaceStructure } from "../../race-structure-engine.js";
 import { optimizeTickets } from "../../ticket-optimization-engine.js";
 import { decideRaceSelection } from "../../race-selection-engine.js";
 import { buildStakeAllocationPlan } from "../../stake-allocation-engine.js";
+import { analyzeExhibitionAI } from "../../exhibition-ai-engine.js";
 import {
   analyzeVenueBias,
   applyVenueBiasToRisk,
@@ -381,6 +382,7 @@ raceRouter.get("/race", async (req, res, next) => {
       ranking,
       top3: ranking.slice(0, 3).map((r) => r.racer.lane)
     };
+    const exhibitionAI = analyzeExhibitionAI({ ranking });
     const raceIndexes = analyzeRaceIndexes({
       ranking,
       top3: prediction.top3,
@@ -418,7 +420,8 @@ raceRouter.get("/race", async (req, res, next) => {
       headSelection,
       probabilities,
       raceIndexes,
-      raceOutcomeProbabilities
+      raceOutcomeProbabilities,
+      exhibitionAI
     });
     const headSelectionRefined = {
       ...headSelection,
@@ -439,7 +442,8 @@ raceRouter.get("/race", async (req, res, next) => {
     const roleCandidates = analyzeRoleCandidates({
       ranking,
       headSelection: headSelectionRefined,
-      partnerSelection
+      partnerSelection,
+      exhibitionAI
     });
     const baseRaceStructure = analyzeRaceStructure({
       ranking,
@@ -447,7 +451,8 @@ raceRouter.get("/race", async (req, res, next) => {
       headConfidence,
       raceIndexes,
       preRaceAnalysis,
-      roleCandidates
+      roleCandidates,
+      exhibitionAI
     });
     const venueBias = analyzeVenueBias({
       race: data.race,
@@ -480,6 +485,7 @@ raceRouter.get("/race", async (req, res, next) => {
       partnerSelection,
       headConfidence,
       headPrecision,
+      exhibitionAI,
       raceRisk,
       raceIndexes,
       wallEvaluation
@@ -505,7 +511,8 @@ raceRouter.get("/race", async (req, res, next) => {
       preRaceAnalysis,
       roleCandidates,
       ticketOptimization,
-      headPrecision
+      headPrecision,
+      exhibitionAI
     });
     const stakeAllocation = buildStakeAllocationPlan({
       raceDecision,
@@ -572,6 +579,7 @@ raceRouter.get("/race", async (req, res, next) => {
       motorTrendAnalysis,
       entryAnalysis,
       preRaceAnalysis,
+      exhibitionAI,
       simulation,
       oddsData: evData.oddsData,
       ev_analysis: evData.ev_analysis,
@@ -711,6 +719,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             indexes,
             raceRisk: null
           });
+          const exhibitionAI = analyzeExhibitionAI({ ranking });
           const baseRaceRisk = evaluateRaceRisk({
             indexes,
             racePattern: pattern.race_pattern,
@@ -741,7 +750,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             headSelection,
             probabilities,
             raceIndexes,
-            raceOutcomeProbabilities
+            raceOutcomeProbabilities,
+            exhibitionAI
           });
           const headSelectionRefined = {
             ...headSelection,
@@ -762,7 +772,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           const roleCandidates = analyzeRoleCandidates({
             ranking,
             headSelection: headSelectionRefined,
-            partnerSelection
+            partnerSelection,
+            exhibitionAI
           });
           const baseRaceStructure = analyzeRaceStructure({
             ranking,
@@ -770,7 +781,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             headConfidence,
             raceIndexes,
             preRaceAnalysis,
-            roleCandidates
+            roleCandidates,
+            exhibitionAI
           });
           const venueBias = analyzeVenueBias({
             race: data.race,
@@ -814,13 +826,15 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             preRaceAnalysis,
             roleCandidates,
             ticketOptimization,
-            headPrecision
+            headPrecision,
+            exhibitionAI
           });
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
             partnerSelection,
             headConfidence,
             headPrecision,
+            exhibitionAI,
             raceRisk,
             raceIndexes,
             wallEvaluation
@@ -857,6 +871,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             backup_heads: headSelectionRefined?.secondary_heads || [],
             head_win_score: headPrecision?.head_win_score ?? null,
             head_gap_score: headPrecision?.head_gap_score ?? null,
+            exhibition_ai_score: exhibitionAI?.exhibition_ai_score ?? null,
             head_stability_score: Number(headStability.toFixed(2)),
             chaos_risk_score: Number(chaosRisk.toFixed(2)),
             venueBias,

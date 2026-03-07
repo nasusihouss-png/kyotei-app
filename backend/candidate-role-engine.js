@@ -7,7 +7,7 @@ function uniq(list) {
   return [...new Set((Array.isArray(list) ? list : []).map((x) => Number(x)).filter((x) => x >= 1 && x <= 6))];
 }
 
-export function analyzeRoleCandidates({ ranking, headSelection, partnerSelection }) {
+export function analyzeRoleCandidates({ ranking, headSelection, partnerSelection, exhibitionAI }) {
   const rows = Array.isArray(ranking) ? ranking : [];
   if (!rows.length) {
     return {
@@ -33,9 +33,21 @@ export function analyzeRoleCandidates({ ranking, headSelection, partnerSelection
     const entryAdv = toNum(f.entry_advantage_score, 0);
     const trend = toNum(f.motor_trend_score, 0);
 
-    const headScore = score * 0.52 + p * 100 * 0.38 + (7 - stRank) * 2.4 + (7 - exRank) * 2.1;
-    const secondScore = score * 0.36 + (7 - stRank) * 4.0 + entryAdv * 3.2 + trend * 2.1 + (mainPartners.includes(lane) ? 8 : 0);
-    const thirdScore = score * 0.24 + (7 - exRank) * 3.2 + entryAdv * 2.2 + (backupPartners.includes(lane) ? 8 : 0) + (mainPartners.includes(lane) ? 4 : 0);
+    let headScore = score * 0.52 + p * 100 * 0.38 + (7 - stRank) * 2.4 + (7 - exRank) * 2.1;
+    let secondScore = score * 0.36 + (7 - stRank) * 4.0 + entryAdv * 3.2 + trend * 2.1 + (mainPartners.includes(lane) ? 8 : 0);
+    let thirdScore = score * 0.24 + (7 - exRank) * 3.2 + entryAdv * 2.2 + (backupPartners.includes(lane) ? 8 : 0) + (mainPartners.includes(lane) ? 4 : 0);
+
+    if (lane === toNum(exhibitionAI?.top_exhibition_lane, 0)) headScore += 10;
+    if (lane === toNum(exhibitionAI?.stable_st_lane, 0)) secondScore += 8;
+    if (lane === toNum(exhibitionAI?.breakout_lane, 0)) {
+      secondScore += 5;
+      thirdScore += 6;
+    }
+    if (lane === toNum(exhibitionAI?.weak_lane, 0)) {
+      headScore -= 7;
+      secondScore -= 4;
+      thirdScore -= 4;
+    }
 
     return {
       lane,

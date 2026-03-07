@@ -361,6 +361,7 @@ export default function App() {
   const raceIndexes = data?.raceIndexes || {};
   const ticketStrategy = data?.ticketStrategy || {};
   const preRaceAnalysis = data?.preRaceAnalysis || data?.preRaceForm || {};
+  const exhibitionAI = data?.exhibitionAI || {};
   const headSelection = data?.headSelection || {};
   const partnerSelection = data?.partnerSelection || {};
   const roleCandidates = data?.roleCandidates || {};
@@ -1119,6 +1120,22 @@ export default function App() {
                       <div className="kv-row"><span>wind_risk_score</span><strong>{formatMaybeNumber(preRaceAnalysis.wind_risk_score, 2)}</strong></div>
                     </div>
                     <p className="muted strategy-line">{preRaceAnalysis.summary || "-"}</p>
+                  </article>
+
+                  <article className="card analysis-card">
+                    <h2>展示AI分析</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>exhibition_time_score</span><strong>{formatMaybeNumber(exhibitionAI.exhibition_time_score, 2)}</strong></div>
+                      <div className="kv-row"><span>exhibition_st_score</span><strong>{formatMaybeNumber(exhibitionAI.exhibition_st_score, 2)}</strong></div>
+                      <div className="kv-row"><span>exhibition_gap_score</span><strong>{formatMaybeNumber(exhibitionAI.exhibition_gap_score, 2)}</strong></div>
+                      <div className="kv-row"><span>exhibition_rank_score</span><strong>{formatMaybeNumber(exhibitionAI.exhibition_rank_score, 2)}</strong></div>
+                      <div className="kv-row"><span>exhibition_breakout_score</span><strong>{formatMaybeNumber(exhibitionAI.exhibition_breakout_score, 2)}</strong></div>
+                      <div className="kv-row"><span>exhibition_ai_score</span><strong>{formatMaybeNumber(exhibitionAI.exhibition_ai_score, 2)}</strong></div>
+                      <div className="kv-row"><span>top_exhibition_lane</span><strong><LanePills lanes={[Number(exhibitionAI.top_exhibition_lane)]} /></strong></div>
+                      <div className="kv-row"><span>stable_st_lane</span><strong><LanePills lanes={[Number(exhibitionAI.stable_st_lane)]} /></strong></div>
+                      <div className="kv-row"><span>breakout_lane</span><strong><LanePills lanes={[Number(exhibitionAI.breakout_lane)]} /></strong></div>
+                      <div className="kv-row"><span>weak_lane</span><strong><LanePills lanes={[Number(exhibitionAI.weak_lane)]} /></strong></div>
+                    </div>
                   </article>
 
                   <article className="card analysis-card">

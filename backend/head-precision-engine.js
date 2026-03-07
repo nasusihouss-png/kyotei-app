@@ -36,7 +36,8 @@ export function evaluateHeadPrecision({
   headSelection,
   probabilities,
   raceIndexes,
-  raceOutcomeProbabilities
+  raceOutcomeProbabilities,
+  exhibitionAI
 }) {
   const rows = Array.isArray(ranking) ? ranking : [];
   if (!rows.length) {
@@ -71,7 +72,7 @@ export function evaluateHeadPrecision({
     else if (lane === 3 || lane === 4) laneShape = makuriP * 0.65;
     else laneShape = (1 - are / 120) * 0.15;
 
-    const headRaw =
+    let headRaw =
       scoreNorm[idx] * 0.36 +
       stQ * 0.2 +
       exQ * 0.18 +
@@ -79,6 +80,11 @@ export function evaluateHeadPrecision({
       entryQ * 0.08 +
       baseWinProb * 0.22 +
       laneShape * 0.14;
+
+    if (lane === toNum(exhibitionAI?.top_exhibition_lane, 0)) headRaw += 0.11;
+    if (lane === toNum(exhibitionAI?.stable_st_lane, 0)) headRaw += 0.08;
+    if (lane === toNum(exhibitionAI?.breakout_lane, 0)) headRaw += 0.09;
+    if (lane === toNum(exhibitionAI?.weak_lane, 0)) headRaw -= 0.08;
 
     return { lane, headRaw };
   });

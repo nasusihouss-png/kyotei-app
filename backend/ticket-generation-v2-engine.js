@@ -130,6 +130,7 @@ export function generateTicketsV2({
   partnerSelection,
   headConfidence,
   headPrecision,
+  exhibitionAI,
   raceRisk,
   raceIndexes,
   wallEvaluation
@@ -149,6 +150,7 @@ export function generateTicketsV2({
   const spreadNeeded = !!headConfidence?.head_spread_needed;
   const headWin = toNum(headPrecision?.head_win_score, 50);
   const headGap = toNum(headPrecision?.head_gap_score, 50);
+  const exAI = toNum(exhibitionAI?.exhibition_ai_score, 50);
 
   if (recommendation === "SKIP") {
     return {
@@ -172,7 +174,7 @@ export function generateTicketsV2({
   ) {
     result = buildHeadFixed({
       mainHead,
-      mainPartners: headGap >= 52 ? mainPartners.slice(0, 2) : mainPartners,
+      mainPartners: headGap >= 52 || exAI >= 66 ? mainPartners.slice(0, 2) : mainPartners,
       backupPartners,
       excluded: fadeLanes
     });
@@ -196,7 +198,7 @@ export function generateTicketsV2({
 
   return {
     ...result,
-    summary: `${result.summary} (頭精度:${headWin.toFixed(1)}/${headGap.toFixed(1)})`,
+    summary: `${result.summary} (頭精度:${headWin.toFixed(1)}/${headGap.toFixed(1)} 展示:${exAI.toFixed(1)})`,
     excluded_lanes: fadeLanes
   };
 }

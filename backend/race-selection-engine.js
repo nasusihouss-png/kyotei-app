@@ -31,13 +31,15 @@ export function decideRaceSelection({
   preRaceAnalysis,
   roleCandidates,
   ticketOptimization,
-  headPrecision
+  headPrecision,
+  exhibitionAI
 }) {
   const head_stability_score = toNum(raceStructure?.head_stability_score, 50);
   const chaos_risk_score = toNum(raceStructure?.chaos_risk_score, 50);
   const pre_race_form_score = toNum(preRaceAnalysis?.pre_race_form_score, 50);
   const partner_clarity_score = calcPartnerClarityScore(roleCandidates);
   const value_balance_score = calcValueBalanceScore(ticketOptimization);
+  const exhibition_ai_score = toNum(exhibitionAI?.exhibition_ai_score, 50);
   const head_precision_score = clamp(
     0,
     100,
@@ -52,7 +54,8 @@ export function decideRaceSelection({
       partner_clarity_score * 0.22 +
       pre_race_form_score * 0.2 +
       (100 - chaos_risk_score) * 0.14 +
-      value_balance_score * 0.08
+      value_balance_score * 0.05 +
+      exhibition_ai_score * 0.03
   );
 
   let mode = "SMALL_BET";
@@ -66,6 +69,7 @@ export function decideRaceSelection({
   if (pre_race_form_score >= 62) reason_codes.push("PRE_RACE_GOOD");
   if (chaos_risk_score <= 52) reason_codes.push("LOW_CHAOS");
   if (value_balance_score >= 58) reason_codes.push("VALUE_BALANCED");
+  if (exhibition_ai_score >= 62) reason_codes.push("EXHIBITION_STRONG");
   if (chaos_risk_score >= 74) reason_codes.push("CHAOS_HIGH");
   if (head_stability_score < 42) reason_codes.push("HEAD_WEAK");
   if (head_precision_score < 42) reason_codes.push("HEAD_PRECISION_LOW");
@@ -94,6 +98,7 @@ export function decideRaceSelection({
       head_precision_score: Number(head_precision_score.toFixed(2)),
       partner_clarity_score: Number(partner_clarity_score.toFixed(2)),
       pre_race_form_score: Number(pre_race_form_score.toFixed(2)),
+      exhibition_ai_score: Number(exhibition_ai_score.toFixed(2)),
       chaos_risk_score: Number(chaos_risk_score.toFixed(2)),
       value_balance_score: Number(value_balance_score.toFixed(2))
     }

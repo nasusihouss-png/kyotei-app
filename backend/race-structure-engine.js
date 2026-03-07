@@ -13,7 +13,8 @@ export function analyzeRaceStructure({
   headConfidence,
   raceIndexes,
   preRaceAnalysis,
-  roleCandidates
+  roleCandidates,
+  exhibitionAI
 }) {
   const rows = Array.isArray(ranking) ? ranking : [];
   const probs = (Array.isArray(probabilities) ? probabilities : [])
@@ -26,16 +27,21 @@ export function analyzeRaceStructure({
   const headConf = toNum(headConfidence?.head_confidence, 0.5);
   const chaosIndex = toNum(raceIndexes?.are_index, 50);
   const windRisk = toNum(preRaceAnalysis?.wind_risk_score, 50);
+  const exhibitionScore = toNum(exhibitionAI?.exhibition_ai_score, 50);
 
   const outerTop = rows.slice(0, 3).filter((r) => toNum(r?.racer?.lane) >= 5).length;
   const fadeCount = Array.isArray(roleCandidates?.fade_lanes) ? roleCandidates.fade_lanes.length : 0;
 
-  const head_stability_score = clamp(0, 100, headConf * 100 * 0.8 + top1 * 100 * 0.2);
+  const head_stability_score = clamp(
+    0,
+    100,
+    headConf * 100 * 0.72 + top1 * 100 * 0.18 + exhibitionScore * 0.1
+  );
   const top3_concentration_score = clamp(0, 100, top3 * 100);
   const chaos_risk_score = clamp(
     0,
     100,
-    chaosIndex * 0.55 + windRisk * 0.25 + outerTop * 7 + fadeCount * 2
+    chaosIndex * 0.52 + windRisk * 0.24 + outerTop * 7 + fadeCount * 2 + (70 - exhibitionScore) * 0.12
   );
   const race_structure_score = clamp(
     0,
