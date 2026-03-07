@@ -50,6 +50,15 @@ function ensurePlacedBetsColumns() {
   if (!colNames.has("bought_odds")) {
     db.exec("ALTER TABLE placed_bets ADD COLUMN bought_odds REAL");
   }
+  if (!colNames.has("recommended_prob")) {
+    db.exec("ALTER TABLE placed_bets ADD COLUMN recommended_prob REAL");
+  }
+  if (!colNames.has("recommended_ev")) {
+    db.exec("ALTER TABLE placed_bets ADD COLUMN recommended_ev REAL");
+  }
+  if (!colNames.has("recommended_bet")) {
+    db.exec("ALTER TABLE placed_bets ADD COLUMN recommended_bet INTEGER");
+  }
 }
 
 ensurePlacedBetsColumns();
@@ -63,6 +72,9 @@ const insertPlacedBetStmt = db.prepare(`
     combo,
     bet_amount,
     bought_odds,
+    recommended_prob,
+    recommended_ev,
+    recommended_bet,
     memo,
     updated_at
   ) VALUES (
@@ -73,6 +85,9 @@ const insertPlacedBetStmt = db.prepare(`
     @combo,
     @bet_amount,
     @bought_odds,
+    @recommended_prob,
+    @recommended_ev,
+    @recommended_bet,
     @memo,
     @updated_at
   )
@@ -103,6 +118,9 @@ const listPlacedBetsStmt = db.prepare(`
     combo,
     bet_amount,
     bought_odds,
+    recommended_prob,
+    recommended_ev,
+    recommended_bet,
     memo,
     hit_flag,
     payout,
@@ -177,6 +195,9 @@ export function createPlacedBet({
   combo,
   bet_amount,
   bought_odds,
+  recommended_prob,
+  recommended_ev,
+  recommended_bet,
   memo
 }) {
   const raceDate = normalizeRaceDate(race_date);
@@ -185,6 +206,9 @@ export function createPlacedBet({
   const normalizedCombo = normalizeCombo(combo);
   const betAmount = toInt(bet_amount);
   const boughtOdds = toFloat(bought_odds);
+  const recommendedProb = toFloat(recommended_prob);
+  const recommendedEv = toFloat(recommended_ev);
+  const recommendedBet = toInt(recommended_bet);
   const raceId = resolveRaceId({
     raceId: race_id,
     raceDate,
@@ -222,6 +246,9 @@ export function createPlacedBet({
     combo: normalizedCombo,
     bet_amount: betAmount,
     bought_odds: boughtOdds,
+    recommended_prob: recommendedProb,
+    recommended_ev: recommendedEv,
+    recommended_bet: recommendedBet,
     memo: memo ? String(memo) : null,
     updated_at: nowIso()
   });

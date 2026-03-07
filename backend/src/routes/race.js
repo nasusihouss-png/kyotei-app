@@ -104,6 +104,17 @@ function finalizeBucket(bucket) {
   };
 }
 
+function sumRows(rows, pick) {
+  return (Array.isArray(rows) ? rows : []).reduce((acc, row) => acc + toNum(row?.[pick]), 0);
+}
+
+function calcRates({ bet, payout, hit, total }) {
+  return {
+    hit_rate: pct(hit, total),
+    recovery_rate: pct(payout, bet)
+  };
+}
+
 function toInt(value, fallback = null) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -482,6 +493,7 @@ raceRouter.get("/race", async (req, res, next) => {
       buyType,
       raceRisk,
       prediction,
+      raceDecision,
       probabilities,
       ev_analysis: evData.ev_analysis,
       bet_plan: bet_plan_with_stake
@@ -1044,6 +1056,382 @@ raceRouter.get("/stats", async (_req, res, next) => {
         "MICRO BET": finalizeBucket(byRecommendationBuckets["MICRO BET"]),
         SKIP: finalizeBucket(byRecommendationBuckets.SKIP)
       }
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.get("/analytics", async (req, res, next) => {
+  try {
+    const baseDate = String(req.query?.date || new Date().toISOString().slice(0, 10));
+    const periodSummaries = getPlacedBetSummaries(baseDate);
+
+    const placedRows = db
+      .prepare(
+        `
+        SELECT id, race_id, race_date, venue_id, race_no, combo, bet_amount, bought_odds, recommended_prob, recommended_ev, recommended_bet, hit_flag, payout, profit_loss
+        FROM placed_bets
+      `
+      )
+      .all();
+
+    const raceRows = db
+      .prepare(
+        `
+        SELECT race_id, race_date, venue_id, venue_name, race_no
+        FROM races
+      `
+      )
+      .all();
+    const raceMap = new Map(raceRows.map((r) => [String(r.race_id), r]));
+
+    const resultsRows = db
+      .prepare(
+        `
+        SELECT race_id, finish_1, finish_2, finish_3, payout_3t
+        FROM results
+      `
+      )
+      .all();
+    const resultMap = new Map(resultsRows.map((r) => [String(r.race_id), r]));
+
+    const latestPredictionRows = db
+      .prepare(
+        `
+        SELECT pl.race_id, pl.recommendation, pl.top3_json, pl.bet_plan_json, pl.race_decision_json, pl.created_at
+        FROM prediction_logs pl
+        INNER JOIN (
+          SELECT race_id, MAX(id) AS max_id
+          FROM prediction_logs
+          GROUP BY race_id
+        ) latest
+          ON latest.max_id = pl.id
+      `
+      )
+      .all();
+
+    const predictionByRace = new Map();
+    for (const row of latestPredictionRows) {
+      predictionByRace.set(String(row.race_id), {
+        recommendation: normalizeRecommendation(row.recommendation),
+        top3: safeJsonParse(row.top3_json, []),
+        betPlan: safeJsonParse(row.bet_plan_json, {}),
+        raceDecision: safeJsonParse(row.race_decision_json, {}),
+        created_at: row.created_at
+      });
+    }
+
+    const settledRows = placedRows.filter((r) => r.hit_flag === 0 || r.hit_flag === 1);
+    const totalBet = sumRows(placedRows, "bet_amount");
+    const totalPayout = sumRows(placedRows, "payout");
+    const totalPL = sumRows(placedRows, "profit_loss");
+    const totalHit = settledRows.filter((r) => toNum(r.hit_flag) === 1).length;
+    const totalSettled = settledRows.length;
+
+    const total = {
+      total_bets: totalBet,
+      total_payout: totalPayout,
+      total_profit_loss: totalPL,
+      settled_count: totalSettled,
+      hit_count: totalHit,
+      ...calcRates({ bet: totalBet, payout: totalPayout, hit: totalHit, total: totalSettled })
+    };
+
+    const byVenueMap = new Map();
+    for (const row of placedRows) {
+      const race = raceMap.get(String(row.race_id));
+      const key = `${row.venue_id}`;
+      if (!byVenueMap.has(key)) {
+        byVenueMap.set(key, {
+          venue_id: toNum(row.venue_id),
+          venue_name: race?.venue_name || null,
+          total_bets: 0,
+          total_payout: 0,
+          total_profit_loss: 0,
+          hit_count: 0,
+          settled_count: 0
+        });
+      }
+      const agg = byVenueMap.get(key);
+      agg.total_bets += toNum(row.bet_amount);
+      agg.total_payout += toNum(row.payout);
+      agg.total_profit_loss += toNum(row.profit_loss);
+      if (row.hit_flag === 0 || row.hit_flag === 1) {
+        agg.settled_count += 1;
+        if (toNum(row.hit_flag) === 1) agg.hit_count += 1;
+      }
+    }
+
+    const venue_performance = Array.from(byVenueMap.values())
+      .map((v) => ({
+        ...v,
+        ...calcRates({
+          bet: v.total_bets,
+          payout: v.total_payout,
+          hit: v.hit_count,
+          total: v.settled_count
+        })
+      }))
+      .sort((a, b) => b.total_profit_loss - a.total_profit_loss);
+
+    const byModeMap = new Map();
+    for (const row of placedRows) {
+      const pred = predictionByRace.get(String(row.race_id));
+      const mode = pred?.raceDecision?.mode || pred?.recommendation || "UNKNOWN";
+      if (!byModeMap.has(mode)) {
+        byModeMap.set(mode, {
+          mode,
+          total_bets: 0,
+          total_payout: 0,
+          total_profit_loss: 0,
+          hit_count: 0,
+          settled_count: 0
+        });
+      }
+      const agg = byModeMap.get(mode);
+      agg.total_bets += toNum(row.bet_amount);
+      agg.total_payout += toNum(row.payout);
+      agg.total_profit_loss += toNum(row.profit_loss);
+      if (row.hit_flag === 0 || row.hit_flag === 1) {
+        agg.settled_count += 1;
+        if (toNum(row.hit_flag) === 1) agg.hit_count += 1;
+      }
+    }
+
+    const mode_performance = Array.from(byModeMap.values())
+      .map((m) => ({
+        ...m,
+        ...calcRates({
+          bet: m.total_bets,
+          payout: m.total_payout,
+          hit: m.hit_count,
+          total: m.settled_count
+        })
+      }))
+      .sort((a, b) => b.total_profit_loss - a.total_profit_loss);
+
+    let headRaceCount = 0;
+    let headHitCount = 0;
+    for (const [raceId, pred] of predictionByRace.entries()) {
+      const result = resultMap.get(raceId);
+      const head = Array.isArray(pred?.top3) ? toNum(pred.top3[0]) : null;
+      const actualHead = result ? toNum(result.finish_1) : null;
+      if (!Number.isFinite(head) || !Number.isFinite(actualHead) || !actualHead) continue;
+      headRaceCount += 1;
+      if (head === actualHead) headHitCount += 1;
+    }
+    const head_prediction = {
+      race_count: headRaceCount,
+      hit_count: headHitCount,
+      success_rate: pct(headHitCount, headRaceCount)
+    };
+
+    const recommendation_only = {
+      race_count: 0,
+      ticket_count: 0,
+      total_bets: 0,
+      total_payout: 0,
+      total_profit_loss: 0,
+      hit_count: 0
+    };
+    const stake_allocation = {
+      race_count: 0,
+      ticket_count: 0,
+      total_bets: 0,
+      total_payout: 0,
+      total_profit_loss: 0,
+      hit_count: 0
+    };
+
+    for (const [raceId, pred] of predictionByRace.entries()) {
+      const result = resultMap.get(raceId);
+      if (!result) continue;
+      const actualCombo = `${result.finish_1}-${result.finish_2}-${result.finish_3}`;
+      const payout3t = toNum(result.payout_3t, 0);
+      const planRows = Array.isArray(pred?.betPlan?.recommended_bets) ? pred.betPlan.recommended_bets : [];
+      if (!planRows.length) continue;
+      recommendation_only.race_count += 1;
+      stake_allocation.race_count += 1;
+
+      for (const row of planRows) {
+        const combo = String(row?.combo || "");
+        if (!combo) continue;
+
+        recommendation_only.ticket_count += 1;
+        recommendation_only.total_bets += 100;
+        if (combo === actualCombo && payout3t > 0) {
+          recommendation_only.hit_count += 1;
+          recommendation_only.total_payout += payout3t;
+          recommendation_only.total_profit_loss += payout3t - 100;
+        } else {
+          recommendation_only.total_profit_loss -= 100;
+        }
+
+        const stakeBet = Math.max(100, toNum(row?.recommended_bet ?? row?.bet, 100));
+        const units = Math.max(1, Math.floor(stakeBet / 100));
+        const payout = combo === actualCombo && payout3t > 0 ? payout3t * units : 0;
+        const profitLoss = payout - stakeBet;
+
+        stake_allocation.ticket_count += 1;
+        stake_allocation.total_bets += stakeBet;
+        stake_allocation.total_payout += payout;
+        stake_allocation.total_profit_loss += profitLoss;
+        if (combo === actualCombo && payout3t > 0) stake_allocation.hit_count += 1;
+      }
+    }
+
+    const recommendation_only_performance = {
+      ...recommendation_only,
+      ...calcRates({
+        bet: recommendation_only.total_bets,
+        payout: recommendation_only.total_payout,
+        hit: recommendation_only.hit_count,
+        total: recommendation_only.ticket_count
+      })
+    };
+    const stake_allocation_performance = {
+      ...stake_allocation,
+      ...calcRates({
+        bet: stake_allocation.total_bets,
+        payout: stake_allocation.total_payout,
+        hit: stake_allocation.hit_count,
+        total: stake_allocation.ticket_count
+      })
+    };
+
+    return res.json({
+      total,
+      periods: periodSummaries,
+      venue_performance,
+      mode_performance,
+      head_prediction,
+      recommendation_only_performance,
+      stake_allocation_performance
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.get("/logs", async (req, res, next) => {
+  try {
+    const limitRaw = Number(req.query?.limit);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 300) : 100;
+
+    const latestPredictionRows = db
+      .prepare(
+        `
+        SELECT pl.race_id, pl.created_at, pl.recommendation, pl.risk_score, pl.race_decision_json, pl.bet_plan_json
+        FROM prediction_logs pl
+        INNER JOIN (
+          SELECT race_id, MAX(id) AS max_id
+          FROM prediction_logs
+          GROUP BY race_id
+        ) latest
+          ON latest.max_id = pl.id
+        ORDER BY pl.id DESC
+        LIMIT ?
+      `
+      )
+      .all(limit);
+
+    const raceRows = db
+      .prepare(
+        `
+        SELECT race_id, race_date, venue_id, venue_name, race_no
+        FROM races
+      `
+      )
+      .all();
+    const raceMap = new Map(raceRows.map((r) => [String(r.race_id), r]));
+
+    const resultRows = db
+      .prepare(
+        `
+        SELECT race_id, finish_1, finish_2, finish_3
+        FROM results
+      `
+      )
+      .all();
+    const resultMap = new Map(resultRows.map((r) => [String(r.race_id), r]));
+
+    const placedRows = db
+      .prepare(
+        `
+        SELECT race_id, combo, bet_amount, bought_odds, recommended_prob, recommended_ev, recommended_bet, hit_flag, payout, profit_loss
+        FROM placed_bets
+      `
+      )
+      .all();
+    const placedByRace = new Map();
+    for (const row of placedRows) {
+      const key = String(row.race_id);
+      if (!placedByRace.has(key)) placedByRace.set(key, []);
+      placedByRace.get(key).push(row);
+    }
+
+    const items = latestPredictionRows.map((row) => {
+      const raceId = String(row.race_id);
+      const race = raceMap.get(raceId) || {};
+      const result = resultMap.get(raceId) || {};
+      const raceDecision = safeJsonParse(row.race_decision_json, {});
+      const betPlan = safeJsonParse(row.bet_plan_json, {});
+      const recommendedTickets = Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [];
+      const actualPlacedTickets = placedByRace.get(raceId) || [];
+
+      const totalActualBet = actualPlacedTickets.reduce((a, b) => a + toNum(b.bet_amount), 0);
+      const totalActualPayout = actualPlacedTickets.reduce((a, b) => a + toNum(b.payout), 0);
+      const totalActualPL = actualPlacedTickets.reduce((a, b) => a + toNum(b.profit_loss), 0);
+      const hitCount = actualPlacedTickets.filter((b) => toNum(b.hit_flag) === 1).length;
+      const missCount = actualPlacedTickets.filter((b) => toNum(b.hit_flag) === 0).length;
+
+      return {
+        race_id: raceId,
+        date: race.race_date ?? null,
+        venueId: race.venue_id ?? null,
+        venueName: race.venue_name ?? null,
+        raceNo: race.race_no ?? null,
+        raceDecision: {
+          mode: raceDecision?.mode || row.recommendation || null,
+          confidence: raceDecision?.confidence ?? null,
+          risk_score: row.risk_score ?? null
+        },
+        recommended_tickets: recommendedTickets.map((t) => ({
+          combo: t.combo,
+          recommended_bet: t.recommended_bet ?? t.bet ?? null,
+          odds: t.odds ?? null,
+          ev: t.ev ?? null,
+          probability: t.prob ?? null,
+          ticket_type: t.ticket_type ?? null
+        })),
+        actual_placed_tickets: actualPlacedTickets.map((t) => ({
+          combo: t.combo,
+          actual_bet_amount: t.bet_amount,
+          recommended_bet_amount: t.recommended_bet,
+          odds: t.bought_odds,
+          recommended_ev: t.recommended_ev,
+          recommended_prob: t.recommended_prob,
+          hit_flag: t.hit_flag,
+          payout: t.payout,
+          profit_loss: t.profit_loss
+        })),
+        actual_result: [
+          result?.finish_1 ?? null,
+          result?.finish_2 ?? null,
+          result?.finish_3 ?? null
+        ],
+        hit_count: hitCount,
+        miss_count: missCount,
+        total_actual_bet: totalActualBet,
+        total_payout: totalActualPayout,
+        total_profit_loss: totalActualPL,
+        logged_at: row.created_at
+      };
+    });
+
+    return res.json({
+      items
     });
   } catch (err) {
     return next(err);

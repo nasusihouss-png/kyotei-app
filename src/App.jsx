@@ -72,6 +72,14 @@ async function fetchHistoryData() {
   return response.json();
 }
 
+async function fetchAnalyticsData(date) {
+  const url = new URL(`${API_BASE}/analytics`);
+  if (date) url.searchParams.set("date", date);
+  const response = await fetch(url.toString());
+  if (!response.ok) throw new Error("Failed to fetch analytics");
+  return response.json();
+}
+
 async function submitRaceResult(payload) {
   const response = await fetch(`${API_BASE}/race/result`, {
     method: "POST",
@@ -284,6 +292,7 @@ export default function App() {
 
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
   const [history, setHistory] = useState([]);
   const [perfError, setPerfError] = useState("");
 
@@ -472,8 +481,13 @@ export default function App() {
     setStatsLoading(true);
     setPerfError("");
     try {
-      const [statsData, historyData] = await Promise.all([fetchStatsData(), fetchHistoryData()]);
+      const [statsData, analyticsData, historyData] = await Promise.all([
+        fetchStatsData(),
+        fetchAnalyticsData(date),
+        fetchHistoryData()
+      ]);
       setStats(statsData);
+      setAnalytics(analyticsData || null);
       setHistory(Array.isArray(historyData?.items) ? historyData.items : []);
     } catch (e) {
       setPerfError(e.message || "Failed to load performance data");
@@ -712,6 +726,9 @@ export default function App() {
           combo: t.combo,
           bet_amount: roundBetTo100(t.bet_amount),
           bought_odds: Number.isFinite(Number(t.odds)) ? Number(t.odds) : null,
+          recommended_prob: Number.isFinite(Number(t.prob)) ? Number(t.prob) : null,
+          recommended_ev: Number.isFinite(Number(t.ev)) ? Number(t.ev) : null,
+          recommended_bet: roundBetTo100(t.bet_amount),
           memo: t.memo
         }))
       );
@@ -1460,6 +1477,141 @@ export default function App() {
               <article className="card stat-card"><span>回収率</span><strong>{formatMaybeNumber(stats?.recovery_rate, 2)}%</strong></article>
               <article className="card stat-card"><span>総損益</span><strong>JPY {(stats?.total_profit_loss ?? 0).toLocaleString()}</strong></article>
               <article className="card stat-card"><span>平均EV</span><strong>{formatMaybeNumber(stats?.average_ev_of_placed_bets, 4)}</strong></article>
+            </section>
+
+            <section className="card">
+              <h2>分析ダッシュボード</h2>
+              <div className="stats-grid">
+                <article className="card stat-card">
+                  <span>総購入</span>
+                  <strong>JPY {(analytics?.total?.total_bets ?? 0).toLocaleString()}</strong>
+                  <small>払戻 JPY {(analytics?.total?.total_payout ?? 0).toLocaleString()}</small>
+                  <small className={getProfitClass(analytics?.total?.total_profit_loss)}>
+                    P/L JPY {(analytics?.total?.total_profit_loss ?? 0).toLocaleString()}
+                  </small>
+                </article>
+                <article className="card stat-card">
+                  <span>総的中率</span>
+                  <strong>{formatMaybeNumber(analytics?.total?.hit_rate, 2)}%</strong>
+                  <small>回収率 {formatMaybeNumber(analytics?.total?.recovery_rate, 2)}%</small>
+                  <small>精算件数 {analytics?.total?.settled_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>頭予想成功率</span>
+                  <strong>{formatMaybeNumber(analytics?.head_prediction?.success_rate, 2)}%</strong>
+                  <small>件数 {analytics?.head_prediction?.race_count ?? 0}</small>
+                  <small>的中 {analytics?.head_prediction?.hit_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>推奨買い目(固定100)</span>
+                  <strong>{formatMaybeNumber(analytics?.recommendation_only_performance?.hit_rate, 2)}%</strong>
+                  <small>回収率 {formatMaybeNumber(analytics?.recommendation_only_performance?.recovery_rate, 2)}%</small>
+                  <small className={getProfitClass(analytics?.recommendation_only_performance?.total_profit_loss)}>
+                    P/L JPY {(analytics?.recommendation_only_performance?.total_profit_loss ?? 0).toLocaleString()}
+                  </small>
+                </article>
+                <article className="card stat-card">
+                  <span>資金配分適用</span>
+                  <strong>{formatMaybeNumber(analytics?.stake_allocation_performance?.hit_rate, 2)}%</strong>
+                  <small>回収率 {formatMaybeNumber(analytics?.stake_allocation_performance?.recovery_rate, 2)}%</small>
+                  <small className={getProfitClass(analytics?.stake_allocation_performance?.total_profit_loss)}>
+                    P/L JPY {(analytics?.stake_allocation_performance?.total_profit_loss ?? 0).toLocaleString()}
+                  </small>
+                </article>
+              </div>
+            </section>
+
+            <section className="card">
+              <h2>日次 / 月次 / 年次サマリー</h2>
+              <div className="stats-grid">
+                <article className="card stat-card">
+                  <span>今日</span>
+                  <strong>Bet JPY {(analytics?.periods?.today?.total_bet_amount ?? 0).toLocaleString()}</strong>
+                  <small>Hit {formatMaybeNumber(analytics?.periods?.today?.hit_rate, 2)}%</small>
+                  <small>Recovery {formatMaybeNumber(analytics?.periods?.today?.recovery_rate, 2)}%</small>
+                  <small className={getProfitClass(analytics?.periods?.today?.total_profit_loss)}>
+                    P/L JPY {(analytics?.periods?.today?.total_profit_loss ?? 0).toLocaleString()}
+                  </small>
+                </article>
+                <article className="card stat-card">
+                  <span>今月</span>
+                  <strong>Bet JPY {(analytics?.periods?.month?.total_bet_amount ?? 0).toLocaleString()}</strong>
+                  <small>Hit {formatMaybeNumber(analytics?.periods?.month?.hit_rate, 2)}%</small>
+                  <small>Recovery {formatMaybeNumber(analytics?.periods?.month?.recovery_rate, 2)}%</small>
+                  <small className={getProfitClass(analytics?.periods?.month?.total_profit_loss)}>
+                    P/L JPY {(analytics?.periods?.month?.total_profit_loss ?? 0).toLocaleString()}
+                  </small>
+                </article>
+                <article className="card stat-card">
+                  <span>今年</span>
+                  <strong>Bet JPY {(analytics?.periods?.year?.total_bet_amount ?? 0).toLocaleString()}</strong>
+                  <small>Hit {formatMaybeNumber(analytics?.periods?.year?.hit_rate, 2)}%</small>
+                  <small>Recovery {formatMaybeNumber(analytics?.periods?.year?.recovery_rate, 2)}%</small>
+                  <small className={getProfitClass(analytics?.periods?.year?.total_profit_loss)}>
+                    P/L JPY {(analytics?.periods?.year?.total_profit_loss ?? 0).toLocaleString()}
+                  </small>
+                </article>
+              </div>
+            </section>
+
+            <section className="card">
+              <h2>場別パフォーマンス</h2>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>場</th>
+                      <th>購入</th>
+                      <th>払戻</th>
+                      <th>損益</th>
+                      <th>的中率</th>
+                      <th>回収率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(analytics?.venue_performance || []).map((v) => (
+                      <tr key={`venue-${v.venue_id}`}>
+                        <td>{v.venue_id} {v.venue_name || "-"}</td>
+                        <td>JPY {(v.total_bets ?? 0).toLocaleString()}</td>
+                        <td>JPY {(v.total_payout ?? 0).toLocaleString()}</td>
+                        <td className={getProfitClass(v.total_profit_loss)}>JPY {(v.total_profit_loss ?? 0).toLocaleString()}</td>
+                        <td>{formatMaybeNumber(v.hit_rate, 2)}%</td>
+                        <td>{formatMaybeNumber(v.recovery_rate, 2)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="card">
+              <h2>判定モード別パフォーマンス</h2>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Mode</th>
+                      <th>購入</th>
+                      <th>払戻</th>
+                      <th>損益</th>
+                      <th>的中率</th>
+                      <th>回収率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(analytics?.mode_performance || []).map((m) => (
+                      <tr key={`mode-${m.mode}`}>
+                        <td>{m.mode}</td>
+                        <td>JPY {(m.total_bets ?? 0).toLocaleString()}</td>
+                        <td>JPY {(m.total_payout ?? 0).toLocaleString()}</td>
+                        <td className={getProfitClass(m.total_profit_loss)}>JPY {(m.total_profit_loss ?? 0).toLocaleString()}</td>
+                        <td>{formatMaybeNumber(m.hit_rate, 2)}%</td>
+                        <td>{formatMaybeNumber(m.recovery_rate, 2)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
 
             <section className="card">
