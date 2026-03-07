@@ -384,6 +384,7 @@ export default function App() {
   const partnerSelection = data?.partnerSelection || {};
   const roleCandidates = data?.roleCandidates || {};
   const raceStructure = data?.raceStructure || {};
+  const venueBias = data?.venueBias || {};
   const wallEvaluation = data?.wallEvaluation || {};
   const headConfidence = data?.headConfidence || {};
   const ticketGenerationV2 = data?.ticketGenerationV2 || {};
@@ -1181,6 +1182,17 @@ export default function App() {
                       <div className="kv-row"><span>race_structure_score</span><strong>{formatMaybeNumber(raceStructure.race_structure_score, 2)}</strong></div>
                     </div>
                     <p className="muted strategy-line">{raceStructure.summary || "-"}</p>
+                  </article>
+
+                  <article className="card analysis-card">
+                    <h2>場バイアス</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>venue_bias_score</span><strong>{formatMaybeNumber(venueBias.venue_bias_score, 2)}</strong></div>
+                      <div className="kv-row"><span>venue_inner_reliability</span><strong>{formatMaybeNumber(venueBias.venue_inner_reliability, 2)}</strong></div>
+                      <div className="kv-row"><span>venue_chaos_factor</span><strong>{formatMaybeNumber(venueBias.venue_chaos_factor, 2)}</strong></div>
+                      <div className="kv-row"><span>venue_style_bias</span><strong>{venueBias.venue_style_bias || "-"}</strong></div>
+                    </div>
+                    <p className="muted strategy-line">{venueBias.summary || "-"}</p>
                   </article>
 
                   <article className="card analysis-card">

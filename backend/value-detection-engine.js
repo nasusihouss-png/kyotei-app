@@ -17,13 +17,17 @@ function tierFromSignals({ valueScore, overpriced, underpriced, prob }) {
   return "safe_low_value";
 }
 
-export function detectValue({ recommendedBets, ticketOptimization, raceDecision }) {
+export function detectValue({ recommendedBets, ticketOptimization, raceDecision, venueBias }) {
   const source =
     Array.isArray(ticketOptimization?.optimized_tickets) && ticketOptimization.optimized_tickets.length
       ? ticketOptimization.optimized_tickets
       : Array.isArray(recommendedBets)
         ? recommendedBets
         : [];
+
+  const venueInner = toNum(venueBias?.venue_inner_reliability, 50);
+  const venueChaos = toNum(venueBias?.venue_chaos_factor, 50);
+  const venueStyle = String(venueBias?.venue_style_bias || "balanced");
 
   const analyzedTickets = source.map((row) => {
     const combo = String(row?.combo || "");
@@ -37,13 +41,21 @@ export function detectValue({ recommendedBets, ticketOptimization, raceDecision 
     const overpriced = priceRatio < 0.88 || (prob >= 0.18 && odds <= 6.5);
     const underpriced = priceRatio > 1.12 && prob >= 0.04;
 
+    const lane = toNum(String(combo).split("-")[0], 0);
+    const venueTicketAdj =
+      (venueStyle === "inner" && lane === 1 ? 2.6 : 0) +
+      (venueStyle === "chaos" && lane >= 3 ? 1.8 : 0) +
+      Math.max(0, venueInner - 55) * (lane <= 2 ? 0.08 : 0.02) -
+      Math.max(0, venueChaos - 60) * (lane <= 2 ? 0.06 : 0.01);
+
     const valueScore = clamp(
       0,
       100,
       prob * 100 * 0.42 +
         clamp(0, 1.5, ev / 1.8) * 30 +
         clamp(0, 1.6, priceRatio) * 20 +
-        (toNum(row?.ticket_confidence_score, 50) - 50) * 0.16
+        (toNum(row?.ticket_confidence_score, 50) - 50) * 0.16 +
+        venueTicketAdj
     );
 
     const bet_value_tier = tierFromSignals({
@@ -78,7 +90,12 @@ export function detectValue({ recommendedBets, ticketOptimization, raceDecision 
   const value_balance_score = clamp(
     0,
     100,
-    avgValue * 0.7 + goodValueCount * 4 - lowValueCount * 3 - modePenalty
+    avgValue * 0.7 +
+      goodValueCount * 4 -
+      lowValueCount * 3 -
+      modePenalty +
+      Math.max(0, venueInner - 55) * 0.12 -
+      Math.max(0, venueChaos - 60) * 0.1
   );
   const low_value_risk = clamp(
     0,
@@ -93,6 +110,8 @@ export function detectValue({ recommendedBets, ticketOptimization, raceDecision 
   } else if (low_value_risk >= 60) {
     summary = "Low-value risk is elevated: reduce overpriced tickets.";
   }
+  if (venueStyle === "inner" && venueInner >= 60) summary += " Venue favors inner stability.";
+  if (venueStyle === "chaos" || venueChaos >= 63) summary += " Venue is chaos-prone, keep tickets compact.";
 
   return {
     value_balance_score: Number(value_balance_score.toFixed(2)),

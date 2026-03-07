@@ -32,7 +32,8 @@ export function decideRaceSelection({
   roleCandidates,
   ticketOptimization,
   headPrecision,
-  exhibitionAI
+  exhibitionAI,
+  venueBias
 }) {
   const head_stability_score = toNum(raceStructure?.head_stability_score, 50);
   const chaos_risk_score = toNum(raceStructure?.chaos_risk_score, 50);
@@ -40,6 +41,9 @@ export function decideRaceSelection({
   const partner_clarity_score = calcPartnerClarityScore(roleCandidates);
   const value_balance_score = calcValueBalanceScore(ticketOptimization);
   const exhibition_ai_score = toNum(exhibitionAI?.exhibition_ai_score, 50);
+  const venue_bias_score = toNum(venueBias?.venue_bias_score, 50);
+  const venue_inner_reliability = toNum(venueBias?.venue_inner_reliability, 50);
+  const venue_chaos_factor = toNum(venueBias?.venue_chaos_factor, 50);
   const head_precision_score = clamp(
     0,
     100,
@@ -55,11 +59,20 @@ export function decideRaceSelection({
       pre_race_form_score * 0.2 +
       (100 - chaos_risk_score) * 0.14 +
       value_balance_score * 0.05 +
-      exhibition_ai_score * 0.03
+      exhibition_ai_score * 0.03 +
+      venue_bias_score * 0.02
   );
 
   let mode = "SMALL_BET";
-  if (race_select_score >= 72 && chaos_risk_score <= 56 && head_stability_score >= 64) mode = "FULL_BET";
+  const venueRiskPenalty = Math.max(0, venue_chaos_factor - 62) * 0.18;
+  const venueHeadBoost = Math.max(0, venue_inner_reliability - 58) * 0.12;
+  if (
+    race_select_score + venueHeadBoost - venueRiskPenalty >= 72 &&
+    chaos_risk_score <= 56 + (venue_inner_reliability >= 60 ? 2 : 0) &&
+    head_stability_score >= 64
+  ) {
+    mode = "FULL_BET";
+  }
   else if (race_select_score < 50 || chaos_risk_score >= 74 || head_stability_score < 42) mode = "SKIP";
 
   const reason_codes = [];
@@ -70,6 +83,8 @@ export function decideRaceSelection({
   if (chaos_risk_score <= 52) reason_codes.push("LOW_CHAOS");
   if (value_balance_score >= 58) reason_codes.push("VALUE_BALANCED");
   if (exhibition_ai_score >= 62) reason_codes.push("EXHIBITION_STRONG");
+  if (venue_bias_score >= 58) reason_codes.push("VENUE_BIAS_FAVORABLE");
+  if (venue_chaos_factor >= 65) reason_codes.push("VENUE_CHAOS_HIGH");
   if (chaos_risk_score >= 74) reason_codes.push("CHAOS_HIGH");
   if (head_stability_score < 42) reason_codes.push("HEAD_WEAK");
   if (head_precision_score < 42) reason_codes.push("HEAD_PRECISION_LOW");
@@ -100,7 +115,10 @@ export function decideRaceSelection({
       pre_race_form_score: Number(pre_race_form_score.toFixed(2)),
       exhibition_ai_score: Number(exhibition_ai_score.toFixed(2)),
       chaos_risk_score: Number(chaos_risk_score.toFixed(2)),
-      value_balance_score: Number(value_balance_score.toFixed(2))
+      value_balance_score: Number(value_balance_score.toFixed(2)),
+      venue_bias_score: Number(venue_bias_score.toFixed(2)),
+      venue_inner_reliability: Number(venue_inner_reliability.toFixed(2)),
+      venue_chaos_factor: Number(venue_chaos_factor.toFixed(2))
     }
   };
 }

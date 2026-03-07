@@ -133,7 +133,8 @@ export function generateTicketsV2({
   exhibitionAI,
   raceRisk,
   raceIndexes,
-  wallEvaluation
+  wallEvaluation,
+  venueBias
 }) {
   const mainHead = Number(headSelection?.main_head);
   const secondaryHeads = uniqueLanes(headSelection?.secondary_heads);
@@ -151,6 +152,9 @@ export function generateTicketsV2({
   const headWin = toNum(headPrecision?.head_win_score, 50);
   const headGap = toNum(headPrecision?.head_gap_score, 50);
   const exAI = toNum(exhibitionAI?.exhibition_ai_score, 50);
+  const venueInner = toNum(venueBias?.venue_inner_reliability, 50);
+  const venueChaos = toNum(venueBias?.venue_chaos_factor, 50);
+  const venueStyle = String(venueBias?.venue_style_bias || "balanced");
 
   if (recommendation === "SKIP") {
     return {
@@ -163,14 +167,16 @@ export function generateTicketsV2({
   }
 
   let result;
+  const compactMode = venueStyle === "inner" && venueInner >= 60 && venueChaos <= 55;
+  const spreadMode = venueStyle === "chaos" || venueChaos >= 63;
   if (
     headFixedOk &&
     !spreadNeeded &&
-    risk <= 82 &&
-    areIndex < 68 &&
+    risk <= (compactMode ? 85 : 82) &&
+    areIndex < (compactMode ? 70 : 68) &&
     wallBreakRisk < 60 &&
-    headWin >= 58 &&
-    headGap >= 38
+    headWin >= (compactMode ? 55 : 58) &&
+    headGap >= (compactMode ? 34 : 38)
   ) {
     result = buildHeadFixed({
       mainHead,
@@ -178,7 +184,7 @@ export function generateTicketsV2({
       backupPartners,
       excluded: fadeLanes
     });
-  } else if (areIndex >= 78 || risk > 90 || wallBreakRisk >= 70) {
+  } else if (areIndex >= 78 || risk > 90 || wallBreakRisk >= 70 || spreadMode) {
     const heads = uniqueLanes([mainHead, ...secondaryHeads]).slice(0, 3);
     result = buildChaosLight({
       heads,
@@ -198,7 +204,7 @@ export function generateTicketsV2({
 
   return {
     ...result,
-    summary: `${result.summary} (頭精度:${headWin.toFixed(1)}/${headGap.toFixed(1)} 展示:${exAI.toFixed(1)})`,
+    summary: `${result.summary} (頭精度:${headWin.toFixed(1)}/${headGap.toFixed(1)} 展示:${exAI.toFixed(1)} 場傾向:${venueStyle})`,
     excluded_lanes: fadeLanes
   };
 }

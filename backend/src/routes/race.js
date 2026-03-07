@@ -416,13 +416,19 @@ raceRouter.get("/race", async (req, res, next) => {
       raceOutcomeProbabilities,
       raceRisk: baseRaceRisk
     });
+    const venueBias = analyzeVenueBias({
+      race: data.race,
+      raceIndexes,
+      ranking
+    });
     const headPrecision = evaluateHeadPrecision({
       ranking,
       headSelection,
       probabilities,
       raceIndexes,
       raceOutcomeProbabilities,
-      exhibitionAI
+      exhibitionAI,
+      venueBias
     });
     const headSelectionRefined = {
       ...headSelection,
@@ -455,11 +461,6 @@ raceRouter.get("/race", async (req, res, next) => {
       roleCandidates,
       exhibitionAI
     });
-    const venueBias = analyzeVenueBias({
-      race: data.race,
-      raceIndexes,
-      ranking
-    });
     const raceStructure = applyVenueBiasToStructure({
       raceStructure: baseRaceStructure,
       venueBias
@@ -489,7 +490,8 @@ raceRouter.get("/race", async (req, res, next) => {
       exhibitionAI,
       raceRisk,
       raceIndexes,
-      wallEvaluation
+      wallEvaluation,
+      venueBias
     });
     const aiEnhancement = analyzeHitQuality({
       ranking,
@@ -513,12 +515,14 @@ raceRouter.get("/race", async (req, res, next) => {
       roleCandidates,
       ticketOptimization,
       headPrecision,
-      exhibitionAI
+      exhibitionAI,
+      venueBias
     });
     const valueDetection = detectValue({
       recommendedBets: bet_plan.recommended_bets,
       ticketOptimization,
-      raceDecision
+      raceDecision,
+      venueBias
     });
     const valueByCombo = new Map(
       (Array.isArray(valueDetection?.tickets) ? valueDetection.tickets : []).map((t) => [String(t.combo), t])
@@ -766,13 +770,19 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceOutcomeProbabilities,
             raceRisk: baseRaceRisk
           });
+          const venueBias = analyzeVenueBias({
+            race: data.race,
+            raceIndexes,
+            ranking
+          });
           const headPrecision = evaluateHeadPrecision({
             ranking,
             headSelection,
             probabilities,
             raceIndexes,
             raceOutcomeProbabilities,
-            exhibitionAI
+            exhibitionAI,
+            venueBias
           });
           const headSelectionRefined = {
             ...headSelection,
@@ -804,11 +814,6 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             preRaceAnalysis,
             roleCandidates,
             exhibitionAI
-          });
-          const venueBias = analyzeVenueBias({
-            race: data.race,
-            raceIndexes,
-            ranking
           });
           const raceStructure = applyVenueBiasToStructure({
             raceStructure: baseRaceStructure,
@@ -848,7 +853,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             roleCandidates,
             ticketOptimization,
             headPrecision,
-            exhibitionAI
+            exhibitionAI,
+            venueBias
           });
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
@@ -858,7 +864,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             exhibitionAI,
             raceRisk,
             raceIndexes,
-            wallEvaluation
+            wallEvaluation,
+            venueBias
           });
 
           const mode = String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase();
@@ -877,7 +884,13 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceDecision,
             ticketOptimization,
             betPlan: bet_plan,
-            ticketGenerationV2
+            ticketGenerationV2,
+            valueDetection: detectValue({
+              recommendedBets: bet_plan.recommended_bets,
+              ticketOptimization,
+              raceDecision,
+              venueBias
+            })
           });
 
           recs.push({

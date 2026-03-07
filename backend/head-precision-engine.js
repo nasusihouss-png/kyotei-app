@@ -37,7 +37,8 @@ export function evaluateHeadPrecision({
   probabilities,
   raceIndexes,
   raceOutcomeProbabilities,
-  exhibitionAI
+  exhibitionAI,
+  venueBias
 }) {
   const rows = Array.isArray(ranking) ? ranking : [];
   if (!rows.length) {
@@ -56,6 +57,9 @@ export function evaluateHeadPrecision({
   const makuriP = toNum(raceOutcomeProbabilities?.makuri_success_prob, 0);
   const nige = toNum(raceIndexes?.nige_index, 50);
   const are = toNum(raceIndexes?.are_index, 50);
+  const venueInner = toNum(venueBias?.venue_inner_reliability, 50);
+  const venueChaos = toNum(venueBias?.venue_chaos_factor, 50);
+  const venueStyle = String(venueBias?.venue_style_bias || "balanced");
 
   const candidateRows = rows.map((row, idx) => {
     const lane = toNum(row?.racer?.lane, 0);
@@ -80,6 +84,15 @@ export function evaluateHeadPrecision({
       entryQ * 0.08 +
       baseWinProb * 0.22 +
       laneShape * 0.14;
+
+    if (lane === 1) {
+      headRaw += (venueInner - 50) * 0.0028;
+      headRaw -= (venueChaos - 50) * 0.0018;
+    } else if (lane >= 3) {
+      headRaw += (venueChaos - 50) * 0.0015;
+    }
+    if (venueStyle === "inner" && lane <= 2) headRaw += 0.035;
+    if (venueStyle === "chaos" && lane >= 3) headRaw += 0.03;
 
     if (lane === toNum(exhibitionAI?.top_exhibition_lane, 0)) headRaw += 0.11;
     if (lane === toNum(exhibitionAI?.stable_st_lane, 0)) headRaw += 0.08;
@@ -110,7 +123,11 @@ export function evaluateHeadPrecision({
   const head_win_score = clamp(
     0,
     100,
-    topProb * 100 * 0.58 + concentration * 100 * 0.18 + Math.max(0, 70 - are) * 0.24
+    topProb * 100 * 0.54 +
+      concentration * 100 * 0.17 +
+      Math.max(0, 70 - are) * 0.2 +
+      Math.max(0, venueInner - 50) * 0.18 -
+      Math.max(0, venueChaos - 55) * 0.08
   );
   const head_gap_score = clamp(
     0,
