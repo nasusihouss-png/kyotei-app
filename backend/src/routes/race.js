@@ -103,6 +103,68 @@ function finalizeBucket(bucket) {
   };
 }
 
+function toInt(value, fallback = null) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.trunc(n);
+}
+
+function normalizeTicketsForRecommendation({
+  ticketGenerationV2,
+  betPlan,
+  ticketOptimization,
+  limit = 4
+}) {
+  const pick = [];
+  const primary = Array.isArray(ticketGenerationV2?.primary_tickets)
+    ? ticketGenerationV2.primary_tickets
+    : [];
+  const secondary = Array.isArray(ticketGenerationV2?.secondary_tickets)
+    ? ticketGenerationV2.secondary_tickets
+    : [];
+  const optimized = Array.isArray(ticketOptimization?.optimized_tickets)
+    ? ticketOptimization.optimized_tickets
+    : [];
+  const planRows = Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [];
+
+  for (const combo of [...primary, ...secondary]) {
+    if (!combo || pick.some((p) => p.combo === combo)) continue;
+    const opt = optimized.find((r) => String(r?.combo) === String(combo));
+    const plan = planRows.find((r) => String(r?.combo) === String(combo));
+    pick.push({
+      combo: String(combo),
+      prob: Number.isFinite(Number(opt?.probability ?? plan?.prob))
+        ? Number(Number(opt?.probability ?? plan?.prob).toFixed(4))
+        : null,
+      odds: Number.isFinite(Number(opt?.odds ?? plan?.odds))
+        ? Number(Number(opt?.odds ?? plan?.odds).toFixed(1))
+        : null,
+      ev: Number.isFinite(Number(opt?.ev ?? plan?.ev)) ? Number(Number(opt?.ev ?? plan?.ev).toFixed(4)) : null,
+      bet: Number.isFinite(Number(opt?.recommended_bet ?? plan?.bet))
+        ? Number(opt?.recommended_bet ?? plan?.bet)
+        : null
+    });
+    if (pick.length >= limit) break;
+  }
+
+  if (pick.length < limit) {
+    for (const row of planRows) {
+      const combo = String(row?.combo || "");
+      if (!combo || pick.some((p) => p.combo === combo)) continue;
+      pick.push({
+        combo,
+        prob: Number.isFinite(Number(row?.prob)) ? Number(Number(row.prob).toFixed(4)) : null,
+        odds: Number.isFinite(Number(row?.odds)) ? Number(Number(row.odds).toFixed(1)) : null,
+        ev: Number.isFinite(Number(row?.ev)) ? Number(Number(row.ev).toFixed(4)) : null,
+        bet: Number.isFinite(Number(row?.bet)) ? Number(row.bet) : null
+      });
+      if (pick.length >= limit) break;
+    }
+  }
+
+  return pick;
+}
+
 function enrichRecommendedTickets({ recommendedBets, probabilities, oddsData, evAnalysis }) {
   const probMap = new Map();
   (Array.isArray(probabilities) ? probabilities : []).forEach((p) => {
@@ -418,6 +480,269 @@ raceRouter.get("/race", async (req, res, next) => {
       aiEnhancement,
       ticketOptimization,
       raceDecision
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.get("/recommendations", async (req, res, next) => {
+  try {
+    const { date, participationMode } = req.query;
+    if (!date) {
+      return res.status(400).json({
+        error: "bad_request",
+        message: "date is required query param"
+      });
+    }
+
+    const limit = Math.max(1, Math.min(30, toInt(req.query?.limit, 12)));
+    const confidenceMin = Math.max(0, Math.min(100, toInt(req.query?.confidenceMin, 68)));
+    const maxChaos = Math.max(0, Math.min(100, toInt(req.query?.maxChaos, 65)));
+    const headStabilityMin = Math.max(0, Math.min(100, toInt(req.query?.headStabilityMin, 50)));
+    const raceNoList = String(req.query?.raceNos || "")
+      .split(",")
+      .map((v) => toInt(v))
+      .filter((v) => Number.isInteger(v) && v >= 1 && v <= 12);
+    const venueList = String(req.query?.venues || "")
+      .split(",")
+      .map((v) => toInt(v))
+      .filter((v) => Number.isInteger(v) && v >= 1 && v <= 24);
+
+    const scanRaceNos = raceNoList.length ? raceNoList : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    const scanVenues = venueList.length
+      ? venueList
+      : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
+    const maxScan = Math.max(1, Math.min(240, toInt(req.query?.maxScan, 72)));
+
+    const recs = [];
+    const errors = [];
+    let scanned = 0;
+
+    for (const venueId of scanVenues) {
+      for (const raceNo of scanRaceNos) {
+        if (scanned >= maxScan) break;
+        scanned += 1;
+        try {
+          const data = await getRaceData({ date, venueId, raceNo });
+          const baseFeatures = applyMotorPerformanceFeatures(
+            applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
+          );
+          const venueAdjustedBase = applyVenueAdjustments(baseFeatures, data.race);
+          const preRanking = rankRace(venueAdjustedBase.racersWithFeatures);
+          const prePattern = analyzeRacePattern(preRanking);
+          const trendFeatures = applyMotorTrendFeatures(venueAdjustedBase.racersWithFeatures, {
+            racePattern: prePattern.race_pattern
+          });
+          const entryAdjusted = applyEntryDynamicsFeatures(trendFeatures, {
+            racePattern: prePattern.race_pattern,
+            chaos_index: prePattern.indexes.chaos_index
+          });
+          const ranking = rankRace(entryAdjusted.racersWithFeatures);
+          const preRaceAnalysis = analyzePreRaceForm({ ranking, race: data.race });
+          const pattern = analyzeRacePattern(ranking);
+          const adjustedChaos = Math.min(
+            100,
+            Number(
+              (
+                pattern.indexes.chaos_index +
+                entryAdjusted.chaosBoost +
+                (venueAdjustedBase.venue.chaosAdjustment || 0)
+              ).toFixed(2)
+            )
+          );
+          const indexes = { ...pattern.indexes, chaos_index: adjustedChaos };
+          const monteCarlo = simulateTrifectaProbabilities(ranking, { topN: 10, simulations: 4000 });
+          const probabilities = monteCarlo.probabilities;
+
+          let evData = {
+            ev_analysis: { best_ev_bets: [] },
+            oddsData: {
+              trifecta: [],
+              exacta: [],
+              fetched_at: new Date().toISOString(),
+              fetch_status: { trifecta: "failed", exacta: "failed" },
+              errors: [{ type: "odds", message: "odds_fetch_failed" }]
+            }
+          };
+          try {
+            evData = await analyzeExpectedValue({
+              date: data.race.date,
+              venueId: data.race.venueId,
+              raceNo: data.race.raceNo,
+              simulation: {
+                method: "monte_carlo",
+                simulations: monteCarlo.simulations,
+                top_combinations: monteCarlo.top_combinations
+              }
+            });
+          } catch {
+            // keep graceful odds fallback
+          }
+
+          const rawBetPlan = buildBetPlan(evData.ev_analysis, 10000);
+          const bet_plan = {
+            ...rawBetPlan,
+            recommended_bets: enrichRecommendedTickets({
+              recommendedBets: rawBetPlan.recommended_bets,
+              probabilities,
+              oddsData: evData.oddsData,
+              evAnalysis: evData.ev_analysis
+            })
+          };
+
+          const raceIndexes = analyzeRaceIndexes({
+            ranking,
+            top3: ranking.slice(0, 3).map((r) => r.racer.lane),
+            racePattern: pattern.race_pattern,
+            indexes,
+            raceRisk: null
+          });
+          const baseRaceRisk = evaluateRaceRisk({
+            indexes,
+            racePattern: pattern.race_pattern,
+            ranking,
+            are_index: raceIndexes.are_index,
+            probabilities,
+            participation_mode: participationMode || "active"
+          });
+          const raceOutcomeProbabilities = estimateRaceOutcomeProbabilities({
+            raceIndexes,
+            raceRisk: baseRaceRisk,
+            racePattern: pattern.race_pattern,
+            ranking
+          });
+          const wallEvaluation = evaluateLane2Wall({
+            ranking,
+            raceIndexes,
+            racePattern: pattern.race_pattern
+          });
+          const { headSelection, partnerSelection } = analyzeHeadAndPartners({
+            ranking,
+            raceIndexes,
+            raceOutcomeProbabilities,
+            raceRisk: baseRaceRisk
+          });
+          const headConfidence = evaluateHeadConfidence({
+            headSelection,
+            raceRisk: baseRaceRisk,
+            raceIndexes,
+            raceOutcomeProbabilities,
+            probabilities,
+            wallEvaluation
+          });
+          const roleCandidates = analyzeRoleCandidates({ ranking, headSelection, partnerSelection });
+          const raceStructure = analyzeRaceStructure({
+            ranking,
+            probabilities,
+            headConfidence,
+            raceIndexes,
+            preRaceAnalysis,
+            roleCandidates
+          });
+          const raceRisk = refineRaceRiskWithStructure({
+            raceRisk: baseRaceRisk,
+            headConfidence,
+            preRaceAnalysis,
+            roleCandidates,
+            probabilities,
+            ranking
+          });
+          const aiEnhancement = analyzeHitQuality({
+            ranking,
+            raceRisk,
+            headConfidence,
+            partnerSelection,
+            oddsData: evData.oddsData,
+            probabilities
+          });
+          const ticketOptimization = optimizeTickets({
+            recommendedBets: bet_plan.recommended_bets,
+            probabilities,
+            oddsData: evData.oddsData,
+            recommendation: raceRisk.recommendation,
+            raceStructure,
+            aiEnhancement
+          });
+          const raceDecision = decideRaceSelection({
+            raceStructure,
+            preRaceAnalysis,
+            roleCandidates,
+            ticketOptimization
+          });
+          const ticketGenerationV2 = generateTicketsV2({
+            headSelection,
+            partnerSelection,
+            headConfidence,
+            raceRisk,
+            raceIndexes,
+            wallEvaluation
+          });
+
+          const mode = String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase();
+          const confidence = Number(raceDecision?.confidence ?? 0);
+          const headStability = Number(raceStructure?.head_stability_score ?? 0);
+          const chaosRisk = Number(raceStructure?.chaos_risk_score ?? raceIndexes?.are_index ?? 0);
+
+          const worthBetting =
+            mode === "FULL_BET" &&
+            confidence >= confidenceMin &&
+            headStability >= headStabilityMin &&
+            chaosRisk <= maxChaos;
+
+          if (!worthBetting) continue;
+
+          recs.push({
+            raceId: `${date}_${venueId}_${raceNo}`,
+            date,
+            venueId: data.race.venueId,
+            venueName: data.race.venueName || null,
+            raceNo: data.race.raceNo,
+            mode,
+            confidence: Number(confidence.toFixed(2)),
+            main_head: Number(headSelection?.main_head) || null,
+            head_stability_score: Number(headStability.toFixed(2)),
+            chaos_risk_score: Number(chaosRisk.toFixed(2)),
+            tickets: normalizeTicketsForRecommendation({
+              ticketGenerationV2,
+              betPlan: bet_plan,
+              ticketOptimization
+            }),
+            summary:
+              raceDecision?.summary ||
+              ticketGenerationV2?.summary ||
+              raceRisk?.skip_summary ||
+              "本線向き",
+            odds: {
+              fetched_at: evData?.oddsData?.fetched_at || null,
+              fetch_status: evData?.oddsData?.fetch_status || null
+            }
+          });
+        } catch (err) {
+          errors.push({
+            venueId,
+            raceNo,
+            message: err?.message || "failed_to_evaluate"
+          });
+        }
+      }
+      if (scanned >= maxScan) break;
+    }
+
+    recs.sort((a, b) => {
+      const c = Number(b.confidence || 0) - Number(a.confidence || 0);
+      if (c !== 0) return c;
+      return Number(b.head_stability_score || 0) - Number(a.head_stability_score || 0);
+    });
+
+    return res.json({
+      date,
+      participation_mode: participationMode || "active",
+      scanned,
+      returned: Math.min(limit, recs.length),
+      recommendations: recs.slice(0, limit),
+      skipped_count: Math.max(0, scanned - recs.length),
+      errors: errors.slice(0, 30)
     });
   } catch (err) {
     return next(err);

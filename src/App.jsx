@@ -51,6 +51,15 @@ async function fetchRaceData(date, venueId, raceNo) {
   return response.json();
 }
 
+async function fetchRecommendationsData(date) {
+  const url = new URL(`${API_BASE}/recommendations`);
+  url.searchParams.set("date", date);
+
+  const response = await fetch(url.toString());
+  if (!response.ok) throw new Error("Failed to fetch recommendations");
+  return response.json();
+}
+
 async function fetchStatsData() {
   const response = await fetch(`${API_BASE}/stats`);
   if (!response.ok) throw new Error("Failed to fetch stats");
@@ -253,6 +262,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
+  const [recommendationsLoading, setRecommendationsLoading] = useState(false);
+  const [recommendationsError, setRecommendationsError] = useState("");
+  const [recommendationsData, setRecommendationsData] = useState([]);
 
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
@@ -475,11 +487,51 @@ export default function App() {
     }
   }, [screen]);
 
+  useEffect(() => {
+    if (screen === "recommend") {
+      loadRecommendations();
+    }
+  }, [screen, date]);
+
   const onFetch = async () => {
     setLoading(true);
     setError("");
     try {
       const result = await fetchRaceData(date, venueId, raceNo);
+      setData(result);
+      setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
+    } catch (e) {
+      setError(e.message || "Failed to fetch race data");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadRecommendations = async () => {
+    setRecommendationsLoading(true);
+    setRecommendationsError("");
+    try {
+      const result = await fetchRecommendationsData(date);
+      setRecommendationsData(Array.isArray(result?.recommendations) ? result.recommendations : []);
+    } catch (e) {
+      setRecommendationsError(e.message || "Failed to fetch recommendations");
+    } finally {
+      setRecommendationsLoading(false);
+    }
+  };
+
+  const onOpenRecommendation = async (row) => {
+    const nextVenueId = Number(row?.venueId);
+    const nextRaceNo = Number(row?.raceNo);
+    if (!Number.isInteger(nextVenueId) || !Number.isInteger(nextRaceNo)) return;
+
+    setVenueId(nextVenueId);
+    setRaceNo(nextRaceNo);
+    setScreen("predict");
+    setLoading(true);
+    setError("");
+    try {
+      const result = await fetchRaceData(date, nextVenueId, nextRaceNo);
       setData(result);
       setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
     } catch (e) {
@@ -871,6 +923,7 @@ export default function App() {
           </div>
           <div className="screen-tabs">
             <button className={screen === "predict" ? "tab on" : "tab"} onClick={() => setScreen("predict")}>予想</button>
+            <button className={screen === "recommend" ? "tab on" : "tab"} onClick={() => setScreen("recommend")}>おすすめ</button>
             <button className={screen === "performance" ? "tab on" : "tab"} onClick={() => setScreen("performance")}>実績</button>
             <button className={screen === "journal" ? "tab on" : "tab"} onClick={() => setScreen("journal")}>ベット記録</button>
           </div>
@@ -1241,6 +1294,79 @@ export default function App() {
           </>
         )}
 
+        {screen === "recommend" && (
+          <>
+            {recommendationsError && <div className="error-banner">{recommendationsError}</div>}
+            <section className="card">
+              <div className="section-head recommend-head">
+                <h2>おすすめレース一覧</h2>
+                <div className="row-actions">
+                  <span className="muted">{date} の本線候補</span>
+                  <button className="fetch-btn secondary" onClick={loadRecommendations} disabled={recommendationsLoading}>
+                    {recommendationsLoading ? "更新中..." : "再取得"}
+                  </button>
+                </div>
+              </div>
+              {recommendationsLoading ? (
+                <p className="muted">おすすめを読み込み中...</p>
+              ) : recommendationsData.length === 0 ? (
+                <p className="muted">条件に合うおすすめレースはありません。</p>
+              ) : (
+                <div className="recommendation-list">
+                  {recommendationsData.map((row) => (
+                    <article className="recommend-card" key={`${row.raceId}-${row.raceNo}`}>
+                      <div className="recommend-card-head">
+                        <strong>{row.venueId} {row.venueName || "-"} {row.raceNo}R</strong>
+                        <span className={`status-pill ${getRiskClass(row.mode)}`}>{row.mode || "-"}</span>
+                      </div>
+                      <div className="kv-list">
+                        <div className="kv-row">
+                          <span>confidence</span>
+                          <strong>{formatMaybeNumber(row.confidence, 2)}</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>頭本命</span>
+                          <strong><LanePills lanes={[Number(row.main_head)]} /></strong>
+                        </div>
+                      </div>
+                      <div className="ticket-mini-list">
+                        {(Array.isArray(row.tickets) ? row.tickets : []).slice(0, 3).map((ticket, idx) => (
+                          <div className="list-row list-row-actions" key={`${row.raceId}-${ticket.combo}-${idx}`}>
+                            <strong><ComboBadge combo={ticket.combo} /></strong>
+                            <span>p {Number.isFinite(Number(ticket.prob)) ? formatMaybeNumber(ticket.prob, 3) : "-"}</span>
+                            <span>odds {Number.isFinite(Number(ticket.odds)) ? formatMaybeNumber(ticket.odds, 1) : "-"}</span>
+                            <span>ev {Number.isFinite(Number(ticket.ev)) ? formatMaybeNumber(ticket.ev, 2) : "-"}</span>
+                            <button
+                              className="fetch-btn secondary"
+                              onClick={() =>
+                                onUsePredictedTicket({
+                                  combo: ticket.combo,
+                                  prob: ticket.prob,
+                                  odds: ticket.odds,
+                                  ev: ticket.ev,
+                                  bet: ticket.bet ?? 100
+                                })
+                              }
+                            >
+                              記録に追加
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="muted strategy-line">{row.summary || "-"}</p>
+                      <div className="row-actions">
+                        <button className="fetch-btn" onClick={() => onOpenRecommendation(row)}>
+                          詳細予想へ
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
         {screen === "performance" && (
           <>
             {perfError && <div className="error-banner">{perfError}</div>}
@@ -1402,7 +1528,8 @@ export default function App() {
                       const combo = normalizeCombo(value);
                       setJournalForm((p) => ({ ...p, combo: value }));
                       if (combo.split("-").length === 3) {
-                        setBuilderLanes(combo.split("-").map((v) => Number(v)));
+                        const [first, second, third] = combo.split("-").map((v) => Number(v));
+                        setBuilderSlots({ first, second, third });
                       }
                     }}
                     placeholder="1-2-3"
