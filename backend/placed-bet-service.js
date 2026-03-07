@@ -604,8 +604,11 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
 
   console.info("[SETTLEMENT] resolved", {
     race_id: raceId,
+    parsed_date: meta.raceDate,
+    parsed_venue_id: meta.venueId,
+    parsed_race_no: meta.raceNo,
     fetched_result: winningCombo,
-    matched_bets: bets.length,
+    placed_bets_found: bets.length,
     official_result_fetched: officialFetched,
     source_url: sourceUrl
   });
@@ -648,12 +651,22 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
 
   const settlement_debug = {
     race_id: raceId,
+    parsed_race_key:
+      meta.raceDate && Number.isInteger(meta.venueId) && Number.isInteger(meta.raceNo)
+        ? `${meta.raceDate.replace(/-/g, "")}_${meta.venueId}_${meta.raceNo}`
+        : null,
     fetched_result: winningCombo,
-    matched_bets: bets.length,
-    updated_rows: updatedRows
+    placed_bets_found: bets.length,
+    matched_bets: hitCount,
+    updated_rows: updatedRows,
+    settlement_attempted: true,
+    db_commit_success: true
   };
 
-  console.info("[SETTLEMENT] completed", settlement_debug);
+  console.info("[SETTLEMENT] completed", {
+    ...settlement_debug,
+    incoming_race_id: race_id
+  });
 
   return {
     race_id: raceId,

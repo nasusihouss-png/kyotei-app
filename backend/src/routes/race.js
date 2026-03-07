@@ -1563,9 +1563,12 @@ raceRouter.post("/placed-bets/settle", async (req, res, next) => {
     const result = await settlePlacedBetsForRace(req.body || {});
     const debug = result?.settlement_debug || {
       race_id: result?.race_id || req.body?.race_id || null,
+      parsed_race_key: null,
       fetched_result: result?.winning_combo || null,
-      matched_bets: Number(result?.settled_count || 0),
-      updated_rows: Number(result?.updated_rows || 0)
+      placed_bets_found: Number(result?.settled_count || 0),
+      matched_bets: Number(result?.hit_count || 0),
+      updated_rows: Number(result?.updated_rows || 0),
+      settlement_attempted: true
     };
     console.info("[SETTLEMENT][API] success", debug);
     return res.json({

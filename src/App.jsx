@@ -178,11 +178,13 @@ async function settlePlacedBets(payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err?.message || "Failed to settle placed bets");
+    const msg = body?.message || "Failed to settle placed bets";
+    const debug = body?.debug ? ` | debug: ${JSON.stringify(body.debug)}` : "";
+    throw new Error(`${msg}${debug}`);
   }
-  return response.json();
+  return body;
 }
 
 function formatMaybeNumber(value, digits = 2) {
@@ -924,14 +926,24 @@ export default function App() {
     setSettlingRaceId(String(raceId));
     setJournalError("");
     try {
-      await settlePlacedBets({
+      const settleResult = await settlePlacedBets({
         race_id: raceId,
         race_date: group?.raceDate,
         venue_id: group?.venueId,
         race_no: group?.raceNo
       });
+      console.info("[UI][SETTLEMENT] response", settleResult?.settlement_debug || settleResult);
       await loadJournal();
       await loadPerformance();
+      const updatedRows = Number(settleResult?.settlement_debug?.updated_rows ?? settleResult?.updated_rows ?? 0);
+      if (updatedRows <= 0) {
+        const dbg = settleResult?.settlement_debug || {};
+        setJournalError(
+          `精算更新0件: race=${dbg.race_id || raceId}, result=${dbg.fetched_result || "-"}, bets=${
+            dbg.placed_bets_found ?? "-"
+          }, updated=${dbg.updated_rows ?? 0}`
+        );
+      }
     } catch (e) {
       setJournalError(e.message || "Failed to settle race");
     } finally {
