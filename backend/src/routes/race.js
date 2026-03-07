@@ -31,6 +31,11 @@ import { evaluateLane2Wall } from "../../wall-evaluation-engine.js";
 import { evaluateHeadConfidence } from "../../head-confidence-engine.js";
 import { generateTicketsV2 } from "../../ticket-generation-v2-engine.js";
 import { analyzeHitQuality } from "../../hit-quality-engine.js";
+import { analyzePreRaceForm } from "../../pre-race-form-engine.js";
+import { analyzeRoleCandidates } from "../../candidate-role-engine.js";
+import { refineRaceRiskWithStructure } from "../../risk-structure-engine.js";
+import { analyzeRaceStructure } from "../../race-structure-engine.js";
+import { optimizeTickets } from "../../ticket-optimization-engine.js";
 import {
   createPlacedBet,
   createPlacedBets,
@@ -126,6 +131,10 @@ raceRouter.get("/race", async (req, res, next) => {
     });
 
     const ranking = rankRace(entryAdjusted.racersWithFeatures);
+    const preRaceAnalysis = analyzePreRaceForm({
+      ranking,
+      race: data.race
+    });
     const pattern = analyzeRacePattern(ranking);
     const adjustedChaos = Math.min(
       100,
@@ -227,7 +236,7 @@ raceRouter.get("/race", async (req, res, next) => {
       indexes,
       raceRisk: null
     });
-    const raceRisk = evaluateRaceRisk({
+    const baseRaceRisk = evaluateRaceRisk({
       indexes,
       racePattern,
       ranking,
@@ -237,14 +246,9 @@ raceRouter.get("/race", async (req, res, next) => {
     });
     const raceOutcomeProbabilities = estimateRaceOutcomeProbabilities({
       raceIndexes,
-      raceRisk,
+      raceRisk: baseRaceRisk,
       racePattern,
       ranking
-    });
-    const ticketStrategy = buildTicketStrategy({
-      raceOutcomeProbabilities,
-      raceIndexes,
-      raceRisk
     });
     const wallEvaluation = evaluateLane2Wall({
       ranking,
@@ -255,15 +259,41 @@ raceRouter.get("/race", async (req, res, next) => {
       ranking,
       raceIndexes,
       raceOutcomeProbabilities,
-      raceRisk
+      raceRisk: baseRaceRisk
     });
     const headConfidence = evaluateHeadConfidence({
       headSelection,
-      raceRisk,
+      raceRisk: baseRaceRisk,
       raceIndexes,
       raceOutcomeProbabilities,
       probabilities,
       wallEvaluation
+    });
+    const roleCandidates = analyzeRoleCandidates({
+      ranking,
+      headSelection,
+      partnerSelection
+    });
+    const raceStructure = analyzeRaceStructure({
+      ranking,
+      probabilities,
+      headConfidence,
+      raceIndexes,
+      preRaceAnalysis,
+      roleCandidates
+    });
+    const raceRisk = refineRaceRiskWithStructure({
+      raceRisk: baseRaceRisk,
+      headConfidence,
+      preRaceAnalysis,
+      roleCandidates,
+      probabilities,
+      ranking
+    });
+    const ticketStrategy = buildTicketStrategy({
+      raceOutcomeProbabilities,
+      raceIndexes,
+      raceRisk
     });
     const ticketGenerationV2 = generateTicketsV2({
       headSelection,
@@ -280,6 +310,14 @@ raceRouter.get("/race", async (req, res, next) => {
       partnerSelection,
       oddsData: evData.oddsData,
       probabilities
+    });
+    const ticketOptimization = optimizeTickets({
+      recommendedBets: bet_plan.recommended_bets,
+      probabilities,
+      oddsData: evData.oddsData,
+      recommendation: raceRisk.recommendation,
+      raceStructure,
+      aiEnhancement
     });
 
     saveFeatureSnapshots(raceId, ranking);
@@ -307,6 +345,7 @@ raceRouter.get("/race", async (req, res, next) => {
       motorAnalysis,
       motorTrendAnalysis,
       entryAnalysis,
+      preRaceAnalysis,
       simulation,
       oddsData: evData.oddsData,
       ev_analysis: evData.ev_analysis,
@@ -318,9 +357,12 @@ raceRouter.get("/race", async (req, res, next) => {
       wallEvaluation,
       headSelection,
       partnerSelection,
+      roleCandidates,
       headConfidence,
+      raceStructure,
       ticketGenerationV2,
-      aiEnhancement
+      aiEnhancement,
+      ticketOptimization
     });
   } catch (err) {
     return next(err);

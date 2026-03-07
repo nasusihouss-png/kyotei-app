@@ -323,11 +323,15 @@ export default function App() {
   const raceOutcomeProbabilities = data?.raceOutcomeProbabilities || {};
   const raceIndexes = data?.raceIndexes || {};
   const ticketStrategy = data?.ticketStrategy || {};
+  const preRaceAnalysis = data?.preRaceAnalysis || data?.preRaceForm || {};
   const headSelection = data?.headSelection || {};
   const partnerSelection = data?.partnerSelection || {};
+  const roleCandidates = data?.roleCandidates || {};
+  const raceStructure = data?.raceStructure || {};
   const wallEvaluation = data?.wallEvaluation || {};
   const headConfidence = data?.headConfidence || {};
   const ticketGenerationV2 = data?.ticketGenerationV2 || {};
+  const ticketOptimization = data?.ticketOptimization || {};
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
 
   const racersByLane = useMemo(() => {
@@ -995,6 +999,39 @@ export default function App() {
                   </article>
 
                   <article className="card analysis-card">
+                    <h2>直前気配</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>exhibition_quality_score</span><strong>{formatMaybeNumber(preRaceAnalysis.exhibition_quality_score, 2)}</strong></div>
+                      <div className="kv-row"><span>entry_advantage_score</span><strong>{formatMaybeNumber(preRaceAnalysis.entry_advantage_score, 2)}</strong></div>
+                      <div className="kv-row"><span>pre_race_form_score</span><strong>{formatMaybeNumber(preRaceAnalysis.pre_race_form_score, 2)}</strong></div>
+                      <div className="kv-row"><span>wind_risk_score</span><strong>{formatMaybeNumber(preRaceAnalysis.wind_risk_score, 2)}</strong></div>
+                    </div>
+                    <p className="muted strategy-line">{preRaceAnalysis.summary || "-"}</p>
+                  </article>
+
+                  <article className="card analysis-card">
+                    <h2>役割候補</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>頭候補</span><strong><LanePills lanes={roleCandidates.head_candidates || []} /></strong></div>
+                      <div className="kv-row"><span>2着候補</span><strong><LanePills lanes={roleCandidates.second_candidates || []} /></strong></div>
+                      <div className="kv-row"><span>3着候補</span><strong><LanePills lanes={roleCandidates.third_candidates || []} /></strong></div>
+                      <div className="kv-row"><span>消し</span><strong><LanePills lanes={roleCandidates.fade_lanes || []} /></strong></div>
+                    </div>
+                    <p className="muted strategy-line">{roleCandidates.summary || "-"}</p>
+                  </article>
+
+                  <article className="card analysis-card">
+                    <h2>レース構造</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>head_stability_score</span><strong>{formatMaybeNumber(raceStructure.head_stability_score, 2)}</strong></div>
+                      <div className="kv-row"><span>top3_concentration_score</span><strong>{formatMaybeNumber(raceStructure.top3_concentration_score, 2)}</strong></div>
+                      <div className="kv-row"><span>chaos_risk_score</span><strong>{formatMaybeNumber(raceStructure.chaos_risk_score, 2)}</strong></div>
+                      <div className="kv-row"><span>race_structure_score</span><strong>{formatMaybeNumber(raceStructure.race_structure_score, 2)}</strong></div>
+                    </div>
+                    <p className="muted strategy-line">{raceStructure.summary || "-"}</p>
+                  </article>
+
+                  <article className="card analysis-card">
                     <h2>2コース壁評価</h2>
                     <div className="kv-list">
                       <div className="kv-row"><span>壁強度</span><strong>{formatMaybeNumber(wallEvaluation.wall_strength, 2)}</strong></div>
@@ -1074,6 +1111,30 @@ export default function App() {
                           <span>odds {formatMaybeNumber(row.odds, 1)}</span>
                           <span>-</span>
                           <span>-</span>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+
+                  <article className="card">
+                    <h2>最適化チケット</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>ticket_confidence_score</span><strong>{formatMaybeNumber(ticketOptimization.ticket_confidence_score, 2)}</strong></div>
+                      <div className="kv-row"><span>odds_adjusted_ticket_score</span><strong>{formatMaybeNumber(ticketOptimization.odds_adjusted_ticket_score, 2)}</strong></div>
+                      <div className="kv-row"><span>value_warning</span><strong>{ticketOptimization.value_warning ? "true" : "false"}</strong></div>
+                      <div className="kv-row"><span>budget_split</span><strong>{ticketOptimization.recommended_budget_split ? `${Math.round((ticketOptimization.recommended_budget_split.primary || 0) * 100)} / ${Math.round((ticketOptimization.recommended_budget_split.secondary || 0) * 100)}` : "-"}</strong></div>
+                    </div>
+                    <div className="list-stack">
+                      {(ticketOptimization.optimized_tickets || []).slice(0, 6).map((row, idx) => (
+                        <div key={`opt-${row.combo}-${idx}`} className="list-row list-row-actions">
+                          <strong><ComboBadge combo={row.combo} /></strong>
+                          <span>p {formatMaybeNumber(row.prob, 3)}</span>
+                          <span>odds {formatMaybeNumber(row.odds, 1)}</span>
+                          <span>ev {formatMaybeNumber(row.ev, 2)}</span>
+                          <span>conf {formatMaybeNumber(row.ticket_confidence_score, 1)}</span>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })}>
+                            記録に追加
+                          </button>
                         </div>
                       ))}
                     </div>
