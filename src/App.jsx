@@ -80,6 +80,12 @@ async function fetchAnalyticsData(date) {
   return response.json();
 }
 
+async function fetchSelfLearningData() {
+  const response = await fetch(`${API_BASE}/self-learning?mode=proposal_only&save=1`);
+  if (!response.ok) throw new Error("Failed to fetch self-learning");
+  return response.json();
+}
+
 async function submitRaceResult(payload) {
   const response = await fetch(`${API_BASE}/race/result`, {
     method: "POST",
@@ -311,6 +317,8 @@ export default function App() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
   const [analytics, setAnalytics] = useState(null);
+  const [selfLearning, setSelfLearning] = useState(null);
+  const [learningSnapshots, setLearningSnapshots] = useState([]);
   const [history, setHistory] = useState([]);
   const [perfError, setPerfError] = useState("");
 
@@ -506,14 +514,17 @@ export default function App() {
     setStatsLoading(true);
     setPerfError("");
     try {
-      const [statsData, analyticsData, historyData] = await Promise.all([
+      const [statsData, analyticsData, historyData, learningData] = await Promise.all([
         fetchStatsData(),
         fetchAnalyticsData(date),
-        fetchHistoryData()
+        fetchHistoryData(),
+        fetchSelfLearningData()
       ]);
       setStats(statsData);
       setAnalytics(analyticsData || null);
       setHistory(Array.isArray(historyData?.items) ? historyData.items : []);
+      setSelfLearning(learningData?.selfLearning || null);
+      setLearningSnapshots(Array.isArray(learningData?.snapshots) ? learningData.snapshots : []);
     } catch (e) {
       setPerfError(e.message || "Failed to load performance data");
     } finally {
@@ -1751,6 +1762,91 @@ export default function App() {
                         <td>{v.races ?? 0}</td>
                         <td>{formatMaybeNumber(v.failure_rate, 2)}%</td>
                         <td>{v.top_failure_mode || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="card">
+              <h2>Self Learning（提案モード）</h2>
+              <div className="stats-grid">
+                <article className="card stat-card">
+                  <span>状態</span>
+                  <strong>{selfLearning?.status || "-"}</strong>
+                  <small>mode: {selfLearning?.mode || "proposal_only"}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>サンプル数</span>
+                  <strong>{selfLearning?.sample_size ?? 0}</strong>
+                  <small>推奨強化は十分サンプル時のみ</small>
+                </article>
+                <article className="card stat-card">
+                  <span>頭精度</span>
+                  <strong>{formatMaybeNumber(selfLearning?.head_precision_performance?.hit_rate, 2)}%</strong>
+                  <small>
+                    {selfLearning?.head_precision_performance?.hit_count ?? 0} /
+                    {" "}
+                    {selfLearning?.head_precision_performance?.sample ?? 0}
+                  </small>
+                </article>
+                <article className="card stat-card">
+                  <span>展示AI高信号時頭一致</span>
+                  <strong>{formatMaybeNumber(selfLearning?.exhibition_ai_performance?.high_signal_head_hit_rate, 2)}%</strong>
+                  <small>
+                    {selfLearning?.exhibition_ai_performance?.high_signal_head_hit ?? 0} /
+                    {" "}
+                    {selfLearning?.exhibition_ai_performance?.high_signal_sample ?? 0}
+                  </small>
+                </article>
+              </div>
+              <p className="muted strategy-line" style={{ marginTop: 8 }}>
+                {selfLearning?.summary || "-"}
+              </p>
+
+              <div className="table-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Weight</th>
+                      <th>Current</th>
+                      <th>Suggested</th>
+                      <th>Delta</th>
+                      <th>Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(selfLearning?.recommendations || {}).map(([key, row]) => (
+                      <tr key={`slr-${key}`}>
+                        <td>{key}</td>
+                        <td>{formatMaybeNumber(row?.current, 4)}</td>
+                        <td>{formatMaybeNumber(row?.suggested, 4)}</td>
+                        <td className={getProfitClass(Number(row?.delta || 0))}>{formatMaybeNumber(row?.delta, 4)}</td>
+                        <td>{row?.confidence || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Snapshot</th>
+                      <th>Sample</th>
+                      <th>Mode</th>
+                      <th>Summary</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {learningSnapshots.slice(0, 10).map((snap) => (
+                      <tr key={`sls-${snap.id}`}>
+                        <td>{snap.date} {snap.created_at ? `(${new Date(snap.created_at).toLocaleString()})` : ""}</td>
+                        <td>{snap.sample_size ?? 0}</td>
+                        <td>{snap.mode || "-"}</td>
+                        <td>{snap.summary || "-"}</td>
                       </tr>
                     ))}
                   </tbody>

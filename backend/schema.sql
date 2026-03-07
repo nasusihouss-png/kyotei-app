@@ -111,3 +111,15 @@ CREATE TABLE IF NOT EXISTS placed_bets (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (race_id) REFERENCES races(race_id)
 );
+
+CREATE TABLE IF NOT EXISTS self_learning_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  snapshot_date TEXT NOT NULL,
+  sample_size INTEGER NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'proposal_only',
+  current_weights_json TEXT NOT NULL,
+  suggested_weights_json TEXT NOT NULL,
+  applied_weights_json TEXT,
+  summary TEXT
+);

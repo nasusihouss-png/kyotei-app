@@ -55,6 +55,7 @@ import {
   settlePlacedBetsForRace,
   getPlacedBetSummaries
 } from "../../placed-bet-service.js";
+import { runSelfLearning } from "../../self-learning-engine.js";
 
 export const raceRouter = Router();
 
@@ -1623,6 +1624,138 @@ raceRouter.get("/analytics", async (req, res, next) => {
       recommendation_only_performance,
       stake_allocation_performance,
       weakness_analysis
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.get("/self-learning", async (req, res, next) => {
+  try {
+    const mode = String(req.query?.mode || "proposal_only");
+    const saveSnapshot = String(req.query?.save || "1") !== "0";
+    const snapshotDate = String(req.query?.date || new Date().toISOString().slice(0, 10));
+
+    const latestPredictionRows = db
+      .prepare(
+        `
+        SELECT pl.race_id, pl.recommendation, pl.prediction_json, pl.race_decision_json, pl.bet_plan_json
+        FROM prediction_logs pl
+        INNER JOIN (
+          SELECT race_id, MAX(id) AS max_id
+          FROM prediction_logs
+          GROUP BY race_id
+        ) latest
+          ON latest.max_id = pl.id
+      `
+      )
+      .all()
+      .map((row) => ({
+        race_id: row.race_id,
+        recommendation: row.recommendation,
+        prediction: safeJsonParse(row.prediction_json, {}),
+        raceDecision: safeJsonParse(row.race_decision_json, {}),
+        betPlan: safeJsonParse(row.bet_plan_json, {})
+      }));
+
+    const resultRows = db
+      .prepare(
+        `
+        SELECT race_id, finish_1, finish_2, finish_3, payout_3t
+        FROM results
+      `
+      )
+      .all();
+
+    const placedRows = db
+      .prepare(
+        `
+        SELECT race_id, venue_id, bet_amount, hit_flag, payout, profit_loss
+        FROM placed_bets
+      `
+      )
+      .all();
+
+    const raceRows = db
+      .prepare(
+        `
+        SELECT race_id, venue_id, venue_name
+        FROM races
+      `
+      )
+      .all();
+
+    const selfLearning = runSelfLearning({
+      predictionRows: latestPredictionRows,
+      resultRows,
+      placedRows,
+      raceRows,
+      mode
+    });
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS self_learning_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        snapshot_date TEXT NOT NULL,
+        sample_size INTEGER NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'proposal_only',
+        current_weights_json TEXT NOT NULL,
+        suggested_weights_json TEXT NOT NULL,
+        applied_weights_json TEXT,
+        summary TEXT
+      )
+    `);
+
+    if (saveSnapshot) {
+      db.prepare(
+        `
+        INSERT INTO self_learning_snapshots (
+          snapshot_date,
+          sample_size,
+          mode,
+          current_weights_json,
+          suggested_weights_json,
+          applied_weights_json,
+          summary
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `
+      ).run(
+        snapshotDate,
+        Number(selfLearning.sample_size || 0),
+        String(selfLearning.mode || "proposal_only"),
+        JSON.stringify(selfLearning.current_weights || {}),
+        JSON.stringify(selfLearning.suggested_weights || {}),
+        JSON.stringify({}),
+        String(selfLearning.summary || "")
+      );
+    }
+
+    const snapshots = db
+      .prepare(
+        `
+        SELECT id, created_at, snapshot_date, sample_size, mode, current_weights_json, suggested_weights_json, applied_weights_json, summary
+        FROM self_learning_snapshots
+        ORDER BY id DESC
+        LIMIT 20
+      `
+      )
+      .all()
+      .map((row) => ({
+        id: row.id,
+        created_at: row.created_at,
+        date: row.snapshot_date,
+        sample_size: row.sample_size,
+        mode: row.mode,
+        current_weights: safeJsonParse(row.current_weights_json, {}),
+        suggested_weights: safeJsonParse(row.suggested_weights_json, {}),
+        applied_weights: safeJsonParse(row.applied_weights_json, {}),
+        summary: row.summary
+      }));
+
+    return res.json({
+      selfLearning,
+      snapshots
     });
   } catch (err) {
     return next(err);
