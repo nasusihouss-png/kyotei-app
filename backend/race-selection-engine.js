@@ -30,22 +30,29 @@ export function decideRaceSelection({
   raceStructure,
   preRaceAnalysis,
   roleCandidates,
-  ticketOptimization
+  ticketOptimization,
+  headPrecision
 }) {
   const head_stability_score = toNum(raceStructure?.head_stability_score, 50);
   const chaos_risk_score = toNum(raceStructure?.chaos_risk_score, 50);
   const pre_race_form_score = toNum(preRaceAnalysis?.pre_race_form_score, 50);
   const partner_clarity_score = calcPartnerClarityScore(roleCandidates);
   const value_balance_score = calcValueBalanceScore(ticketOptimization);
+  const head_precision_score = clamp(
+    0,
+    100,
+    toNum(headPrecision?.head_win_score, 50) * 0.7 + toNum(headPrecision?.head_gap_score, 50) * 0.3
+  );
 
   const race_select_score = clamp(
     0,
     100,
-    head_stability_score * 0.3 +
-      partner_clarity_score * 0.24 +
+    head_stability_score * 0.24 +
+      head_precision_score * 0.12 +
+      partner_clarity_score * 0.22 +
       pre_race_form_score * 0.2 +
-      (100 - chaos_risk_score) * 0.16 +
-      value_balance_score * 0.1
+      (100 - chaos_risk_score) * 0.14 +
+      value_balance_score * 0.08
   );
 
   let mode = "SMALL_BET";
@@ -54,12 +61,14 @@ export function decideRaceSelection({
 
   const reason_codes = [];
   if (head_stability_score >= 65) reason_codes.push("HEAD_STABLE");
+  if (head_precision_score >= 64) reason_codes.push("HEAD_PRECISION_HIGH");
   if (partner_clarity_score >= 62) reason_codes.push("PARTNER_CLEAR");
   if (pre_race_form_score >= 62) reason_codes.push("PRE_RACE_GOOD");
   if (chaos_risk_score <= 52) reason_codes.push("LOW_CHAOS");
   if (value_balance_score >= 58) reason_codes.push("VALUE_BALANCED");
   if (chaos_risk_score >= 74) reason_codes.push("CHAOS_HIGH");
   if (head_stability_score < 42) reason_codes.push("HEAD_WEAK");
+  if (head_precision_score < 42) reason_codes.push("HEAD_PRECISION_LOW");
 
   let summary = "様子見寄り";
   if (mode === "FULL_BET") summary = "頭安定、相手絞りやすく、本線向き";
@@ -82,6 +91,7 @@ export function decideRaceSelection({
     summary,
     factors: {
       head_stability_score: Number(head_stability_score.toFixed(2)),
+      head_precision_score: Number(head_precision_score.toFixed(2)),
       partner_clarity_score: Number(partner_clarity_score.toFixed(2)),
       pre_race_form_score: Number(pre_race_form_score.toFixed(2)),
       chaos_risk_score: Number(chaos_risk_score.toFixed(2)),

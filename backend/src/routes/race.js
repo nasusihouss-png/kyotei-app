@@ -29,6 +29,7 @@ import { buildTicketStrategy } from "../../ticket-strategy-engine.js";
 import { analyzeHeadAndPartners } from "../../head-partner-selection-engine.js";
 import { evaluateLane2Wall } from "../../wall-evaluation-engine.js";
 import { evaluateHeadConfidence } from "../../head-confidence-engine.js";
+import { evaluateHeadPrecision } from "../../head-precision-engine.js";
 import { generateTicketsV2 } from "../../ticket-generation-v2-engine.js";
 import { analyzeHitQuality } from "../../hit-quality-engine.js";
 import { analyzePreRaceForm } from "../../pre-race-form-engine.js";
@@ -38,6 +39,11 @@ import { analyzeRaceStructure } from "../../race-structure-engine.js";
 import { optimizeTickets } from "../../ticket-optimization-engine.js";
 import { decideRaceSelection } from "../../race-selection-engine.js";
 import { buildStakeAllocationPlan } from "../../stake-allocation-engine.js";
+import {
+  analyzeVenueBias,
+  applyVenueBiasToRisk,
+  applyVenueBiasToStructure
+} from "../../venue-bias-engine.js";
 import {
   createPlacedBet,
   createPlacedBets,
@@ -383,8 +389,23 @@ raceRouter.get("/race", async (req, res, next) => {
       raceOutcomeProbabilities,
       raceRisk: baseRaceRisk
     });
-    const headConfidence = evaluateHeadConfidence({
+    const headPrecision = evaluateHeadPrecision({
+      ranking,
       headSelection,
+      probabilities,
+      raceIndexes,
+      raceOutcomeProbabilities
+    });
+    const headSelectionRefined = {
+      ...headSelection,
+      main_head: headPrecision.main_head ?? headSelection?.main_head ?? null,
+      secondary_heads:
+        Array.isArray(headPrecision.backup_heads) && headPrecision.backup_heads.length
+          ? headPrecision.backup_heads
+          : headSelection?.secondary_heads || []
+    };
+    const headConfidence = evaluateHeadConfidence({
+      headSelection: headSelectionRefined,
       raceRisk: baseRaceRisk,
       raceIndexes,
       raceOutcomeProbabilities,
@@ -393,10 +414,10 @@ raceRouter.get("/race", async (req, res, next) => {
     });
     const roleCandidates = analyzeRoleCandidates({
       ranking,
-      headSelection,
+      headSelection: headSelectionRefined,
       partnerSelection
     });
-    const raceStructure = analyzeRaceStructure({
+    const baseRaceStructure = analyzeRaceStructure({
       ranking,
       probabilities,
       headConfidence,
@@ -404,7 +425,16 @@ raceRouter.get("/race", async (req, res, next) => {
       preRaceAnalysis,
       roleCandidates
     });
-    const raceRisk = refineRaceRiskWithStructure({
+    const venueBias = analyzeVenueBias({
+      race: data.race,
+      raceIndexes,
+      ranking
+    });
+    const raceStructure = applyVenueBiasToStructure({
+      raceStructure: baseRaceStructure,
+      venueBias
+    });
+    const refinedRaceRisk = refineRaceRiskWithStructure({
       raceRisk: baseRaceRisk,
       headConfidence,
       preRaceAnalysis,
@@ -412,15 +442,20 @@ raceRouter.get("/race", async (req, res, next) => {
       probabilities,
       ranking
     });
+    const raceRisk = applyVenueBiasToRisk({
+      raceRisk: refinedRaceRisk,
+      venueBias
+    });
     const ticketStrategy = buildTicketStrategy({
       raceOutcomeProbabilities,
       raceIndexes,
       raceRisk
     });
     const ticketGenerationV2 = generateTicketsV2({
-      headSelection,
+      headSelection: headSelectionRefined,
       partnerSelection,
       headConfidence,
+      headPrecision,
       raceRisk,
       raceIndexes,
       wallEvaluation
@@ -445,7 +480,8 @@ raceRouter.get("/race", async (req, res, next) => {
       raceStructure,
       preRaceAnalysis,
       roleCandidates,
-      ticketOptimization
+      ticketOptimization,
+      headPrecision
     });
     const stakeAllocation = buildStakeAllocationPlan({
       raceDecision,
@@ -522,10 +558,12 @@ raceRouter.get("/race", async (req, res, next) => {
       raceOutcomeProbabilities,
       ticketStrategy,
       wallEvaluation,
-      headSelection,
+      headSelection: headSelectionRefined,
+      headPrecision,
       partnerSelection,
       roleCandidates,
       headConfidence,
+      venueBias,
       raceStructure,
       ticketGenerationV2,
       aiEnhancement,
@@ -674,16 +712,35 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceOutcomeProbabilities,
             raceRisk: baseRaceRisk
           });
-          const headConfidence = evaluateHeadConfidence({
+          const headPrecision = evaluateHeadPrecision({
+            ranking,
             headSelection,
+            probabilities,
+            raceIndexes,
+            raceOutcomeProbabilities
+          });
+          const headSelectionRefined = {
+            ...headSelection,
+            main_head: headPrecision.main_head ?? headSelection?.main_head ?? null,
+            secondary_heads:
+              Array.isArray(headPrecision.backup_heads) && headPrecision.backup_heads.length
+                ? headPrecision.backup_heads
+                : headSelection?.secondary_heads || []
+          };
+          const headConfidence = evaluateHeadConfidence({
+            headSelection: headSelectionRefined,
             raceRisk: baseRaceRisk,
             raceIndexes,
             raceOutcomeProbabilities,
             probabilities,
             wallEvaluation
           });
-          const roleCandidates = analyzeRoleCandidates({ ranking, headSelection, partnerSelection });
-          const raceStructure = analyzeRaceStructure({
+          const roleCandidates = analyzeRoleCandidates({
+            ranking,
+            headSelection: headSelectionRefined,
+            partnerSelection
+          });
+          const baseRaceStructure = analyzeRaceStructure({
             ranking,
             probabilities,
             headConfidence,
@@ -691,13 +748,26 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             preRaceAnalysis,
             roleCandidates
           });
-          const raceRisk = refineRaceRiskWithStructure({
+          const venueBias = analyzeVenueBias({
+            race: data.race,
+            raceIndexes,
+            ranking
+          });
+          const raceStructure = applyVenueBiasToStructure({
+            raceStructure: baseRaceStructure,
+            venueBias
+          });
+          const refinedRaceRisk = refineRaceRiskWithStructure({
             raceRisk: baseRaceRisk,
             headConfidence,
             preRaceAnalysis,
             roleCandidates,
             probabilities,
             ranking
+          });
+          const raceRisk = applyVenueBiasToRisk({
+            raceRisk: refinedRaceRisk,
+            venueBias
           });
           const aiEnhancement = analyzeHitQuality({
             ranking,
@@ -719,12 +789,14 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceStructure,
             preRaceAnalysis,
             roleCandidates,
-            ticketOptimization
+            ticketOptimization,
+            headPrecision
           });
           const ticketGenerationV2 = generateTicketsV2({
-            headSelection,
+            headSelection: headSelectionRefined,
             partnerSelection,
             headConfidence,
+            headPrecision,
             raceRisk,
             raceIndexes,
             wallEvaluation
@@ -757,9 +829,13 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceNo: data.race.raceNo,
             mode,
             confidence: Number(confidence.toFixed(2)),
-            main_head: Number(headSelection?.main_head) || null,
+            main_head: Number(headSelectionRefined?.main_head) || null,
+            backup_heads: headSelectionRefined?.secondary_heads || [],
+            head_win_score: headPrecision?.head_win_score ?? null,
+            head_gap_score: headPrecision?.head_gap_score ?? null,
             head_stability_score: Number(headStability.toFixed(2)),
             chaos_risk_score: Number(chaosRisk.toFixed(2)),
+            venueBias,
             tickets: stakeAllocation.tickets.slice(0, 4).map((t) => ({
               combo: t.combo,
               prob: Number.isFinite(Number(t.prob)) ? Number(t.prob) : null,
