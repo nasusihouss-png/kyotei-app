@@ -332,6 +332,7 @@ export default function App() {
   const headConfidence = data?.headConfidence || {};
   const ticketGenerationV2 = data?.ticketGenerationV2 || {};
   const ticketOptimization = data?.ticketOptimization || {};
+  const raceDecision = data?.raceDecision || {};
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
 
   const racersByLane = useMemo(() => {
@@ -950,6 +951,21 @@ export default function App() {
                       {skipReasonCodes.length === 0 ? <span className="chip">特記事項なし</span> : skipReasonCodes.map((code) => <span className="chip" key={code}>{code}</span>)}
                     </div>
                     <p className="muted strategy-line">{raceRisk.skip_summary || "-"}</p>
+                  </article>
+
+                  <article className="card analysis-card">
+                    <h2>レース判定AI</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>mode</span><strong>{raceDecision.mode || "-"}</strong></div>
+                      <div className="kv-row"><span>confidence</span><strong>{formatMaybeNumber(raceDecision.confidence, 2)}</strong></div>
+                      <div className="kv-row"><span>race_select_score</span><strong>{formatMaybeNumber(raceDecision.race_select_score, 2)}</strong></div>
+                    </div>
+                    <div className="chips-wrap">
+                      {(raceDecision.reason_codes || []).length === 0
+                        ? <span className="chip">NO_REASON</span>
+                        : (raceDecision.reason_codes || []).map((code) => <span className="chip" key={`rd-${code}`}>{code}</span>)}
+                    </div>
+                    <p className="muted strategy-line">{raceDecision.summary || "-"}</p>
                   </article>
 
                   <article className="card analysis-card">

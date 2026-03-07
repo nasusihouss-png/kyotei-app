@@ -36,6 +36,7 @@ import { analyzeRoleCandidates } from "../../candidate-role-engine.js";
 import { refineRaceRiskWithStructure } from "../../risk-structure-engine.js";
 import { analyzeRaceStructure } from "../../race-structure-engine.js";
 import { optimizeTickets } from "../../ticket-optimization-engine.js";
+import { decideRaceSelection } from "../../race-selection-engine.js";
 import {
   createPlacedBet,
   createPlacedBets,
@@ -319,6 +320,12 @@ raceRouter.get("/race", async (req, res, next) => {
       raceStructure,
       aiEnhancement
     });
+    const raceDecision = decideRaceSelection({
+      raceStructure,
+      preRaceAnalysis,
+      roleCandidates,
+      ticketOptimization
+    });
 
     saveFeatureSnapshots(raceId, ranking);
 
@@ -362,7 +369,8 @@ raceRouter.get("/race", async (req, res, next) => {
       raceStructure,
       ticketGenerationV2,
       aiEnhancement,
-      ticketOptimization
+      ticketOptimization,
+      raceDecision
     });
   } catch (err) {
     return next(err);
