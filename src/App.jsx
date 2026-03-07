@@ -189,6 +189,22 @@ function getProfitClass(value) {
   return "profit-neutral";
 }
 
+function getTicketTypeLabel(ticketType) {
+  const t = String(ticketType || "").toLowerCase();
+  if (t === "main") return "本線";
+  if (t === "backup") return "押さえ";
+  if (t === "longshot") return "穴";
+  return "通常";
+}
+
+function getTicketTypeClass(ticketType) {
+  const t = String(ticketType || "").toLowerCase();
+  if (t === "main") return "ttype-main";
+  if (t === "backup") return "ttype-backup";
+  if (t === "longshot") return "ttype-longshot";
+  return "ttype-backup";
+}
+
 function roundBetTo100(value) {
   const num = Number(value);
   if (!Number.isFinite(num) || num <= 0) return 100;
@@ -344,6 +360,7 @@ export default function App() {
   const headConfidence = data?.headConfidence || {};
   const ticketGenerationV2 = data?.ticketGenerationV2 || {};
   const ticketOptimization = data?.ticketOptimization || {};
+  const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
   const raceDecision = data?.raceDecision || {};
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
 
@@ -400,12 +417,19 @@ export default function App() {
         .map((bet) => {
           const prob = probabilityByCombo.get(bet?.combo);
           const evSource = evBets.find((e) => e?.combo === bet?.combo);
+          const recommendedBet = Number.isFinite(Number(bet?.recommended_bet))
+            ? Number(bet.recommended_bet)
+            : Number.isFinite(Number(bet?.bet))
+              ? Number(bet.bet)
+              : 100;
           return {
             ...bet,
             prob: Number.isFinite(prob) ? prob : null,
-            ev: evSource?.ev,
+            ev: Number.isFinite(Number(bet?.ev)) ? Number(bet.ev) : evSource?.ev,
             odds: oddsByCombo.get(bet?.combo) ?? null,
-            roundedBet: roundBetTo100(bet?.bet)
+            roundedBet: roundBetTo100(recommendedBet),
+            ticket_type: bet?.ticket_type || "backup",
+            recommended_bet: roundBetTo100(recommendedBet)
           };
         })
         .sort((a, b) => (Number.isFinite(b?.prob) ? b.prob : -1) - (Number.isFinite(a?.prob) ? a.prob : -1)),
@@ -720,7 +744,9 @@ export default function App() {
       data?.raceId ||
       `${String(selectedRaceDate || "").replace(/-/g, "")}_${selectedVenueId}_${selectedRaceNo}`;
 
-    const defaultAmount = roundBetTo100(bet?.roundedBet ?? bet?.bet ?? 100);
+    const defaultAmount = roundBetTo100(
+      bet?.recommended_bet ?? bet?.roundedBet ?? bet?.bet ?? 100
+    );
     setQuickBetAmount(defaultAmount);
 
     setJournalForm((prev) => ({
@@ -1132,6 +1158,16 @@ export default function App() {
 
                 <section className="dashboard-grid">
                   <article className="card">
+                    <h2>資金配分プラン</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>mode</span><strong>{bankrollPlan.mode || raceDecision.mode || "-"}</strong></div>
+                      <div className="kv-row"><span>race_budget</span><strong>JPY {Number(bankrollPlan.race_budget || 0).toLocaleString()}</strong></div>
+                      <div className="kv-row"><span>allocation_style</span><strong>{bankrollPlan.allocation_style || "-"}</strong></div>
+                    </div>
+                    <p className="muted strategy-line">{bankrollPlan.summary || "-"}</p>
+                  </article>
+
+                  <article className="card">
                     <h2>EV上位買い目</h2>
                     <div className="list-stack">
                       {evBets.map((bet, idx) => (
@@ -1154,10 +1190,11 @@ export default function App() {
                       {recommendedBetsByProb.map((bet, idx) => (
                         <div key={`${bet.combo}-${idx}`} className="list-row list-row-actions">
                           <strong><ComboBadge combo={bet.combo} /></strong>
+                          <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
                           <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
                           <span>odds {Number.isFinite(bet.odds) ? formatMaybeNumber(bet.odds, 1) : "-"}</span>
                           <span>ev {formatMaybeNumber(bet.ev, 2)}</span>
-                          <span>金額 JPY {bet.roundedBet.toLocaleString()}</span>
+                          <span className="bet-amount-strong">金額 JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)}>
                             記録に追加
                           </button>
@@ -1197,10 +1234,11 @@ export default function App() {
                       {(ticketOptimization.optimized_tickets || []).slice(0, 6).map((row, idx) => (
                         <div key={`opt-${row.combo}-${idx}`} className="list-row list-row-actions">
                           <strong><ComboBadge combo={row.combo} /></strong>
+                          <span className={`ticket-type ${getTicketTypeClass(row.ticket_type)}`}>{getTicketTypeLabel(row.ticket_type)}</span>
                           <span>p {formatMaybeNumber(row.prob, 3)}</span>
                           <span>odds {formatMaybeNumber(row.odds, 1)}</span>
                           <span>ev {formatMaybeNumber(row.ev, 2)}</span>
-                          <span>conf {formatMaybeNumber(row.ticket_confidence_score, 1)}</span>
+                          <span className="bet-amount-strong">JPY {Number(row.recommended_bet || 0).toLocaleString()}</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })}>
                             記録に追加
                           </button>
@@ -1333,9 +1371,10 @@ export default function App() {
                         {(Array.isArray(row.tickets) ? row.tickets : []).slice(0, 3).map((ticket, idx) => (
                           <div className="list-row list-row-actions" key={`${row.raceId}-${ticket.combo}-${idx}`}>
                             <strong><ComboBadge combo={ticket.combo} /></strong>
+                            <span className={`ticket-type ${getTicketTypeClass(ticket.ticket_type)}`}>{getTicketTypeLabel(ticket.ticket_type)}</span>
                             <span>p {Number.isFinite(Number(ticket.prob)) ? formatMaybeNumber(ticket.prob, 3) : "-"}</span>
                             <span>odds {Number.isFinite(Number(ticket.odds)) ? formatMaybeNumber(ticket.odds, 1) : "-"}</span>
-                            <span>ev {Number.isFinite(Number(ticket.ev)) ? formatMaybeNumber(ticket.ev, 2) : "-"}</span>
+                            <span>JPY {Number.isFinite(Number(ticket.bet)) ? Number(ticket.bet).toLocaleString() : "-"}</span>
                             <button
                               className="fetch-btn secondary"
                               onClick={() =>
@@ -1344,7 +1383,8 @@ export default function App() {
                                   prob: ticket.prob,
                                   odds: ticket.odds,
                                   ev: ticket.ev,
-                                  bet: ticket.bet ?? 100
+                                  bet: ticket.bet ?? 100,
+                                  ticket_type: ticket.ticket_type
                                 })
                               }
                             >

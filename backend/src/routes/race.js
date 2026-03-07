@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import { getRaceData } from "../services/boatrace.js";
 import { saveRace } from "../../save-race.js";
 import { buildRaceFeatures } from "../../feature-engine.js";
@@ -37,6 +37,7 @@ import { refineRaceRiskWithStructure } from "../../risk-structure-engine.js";
 import { analyzeRaceStructure } from "../../race-structure-engine.js";
 import { optimizeTickets } from "../../ticket-optimization-engine.js";
 import { decideRaceSelection } from "../../race-selection-engine.js";
+import { buildStakeAllocationPlan } from "../../stake-allocation-engine.js";
 import {
   createPlacedBet,
   createPlacedBets,
@@ -435,6 +436,43 @@ raceRouter.get("/race", async (req, res, next) => {
       roleCandidates,
       ticketOptimization
     });
+    const stakeAllocation = buildStakeAllocationPlan({
+      raceDecision,
+      ticketOptimization,
+      betPlan: bet_plan,
+      ticketGenerationV2
+    });
+    const stakeByCombo = new Map(stakeAllocation.tickets.map((t) => [String(t.combo), t]));
+    const bet_plan_with_stake = {
+      ...bet_plan,
+      recommended_bets: (Array.isArray(bet_plan.recommended_bets) ? bet_plan.recommended_bets : []).map((row) => {
+        const stake = stakeByCombo.get(String(row?.combo || ""));
+        return {
+          ...row,
+          ticket_type: stake?.ticket_type || "backup",
+          recommended_bet: Number.isFinite(Number(stake?.recommended_bet))
+            ? Number(stake.recommended_bet)
+            : Number(row?.bet ?? 100)
+        };
+      })
+    };
+    const ticketOptimizationWithStake = {
+      ...ticketOptimization,
+      optimized_tickets: (Array.isArray(ticketOptimization.optimized_tickets)
+        ? ticketOptimization.optimized_tickets
+        : []
+      ).map((row) => {
+        const stake = stakeByCombo.get(String(row?.combo || ""));
+        return {
+          ...row,
+          ticket_type: stake?.ticket_type || row?.ticket_type || "backup",
+          recommended_bet: Number.isFinite(Number(stake?.recommended_bet))
+            ? Number(stake.recommended_bet)
+            : Number(row?.recommended_bet ?? 100)
+        };
+      }),
+      bankrollPlan: stakeAllocation.bankrollPlan
+    };
 
     saveFeatureSnapshots(raceId, ranking);
 
@@ -446,7 +484,7 @@ raceRouter.get("/race", async (req, res, next) => {
       prediction,
       probabilities,
       ev_analysis: evData.ev_analysis,
-      bet_plan
+      bet_plan: bet_plan_with_stake
     });
 
     return res.json({
@@ -465,7 +503,8 @@ raceRouter.get("/race", async (req, res, next) => {
       simulation,
       oddsData: evData.oddsData,
       ev_analysis: evData.ev_analysis,
-      bet_plan,
+      bet_plan: bet_plan_with_stake,
+      bankrollPlan: stakeAllocation.bankrollPlan,
       raceRisk,
       raceIndexes,
       raceOutcomeProbabilities,
@@ -478,7 +517,7 @@ raceRouter.get("/race", async (req, res, next) => {
       raceStructure,
       ticketGenerationV2,
       aiEnhancement,
-      ticketOptimization,
+      ticketOptimization: ticketOptimizationWithStake,
       raceDecision
     });
   } catch (err) {
@@ -691,6 +730,12 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             chaosRisk <= maxChaos;
 
           if (!worthBetting) continue;
+          const stakeAllocation = buildStakeAllocationPlan({
+            raceDecision,
+            ticketOptimization,
+            betPlan: bet_plan,
+            ticketGenerationV2
+          });
 
           recs.push({
             raceId: `${date}_${venueId}_${raceNo}`,
@@ -703,11 +748,15 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             main_head: Number(headSelection?.main_head) || null,
             head_stability_score: Number(headStability.toFixed(2)),
             chaos_risk_score: Number(chaosRisk.toFixed(2)),
-            tickets: normalizeTicketsForRecommendation({
-              ticketGenerationV2,
-              betPlan: bet_plan,
-              ticketOptimization
-            }),
+            tickets: stakeAllocation.tickets.slice(0, 4).map((t) => ({
+              combo: t.combo,
+              prob: Number.isFinite(Number(t.prob)) ? Number(t.prob) : null,
+              odds: Number.isFinite(Number(t.odds)) ? Number(t.odds) : null,
+              ev: Number.isFinite(Number(t.ev)) ? Number(t.ev) : null,
+              bet: Number.isFinite(Number(t.recommended_bet)) ? Number(t.recommended_bet) : null,
+              ticket_type: t.ticket_type || "backup"
+            })),
+            bankrollPlan: stakeAllocation.bankrollPlan,
             summary:
               raceDecision?.summary ||
               ticketGenerationV2?.summary ||
@@ -1117,3 +1166,4 @@ raceRouter.get("/results-history", async (req, res, next) => {
     return next(err);
   }
 });
+
