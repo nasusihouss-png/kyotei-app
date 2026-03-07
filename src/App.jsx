@@ -213,6 +213,24 @@ function getTicketTypeClass(ticketType) {
   return "ttype-backup";
 }
 
+function getValueTierLabel(tier) {
+  const t = String(tier || "");
+  if (t === "main_value") return "価値高";
+  if (t === "safe_low_value") return "低価値";
+  if (t === "speculative") return "準穴";
+  if (t === "avoid") return "回避";
+  return "通常";
+}
+
+function getValueTierClass(tier) {
+  const t = String(tier || "");
+  if (t === "main_value") return "value-main";
+  if (t === "safe_low_value") return "value-low";
+  if (t === "speculative") return "value-spec";
+  if (t === "avoid") return "value-avoid";
+  return "value-normal";
+}
+
 function roundBetTo100(value) {
   const num = Number(value);
   if (!Number.isFinite(num) || num <= 0) return 100;
@@ -370,6 +388,7 @@ export default function App() {
   const headConfidence = data?.headConfidence || {};
   const ticketGenerationV2 = data?.ticketGenerationV2 || {};
   const ticketOptimization = data?.ticketOptimization || {};
+  const valueDetection = data?.valueDetection || {};
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
   const raceDecision = data?.raceDecision || {};
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
@@ -439,6 +458,10 @@ export default function App() {
             odds: oddsByCombo.get(bet?.combo) ?? null,
             roundedBet: roundBetTo100(recommendedBet),
             ticket_type: bet?.ticket_type || "backup",
+            value_score: Number.isFinite(Number(bet?.value_score)) ? Number(bet.value_score) : null,
+            bet_value_tier: bet?.bet_value_tier || null,
+            overpriced_flag: !!bet?.overpriced_flag,
+            underpriced_flag: !!bet?.underpriced_flag,
             recommended_bet: roundBetTo100(recommendedBet)
           };
         })
@@ -1202,6 +1225,16 @@ export default function App() {
                   </article>
 
                   <article className="card">
+                    <h2>Value検出</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>value_balance_score</span><strong>{formatMaybeNumber(valueDetection.value_balance_score, 2)}</strong></div>
+                      <div className="kv-row"><span>low_value_risk</span><strong>{formatMaybeNumber(valueDetection.low_value_risk, 2)}</strong></div>
+                      <div className="kv-row"><span>price_quality_score</span><strong>{formatMaybeNumber(valueDetection.price_quality_score, 2)}</strong></div>
+                    </div>
+                    <p className="muted strategy-line">{valueDetection.summary || "-"}</p>
+                  </article>
+
+                  <article className="card">
                     <h2>EV上位買い目</h2>
                     <div className="list-stack">
                       {evBets.map((bet, idx) => (
@@ -1228,6 +1261,9 @@ export default function App() {
                           <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
                           <span>odds {Number.isFinite(bet.odds) ? formatMaybeNumber(bet.odds, 1) : "-"}</span>
                           <span>ev {formatMaybeNumber(bet.ev, 2)}</span>
+                          <span className={`ticket-value ${getValueTierClass(bet.bet_value_tier)}`}>
+                            {getValueTierLabel(bet.bet_value_tier)}
+                          </span>
                           <span className="bet-amount-strong">金額 JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)}>
                             記録に追加
@@ -1272,6 +1308,9 @@ export default function App() {
                           <span>p {formatMaybeNumber(row.prob, 3)}</span>
                           <span>odds {formatMaybeNumber(row.odds, 1)}</span>
                           <span>ev {formatMaybeNumber(row.ev, 2)}</span>
+                          <span className={`ticket-value ${getValueTierClass(row.bet_value_tier)}`}>
+                            {getValueTierLabel(row.bet_value_tier)}
+                          </span>
                           <span className="bet-amount-strong">JPY {Number(row.recommended_bet || 0).toLocaleString()}</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })}>
                             記録に追加

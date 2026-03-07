@@ -30,11 +30,11 @@ function getAllocationStyle(mode, mainCount) {
 
 function getSummary(mode, allocationStyle) {
   const m = String(mode || "").toUpperCase().replace(/\s+/g, "_");
-  if (m === "SKIP") return "見送り";
-  if (m === "MICRO_BET") return "本線絞りで最小投資";
-  if (m === "SMALL_BET") return "本線厚め、押さえ薄め";
-  if (allocationStyle === "balanced") return "本線中心にバランス配分";
-  return "本線厚め、押さえ控えめ";
+  if (m === "SKIP") return "Skip";
+  if (m === "MICRO_BET") return "Small test size, minimum exposure.";
+  if (m === "SMALL_BET") return "Main-line focused with light coverage.";
+  if (allocationStyle === "balanced") return "Balanced between primary and backup tickets.";
+  return "Main-line focused allocation.";
 }
 
 function determineTicketType({ combo, prob, odds, ev, primarySet, secondarySet }) {
@@ -51,7 +51,16 @@ function typeWeightMultiplier(type, mode) {
   return m === "FULL_BET" ? 0.28 : 0.12;
 }
 
-function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, mode }) {
+function valueTierMultiplier(tier) {
+  const t = String(tier || "");
+  if (t === "main_value") return 1.08;
+  if (t === "safe_low_value") return 0.88;
+  if (t === "speculative") return 0.7;
+  if (t === "avoid") return 0.22;
+  return 1;
+}
+
+function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, mode, valueDetection }) {
   const primarySet = new Set(
     (Array.isArray(ticketGenerationV2?.primary_tickets) ? ticketGenerationV2.primary_tickets : []).map((v) =>
       String(v)
@@ -62,12 +71,16 @@ function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, m
       String(v)
     )
   );
+  const valueByCombo = new Map(
+    (Array.isArray(valueDetection?.tickets) ? valueDetection.tickets : []).map((t) => [String(t.combo), t])
+  );
 
-  const rows = Array.isArray(ticketOptimization?.optimized_tickets) && ticketOptimization.optimized_tickets.length
-    ? ticketOptimization.optimized_tickets
-    : Array.isArray(betPlan?.recommended_bets)
-      ? betPlan.recommended_bets
-      : [];
+  const rows =
+    Array.isArray(ticketOptimization?.optimized_tickets) && ticketOptimization.optimized_tickets.length
+      ? ticketOptimization.optimized_tickets
+      : Array.isArray(betPlan?.recommended_bets)
+        ? betPlan.recommended_bets
+        : [];
 
   return rows
     .map((row) => {
@@ -89,7 +102,11 @@ function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, m
       const evNorm = clamp(0, 1.4, ev / 2.4);
       const baseWeight = clamp(0.05, 100, prob * 100 * 0.58 + evNorm * 20 + conf * 0.12 + oddsFactor * 10);
       const typeMultiplier = typeWeightMultiplier(ticket_type, mode);
-      const weight = clamp(0.02, 999, baseWeight * typeMultiplier);
+      const valueRow = valueByCombo.get(combo);
+      const valueScore = toNum(valueRow?.value_score, 50);
+      const valueScoreMultiplier = clamp(0.55, 1.15, 0.72 + valueScore / 120);
+      const tierMultiplier = valueTierMultiplier(valueRow?.bet_value_tier);
+      const weight = clamp(0.02, 999, baseWeight * typeMultiplier * valueScoreMultiplier * tierMultiplier);
 
       return {
         combo,
@@ -97,6 +114,10 @@ function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, m
         odds: odds > 0 ? Number(odds.toFixed(1)) : null,
         ev: Number(ev.toFixed(4)),
         ticket_type,
+        value_score: Number.isFinite(Number(valueRow?.value_score)) ? Number(valueRow.value_score) : null,
+        bet_value_tier: valueRow?.bet_value_tier || null,
+        overpriced_flag: !!valueRow?.overpriced_flag,
+        underpriced_flag: !!valueRow?.underpriced_flag,
         weight
       };
     })
@@ -109,11 +130,18 @@ export function buildStakeAllocationPlan({
   raceDecision,
   ticketOptimization,
   betPlan,
-  ticketGenerationV2
+  ticketGenerationV2,
+  valueDetection
 }) {
   const mode = String(raceDecision?.mode || raceDecision?.recommendation || "SKIP");
   const race_budget = getRaceBudgetByMode(mode);
-  const candidates = buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, mode });
+  const candidates = buildCandidateRows({
+    ticketOptimization,
+    betPlan,
+    ticketGenerationV2,
+    mode,
+    valueDetection
+  });
 
   if (race_budget <= 0 || candidates.length === 0) {
     return {
@@ -121,7 +149,7 @@ export function buildStakeAllocationPlan({
         race_budget: 0,
         mode: mode.toUpperCase().replace(/_/g, " "),
         allocation_style: "none",
-        summary: "見送り"
+        summary: "Skip"
       },
       tickets: candidates.map((t) => ({
         ...t,

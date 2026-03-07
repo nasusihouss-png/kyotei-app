@@ -40,6 +40,7 @@ import { optimizeTickets } from "../../ticket-optimization-engine.js";
 import { decideRaceSelection } from "../../race-selection-engine.js";
 import { buildStakeAllocationPlan } from "../../stake-allocation-engine.js";
 import { analyzeExhibitionAI } from "../../exhibition-ai-engine.js";
+import { detectValue } from "../../value-detection-engine.js";
 import {
   analyzeVenueBias,
   applyVenueBiasToRisk,
@@ -514,20 +515,34 @@ raceRouter.get("/race", async (req, res, next) => {
       headPrecision,
       exhibitionAI
     });
+    const valueDetection = detectValue({
+      recommendedBets: bet_plan.recommended_bets,
+      ticketOptimization,
+      raceDecision
+    });
+    const valueByCombo = new Map(
+      (Array.isArray(valueDetection?.tickets) ? valueDetection.tickets : []).map((t) => [String(t.combo), t])
+    );
     const stakeAllocation = buildStakeAllocationPlan({
       raceDecision,
       ticketOptimization,
       betPlan: bet_plan,
-      ticketGenerationV2
+      ticketGenerationV2,
+      valueDetection
     });
     const stakeByCombo = new Map(stakeAllocation.tickets.map((t) => [String(t.combo), t]));
     const bet_plan_with_stake = {
       ...bet_plan,
       recommended_bets: (Array.isArray(bet_plan.recommended_bets) ? bet_plan.recommended_bets : []).map((row) => {
         const stake = stakeByCombo.get(String(row?.combo || ""));
+        const value = valueByCombo.get(String(row?.combo || ""));
         return {
           ...row,
           ticket_type: stake?.ticket_type || "backup",
+          value_score: Number.isFinite(Number(value?.value_score)) ? Number(value.value_score) : null,
+          overpriced_flag: !!value?.overpriced_flag,
+          underpriced_flag: !!value?.underpriced_flag,
+          bet_value_tier: value?.bet_value_tier || null,
           recommended_bet: Number.isFinite(Number(stake?.recommended_bet))
             ? Number(stake.recommended_bet)
             : Number(row?.bet ?? 100)
@@ -541,9 +556,14 @@ raceRouter.get("/race", async (req, res, next) => {
         : []
       ).map((row) => {
         const stake = stakeByCombo.get(String(row?.combo || ""));
+        const value = valueByCombo.get(String(row?.combo || ""));
         return {
           ...row,
           ticket_type: stake?.ticket_type || row?.ticket_type || "backup",
+          value_score: Number.isFinite(Number(value?.value_score)) ? Number(value.value_score) : null,
+          overpriced_flag: !!value?.overpriced_flag,
+          underpriced_flag: !!value?.underpriced_flag,
+          bet_value_tier: value?.bet_value_tier || null,
           recommended_bet: Number.isFinite(Number(stake?.recommended_bet))
             ? Number(stake.recommended_bet)
             : Number(row?.recommended_bet ?? 100)
@@ -600,7 +620,8 @@ raceRouter.get("/race", async (req, res, next) => {
       ticketGenerationV2,
       aiEnhancement,
       ticketOptimization: ticketOptimizationWithStake,
-      raceDecision
+      raceDecision,
+      valueDetection
     });
   } catch (err) {
     return next(err);
