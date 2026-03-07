@@ -38,7 +38,9 @@ export function evaluateHeadPrecision({
   raceIndexes,
   raceOutcomeProbabilities,
   exhibitionAI,
-  venueBias
+  venueBias,
+  raceFlow,
+  playerStartProfiles
 }) {
   const rows = Array.isArray(ranking) ? ranking : [];
   if (!rows.length) {
@@ -60,6 +62,10 @@ export function evaluateHeadPrecision({
   const venueInner = toNum(venueBias?.venue_inner_reliability, 50);
   const venueChaos = toNum(venueBias?.venue_chaos_factor, 50);
   const venueStyle = String(venueBias?.venue_style_bias || "balanced");
+  const flowMode = String(raceFlow?.race_flow_mode || "");
+  const nigeFlow = toNum(raceFlow?.nige_prob, 0);
+  const sashiFlow = toNum(raceFlow?.sashi_prob, 0);
+  const makuriFlow = toNum(raceFlow?.makuri_prob, 0) + toNum(raceFlow?.makurizashi_prob, 0);
 
   const candidateRows = rows.map((row, idx) => {
     const lane = toNum(row?.racer?.lane, 0);
@@ -69,6 +75,7 @@ export function evaluateHeadPrecision({
     const motorQ = clamp(0, 1, toNum(f.motor_total_score, 0) / 20);
     const entryQ = clamp(0, 1, (toNum(f.entry_advantage_score, 0) + 12) / 24);
     const baseWinProb = toNum(winMap?.[lane], 0);
+    const sp = playerStartProfiles?.by_lane?.[String(lane)] || {};
 
     let laneShape = 0;
     if (lane === 1) laneShape = escapeP * 0.9 + nige / 120;
@@ -93,6 +100,12 @@ export function evaluateHeadPrecision({
     }
     if (venueStyle === "inner" && lane <= 2) headRaw += 0.035;
     if (venueStyle === "chaos" && lane >= 3) headRaw += 0.03;
+    if (flowMode === "nige" && lane === 1) headRaw += Math.max(0.02, nigeFlow * 0.18);
+    if (flowMode === "sashi" && lane === 2) headRaw += Math.max(0.02, sashiFlow * 0.16);
+    if ((flowMode === "makuri" || flowMode === "makurizashi") && (lane === 3 || lane === 4)) {
+      headRaw += Math.max(0.02, makuriFlow * 0.14);
+    }
+    headRaw += toNum(sp.start_stability_score, 50) * 0.0016 + toNum(sp.start_attack_score, 50) * 0.0012;
 
     if (lane === toNum(exhibitionAI?.top_exhibition_lane, 0)) headRaw += 0.11;
     if (lane === toNum(exhibitionAI?.stable_st_lane, 0)) headRaw += 0.08;

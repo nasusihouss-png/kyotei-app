@@ -412,13 +412,16 @@ export default function App() {
   const raceRisk = data?.raceRisk || {};
   const probabilities = Array.isArray(data?.probabilities) ? data.probabilities : [];
   const raceOutcomeProbabilities = data?.raceOutcomeProbabilities || {};
+  const raceFlow = data?.raceFlow || {};
   const raceIndexes = data?.raceIndexes || {};
   const marketTrap = data?.marketTrap || {};
   const ticketStrategy = data?.ticketStrategy || {};
   const preRaceAnalysis = data?.preRaceAnalysis || data?.preRaceForm || {};
   const exhibitionAI = data?.exhibitionAI || {};
+  const playerStartProfile = data?.playerStartProfile || {};
   const headSelection = data?.headSelection || {};
   const partnerSelection = data?.partnerSelection || {};
+  const partnerPrecision = data?.partnerPrecision || {};
   const roleCandidates = data?.roleCandidates || {};
   const raceStructure = data?.raceStructure || {};
   const venueBias = data?.venueBias || {};
@@ -511,6 +514,13 @@ export default function App() {
   const simulatedCombos = useMemo(
     () => (Array.isArray(data?.simulation?.top_combinations) ? data.simulation.top_combinations.slice(0, 5) : []),
     [data]
+  );
+  const startProfileRows = useMemo(
+    () =>
+      (Array.isArray(playerStartProfile?.profiles) ? playerStartProfile.profiles : [])
+        .slice()
+        .sort((a, b) => Number(a?.lane || 0) - Number(b?.lane || 0)),
+    [playerStartProfile]
   );
 
   const currentRaceKey = useMemo(
@@ -1110,6 +1120,18 @@ export default function App() {
                   </article>
 
                   <article className="card analysis-card">
+                    <h2>レースフロー</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>flow_mode</span><strong>{raceFlow.race_flow_mode || "-"}</strong></div>
+                      <div className="kv-row"><span>nige_prob</span><strong>{formatMaybeNumber((raceFlow.nige_prob ?? 0) * 100, 1)}%</strong></div>
+                      <div className="kv-row"><span>sashi_prob</span><strong>{formatMaybeNumber((raceFlow.sashi_prob ?? 0) * 100, 1)}%</strong></div>
+                      <div className="kv-row"><span>makuri_prob</span><strong>{formatMaybeNumber((raceFlow.makuri_prob ?? 0) * 100, 1)}%</strong></div>
+                      <div className="kv-row"><span>makurizashi_prob</span><strong>{formatMaybeNumber((raceFlow.makurizashi_prob ?? 0) * 100, 1)}%</strong></div>
+                      <div className="kv-row"><span>flow_confidence</span><strong>{formatMaybeNumber((raceFlow.flow_confidence ?? 0) * 100, 1)}%</strong></div>
+                    </div>
+                  </article>
+
+                  <article className="card analysis-card">
                     <h2>レース指数</h2>
                     <div className="kv-list">
                       <div className="kv-row"><span>逃げ指数</span><strong>{formatMaybeNumber(raceIndexes.nige_index, 2)}</strong></div>
@@ -1236,6 +1258,24 @@ export default function App() {
                   </article>
 
                   <article className="card analysis-card">
+                    <h2>選手スタートプロファイル</h2>
+                    <div className="list-stack">
+                      {startProfileRows.length === 0 ? (
+                        <p className="muted">データなし</p>
+                      ) : (
+                        startProfileRows.map((row) => (
+                          <div key={`sp-${row.lane}`} className="list-row">
+                            <strong><LanePills lanes={[Number(row.lane)]} /></strong>
+                            <span>attack {formatMaybeNumber(row.start_attack_score, 1)}</span>
+                            <span>stable {formatMaybeNumber(row.start_stability_score, 1)}</span>
+                            <span>{row.player_start_profile || "-"}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </article>
+
+                  <article className="card analysis-card">
                     <h2>役割候補</h2>
                     <div className="kv-list">
                       <div className="kv-row"><span>頭候補</span><strong><LanePills lanes={roleCandidates.head_candidates || []} /></strong></div>
@@ -1244,6 +1284,20 @@ export default function App() {
                       <div className="kv-row"><span>消し</span><strong><LanePills lanes={roleCandidates.fade_lanes || []} /></strong></div>
                     </div>
                     <p className="muted strategy-line">{roleCandidates.summary || "-"}</p>
+                  </article>
+
+                  <article className="card analysis-card">
+                    <h2>相手精度</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>2着候補</span><strong><LanePills lanes={partnerPrecision.second_candidates || []} /></strong></div>
+                      <div className="kv-row"><span>3着候補</span><strong><LanePills lanes={partnerPrecision.third_candidates || []} /></strong></div>
+                      <div className="kv-row"><span>残し内枠</span><strong><LanePills lanes={partnerPrecision.residual_inside_lanes || []} /></strong></div>
+                      <div className="kv-row"><span>3着外枠</span><strong><LanePills lanes={partnerPrecision.outside_third_lanes || []} /></strong></div>
+                      <div className="kv-row"><span>2着適性</span><strong>{formatMaybeNumber(partnerPrecision.second_place_fit_score, 1)}</strong></div>
+                      <div className="kv-row"><span>3着適性</span><strong>{formatMaybeNumber(partnerPrecision.third_place_fit_score, 1)}</strong></div>
+                      <div className="kv-row"><span>残しスコア</span><strong>{formatMaybeNumber(partnerPrecision.residual_lane_score, 1)}</strong></div>
+                      <div className="kv-row"><span>外3着スコア</span><strong>{formatMaybeNumber(partnerPrecision.outside_third_score, 1)}</strong></div>
+                    </div>
                   </article>
 
                   <article className="card analysis-card">

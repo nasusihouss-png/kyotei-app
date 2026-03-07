@@ -128,6 +128,7 @@ function buildChaosLight({ heads, mainPartners, backupPartners, excluded }) {
 export function generateTicketsV2({
   headSelection,
   partnerSelection,
+  partnerPrecision,
   headConfidence,
   headPrecision,
   exhibitionAI,
@@ -135,13 +136,19 @@ export function generateTicketsV2({
   raceIndexes,
   wallEvaluation,
   venueBias,
-  marketTrap
+  marketTrap,
+  raceFlow,
+  playerStartProfiles
 }) {
   const mainHead = Number(headSelection?.main_head);
   const secondaryHeads = uniqueLanes(headSelection?.secondary_heads);
   const fadeLanes = uniqueLanes(partnerSelection?.fade_lanes);
   const mainPartners = uniqueLanes(partnerSelection?.main_partners);
   const backupPartners = uniqueLanes(partnerSelection?.backup_partners);
+  const precisionSecond = uniqueLanes(partnerPrecision?.second_candidates);
+  const precisionThird = uniqueLanes(partnerPrecision?.third_candidates);
+  const mergedMainPartners = uniqueLanes([...precisionSecond, ...mainPartners]).slice(0, 4);
+  const mergedBackupPartners = uniqueLanes([...precisionThird, ...backupPartners]).slice(0, 5);
 
   const risk = toNum(raceRisk?.risk_score);
   const recommendation = String(raceRisk?.recommendation || "").toUpperCase();
@@ -157,6 +164,9 @@ export function generateTicketsV2({
   const venueChaos = toNum(venueBias?.venue_chaos_factor, 50);
   const venueStyle = String(venueBias?.venue_style_bias || "balanced");
   const trapScore = toNum(marketTrap?.trap_score, 0);
+  const flowMode = String(raceFlow?.race_flow_mode || "");
+  const flowConfidence = toNum(raceFlow?.flow_confidence, 0.35);
+  const mainHeadProfile = playerStartProfiles?.by_lane?.[String(mainHead)] || {};
 
   if (recommendation === "SKIP") {
     return {
@@ -182,34 +192,48 @@ export function generateTicketsV2({
   ) {
     result = buildHeadFixed({
       mainHead,
-      mainPartners: headGap >= 52 || exAI >= 66 ? mainPartners.slice(0, 2) : mainPartners,
-      backupPartners,
+      mainPartners:
+        flowMode === "nige"
+          ? mergedMainPartners.filter((x) => x <= 3)
+          : headGap >= 52 || exAI >= 66
+            ? mergedMainPartners.slice(0, 2)
+            : mergedMainPartners,
+      backupPartners: mergedBackupPartners,
       excluded: fadeLanes
     });
   } else if (areIndex >= 78 || risk > 90 || wallBreakRisk >= 70 || spreadMode || trapScore >= 62) {
     const heads = uniqueLanes([mainHead, ...secondaryHeads]).slice(0, 3);
     result = buildChaosLight({
       heads,
-      mainPartners,
-      backupPartners,
+      mainPartners: mergedMainPartners,
+      backupPartners: mergedBackupPartners,
       excluded: fadeLanes
     });
   } else {
     const heads = uniqueLanes([mainHead, ...secondaryHeads]).slice(0, 3);
     result = buildHeadSpread({
       heads,
-      mainPartners,
-      backupPartners,
+      mainPartners:
+        flowMode === "sashi"
+          ? mergedMainPartners.filter((x) => x !== heads[0]).slice(0, 3)
+          : flowMode === "makuri" || flowMode === "makurizashi"
+            ? mergedMainPartners.filter((x) => x >= 2)
+            : mergedMainPartners,
+      backupPartners: mergedBackupPartners,
       excluded: fadeLanes
     });
   }
 
   const secondaryLimited = trapScore >= 62 ? result.secondary_tickets.slice(0, 6) : result.secondary_tickets;
+  if (toNum(mainHeadProfile.start_stability_score, 50) < 45 && secondaryLimited.length > 4) {
+    secondaryLimited.length = 4;
+  }
+  const flowSuffix = ` flow:${flowMode || "-"} conf:${(flowConfidence * 100).toFixed(1)}%`;
 
   return {
     ...result,
     secondary_tickets: secondaryLimited,
-    summary: `${result.summary} (頭精度:${headWin.toFixed(1)}/${headGap.toFixed(1)} 展示:${exAI.toFixed(1)} 場傾向:${venueStyle})`,
+    summary: `${result.summary} (頭精度:${headWin.toFixed(1)}/${headGap.toFixed(1)} 展示:${exAI.toFixed(1)} 場傾向:${venueStyle}${flowSuffix})`,
     excluded_lanes: fadeLanes
   };
 }

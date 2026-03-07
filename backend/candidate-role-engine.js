@@ -7,7 +7,15 @@ function uniq(list) {
   return [...new Set((Array.isArray(list) ? list : []).map((x) => Number(x)).filter((x) => x >= 1 && x <= 6))];
 }
 
-export function analyzeRoleCandidates({ ranking, headSelection, partnerSelection, exhibitionAI }) {
+export function analyzeRoleCandidates({
+  ranking,
+  headSelection,
+  partnerSelection,
+  exhibitionAI,
+  raceFlow,
+  playerStartProfiles,
+  partnerPrecision
+}) {
   const rows = Array.isArray(ranking) ? ranking : [];
   if (!rows.length) {
     return {
@@ -23,6 +31,11 @@ export function analyzeRoleCandidates({ ranking, headSelection, partnerSelection
   const mainPartners = uniq(partnerSelection?.main_partners);
   const backupPartners = uniq(partnerSelection?.backup_partners);
 
+  const flowMode = String(raceFlow?.race_flow_mode || "");
+  const nigeProb = toNum(raceFlow?.nige_prob, 0);
+  const sashiProb = toNum(raceFlow?.sashi_prob, 0);
+  const makuriProb = toNum(raceFlow?.makuri_prob, 0) + toNum(raceFlow?.makurizashi_prob, 0);
+
   const roleRows = rows.map((row) => {
     const lane = toNum(row?.racer?.lane);
     const score = toNum(row?.score);
@@ -32,10 +45,17 @@ export function analyzeRoleCandidates({ ranking, headSelection, partnerSelection
     const exRank = toNum(f.exhibition_rank, 6);
     const entryAdv = toNum(f.entry_advantage_score, 0);
     const trend = toNum(f.motor_trend_score, 0);
+    const sp = playerStartProfiles?.by_lane?.[String(lane)] || {};
 
     let headScore = score * 0.52 + p * 100 * 0.38 + (7 - stRank) * 2.4 + (7 - exRank) * 2.1;
-    let secondScore = score * 0.36 + (7 - stRank) * 4.0 + entryAdv * 3.2 + trend * 2.1 + (mainPartners.includes(lane) ? 8 : 0);
-    let thirdScore = score * 0.24 + (7 - exRank) * 3.2 + entryAdv * 2.2 + (backupPartners.includes(lane) ? 8 : 0) + (mainPartners.includes(lane) ? 4 : 0);
+    let secondScore =
+      score * 0.36 + (7 - stRank) * 4.0 + entryAdv * 3.2 + trend * 2.1 + (mainPartners.includes(lane) ? 8 : 0);
+    let thirdScore =
+      score * 0.24 +
+      (7 - exRank) * 3.2 +
+      entryAdv * 2.2 +
+      (backupPartners.includes(lane) ? 8 : 0) +
+      (mainPartners.includes(lane) ? 4 : 0);
 
     if (lane === toNum(exhibitionAI?.top_exhibition_lane, 0)) headScore += 10;
     if (lane === toNum(exhibitionAI?.stable_st_lane, 0)) secondScore += 8;
@@ -48,6 +68,24 @@ export function analyzeRoleCandidates({ ranking, headSelection, partnerSelection
       secondScore -= 4;
       thirdScore -= 4;
     }
+
+    if (flowMode === "nige") {
+      if (lane === 1) headScore += 10 * Math.max(0.4, nigeProb);
+      if (lane === 2) secondScore += 8 * Math.max(0.35, nigeProb);
+      if (lane === 3) thirdScore += 5 * Math.max(0.3, nigeProb);
+    } else if (flowMode === "sashi") {
+      if (lane === 2) headScore += 9 * Math.max(0.35, sashiProb);
+      if (lane === 1) secondScore += 6 * Math.max(0.3, sashiProb);
+      if (lane === 3 || lane === 4) thirdScore += 5 * Math.max(0.25, sashiProb);
+    } else if (flowMode === "makuri" || flowMode === "makurizashi") {
+      if (lane === 3 || lane === 4) headScore += 9 * Math.max(0.35, makuriProb);
+      if (lane === 1 || lane === 2) secondScore += 4 * Math.max(0.25, makuriProb);
+      if (lane >= 4) thirdScore += 5 * Math.max(0.25, makuriProb);
+    }
+
+    headScore += toNum(sp.start_stability_score, 50) * 0.06;
+    secondScore += toNum(sp.start_attack_score, 50) * 0.07;
+    thirdScore += toNum(sp.makuri_style_score, 50) * 0.04;
 
     return {
       lane,
@@ -75,12 +113,15 @@ export function analyzeRoleCandidates({ ranking, headSelection, partnerSelection
     .slice(0, 4)
     .map((r) => r.lane);
 
-  const summary = `頭:${head_candidates.join(",")} / 2着:${second_candidates.join(",")} / 3着:${third_candidates.join(",")}`;
+  const secondBlend = uniq([...(partnerPrecision?.second_candidates || []), ...second_candidates]).slice(0, 4);
+  const thirdBlend = uniq([...(partnerPrecision?.third_candidates || []), ...third_candidates]).slice(0, 4);
+
+  const summary = `head:${head_candidates.join(",")} / 2nd:${secondBlend.join(",")} / 3rd:${thirdBlend.join(",")}`;
 
   return {
     head_candidates,
-    second_candidates,
-    third_candidates,
+    second_candidates: secondBlend,
+    third_candidates: thirdBlend,
     fade_lanes: fade,
     summary
   };
