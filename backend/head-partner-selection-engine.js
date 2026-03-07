@@ -126,8 +126,15 @@ export function analyzeHeadAndPartners({
   const partnerPool = withProb.filter((r) => r.lane !== mainHead);
   const byPartner = [...partnerPool].sort((a, b) => b.partnerRaw - a.partnerRaw);
 
-  const mainPartners = byPartner.slice(0, 3).map((r) => r.lane);
-  const backupPartners = byPartner.slice(3, 5).map((r) => r.lane);
+  const bestPartnerRaw = byPartner[0]?.partnerRaw ?? 0;
+  const filteredByLaneQuality = byPartner.filter((r) => {
+    if (r.lane <= 4) return true;
+    // lane 5/6 requires strong support to avoid weak spread
+    return r.partnerRaw >= bestPartnerRaw - 0.12;
+  });
+
+  const mainPartners = filteredByLaneQuality.slice(0, 3).map((r) => r.lane);
+  const backupPartners = filteredByLaneQuality.slice(3, 5).map((r) => r.lane);
   const selected = new Set([mainHead, ...mainPartners, ...backupPartners]);
   const fadeLanes = withProb
     .filter((r) => !selected.has(r.lane))

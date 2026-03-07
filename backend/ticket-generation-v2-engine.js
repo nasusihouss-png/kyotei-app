@@ -48,8 +48,8 @@ function buildHeadFixed({ mainHead, mainPartners, backupPartners, excluded }) {
 
   return {
     strategy_type: "head-fixed",
-    primary_tickets: [...primary].slice(0, 12),
-    secondary_tickets: [...secondary].filter((x) => !primary.has(x)).slice(0, 18),
+    primary_tickets: [...primary].slice(0, 8),
+    secondary_tickets: [...secondary].filter((x) => !primary.has(x)).slice(0, 10),
     summary: `${mainHead}頭固定で${ext.join(",")}へ流す`
   };
 }
@@ -84,8 +84,8 @@ function buildHeadSpread({ heads, mainPartners, backupPartners, excluded }) {
 
   return {
     strategy_type: "head-spread",
-    primary_tickets: [...primary].slice(0, 14),
-    secondary_tickets: [...secondary].filter((x) => !primary.has(x)).slice(0, 24),
+    primary_tickets: [...primary].slice(0, 10),
+    secondary_tickets: [...secondary].filter((x) => !primary.has(x)).slice(0, 14),
     summary: `${heads.join(",")}頭分散で${ext.join(",")}相手`
   };
 }
@@ -120,7 +120,7 @@ function buildChaosLight({ heads, mainPartners, backupPartners, excluded }) {
   return {
     strategy_type: "chaos-light",
     primary_tickets: [...primary].slice(0, 8),
-    secondary_tickets: [...secondary].filter((x) => !primary.has(x)).slice(0, 10),
+    secondary_tickets: [...secondary].filter((x) => !primary.has(x)).slice(0, 8),
     summary: `${heads.slice(0, 2).join(",")}頭中心、点数抑制で軽め運用`
   };
 }
@@ -158,7 +158,7 @@ export function generateTicketsV2({
   }
 
   let result;
-  if (headFixedOk && !spreadNeeded && risk <= 85 && areIndex < 70 && wallBreakRisk < 62) {
+  if (headFixedOk && !spreadNeeded && risk <= 82 && areIndex < 68 && wallBreakRisk < 60) {
     result = buildHeadFixed({
       mainHead,
       mainPartners,

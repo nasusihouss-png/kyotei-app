@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS placed_bets (
   race_no INTEGER NOT NULL,
   combo TEXT NOT NULL,
   bet_amount INTEGER NOT NULL,
+  bought_odds REAL,
   memo TEXT,
   hit_flag INTEGER,
   payout INTEGER DEFAULT 0,

@@ -9,6 +9,11 @@ function toInt(value, fallback = null) {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
+function toFloat(value, fallback = null) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -39,6 +44,16 @@ function resolveRaceId({ raceId, raceDate, venueId, raceNo }) {
   });
 }
 
+function ensurePlacedBetsColumns() {
+  const cols = db.prepare("PRAGMA table_info(placed_bets)").all();
+  const colNames = new Set(cols.map((c) => String(c.name)));
+  if (!colNames.has("bought_odds")) {
+    db.exec("ALTER TABLE placed_bets ADD COLUMN bought_odds REAL");
+  }
+}
+
+ensurePlacedBetsColumns();
+
 const insertPlacedBetStmt = db.prepare(`
   INSERT INTO placed_bets (
     race_id,
@@ -47,6 +62,7 @@ const insertPlacedBetStmt = db.prepare(`
     race_no,
     combo,
     bet_amount,
+    bought_odds,
     memo,
     updated_at
   ) VALUES (
@@ -56,6 +72,7 @@ const insertPlacedBetStmt = db.prepare(`
     @race_no,
     @combo,
     @bet_amount,
+    @bought_odds,
     @memo,
     @updated_at
   )
@@ -85,6 +102,7 @@ const listPlacedBetsStmt = db.prepare(`
     race_no,
     combo,
     bet_amount,
+    bought_odds,
     memo,
     hit_flag,
     payout,
@@ -158,6 +176,7 @@ export function createPlacedBet({
   race_no,
   combo,
   bet_amount,
+  bought_odds,
   memo
 }) {
   const raceDate = normalizeRaceDate(race_date);
@@ -165,6 +184,7 @@ export function createPlacedBet({
   const raceNo = toInt(race_no);
   const normalizedCombo = normalizeCombo(combo);
   const betAmount = toInt(bet_amount);
+  const boughtOdds = toFloat(bought_odds);
   const raceId = resolveRaceId({
     raceId: race_id,
     raceDate,
@@ -201,6 +221,7 @@ export function createPlacedBet({
     race_no: raceNo,
     combo: normalizedCombo,
     bet_amount: betAmount,
+    bought_odds: boughtOdds,
     memo: memo ? String(memo) : null,
     updated_at: nowIso()
   });

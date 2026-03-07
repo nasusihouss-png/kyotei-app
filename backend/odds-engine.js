@@ -32,11 +32,10 @@ function parseThirdByBlock($) {
       if (Number.isInteger(n)) thirds.push(n);
     });
 
-  // Expect 6 blocks (third-place lanes).
   return thirds.slice(0, 6);
 }
 
-function parseOddsMap(html) {
+function parseTrifectaOddsMap(html) {
   const $ = cheerio.load(html);
   const thirdByBlock = parseThirdByBlock($);
   const oddsMap = new Map();
@@ -86,24 +85,109 @@ function parseOddsMap(html) {
   return oddsMap;
 }
 
-export async function analyzeExpectedValue({ date, venueId, raceNo, simulation }) {
+function parseExactaOddsMap(html) {
+  const $ = cheerio.load(html);
+  const oddsMap = new Map();
+
+  $("table tr").each((_, tr) => {
+    const text = $(tr).text().replace(/\s+/g, " ").trim();
+    if (!text) return;
+
+    const comboMatch = text.match(/([1-6])\s*[-－]\s*([1-6])/);
+    if (!comboMatch) return;
+    const first = Number(comboMatch[1]);
+    const second = Number(comboMatch[2]);
+    if (first === second) return;
+
+    const oddsMatch = text.match(/(\d[\d,]*(?:\.\d+)?)/g);
+    if (!oddsMatch || !oddsMatch.length) return;
+    const odds = toNumber(oddsMatch[oddsMatch.length - 1]);
+    if (!Number.isFinite(odds)) return;
+
+    oddsMap.set(`${first}-${second}`, odds);
+  });
+
+  return oddsMap;
+}
+
+function mapToList(map) {
+  return [...map.entries()]
+    .map(([combo, odds]) => ({
+      combo,
+      odds: Number(Number(odds).toFixed(1))
+    }))
+    .sort((a, b) => a.odds - b.odds);
+}
+
+async function fetchSafely(url, parser) {
+  try {
+    const html = await fetchHtml(url);
+    return {
+      ok: true,
+      url,
+      map: parser(html)
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      url,
+      error: err?.message || "fetch_failed",
+      map: new Map()
+    };
+  }
+}
+
+export async function fetchRaceOddsData({ date, venueId, raceNo }) {
   const hd = String(date || "").replace(/-/g, "");
   const jcd = String(venueId).padStart(2, "0");
   const rno = Number(raceNo);
-  const oddsUrl = `${BOATRACE_BASE}/owpc/pc/race/odds3t?rno=${rno}&jcd=${jcd}&hd=${hd}`;
 
-  const html = await fetchHtml(oddsUrl);
-  const oddsMap = parseOddsMap(html);
+  const odds3tUrl = `${BOATRACE_BASE}/owpc/pc/race/odds3t?rno=${rno}&jcd=${jcd}&hd=${hd}`;
+  const odds2tfUrl = `${BOATRACE_BASE}/owpc/pc/race/odds2tf?rno=${rno}&jcd=${jcd}&hd=${hd}`;
+  const odds2tUrl = `${BOATRACE_BASE}/owpc/pc/race/odds2t?rno=${rno}&jcd=${jcd}&hd=${hd}`;
+
+  const trifectaResult = await fetchSafely(odds3tUrl, parseTrifectaOddsMap);
+  let exactaResult = await fetchSafely(odds2tfUrl, parseExactaOddsMap);
+  if (!exactaResult.map.size) {
+    exactaResult = await fetchSafely(odds2tUrl, parseExactaOddsMap);
+  }
+
+  return {
+    trifectaMap: trifectaResult.map,
+    exactaMap: exactaResult.map,
+    oddsData: {
+      trifecta: mapToList(trifectaResult.map),
+      exacta: mapToList(exactaResult.map),
+      fetched_at: new Date().toISOString(),
+      source_urls: {
+        trifecta: trifectaResult.url,
+        exacta: exactaResult.url
+      },
+      fetch_status: {
+        trifecta: trifectaResult.ok ? "ok" : "failed",
+        exacta: exactaResult.ok ? "ok" : "failed"
+      },
+      errors: [
+        ...(trifectaResult.ok ? [] : [{ type: "trifecta", message: trifectaResult.error }]),
+        ...(exactaResult.ok ? [] : [{ type: "exacta", message: exactaResult.error }])
+      ]
+    }
+  };
+}
+
+export async function analyzeExpectedValue({ date, venueId, raceNo, simulation }) {
+  const odds = await fetchRaceOddsData({ date, venueId, raceNo });
+  const oddsMap = odds.trifectaMap;
 
   const base = (simulation?.top_combinations || []).map((x) => {
     const combo = x.combo;
     const prob = Number(x.prob);
-    const odds = oddsMap.get(combo) ?? null;
-    const ev = odds !== null ? prob * odds : null;
+    const oddsValue = oddsMap.get(combo) ?? null;
+    const ev = oddsValue !== null ? prob * oddsValue : null;
     return {
       combo,
       prob,
-      odds,
+      odds: oddsValue,
       ev
     };
   });
@@ -119,9 +203,9 @@ export async function analyzeExpectedValue({ date, venueId, raceNo, simulation }
     }));
 
   return {
-    oddsUrl,
     ev_analysis: {
       best_ev_bets
-    }
+    },
+    oddsData: odds.oddsData
   };
 }

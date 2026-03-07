@@ -15,15 +15,16 @@ export function calcRacerScore(f) {
   score += f.local_win_rate * 2.2;
   score += f.motor2_rate * 0.32;
   score += f.boat2_rate * 0.18;
-  score += f.st_inv * 35;
+  score += f.st_inv * 40;
   score += f.local_minus_nation * 1.2;
 
   // Exhibition bonuses
-  if (f.exhibition_rank === 1) score += 6;
-  else if (f.exhibition_rank === 2) score += 3;
+  if (f.exhibition_rank === 1) score += 8;
+  else if (f.exhibition_rank === 2) score += 4;
 
   // Exhibition ST bonus
-  if (f.st_rank === 1) score += 5;
+  if (f.st_rank === 1) score += 7;
+  else if (f.st_rank === 2) score += 3;
 
   // Tilt bonus (+0.5)
   score += f.tilt_bonus || 0;

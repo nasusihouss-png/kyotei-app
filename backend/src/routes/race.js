@@ -30,6 +30,7 @@ import { analyzeHeadAndPartners } from "../../head-partner-selection-engine.js";
 import { evaluateLane2Wall } from "../../wall-evaluation-engine.js";
 import { evaluateHeadConfidence } from "../../head-confidence-engine.js";
 import { generateTicketsV2 } from "../../ticket-generation-v2-engine.js";
+import { analyzeHitQuality } from "../../hit-quality-engine.js";
 import {
   createPlacedBet,
   createPlacedBets,
@@ -167,12 +168,26 @@ raceRouter.get("/race", async (req, res, next) => {
       simulations: monteCarlo.simulations,
       top_combinations: monteCarlo.top_combinations
     };
-    const evData = await analyzeExpectedValue({
-      date: data.race.date,
-      venueId: data.race.venueId,
-      raceNo: data.race.raceNo,
-      simulation
-    });
+    let evData = {
+      ev_analysis: { best_ev_bets: [] },
+      oddsData: {
+        trifecta: [],
+        exacta: [],
+        fetched_at: new Date().toISOString(),
+        fetch_status: { trifecta: "failed", exacta: "failed" },
+        errors: [{ type: "odds", message: "odds_fetch_failed" }]
+      }
+    };
+    try {
+      evData = await analyzeExpectedValue({
+        date: data.race.date,
+        venueId: data.race.venueId,
+        raceNo: data.race.raceNo,
+        simulation
+      });
+    } catch (oddsErr) {
+      console.warn("[ODDS] fetch failed:", oddsErr?.message || oddsErr);
+    }
     const bet_plan = buildBetPlan(evData.ev_analysis, 10000);
     const motorAnalysis = ranking.map((r) => ({
       rank: r.rank,
@@ -258,6 +273,14 @@ raceRouter.get("/race", async (req, res, next) => {
       raceIndexes,
       wallEvaluation
     });
+    const aiEnhancement = analyzeHitQuality({
+      ranking,
+      raceRisk,
+      headConfidence,
+      partnerSelection,
+      oddsData: evData.oddsData,
+      probabilities
+    });
 
     saveFeatureSnapshots(raceId, ranking);
 
@@ -285,6 +308,7 @@ raceRouter.get("/race", async (req, res, next) => {
       motorTrendAnalysis,
       entryAnalysis,
       simulation,
+      oddsData: evData.oddsData,
       ev_analysis: evData.ev_analysis,
       bet_plan,
       raceRisk,
@@ -295,7 +319,8 @@ raceRouter.get("/race", async (req, res, next) => {
       headSelection,
       partnerSelection,
       headConfidence,
-      ticketGenerationV2
+      ticketGenerationV2,
+      aiEnhancement
     });
   } catch (err) {
     return next(err);

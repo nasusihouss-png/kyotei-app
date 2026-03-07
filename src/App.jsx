@@ -314,6 +314,10 @@ export default function App() {
   const top3 = Array.isArray(prediction?.top3) ? prediction.top3 : [];
   const evBets = Array.isArray(data?.ev_analysis?.best_ev_bets) ? data.ev_analysis.best_ev_bets.slice(0, 3) : [];
   const recommendedBets = Array.isArray(data?.bet_plan?.recommended_bets) ? data.bet_plan.recommended_bets : [];
+  const oddsData = data?.oddsData || {};
+  const trifectaOddsList = Array.isArray(oddsData?.trifecta) ? oddsData.trifecta : [];
+  const exactaOddsList = Array.isArray(oddsData?.exacta) ? oddsData.exacta : [];
+  const aiEnhancement = data?.aiEnhancement || {};
   const raceRisk = data?.raceRisk || {};
   const probabilities = Array.isArray(data?.probabilities) ? data.probabilities : [];
   const raceOutcomeProbabilities = data?.raceOutcomeProbabilities || {};
@@ -364,6 +368,15 @@ export default function App() {
     return map;
   }, [evBets, probabilities]);
 
+  const oddsByCombo = useMemo(() => {
+    const map = new Map();
+    trifectaOddsList.forEach((row) => {
+      const odds = Number(row?.odds);
+      if (row?.combo && Number.isFinite(odds)) map.set(String(row.combo), odds);
+    });
+    return map;
+  }, [trifectaOddsList]);
+
   const recommendedBetsByProb = useMemo(
     () =>
       recommendedBets
@@ -374,11 +387,12 @@ export default function App() {
             ...bet,
             prob: Number.isFinite(prob) ? prob : null,
             ev: evSource?.ev,
+            odds: oddsByCombo.get(bet?.combo) ?? null,
             roundedBet: roundBetTo100(bet?.bet)
           };
         })
         .sort((a, b) => (Number.isFinite(b?.prob) ? b.prob : -1) - (Number.isFinite(a?.prob) ? a.prob : -1)),
-    [recommendedBets, probabilityByCombo, evBets]
+    [recommendedBets, probabilityByCombo, evBets, oddsByCombo]
   );
   const simulatedCombos = useMemo(
     () => (Array.isArray(data?.simulation?.top_combinations) ? data.simulation.top_combinations.slice(0, 5) : []),
@@ -541,7 +555,8 @@ export default function App() {
         bet_amount: rounded,
         memo: ticket?.memo ?? journalForm.memo ?? "",
         prob: Number.isFinite(Number(ticket?.prob)) ? Number(ticket.prob) : null,
-        ev: Number.isFinite(Number(ticket?.ev)) ? Number(ticket.ev) : null
+        ev: Number.isFinite(Number(ticket?.ev)) ? Number(ticket.ev) : null,
+        odds: Number.isFinite(Number(ticket?.odds)) ? Number(ticket.odds) : null
       };
       if (idx >= 0) {
         const existing = prev[idx];
@@ -615,6 +630,7 @@ export default function App() {
           race_no: Number(t.race_no ?? journalForm.race_no),
           combo: t.combo,
           bet_amount: roundBetTo100(t.bet_amount),
+          bought_odds: Number.isFinite(Number(t.odds)) ? Number(t.odds) : null,
           memo: t.memo
         }))
       );
@@ -669,7 +685,8 @@ export default function App() {
       combo,
       bet_amount: defaultAmount,
       prob: bet?.prob,
-      ev: bet?.ev
+      ev: bet?.ev,
+      odds: bet?.odds
     });
   };
 
@@ -995,6 +1012,16 @@ export default function App() {
                     </div>
                     <p className="muted strategy-line">{headConfidence.summary || "-"}</p>
                   </article>
+
+                  <article className="card analysis-card">
+                    <h2>的中重視スコア</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>hit_mode_score</span><strong>{formatMaybeNumber(aiEnhancement.hit_mode_score, 2)}</strong></div>
+                      <div className="kv-row"><span>solid_ticket_score</span><strong>{formatMaybeNumber(aiEnhancement.solid_ticket_score, 2)}</strong></div>
+                      <div className="kv-row"><span>inner_reliability_score</span><strong>{formatMaybeNumber(aiEnhancement.inner_reliability_score, 2)}</strong></div>
+                      <div className="kv-row"><span>odds_adjusted_ticket_score</span><strong>{formatMaybeNumber(aiEnhancement.odds_adjusted_ticket_score, 2)}</strong></div>
+                    </div>
+                  </article>
                 </section>
 
                 <section className="dashboard-grid">
@@ -1022,11 +1049,31 @@ export default function App() {
                         <div key={`${bet.combo}-${idx}`} className="list-row list-row-actions">
                           <strong><ComboBadge combo={bet.combo} /></strong>
                           <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                          <span>odds {Number.isFinite(bet.odds) ? formatMaybeNumber(bet.odds, 1) : "-"}</span>
                           <span>ev {formatMaybeNumber(bet.ev, 2)}</span>
                           <span>金額 JPY {bet.roundedBet.toLocaleString()}</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)}>
                             記録に追加
                           </button>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+
+                  <article className="card">
+                    <h2>オッズ取得</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>取得時刻</span><strong>{oddsData?.fetched_at ? new Date(oddsData.fetched_at).toLocaleString() : "-"}</strong></div>
+                      <div className="kv-row"><span>3連単件数</span><strong>{trifectaOddsList.length}</strong></div>
+                      <div className="kv-row"><span>2連単件数</span><strong>{exactaOddsList.length}</strong></div>
+                    </div>
+                    <div className="list-stack">
+                      {trifectaOddsList.slice(0, 5).map((row, idx) => (
+                        <div key={`odds3-${idx}`} className="list-row">
+                          <strong><ComboBadge combo={row.combo} /></strong>
+                          <span>odds {formatMaybeNumber(row.odds, 1)}</span>
+                          <span>-</span>
+                          <span>-</span>
                         </div>
                       ))}
                     </div>
@@ -1056,9 +1103,9 @@ export default function App() {
                           <div key={`${row.combo}-${idx}`} className="list-row list-row-actions">
                             <strong><ComboBadge combo={row.combo} /></strong>
                             <span>p {formatMaybeNumber(row.prob, 4)}</span>
+                            <span>odds {Number.isFinite(oddsByCombo.get(row.combo)) ? formatMaybeNumber(oddsByCombo.get(row.combo), 1) : "-"}</span>
                             <span>-</span>
-                            <span>-</span>
-                            <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, bet: 100 })}>
+                            <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: oddsByCombo.get(row.combo), bet: 100 })}>
                               記録に追加
                             </button>
                           </div>
@@ -1379,6 +1426,7 @@ export default function App() {
                           />
                         </span>
                         <span>p {Number.isFinite(ticket.prob) ? formatMaybeNumber(ticket.prob, 3) : "-"}</span>
+                        <span>odds {Number.isFinite(ticket.odds) ? formatMaybeNumber(ticket.odds, 1) : "-"}</span>
                         <span>ev {Number.isFinite(ticket.ev) ? formatMaybeNumber(ticket.ev, 2) : "-"}</span>
                         <button
                           className="fetch-btn secondary"
@@ -1515,6 +1563,7 @@ export default function App() {
                                   <span className="label">状態</span>
                                   <span className={`status-pill ${getBetStatusClass(bet.status)}`}>{bet.status === "hit" ? "的中" : bet.status === "miss" ? "ハズレ" : "未精算"}</span>
                                 </div>
+                                <div><span className="label">購入時オッズ</span><strong>{Number.isFinite(Number(bet.bought_odds)) ? formatMaybeNumber(bet.bought_odds, 1) : "-"}</strong></div>
                                 <div><span className="label">払戻</span><strong>JPY {(bet.payout ?? 0).toLocaleString()}</strong></div>
                                 <div>
                                   <span className="label">損益</span>
