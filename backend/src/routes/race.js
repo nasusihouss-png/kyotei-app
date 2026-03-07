@@ -249,6 +249,39 @@ function enrichRecommendedTickets({ recommendedBets, probabilities, oddsData, ev
   });
 }
 
+function calcHitRateRankingScore({
+  raceDecision,
+  raceStructure,
+  headPrecision,
+  valueDetection,
+  marketTrap,
+  ticketOptimization
+}) {
+  const mode = String(raceDecision?.mode || "SMALL_BET").toUpperCase();
+  const modeBase = mode === "FULL_BET" ? 18 : mode === "SMALL_BET" ? 11 : mode === "MICRO_BET" ? 7 : 0;
+  const confidence = toNum(raceDecision?.confidence, 0);
+  const headStability = toNum(raceStructure?.head_stability_score, 50);
+  const headGap = toNum(headPrecision?.head_gap_score, 50);
+  const chaosRisk = toNum(raceStructure?.chaos_risk_score, 50);
+  const valueBalance = toNum(valueDetection?.value_balance_score, 50);
+  const trapScore = toNum(marketTrap?.trap_score, 35);
+  const ticketQuality = toNum(ticketOptimization?.ticket_confidence_score, 50);
+
+  const score = clamp(
+    0,
+    100,
+    modeBase +
+      confidence * 0.22 +
+      headStability * 0.2 +
+      headGap * 0.14 +
+      (100 - chaosRisk) * 0.16 +
+      valueBalance * 0.12 +
+      ticketQuality * 0.12 -
+      trapScore * 0.2
+  );
+  return Number(score.toFixed(2));
+}
+
 raceRouter.get("/race", async (req, res, next) => {
   try {
     const { date, venueId, raceNo, participationMode } = req.query;
@@ -991,6 +1024,330 @@ raceRouter.get("/recommendations", async (req, res, next) => {
       recommendations: recs.slice(0, limit),
       skipped_count: Math.max(0, scanned - recs.length),
       errors: errors.slice(0, 30)
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.get("/rankings", async (req, res, next) => {
+  try {
+    const { date, participationMode } = req.query;
+    const mode = String(req.query?.mode || "hit_rate").toLowerCase();
+    if (!date) {
+      return res.status(400).json({
+        error: "bad_request",
+        message: "date is required query param"
+      });
+    }
+
+    const limit = Math.max(1, Math.min(50, toInt(req.query?.limit, 20)));
+    const raceNoList = String(req.query?.raceNos || "")
+      .split(",")
+      .map((v) => toInt(v))
+      .filter((v) => Number.isInteger(v) && v >= 1 && v <= 12);
+    const venueList = String(req.query?.venues || "")
+      .split(",")
+      .map((v) => toInt(v))
+      .filter((v) => Number.isInteger(v) && v >= 1 && v <= 24);
+
+    const scanRaceNos = raceNoList.length ? raceNoList : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    const scanVenues = venueList.length
+      ? venueList
+      : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
+    const maxScan = Math.max(1, Math.min(240, toInt(req.query?.maxScan, 96)));
+
+    const items = [];
+    const errors = [];
+    let scanned = 0;
+
+    for (const venueId of scanVenues) {
+      for (const raceNo of scanRaceNos) {
+        if (scanned >= maxScan) break;
+        scanned += 1;
+        try {
+          const data = await getRaceData({ date, venueId, raceNo });
+          const baseFeatures = applyMotorPerformanceFeatures(
+            applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
+          );
+          const venueAdjustedBase = applyVenueAdjustments(baseFeatures, data.race);
+          const preRanking = rankRace(venueAdjustedBase.racersWithFeatures);
+          const prePattern = analyzeRacePattern(preRanking);
+          const trendFeatures = applyMotorTrendFeatures(venueAdjustedBase.racersWithFeatures, {
+            racePattern: prePattern.race_pattern
+          });
+          const entryAdjusted = applyEntryDynamicsFeatures(trendFeatures, {
+            racePattern: prePattern.race_pattern,
+            chaos_index: prePattern.indexes.chaos_index
+          });
+          const ranking = rankRace(entryAdjusted.racersWithFeatures);
+          const preRaceAnalysis = analyzePreRaceForm({
+            ranking,
+            race: data.race
+          });
+          const pattern = analyzeRacePattern(ranking);
+          const adjustedChaos = Math.min(
+            100,
+            Number(
+              (
+                pattern.indexes.chaos_index +
+                entryAdjusted.chaosBoost +
+                (venueAdjustedBase.venue.chaosAdjustment || 0)
+              ).toFixed(2)
+            )
+          );
+          const indexes = { ...pattern.indexes, chaos_index: adjustedChaos };
+          const raceIndexes = analyzeRaceIndexes({
+            ranking,
+            top3: ranking.slice(0, 3).map((r) => r.racer.lane),
+            racePattern: pattern.race_pattern,
+            indexes,
+            raceRisk: null
+          });
+          const exhibitionAI = analyzeExhibitionAI({ ranking });
+          const baseRaceRisk = evaluateRaceRisk({
+            indexes,
+            racePattern: pattern.race_pattern,
+            ranking,
+            are_index: raceIndexes.are_index,
+            probabilities: [],
+            participation_mode: participationMode || "active"
+          });
+          const raceOutcomeProbabilities = estimateRaceOutcomeProbabilities({
+            raceIndexes,
+            raceRisk: baseRaceRisk,
+            racePattern: pattern.race_pattern,
+            ranking
+          });
+          const wallEvaluation = evaluateLane2Wall({
+            ranking,
+            raceIndexes,
+            racePattern: pattern.race_pattern
+          });
+          const { headSelection, partnerSelection } = analyzeHeadAndPartners({
+            ranking,
+            raceIndexes,
+            raceOutcomeProbabilities,
+            raceRisk: baseRaceRisk
+          });
+          const venueBias = analyzeVenueBias({
+            race: data.race,
+            raceIndexes,
+            ranking
+          });
+          const headPrecision = evaluateHeadPrecision({
+            ranking,
+            headSelection,
+            probabilities: [],
+            raceIndexes,
+            raceOutcomeProbabilities,
+            exhibitionAI,
+            venueBias
+          });
+          const headSelectionRefined = {
+            ...headSelection,
+            main_head: headPrecision.main_head ?? headSelection?.main_head ?? null,
+            secondary_heads:
+              Array.isArray(headPrecision.backup_heads) && headPrecision.backup_heads.length
+                ? headPrecision.backup_heads
+                : headSelection?.secondary_heads || []
+          };
+          const headConfidence = evaluateHeadConfidence({
+            headSelection: headSelectionRefined,
+            raceRisk: baseRaceRisk,
+            raceIndexes,
+            raceOutcomeProbabilities,
+            probabilities: [],
+            wallEvaluation
+          });
+          const roleCandidates = analyzeRoleCandidates({
+            ranking,
+            headSelection: headSelectionRefined,
+            partnerSelection,
+            exhibitionAI
+          });
+          const baseRaceStructure = analyzeRaceStructure({
+            ranking,
+            probabilities: [],
+            headConfidence,
+            raceIndexes,
+            preRaceAnalysis,
+            roleCandidates,
+            exhibitionAI
+          });
+          const raceStructure = applyVenueBiasToStructure({
+            raceStructure: baseRaceStructure,
+            venueBias
+          });
+          const refinedRaceRisk = refineRaceRiskWithStructure({
+            raceRisk: baseRaceRisk,
+            headConfidence,
+            preRaceAnalysis,
+            roleCandidates,
+            probabilities: [],
+            ranking
+          });
+          const raceRisk = applyVenueBiasToRisk({
+            raceRisk: refinedRaceRisk,
+            venueBias
+          });
+
+          let evData = {
+            ev_analysis: { best_ev_bets: [] },
+            oddsData: { trifecta: [], exacta: [], fetched_at: null, fetch_status: {} }
+          };
+          try {
+            evData = await analyzeExpectedValue({
+              date: data.race.date,
+              venueId: data.race.venueId,
+              raceNo: data.race.raceNo,
+              simulation: { top_combinations: [] }
+            });
+          } catch {
+            // keep graceful fallback
+          }
+          const rawBetPlan = buildBetPlan(evData.ev_analysis, 10000);
+          const bet_plan = {
+            ...rawBetPlan,
+            recommended_bets: enrichRecommendedTickets({
+              recommendedBets: rawBetPlan.recommended_bets,
+              probabilities: [],
+              oddsData: evData.oddsData,
+              evAnalysis: evData.ev_analysis
+            })
+          };
+
+          const aiEnhancement = analyzeHitQuality({
+            ranking,
+            raceRisk,
+            headConfidence,
+            partnerSelection,
+            oddsData: evData.oddsData,
+            probabilities: []
+          });
+          const ticketOptimization = optimizeTickets({
+            recommendedBets: bet_plan.recommended_bets,
+            probabilities: [],
+            oddsData: evData.oddsData,
+            recommendation: raceRisk.recommendation,
+            raceStructure,
+            aiEnhancement
+          });
+          const marketTrap = detectMarketTraps({
+            raceRisk,
+            raceStructure,
+            raceIndexes,
+            recommendedBets: bet_plan.recommended_bets,
+            ticketOptimization,
+            probabilities: []
+          });
+          const raceDecision = decideRaceSelection({
+            raceStructure,
+            preRaceAnalysis,
+            roleCandidates,
+            ticketOptimization,
+            headPrecision,
+            exhibitionAI,
+            venueBias,
+            marketTrap
+          });
+          const ticketGenerationV2 = generateTicketsV2({
+            headSelection: headSelectionRefined,
+            partnerSelection,
+            headConfidence,
+            headPrecision,
+            exhibitionAI,
+            raceRisk,
+            raceIndexes,
+            wallEvaluation,
+            venueBias,
+            marketTrap
+          });
+          const valueDetection = detectValue({
+            recommendedBets: bet_plan.recommended_bets,
+            ticketOptimization,
+            raceDecision,
+            venueBias,
+            marketTrap
+          });
+          const stakeAllocation = buildStakeAllocationPlan({
+            raceDecision,
+            ticketOptimization,
+            betPlan: bet_plan,
+            ticketGenerationV2,
+            valueDetection,
+            marketTrap
+          });
+
+          const ranking_score = mode === "hit_rate"
+            ? calcHitRateRankingScore({
+              raceDecision,
+              raceStructure,
+              headPrecision,
+              valueDetection,
+              marketTrap,
+              ticketOptimization
+            })
+            : calcHitRateRankingScore({
+              raceDecision,
+              raceStructure,
+              headPrecision,
+              valueDetection,
+              marketTrap,
+              ticketOptimization
+            });
+
+          items.push({
+            venueId: data.race.venueId,
+            venueName: data.race.venueName || null,
+            raceNo: data.race.raceNo,
+            ranking_score,
+            decision_mode: raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN",
+            confidence: Number(toNum(raceDecision?.confidence, 0).toFixed(2)),
+            main_head: Number(headSelectionRefined?.main_head) || null,
+            summary: raceDecision?.summary || ticketGenerationV2?.summary || "評価中",
+            raceId: `${date}_${data.race.venueId}_${data.race.raceNo}`,
+            ticket_quality: Number(toNum(ticketOptimization?.ticket_confidence_score, 0).toFixed(2)),
+            trap_score: Number(toNum(marketTrap?.trap_score, 0).toFixed(2)),
+            value_balance_score: Number(toNum(valueDetection?.value_balance_score, 0).toFixed(2)),
+            race_budget: Number(toNum(stakeAllocation?.bankrollPlan?.race_budget, 0))
+          });
+        } catch (err) {
+          errors.push({
+            venueId,
+            raceNo,
+            message: err?.message || "failed_to_rank"
+          });
+        }
+      }
+      if (scanned >= maxScan) break;
+    }
+
+    items.sort((a, b) => b.ranking_score - a.ranking_score);
+    const rankings = items.slice(0, limit).map((row, idx) => ({
+      rank: idx + 1,
+      venueId: row.venueId,
+      venueName: row.venueName,
+      raceNo: row.raceNo,
+      ranking_score: row.ranking_score,
+      decision_mode: row.decision_mode,
+      confidence: row.confidence,
+      main_head: row.main_head,
+      summary: row.summary,
+      raceId: row.raceId,
+      ticket_quality: row.ticket_quality,
+      trap_score: row.trap_score,
+      value_balance_score: row.value_balance_score,
+      race_budget: row.race_budget
+    }));
+
+    return res.json({
+      date,
+      mode,
+      scanned,
+      returned: rankings.length,
+      rankings,
+      errors: errors.slice(0, 40)
     });
   } catch (err) {
     return next(err);

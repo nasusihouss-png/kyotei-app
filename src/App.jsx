@@ -60,6 +60,15 @@ async function fetchRecommendationsData(date) {
   return response.json();
 }
 
+async function fetchRankingsData(date, mode = "hit_rate") {
+  const url = new URL(`${API_BASE}/rankings`);
+  url.searchParams.set("date", date);
+  url.searchParams.set("mode", mode);
+  const response = await fetch(url.toString());
+  if (!response.ok) throw new Error("Failed to fetch rankings");
+  return response.json();
+}
+
 async function fetchStatsData() {
   const response = await fetch(`${API_BASE}/stats`);
   if (!response.ok) throw new Error("Failed to fetch stats");
@@ -329,6 +338,9 @@ export default function App() {
   const [recommendationsLoading, setRecommendationsLoading] = useState(false);
   const [recommendationsError, setRecommendationsError] = useState("");
   const [recommendationsData, setRecommendationsData] = useState([]);
+  const [rankingsLoading, setRankingsLoading] = useState(false);
+  const [rankingsError, setRankingsError] = useState("");
+  const [rankingsData, setRankingsData] = useState([]);
 
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
@@ -585,6 +597,11 @@ export default function App() {
       loadRecommendations();
     }
   }, [screen, date]);
+  useEffect(() => {
+    if (screen === "rankings") {
+      loadRankings();
+    }
+  }, [screen, date]);
 
   const onFetch = async () => {
     setLoading(true);
@@ -610,6 +627,19 @@ export default function App() {
       setRecommendationsError(e.message || "Failed to fetch recommendations");
     } finally {
       setRecommendationsLoading(false);
+    }
+  };
+
+  const loadRankings = async () => {
+    setRankingsLoading(true);
+    setRankingsError("");
+    try {
+      const result = await fetchRankingsData(date, "hit_rate");
+      setRankingsData(Array.isArray(result?.rankings) ? result.rankings : []);
+    } catch (e) {
+      setRankingsError(e.message || "Failed to fetch rankings");
+    } finally {
+      setRankingsLoading(false);
     }
   };
 
@@ -1022,6 +1052,7 @@ export default function App() {
           <div className="screen-tabs">
             <button className={screen === "predict" ? "tab on" : "tab"} onClick={() => setScreen("predict")}>予想</button>
             <button className={screen === "recommend" ? "tab on" : "tab"} onClick={() => setScreen("recommend")}>おすすめ</button>
+            <button className={screen === "rankings" ? "tab on" : "tab"} onClick={() => setScreen("rankings")}>ランキング</button>
             <button className={screen === "performance" ? "tab on" : "tab"} onClick={() => setScreen("performance")}>実績</button>
             <button className={screen === "journal" ? "tab on" : "tab"} onClick={() => setScreen("journal")}>ベット記録</button>
           </div>
@@ -1525,6 +1556,53 @@ export default function App() {
                             </button>
                           </div>
                         ))}
+                      </div>
+                      <p className="muted strategy-line">{row.summary || "-"}</p>
+                      <div className="row-actions">
+                        <button className="fetch-btn" onClick={() => onOpenRecommendation(row)}>
+                          詳細予想へ
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {screen === "rankings" && (
+          <>
+            {rankingsError && <div className="error-banner">{rankingsError}</div>}
+            <section className="card">
+              <div className="section-head recommend-head">
+                <h2>AIレースランキング</h2>
+                <div className="row-actions">
+                  <span className="muted">{date} / hit_rate モード</span>
+                  <button className="fetch-btn secondary" onClick={loadRankings} disabled={rankingsLoading}>
+                    {rankingsLoading ? "更新中..." : "再取得"}
+                  </button>
+                </div>
+              </div>
+              {rankingsLoading ? (
+                <p className="muted">ランキングを読み込み中...</p>
+              ) : rankingsData.length === 0 ? (
+                <p className="muted">ランキング対象レースがありません。</p>
+              ) : (
+                <div className="recommendation-list">
+                  {rankingsData.map((row) => (
+                    <article className="recommend-card" key={`rk-${row.rank}-${row.venueId}-${row.raceNo}`}>
+                      <div className="recommend-card-head">
+                        <strong>#{row.rank} {row.venueId} {row.venueName || "-"} {row.raceNo}R</strong>
+                        <span className={`status-pill ${getRiskClass(row.decision_mode)}`}>{row.decision_mode || "-"}</span>
+                      </div>
+                      <div className="kv-list">
+                        <div className="kv-row"><span>ranking_score</span><strong>{formatMaybeNumber(row.ranking_score, 2)}</strong></div>
+                        <div className="kv-row"><span>confidence</span><strong>{formatMaybeNumber(row.confidence, 2)}</strong></div>
+                        <div className="kv-row"><span>main_head</span><strong><LanePills lanes={[Number(row.main_head)]} /></strong></div>
+                        <div className="kv-row"><span>ticket_quality</span><strong>{formatMaybeNumber(row.ticket_quality, 2)}</strong></div>
+                        <div className="kv-row"><span>trap_score</span><strong>{formatMaybeNumber(row.trap_score, 2)}</strong></div>
+                        <div className="kv-row"><span>value_balance_score</span><strong>{formatMaybeNumber(row.value_balance_score, 2)}</strong></div>
                       </div>
                       <p className="muted strategy-line">{row.summary || "-"}</p>
                       <div className="row-actions">
