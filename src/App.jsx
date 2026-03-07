@@ -1615,6 +1615,82 @@ export default function App() {
             </section>
 
             <section className="card">
+              <h2>AI弱点分析</h2>
+              <div className="stats-grid">
+                <article className="card stat-card">
+                  <span>分析対象レース</span>
+                  <strong>{analytics?.weakness_analysis?.weakness_summary?.analyzed_races ?? 0}</strong>
+                  <small>失敗含む {analytics?.weakness_analysis?.weakness_summary?.races_with_failures ?? 0}</small>
+                  <small>失敗率 {formatMaybeNumber(analytics?.weakness_analysis?.weakness_summary?.failure_rate, 2)}%</small>
+                </article>
+                <article className="card stat-card">
+                  <span>頭精度</span>
+                  <strong>{formatMaybeNumber(analytics?.weakness_analysis?.head_accuracy_stats?.rate, 2)}%</strong>
+                  <small>的中 {analytics?.weakness_analysis?.head_accuracy_stats?.hit ?? 0} / {analytics?.weakness_analysis?.head_accuracy_stats?.total ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>相手精度</span>
+                  <strong>{formatMaybeNumber(analytics?.weakness_analysis?.partner_accuracy_stats?.rate, 2)}%</strong>
+                  <small>頭的中時の相手一致率</small>
+                </article>
+                <article className="card stat-card">
+                  <span>推奨利用率</span>
+                  <strong>{formatMaybeNumber(analytics?.weakness_analysis?.recommendation_usage?.usage_rate, 2)}%</strong>
+                  <small>{analytics?.weakness_analysis?.recommendation_usage?.used_races ?? 0} / {analytics?.weakness_analysis?.recommendation_usage?.analyzed_races ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>資金配分利用率</span>
+                  <strong>{formatMaybeNumber(analytics?.weakness_analysis?.stake_allocation_usage?.usage_rate, 2)}%</strong>
+                  <small>{analytics?.weakness_analysis?.stake_allocation_usage?.used_tickets ?? 0} / {analytics?.weakness_analysis?.stake_allocation_usage?.total_tickets ?? 0}</small>
+                </article>
+              </div>
+
+              <div className="table-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>主要失敗モード</th>
+                      <th>件数</th>
+                      <th>比率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(analytics?.weakness_analysis?.top_failure_modes || []).map((w) => (
+                      <tr key={`weak-${w.code}`}>
+                        <td>{w.code}</td>
+                        <td>{w.count}</td>
+                        <td>{formatMaybeNumber(w.rate, 2)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>場</th>
+                      <th>レース数</th>
+                      <th>失敗率</th>
+                      <th>最多失敗モード</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(analytics?.weakness_analysis?.venue_weakness_stats || []).slice(0, 12).map((v) => (
+                      <tr key={`vw-${v.venue_id}`}>
+                        <td>{v.venue_id} {v.venue_name || "-"}</td>
+                        <td>{v.races ?? 0}</td>
+                        <td>{formatMaybeNumber(v.failure_rate, 2)}%</td>
+                        <td>{v.top_failure_mode || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="card">
               <h2>推奨タイプ別実績</h2>
               <div className="stats-grid">
                 {["FULL BET", "SMALL BET", "MICRO BET", "SKIP"].map((k) => {

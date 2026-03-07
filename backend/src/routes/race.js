@@ -121,6 +121,30 @@ function calcRates({ bet, payout, hit, total }) {
   };
 }
 
+function normalizeCombo(value) {
+  const digits = String(value || "").match(/[1-6]/g) || [];
+  return digits.slice(0, 3).join("-");
+}
+
+function classifyWeaknessCodes({
+  predictedHead,
+  actualHead,
+  hasHit,
+  riskScore,
+  placedCount,
+  top3Concentration,
+  avgBoughtOdds
+}) {
+  const codes = [];
+  if (predictedHead && actualHead && predictedHead !== actualHead) codes.push("HEAD_MISS");
+  if (predictedHead && actualHead && predictedHead === actualHead && !hasHit) codes.push("PARTNER_MISS");
+  if (!hasHit && riskScore <= 55) codes.push("CHAOS_UNDERESTIMATED");
+  if (!hasHit && placedCount > 0 && avgBoughtOdds > 0 && avgBoughtOdds <= 12) codes.push("ODDS_TRAP");
+  if (placedCount >= 8) codes.push("OVERSPREAD");
+  if (!hasHit && placedCount <= 2 && top3Concentration < 0.52) codes.push("UNDERSPREAD");
+  return [...new Set(codes)];
+}
+
 function toInt(value, fallback = null) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -1175,7 +1199,7 @@ raceRouter.get("/analytics", async (req, res, next) => {
     const latestPredictionRows = db
       .prepare(
         `
-        SELECT pl.race_id, pl.recommendation, pl.top3_json, pl.bet_plan_json, pl.race_decision_json, pl.created_at
+        SELECT pl.race_id, pl.recommendation, pl.top3_json, pl.bet_plan_json, pl.race_decision_json, pl.probabilities_json, pl.created_at
         FROM prediction_logs pl
         INNER JOIN (
           SELECT race_id, MAX(id) AS max_id
@@ -1194,6 +1218,7 @@ raceRouter.get("/analytics", async (req, res, next) => {
         top3: safeJsonParse(row.top3_json, []),
         betPlan: safeJsonParse(row.bet_plan_json, {}),
         raceDecision: safeJsonParse(row.race_decision_json, {}),
+        probabilities: safeJsonParse(row.probabilities_json, []),
         created_at: row.created_at
       });
     }
@@ -1376,6 +1401,170 @@ raceRouter.get("/analytics", async (req, res, next) => {
       })
     };
 
+    const weaknessCount = new Map();
+    const venueWeakMap = new Map();
+    let analyzedRaces = 0;
+    let racesWithFailures = 0;
+    let headTotal = 0;
+    let headHit = 0;
+    let partnerTotal = 0;
+    let partnerHit = 0;
+    let hpHighTotal = 0;
+    let hpHighHit = 0;
+    let hpMidTotal = 0;
+    let hpMidHit = 0;
+    let hpLowTotal = 0;
+    let hpLowHit = 0;
+    let recommendationUsedRaces = 0;
+    let stakeUsedTickets = 0;
+    let stakeTotalTickets = 0;
+
+    for (const [raceId, pred] of predictionByRace.entries()) {
+      const result = resultMap.get(raceId);
+      if (!result) continue;
+      analyzedRaces += 1;
+
+      const placed = placedRows.filter((r) => String(r.race_id) === raceId);
+      const settled = placed.filter((r) => r.hit_flag === 0 || r.hit_flag === 1);
+      const hasHit = settled.some((r) => toNum(r.hit_flag) === 1);
+      const placedCount = settled.length;
+      const avgBoughtOdds =
+        placedCount > 0
+          ? settled.reduce((a, b) => a + toNum(b.bought_odds), 0) / placedCount
+          : 0;
+
+      const predictedHead = toNum(Array.isArray(pred?.top3) ? pred.top3[0] : null, 0);
+      const actualHead = toNum(result.finish_1, 0);
+      if (predictedHead && actualHead) {
+        headTotal += 1;
+        if (predictedHead === actualHead) headHit += 1;
+      }
+
+      const actualCombo = `${result.finish_1}-${result.finish_2}-${result.finish_3}`;
+      const recCombos = new Set(
+        (Array.isArray(pred?.betPlan?.recommended_bets) ? pred.betPlan.recommended_bets : [])
+          .map((r) => normalizeCombo(r?.combo))
+          .filter(Boolean)
+      );
+      if (recCombos.size > 0 && recCombos.has(actualCombo)) recommendationUsedRaces += 1;
+
+      const hp = toNum(pred?.raceDecision?.factors?.head_precision_score, 50);
+      if (hp >= 66) {
+        hpHighTotal += 1;
+        if (predictedHead && actualHead && predictedHead === actualHead) hpHighHit += 1;
+      } else if (hp >= 50) {
+        hpMidTotal += 1;
+        if (predictedHead && actualHead && predictedHead === actualHead) hpMidHit += 1;
+      } else {
+        hpLowTotal += 1;
+        if (predictedHead && actualHead && predictedHead === actualHead) hpLowHit += 1;
+      }
+
+      if (predictedHead && actualHead && predictedHead === actualHead) {
+        partnerTotal += 1;
+        if (recCombos.has(actualCombo)) partnerHit += 1;
+      }
+
+      for (const row of placed) {
+        stakeTotalTickets += 1;
+        if (toNum(row.recommended_bet) > 0) stakeUsedTickets += 1;
+      }
+
+      const probs = (Array.isArray(pred?.probabilities) ? pred.probabilities : [])
+        .map((x) => toNum(x?.p ?? x?.prob, 0))
+        .filter((x) => x > 0)
+        .sort((a, b) => b - a);
+      const top3Concentration = (probs[0] || 0) + (probs[1] || 0) + (probs[2] || 0);
+      const riskScore = toNum(pred?.raceDecision?.factors?.chaos_risk_score, 50);
+
+      const codes = classifyWeaknessCodes({
+        predictedHead,
+        actualHead,
+        hasHit,
+        riskScore,
+        placedCount,
+        top3Concentration,
+        avgBoughtOdds
+      });
+      if (codes.length) racesWithFailures += 1;
+      for (const code of codes) {
+        weaknessCount.set(code, toNum(weaknessCount.get(code), 0) + 1);
+      }
+
+      const race = raceMap.get(raceId) || {};
+      const vk = String(race?.venue_id ?? "unknown");
+      if (!venueWeakMap.has(vk)) {
+        venueWeakMap.set(vk, {
+          venue_id: toNum(race?.venue_id),
+          venue_name: race?.venue_name || null,
+          races: 0,
+          failures: 0,
+          weakness_counts: {}
+        });
+      }
+      const va = venueWeakMap.get(vk);
+      va.races += 1;
+      if (codes.length) va.failures += 1;
+      for (const c of codes) {
+        va.weakness_counts[c] = toNum(va.weakness_counts[c], 0) + 1;
+      }
+    }
+
+    const top_failure_modes = Array.from(weaknessCount.entries())
+      .map(([code, count]) => ({
+        code,
+        count,
+        rate: analyzedRaces ? Number(((count / analyzedRaces) * 100).toFixed(2)) : 0
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+
+    const venue_weakness_stats = Array.from(venueWeakMap.values())
+      .map((v) => {
+        const topMode = Object.entries(v.weakness_counts || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+        return {
+          ...v,
+          failure_rate: v.races ? Number(((v.failures / v.races) * 100).toFixed(2)) : 0,
+          top_failure_mode: topMode
+        };
+      })
+      .sort((a, b) => b.failure_rate - a.failure_rate);
+
+    const weakness_analysis = {
+      weakness_summary: {
+        analyzed_races: analyzedRaces,
+        races_with_failures: racesWithFailures,
+        failure_rate: analyzedRaces ? Number(((racesWithFailures / analyzedRaces) * 100).toFixed(2)) : 0
+      },
+      top_failure_modes,
+      head_accuracy_stats: {
+        total: headTotal,
+        hit: headHit,
+        rate: pct(headHit, headTotal),
+        by_head_precision: {
+          high: { total: hpHighTotal, hit: hpHighHit, rate: pct(hpHighHit, hpHighTotal) },
+          medium: { total: hpMidTotal, hit: hpMidHit, rate: pct(hpMidHit, hpMidTotal) },
+          low: { total: hpLowTotal, hit: hpLowHit, rate: pct(hpLowHit, hpLowTotal) }
+        }
+      },
+      partner_accuracy_stats: {
+        total_head_hit_races: partnerTotal,
+        partner_hit_races: partnerHit,
+        rate: pct(partnerHit, partnerTotal)
+      },
+      venue_weakness_stats,
+      recommendation_usage: {
+        analyzed_races: analyzedRaces,
+        used_races: recommendationUsedRaces,
+        usage_rate: pct(recommendationUsedRaces, analyzedRaces)
+      },
+      stake_allocation_usage: {
+        total_tickets: stakeTotalTickets,
+        used_tickets: stakeUsedTickets,
+        usage_rate: pct(stakeUsedTickets, stakeTotalTickets)
+      }
+    };
+
     return res.json({
       total,
       periods: periodSummaries,
@@ -1383,7 +1572,8 @@ raceRouter.get("/analytics", async (req, res, next) => {
       mode_performance,
       head_prediction,
       recommendation_only_performance,
-      stake_allocation_performance
+      stake_allocation_performance,
+      weakness_analysis
     });
   } catch (err) {
     return next(err);
