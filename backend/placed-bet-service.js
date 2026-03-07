@@ -35,8 +35,41 @@ function normalizeDateCompact(date) {
   return raceDate ? raceDate.replace(/-/g, "") : null;
 }
 
+function parseRaceIdParts(raceId) {
+  const raw = String(raceId || "").trim();
+  if (!raw) return null;
+
+  const compact = raw.match(/^(\d{8})_(\d{1,2})_(\d{1,2})$/);
+  if (compact) {
+    const ymd = compact[1];
+    const venueId = toInt(compact[2]);
+    const raceNo = toInt(compact[3]);
+    if (!Number.isInteger(venueId) || !Number.isInteger(raceNo)) return null;
+    return {
+      canonicalRaceId: `${ymd}_${venueId}_${raceNo}`,
+      raceDate: `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`,
+      venueId,
+      raceNo
+    };
+  }
+
+  const dashed = raw.match(/^(\d{4})-?(\d{2})-?(\d{2})_(\d{1,2})_(\d{1,2})$/);
+  if (!dashed) return null;
+  const ymd = `${dashed[1]}${dashed[2]}${dashed[3]}`;
+  const venueId = toInt(dashed[4]);
+  const raceNo = toInt(dashed[5]);
+  if (!Number.isInteger(venueId) || !Number.isInteger(raceNo)) return null;
+  return {
+    canonicalRaceId: `${ymd}_${venueId}_${raceNo}`,
+    raceDate: `${dashed[1]}-${dashed[2]}-${dashed[3]}`,
+    venueId,
+    raceNo
+  };
+}
+
 function resolveRaceId({ raceId, raceDate, venueId, raceNo }) {
-  if (raceId) return String(raceId);
+  const parsed = parseRaceIdParts(raceId);
+  if (parsed?.canonicalRaceId) return parsed.canonicalRaceId;
   return buildRaceIdFromParts({
     date: raceDate,
     venueId,
@@ -184,6 +217,26 @@ const getPlacedBetRaceMetaByIdStmt = db.prepare(`
   FROM placed_bets
   WHERE race_id = ?
   ORDER BY id DESC
+  LIMIT 1
+`);
+
+const listBetsByRaceMetaStmt = db.prepare(`
+  SELECT id, combo, bet_amount
+  FROM placed_bets
+  WHERE race_date = @race_date
+    AND venue_id = @venue_id
+    AND race_no = @race_no
+`);
+
+const getRaceResultByMetaStmt = db.prepare(`
+  SELECT re.race_id, re.finish_1, re.finish_2, re.finish_3, re.payout_3t
+  FROM results re
+  INNER JOIN races r
+    ON r.race_id = re.race_id
+  WHERE r.race_date = @race_date
+    AND r.venue_id = @venue_id
+    AND r.race_no = @race_no
+  ORDER BY re.created_at DESC
   LIMIT 1
 `);
 
@@ -349,15 +402,17 @@ function buildPayoutMapFromSettlementLogs(raceId) {
 }
 
 function resolveRaceMetaForSettlement({ raceId, raceDate, venueId, raceNo }) {
-  const byRaces = raceId ? getRaceByIdStmt.get(raceId) : null;
-  const byBets = raceId ? getPlacedBetRaceMetaByIdStmt.get(raceId) : null;
+  const parsedRaceId = parseRaceIdParts(raceId);
+  const canonicalInputRaceId = parsedRaceId?.canonicalRaceId || (raceId ? String(raceId) : null);
+  const byRaces = canonicalInputRaceId ? getRaceByIdStmt.get(canonicalInputRaceId) : null;
+  const byBets = canonicalInputRaceId ? getPlacedBetRaceMetaByIdStmt.get(canonicalInputRaceId) : null;
 
   const picked = byRaces || byBets || {};
-  const finalDate = normalizeRaceDate(raceDate || picked.race_date);
-  const finalVenueId = toInt(venueId ?? picked.venue_id);
-  const finalRaceNo = toInt(raceNo ?? picked.race_no);
+  const finalDate = normalizeRaceDate(raceDate || parsedRaceId?.raceDate || picked.race_date);
+  const finalVenueId = toInt(venueId ?? parsedRaceId?.venueId ?? picked.venue_id);
+  const finalRaceNo = toInt(raceNo ?? parsedRaceId?.raceNo ?? picked.race_no);
   const finalRaceId =
-    raceId ||
+    parsedRaceId?.canonicalRaceId ||
     resolveRaceId({
       raceDate: finalDate,
       venueId: finalVenueId,
@@ -404,21 +459,20 @@ function parseResultFromRaceresultHtml(html) {
   let combo = null;
   let payout3t = null;
 
-  const tableRows = $("tr");
-  tableRows.each((_, tr) => {
+  $("table tr").each((_, tr) => {
     if (combo) return;
     const $tr = $(tr);
     const heading = normalizeSpace($tr.find("th").first().text());
-    if (!heading.includes("3連単")) return;
-
     const text = normalizeSpace($tr.text());
+    if (!/3連単/.test(`${heading} ${text}`)) return;
+
     combo = parseComboFromText(text);
     payout3t = parsePayoutFromText(text);
   });
 
   if (!combo) {
-    const text = normalizeSpace($("body").text());
-    const match = text.match(/3連単[^0-9]*([1-6])\D+([1-6])\D+([1-6])[^0-9]*(\d[\d,]*)\s*円/);
+    const text = normalizeSpace(normalizeDigits($("body").text()));
+    const match = text.match(/3連単[^0-9]{0,50}([1-6])\D+([1-6])\D+([1-6])[^0-9]{0,50}(\d[\d,]*)\s*円/);
     if (match) {
       combo = `${match[1]}-${match[2]}-${match[3]}`;
       payout3t = Number(String(match[4]).replace(/,/g, ""));
@@ -435,7 +489,6 @@ function parseResultFromRaceresultHtml(html) {
     payout3t: Number.isFinite(payout3t) ? payout3t : null
   };
 }
-
 async function fetchOfficialRaceResult({ raceDate, venueId, raceNo }) {
   const hd = normalizeDateCompact(raceDate);
   const jcd = String(venueId).padStart(2, "0");
@@ -472,11 +525,33 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
     throw {
       statusCode: 400,
       code: "invalid_race_id",
-      message: "race_id or race_date+venue_id+race_no is required"
+      message: "race_id or race_date+venue_id+race_no is required",
+      debug: {
+        race_id,
+        race_date,
+        venue_id,
+        race_no
+      }
     };
   }
 
+  console.info("[SETTLEMENT] start", {
+    race_id,
+    race_date,
+    venue_id,
+    race_no,
+    resolved_race_id: raceId,
+    resolved_meta: meta
+  });
+
   let result = getRaceResultStmt.get(raceId);
+  if (!result && meta.raceDate && Number.isInteger(meta.venueId) && Number.isInteger(meta.raceNo)) {
+    result = getRaceResultByMetaStmt.get({
+      race_date: meta.raceDate,
+      venue_id: meta.venueId,
+      race_no: meta.raceNo
+    });
+  }
   let officialFetched = false;
   let sourceUrl = null;
 
@@ -489,6 +564,13 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
         payout3t: official.payout3t
       });
       result = getRaceResultStmt.get(raceId);
+      if (!result && meta.raceDate && Number.isInteger(meta.venueId) && Number.isInteger(meta.raceNo)) {
+        result = getRaceResultByMetaStmt.get({
+          race_date: meta.raceDate,
+          venue_id: meta.venueId,
+          race_no: meta.raceNo
+        });
+      }
       officialFetched = true;
       sourceUrl = official.url;
     }
@@ -498,17 +580,40 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
     throw {
       statusCode: 404,
       code: "result_not_found",
-      message: "Race result is not confirmed yet"
+      message: "Race result is not confirmed yet",
+      debug: {
+        race_id: raceId,
+        resolved_meta: meta,
+        official_result_fetched: officialFetched,
+        source_url: sourceUrl
+      }
     };
   }
 
-  const winningCombo = `${result.finish_1}-${result.finish_2}-${result.finish_3}`;
+  const winningCombo = normalizeCombo(`${result.finish_1}-${result.finish_2}-${result.finish_3}`);
   const payoutByCombo = buildPayoutMapFromSettlementLogs(raceId);
   const defaultPayout = toInt(result.payout_3t, 0);
-  const bets = listBetsByRaceStmt.all(raceId);
+  let bets = listBetsByRaceStmt.all(raceId);
+  if (!bets.length && meta.raceDate && Number.isInteger(meta.venueId) && Number.isInteger(meta.raceNo)) {
+    bets = listBetsByRaceMetaStmt.all({
+      race_date: meta.raceDate,
+      venue_id: meta.venueId,
+      race_no: meta.raceNo
+    });
+  }
+
+  console.info("[SETTLEMENT] resolved", {
+    race_id: raceId,
+    fetched_result: winningCombo,
+    matched_bets: bets.length,
+    official_result_fetched: officialFetched,
+    source_url: sourceUrl
+  });
 
   let settledCount = 0;
   let hitCount = 0;
+  let updatedRows = 0;
+  const updatedBetIds = [];
 
   const tx = db.transaction(() => {
     for (const bet of bets) {
@@ -525,7 +630,7 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
       }
       const profitLoss = payout - betAmount;
 
-      settleBetStmt.run({
+      const updateResult = settleBetStmt.run({
         id: bet.id,
         hit_flag: hit,
         payout,
@@ -533,11 +638,22 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
         settled_at: nowIso(),
         updated_at: nowIso()
       });
+      updatedRows += toInt(updateResult?.changes, 0);
+      updatedBetIds.push(bet.id);
       settledCount += 1;
     }
   });
 
   tx();
+
+  const settlement_debug = {
+    race_id: raceId,
+    fetched_result: winningCombo,
+    matched_bets: bets.length,
+    updated_rows: updatedRows
+  };
+
+  console.info("[SETTLEMENT] completed", settlement_debug);
 
   return {
     race_id: raceId,
@@ -545,7 +661,10 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
     settled_count: settledCount,
     hit_count: hitCount,
     official_result_fetched: officialFetched,
-    source_url: sourceUrl
+    source_url: sourceUrl,
+    updated_rows: updatedRows,
+    updated_bet_ids: updatedBetIds,
+    settlement_debug
   };
 }
 
@@ -591,3 +710,4 @@ export function getPlacedBetSummaries(baseDateInput) {
     year: summarizeRange(yearStart, today)
   };
 }
+

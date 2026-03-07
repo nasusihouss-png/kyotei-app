@@ -1561,11 +1561,25 @@ raceRouter.delete("/placed-bets/:id", async (req, res, next) => {
 raceRouter.post("/placed-bets/settle", async (req, res, next) => {
   try {
     const result = await settlePlacedBetsForRace(req.body || {});
+    const debug = result?.settlement_debug || {
+      race_id: result?.race_id || req.body?.race_id || null,
+      fetched_result: result?.winning_combo || null,
+      matched_bets: Number(result?.settled_count || 0),
+      updated_rows: Number(result?.updated_rows || 0)
+    };
+    console.info("[SETTLEMENT][API] success", debug);
     return res.json({
       ok: true,
-      ...result
+      ...result,
+      settlement_debug: debug
     });
   } catch (err) {
+    console.error("[SETTLEMENT][API] failed", {
+      message: err?.message,
+      code: err?.code,
+      debug: err?.debug || null,
+      input: req.body || {}
+    });
     return next(err);
   }
 });
