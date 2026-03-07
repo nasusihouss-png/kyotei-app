@@ -237,6 +237,22 @@ function getValueTierClass(tier) {
   return "value-normal";
 }
 
+function getAvoidLevelLabel(level) {
+  const n = Number(level || 0);
+  if (n >= 3) return "回避強";
+  if (n === 2) return "回避中";
+  if (n === 1) return "注意";
+  return "通常";
+}
+
+function getAvoidLevelClass(level) {
+  const n = Number(level || 0);
+  if (n >= 3) return "trap-high";
+  if (n === 2) return "trap-mid";
+  if (n === 1) return "trap-low";
+  return "trap-none";
+}
+
 function roundBetTo100(value) {
   const num = Number(value);
   if (!Number.isFinite(num) || num <= 0) return 100;
@@ -385,6 +401,7 @@ export default function App() {
   const probabilities = Array.isArray(data?.probabilities) ? data.probabilities : [];
   const raceOutcomeProbabilities = data?.raceOutcomeProbabilities || {};
   const raceIndexes = data?.raceIndexes || {};
+  const marketTrap = data?.marketTrap || {};
   const ticketStrategy = data?.ticketStrategy || {};
   const preRaceAnalysis = data?.preRaceAnalysis || data?.preRaceForm || {};
   const exhibitionAI = data?.exhibitionAI || {};
@@ -471,6 +488,8 @@ export default function App() {
             bet_value_tier: bet?.bet_value_tier || null,
             overpriced_flag: !!bet?.overpriced_flag,
             underpriced_flag: !!bet?.underpriced_flag,
+            trap_flags: Array.isArray(bet?.trap_flags) ? bet.trap_flags : [],
+            avoid_level: Number.isFinite(Number(bet?.avoid_level)) ? Number(bet.avoid_level) : 0,
             recommended_bet: roundBetTo100(recommendedBet)
           };
         })
@@ -1086,6 +1105,18 @@ export default function App() {
                   </article>
 
                   <article className="card analysis-card">
+                    <h2>マーケットトラップ</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>trap_score</span><strong>{formatMaybeNumber(marketTrap.trap_score, 2)}</strong></div>
+                      <div className="kv-row">
+                        <span>trap_flags</span>
+                        <strong>{Array.isArray(marketTrap.trap_flags) && marketTrap.trap_flags.length ? marketTrap.trap_flags.join(", ") : "-"}</strong>
+                      </div>
+                    </div>
+                    <p className="muted strategy-line">{marketTrap.summary || "-"}</p>
+                  </article>
+
+                  <article className="card analysis-card">
                     <h2>レース判定AI</h2>
                     <div className="kv-list">
                       <div className="kv-row"><span>mode</span><strong>{raceDecision.mode || "-"}</strong></div>
@@ -1287,6 +1318,9 @@ export default function App() {
                           <span className={`ticket-value ${getValueTierClass(bet.bet_value_tier)}`}>
                             {getValueTierLabel(bet.bet_value_tier)}
                           </span>
+                          <span className={`ticket-trap ${getAvoidLevelClass(bet.avoid_level)}`}>
+                            {getAvoidLevelLabel(bet.avoid_level)}
+                          </span>
                           <span className="bet-amount-strong">金額 JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)}>
                             記録に追加
@@ -1333,6 +1367,9 @@ export default function App() {
                           <span>ev {formatMaybeNumber(row.ev, 2)}</span>
                           <span className={`ticket-value ${getValueTierClass(row.bet_value_tier)}`}>
                             {getValueTierLabel(row.bet_value_tier)}
+                          </span>
+                          <span className={`ticket-trap ${getAvoidLevelClass(row.avoid_level)}`}>
+                            {getAvoidLevelLabel(row.avoid_level)}
                           </span>
                           <span className="bet-amount-strong">JPY {Number(row.recommended_bet || 0).toLocaleString()}</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })}>

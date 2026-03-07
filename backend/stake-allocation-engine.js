@@ -60,7 +60,7 @@ function valueTierMultiplier(tier) {
   return 1;
 }
 
-function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, mode, valueDetection }) {
+function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, mode, valueDetection, marketTrap }) {
   const primarySet = new Set(
     (Array.isArray(ticketGenerationV2?.primary_tickets) ? ticketGenerationV2.primary_tickets : []).map((v) =>
       String(v)
@@ -73,6 +73,9 @@ function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, m
   );
   const valueByCombo = new Map(
     (Array.isArray(valueDetection?.tickets) ? valueDetection.tickets : []).map((t) => [String(t.combo), t])
+  );
+  const trapByCombo = new Map(
+    (Array.isArray(marketTrap?.ticket_traps) ? marketTrap.ticket_traps : []).map((t) => [String(t.combo), t])
   );
 
   const rows =
@@ -106,7 +109,10 @@ function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, m
       const valueScore = toNum(valueRow?.value_score, 50);
       const valueScoreMultiplier = clamp(0.55, 1.15, 0.72 + valueScore / 120);
       const tierMultiplier = valueTierMultiplier(valueRow?.bet_value_tier);
-      const weight = clamp(0.02, 999, baseWeight * typeMultiplier * valueScoreMultiplier * tierMultiplier);
+      const trapRow = trapByCombo.get(combo);
+      const avoidLevel = toNum(trapRow?.avoid_level, 0);
+      const trapMultiplier = avoidLevel >= 3 ? 0.18 : avoidLevel === 2 ? 0.45 : avoidLevel === 1 ? 0.72 : 1;
+      const weight = clamp(0.02, 999, baseWeight * typeMultiplier * valueScoreMultiplier * tierMultiplier * trapMultiplier);
 
       return {
         combo,
@@ -118,6 +124,8 @@ function buildCandidateRows({ ticketOptimization, betPlan, ticketGenerationV2, m
         bet_value_tier: valueRow?.bet_value_tier || null,
         overpriced_flag: !!valueRow?.overpriced_flag,
         underpriced_flag: !!valueRow?.underpriced_flag,
+        trap_flags: Array.isArray(trapRow?.trap_flags) ? trapRow.trap_flags : [],
+        avoid_level: avoidLevel,
         weight
       };
     })
@@ -131,7 +139,8 @@ export function buildStakeAllocationPlan({
   ticketOptimization,
   betPlan,
   ticketGenerationV2,
-  valueDetection
+  valueDetection,
+  marketTrap
 }) {
   const mode = String(raceDecision?.mode || raceDecision?.recommendation || "SKIP");
   const race_budget = getRaceBudgetByMode(mode);
@@ -140,7 +149,8 @@ export function buildStakeAllocationPlan({
     betPlan,
     ticketGenerationV2,
     mode,
-    valueDetection
+    valueDetection,
+    marketTrap
   });
 
   if (race_budget <= 0 || candidates.length === 0) {

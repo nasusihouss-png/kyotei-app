@@ -33,7 +33,8 @@ export function decideRaceSelection({
   ticketOptimization,
   headPrecision,
   exhibitionAI,
-  venueBias
+  venueBias,
+  marketTrap
 }) {
   const head_stability_score = toNum(raceStructure?.head_stability_score, 50);
   const chaos_risk_score = toNum(raceStructure?.chaos_risk_score, 50);
@@ -44,6 +45,7 @@ export function decideRaceSelection({
   const venue_bias_score = toNum(venueBias?.venue_bias_score, 50);
   const venue_inner_reliability = toNum(venueBias?.venue_inner_reliability, 50);
   const venue_chaos_factor = toNum(venueBias?.venue_chaos_factor, 50);
+  const trap_score = toNum(marketTrap?.trap_score, 35);
   const head_precision_score = clamp(
     0,
     100,
@@ -60,7 +62,8 @@ export function decideRaceSelection({
       (100 - chaos_risk_score) * 0.14 +
       value_balance_score * 0.05 +
       exhibition_ai_score * 0.03 +
-      venue_bias_score * 0.02
+      venue_bias_score * 0.02 -
+      trap_score * 0.05
   );
 
   let mode = "SMALL_BET";
@@ -85,6 +88,8 @@ export function decideRaceSelection({
   if (exhibition_ai_score >= 62) reason_codes.push("EXHIBITION_STRONG");
   if (venue_bias_score >= 58) reason_codes.push("VENUE_BIAS_FAVORABLE");
   if (venue_chaos_factor >= 65) reason_codes.push("VENUE_CHAOS_HIGH");
+  if (trap_score >= 65) reason_codes.push("MARKET_TRAP_HIGH");
+  else if (trap_score >= 45) reason_codes.push("MARKET_TRAP_MEDIUM");
   if (chaos_risk_score >= 74) reason_codes.push("CHAOS_HIGH");
   if (head_stability_score < 42) reason_codes.push("HEAD_WEAK");
   if (head_precision_score < 42) reason_codes.push("HEAD_PRECISION_LOW");
@@ -118,7 +123,8 @@ export function decideRaceSelection({
       value_balance_score: Number(value_balance_score.toFixed(2)),
       venue_bias_score: Number(venue_bias_score.toFixed(2)),
       venue_inner_reliability: Number(venue_inner_reliability.toFixed(2)),
-      venue_chaos_factor: Number(venue_chaos_factor.toFixed(2))
+      venue_chaos_factor: Number(venue_chaos_factor.toFixed(2)),
+      trap_score: Number(trap_score.toFixed(2))
     }
   };
 }

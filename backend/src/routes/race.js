@@ -41,6 +41,7 @@ import { decideRaceSelection } from "../../race-selection-engine.js";
 import { buildStakeAllocationPlan } from "../../stake-allocation-engine.js";
 import { analyzeExhibitionAI } from "../../exhibition-ai-engine.js";
 import { detectValue } from "../../value-detection-engine.js";
+import { detectMarketTraps } from "../../market-trap-detector.js";
 import {
   analyzeVenueBias,
   applyVenueBiasToRisk,
@@ -483,17 +484,6 @@ raceRouter.get("/race", async (req, res, next) => {
       raceIndexes,
       raceRisk
     });
-    const ticketGenerationV2 = generateTicketsV2({
-      headSelection: headSelectionRefined,
-      partnerSelection,
-      headConfidence,
-      headPrecision,
-      exhibitionAI,
-      raceRisk,
-      raceIndexes,
-      wallEvaluation,
-      venueBias
-    });
     const aiEnhancement = analyzeHitQuality({
       ranking,
       raceRisk,
@@ -510,6 +500,14 @@ raceRouter.get("/race", async (req, res, next) => {
       raceStructure,
       aiEnhancement
     });
+    const marketTrap = detectMarketTraps({
+      raceRisk,
+      raceStructure,
+      raceIndexes,
+      recommendedBets: bet_plan.recommended_bets,
+      ticketOptimization,
+      probabilities
+    });
     const raceDecision = decideRaceSelection({
       raceStructure,
       preRaceAnalysis,
@@ -517,23 +515,41 @@ raceRouter.get("/race", async (req, res, next) => {
       ticketOptimization,
       headPrecision,
       exhibitionAI,
-      venueBias
+      venueBias,
+      marketTrap
+    });
+    const ticketGenerationV2 = generateTicketsV2({
+      headSelection: headSelectionRefined,
+      partnerSelection,
+      headConfidence,
+      headPrecision,
+      exhibitionAI,
+      raceRisk,
+      raceIndexes,
+      wallEvaluation,
+      venueBias,
+      marketTrap
     });
     const valueDetection = detectValue({
       recommendedBets: bet_plan.recommended_bets,
       ticketOptimization,
       raceDecision,
-      venueBias
+      venueBias,
+      marketTrap
     });
     const valueByCombo = new Map(
       (Array.isArray(valueDetection?.tickets) ? valueDetection.tickets : []).map((t) => [String(t.combo), t])
+    );
+    const trapByCombo = new Map(
+      (Array.isArray(marketTrap?.ticket_traps) ? marketTrap.ticket_traps : []).map((t) => [String(t.combo), t])
     );
     const stakeAllocation = buildStakeAllocationPlan({
       raceDecision,
       ticketOptimization,
       betPlan: bet_plan,
       ticketGenerationV2,
-      valueDetection
+      valueDetection,
+      marketTrap
     });
     const stakeByCombo = new Map(stakeAllocation.tickets.map((t) => [String(t.combo), t]));
     const bet_plan_with_stake = {
@@ -541,6 +557,7 @@ raceRouter.get("/race", async (req, res, next) => {
       recommended_bets: (Array.isArray(bet_plan.recommended_bets) ? bet_plan.recommended_bets : []).map((row) => {
         const stake = stakeByCombo.get(String(row?.combo || ""));
         const value = valueByCombo.get(String(row?.combo || ""));
+        const trap = trapByCombo.get(String(row?.combo || ""));
         return {
           ...row,
           ticket_type: stake?.ticket_type || "backup",
@@ -548,6 +565,8 @@ raceRouter.get("/race", async (req, res, next) => {
           overpriced_flag: !!value?.overpriced_flag,
           underpriced_flag: !!value?.underpriced_flag,
           bet_value_tier: value?.bet_value_tier || null,
+          trap_flags: Array.isArray(trap?.trap_flags) ? trap.trap_flags : [],
+          avoid_level: Number.isFinite(Number(trap?.avoid_level)) ? Number(trap.avoid_level) : 0,
           recommended_bet: Number.isFinite(Number(stake?.recommended_bet))
             ? Number(stake.recommended_bet)
             : Number(row?.bet ?? 100)
@@ -562,6 +581,7 @@ raceRouter.get("/race", async (req, res, next) => {
       ).map((row) => {
         const stake = stakeByCombo.get(String(row?.combo || ""));
         const value = valueByCombo.get(String(row?.combo || ""));
+        const trap = trapByCombo.get(String(row?.combo || ""));
         return {
           ...row,
           ticket_type: stake?.ticket_type || row?.ticket_type || "backup",
@@ -569,6 +589,8 @@ raceRouter.get("/race", async (req, res, next) => {
           overpriced_flag: !!value?.overpriced_flag,
           underpriced_flag: !!value?.underpriced_flag,
           bet_value_tier: value?.bet_value_tier || null,
+          trap_flags: Array.isArray(trap?.trap_flags) ? trap.trap_flags : [],
+          avoid_level: Number.isFinite(Number(trap?.avoid_level)) ? Number(trap.avoid_level) : 0,
           recommended_bet: Number.isFinite(Number(stake?.recommended_bet))
             ? Number(stake.recommended_bet)
             : Number(row?.recommended_bet ?? 100)
@@ -626,7 +648,8 @@ raceRouter.get("/race", async (req, res, next) => {
       aiEnhancement,
       ticketOptimization: ticketOptimizationWithStake,
       raceDecision,
-      valueDetection
+      valueDetection,
+      marketTrap
     });
   } catch (err) {
     return next(err);
@@ -848,6 +871,14 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceStructure,
             aiEnhancement
           });
+          const marketTrap = detectMarketTraps({
+            raceRisk,
+            raceStructure,
+            raceIndexes,
+            recommendedBets: bet_plan.recommended_bets,
+            ticketOptimization,
+            probabilities
+          });
           const raceDecision = decideRaceSelection({
             raceStructure,
             preRaceAnalysis,
@@ -855,7 +886,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             ticketOptimization,
             headPrecision,
             exhibitionAI,
-            venueBias
+            venueBias,
+            marketTrap
           });
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
@@ -886,11 +918,13 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             ticketOptimization,
             betPlan: bet_plan,
             ticketGenerationV2,
+            marketTrap,
             valueDetection: detectValue({
               recommendedBets: bet_plan.recommended_bets,
               ticketOptimization,
               raceDecision,
-              venueBias
+              venueBias,
+              marketTrap
             })
           });
 
@@ -910,13 +944,16 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             head_stability_score: Number(headStability.toFixed(2)),
             chaos_risk_score: Number(chaosRisk.toFixed(2)),
             venueBias,
+            marketTrap,
             tickets: stakeAllocation.tickets.slice(0, 4).map((t) => ({
               combo: t.combo,
               prob: Number.isFinite(Number(t.prob)) ? Number(t.prob) : null,
               odds: Number.isFinite(Number(t.odds)) ? Number(t.odds) : null,
               ev: Number.isFinite(Number(t.ev)) ? Number(t.ev) : null,
               bet: Number.isFinite(Number(t.recommended_bet)) ? Number(t.recommended_bet) : null,
-              ticket_type: t.ticket_type || "backup"
+              ticket_type: t.ticket_type || "backup",
+              trap_flags: Array.isArray(t.trap_flags) ? t.trap_flags : [],
+              avoid_level: Number.isFinite(Number(t.avoid_level)) ? Number(t.avoid_level) : 0
             })),
             bankrollPlan: stakeAllocation.bankrollPlan,
             summary:

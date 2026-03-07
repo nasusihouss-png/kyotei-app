@@ -17,7 +17,7 @@ function tierFromSignals({ valueScore, overpriced, underpriced, prob }) {
   return "safe_low_value";
 }
 
-export function detectValue({ recommendedBets, ticketOptimization, raceDecision, venueBias }) {
+export function detectValue({ recommendedBets, ticketOptimization, raceDecision, venueBias, marketTrap }) {
   const source =
     Array.isArray(ticketOptimization?.optimized_tickets) && ticketOptimization.optimized_tickets.length
       ? ticketOptimization.optimized_tickets
@@ -28,6 +28,10 @@ export function detectValue({ recommendedBets, ticketOptimization, raceDecision,
   const venueInner = toNum(venueBias?.venue_inner_reliability, 50);
   const venueChaos = toNum(venueBias?.venue_chaos_factor, 50);
   const venueStyle = String(venueBias?.venue_style_bias || "balanced");
+
+  const trapByCombo = new Map(
+    (Array.isArray(marketTrap?.ticket_traps) ? marketTrap.ticket_traps : []).map((t) => [String(t.combo), t])
+  );
 
   const analyzedTickets = source.map((row) => {
     const combo = String(row?.combo || "");
@@ -48,6 +52,9 @@ export function detectValue({ recommendedBets, ticketOptimization, raceDecision,
       Math.max(0, venueInner - 55) * (lane <= 2 ? 0.08 : 0.02) -
       Math.max(0, venueChaos - 60) * (lane <= 2 ? 0.06 : 0.01);
 
+    const trap = trapByCombo.get(combo);
+    const trapPenalty = toNum(trap?.avoid_level, 0) * 6;
+
     const valueScore = clamp(
       0,
       100,
@@ -55,7 +62,8 @@ export function detectValue({ recommendedBets, ticketOptimization, raceDecision,
         clamp(0, 1.5, ev / 1.8) * 30 +
         clamp(0, 1.6, priceRatio) * 20 +
         (toNum(row?.ticket_confidence_score, 50) - 50) * 0.16 +
-        venueTicketAdj
+        venueTicketAdj -
+        trapPenalty
     );
 
     const bet_value_tier = tierFromSignals({
@@ -74,7 +82,9 @@ export function detectValue({ recommendedBets, ticketOptimization, raceDecision,
       value_score: Number(valueScore.toFixed(2)),
       overpriced_flag: !!overpriced,
       underpriced_flag: !!underpriced,
-      bet_value_tier
+      bet_value_tier,
+      trap_flags: Array.isArray(trap?.trap_flags) ? trap.trap_flags : [],
+      avoid_level: toNum(trap?.avoid_level, 0)
     };
   });
 

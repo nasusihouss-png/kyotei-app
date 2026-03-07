@@ -134,7 +134,8 @@ export function generateTicketsV2({
   raceRisk,
   raceIndexes,
   wallEvaluation,
-  venueBias
+  venueBias,
+  marketTrap
 }) {
   const mainHead = Number(headSelection?.main_head);
   const secondaryHeads = uniqueLanes(headSelection?.secondary_heads);
@@ -155,6 +156,7 @@ export function generateTicketsV2({
   const venueInner = toNum(venueBias?.venue_inner_reliability, 50);
   const venueChaos = toNum(venueBias?.venue_chaos_factor, 50);
   const venueStyle = String(venueBias?.venue_style_bias || "balanced");
+  const trapScore = toNum(marketTrap?.trap_score, 0);
 
   if (recommendation === "SKIP") {
     return {
@@ -184,7 +186,7 @@ export function generateTicketsV2({
       backupPartners,
       excluded: fadeLanes
     });
-  } else if (areIndex >= 78 || risk > 90 || wallBreakRisk >= 70 || spreadMode) {
+  } else if (areIndex >= 78 || risk > 90 || wallBreakRisk >= 70 || spreadMode || trapScore >= 62) {
     const heads = uniqueLanes([mainHead, ...secondaryHeads]).slice(0, 3);
     result = buildChaosLight({
       heads,
@@ -202,8 +204,11 @@ export function generateTicketsV2({
     });
   }
 
+  const secondaryLimited = trapScore >= 62 ? result.secondary_tickets.slice(0, 6) : result.secondary_tickets;
+
   return {
     ...result,
+    secondary_tickets: secondaryLimited,
     summary: `${result.summary} (頭精度:${headWin.toFixed(1)}/${headGap.toFixed(1)} 展示:${exAI.toFixed(1)} 場傾向:${venueStyle})`,
     excluded_lanes: fadeLanes
   };
