@@ -476,7 +476,7 @@ function parseComboFromText(text) {
 
 function parsePayoutFromText(text) {
   const cleaned = normalizeDigits(text).replace(/,/g, "");
-  const m = cleaned.match(/(\d+)\s*円/);
+  const m = cleaned.match(/(\d+)\s*\u5186/);
   if (!m) return null;
   const payout = Number(m[1]);
   return Number.isFinite(payout) ? payout : null;
@@ -486,24 +486,44 @@ function parseResultFromRaceresultHtml(html) {
   const $ = cheerio.load(html);
   let combo = null;
   let payout3t = null;
+  const parseDebug = {
+    source_heading: null,
+    source_combo_cell: null,
+    source_row_text_snippet: null
+  };
 
   $("table tr").each((_, tr) => {
     if (combo) return;
     const $tr = $(tr);
-    const heading = normalizeSpace($tr.find("th").first().text());
-    const text = normalizeSpace($tr.text());
-    if (!/3連単/.test(`${heading} ${text}`)) return;
+    const $cells = $tr.children("th,td");
+    if (!$cells.length) return;
 
-    combo = parseComboFromText(text);
-    payout3t = parsePayoutFromText(text);
+    const heading = normalizeSpace($cells.eq(0).text());
+    if (!/3\u9023\u5358/.test(heading)) return;
+
+    const comboCellText = normalizeSpace($cells.eq(1).text());
+    const rowText = normalizeSpace($tr.text());
+    const parsedCombo = parseComboFromText(comboCellText) || parseComboFromText(rowText);
+    if (!parsedCombo) return;
+
+    combo = parsedCombo;
+    const payoutText = normalizeSpace($cells.eq(2).text()) || rowText;
+    payout3t = parsePayoutFromText(payoutText);
+
+    parseDebug.source_heading = heading;
+    parseDebug.source_combo_cell = comboCellText;
+    parseDebug.source_row_text_snippet = rowText.slice(0, 180);
   });
 
   if (!combo) {
-    const text = normalizeSpace(normalizeDigits($("body").text()));
-    const match = text.match(/3連単[^0-9]{0,50}([1-6])\D+([1-6])\D+([1-6])[^0-9]{0,50}(\d[\d,]*)\s*円/);
+    const bodyText = normalizeSpace(normalizeDigits($("body").text()));
+    const match = bodyText.match(/3\u9023\u5358[^0-9]{0,80}([1-6])\D+([1-6])\D+([1-6])[^0-9]{0,80}(\d[\d,]*)\s*\u5186/);
     if (match) {
       combo = `${match[1]}-${match[2]}-${match[3]}`;
       payout3t = Number(String(match[4]).replace(/,/g, ""));
+      parseDebug.source_heading = "fallback_body_regex";
+      parseDebug.source_combo_cell = match.slice(1, 4).join("-");
+      parseDebug.source_row_text_snippet = bodyText.slice(0, 180);
     }
   }
 
@@ -514,7 +534,8 @@ function parseResultFromRaceresultHtml(html) {
   return {
     top3,
     combo,
-    payout3t: Number.isFinite(payout3t) ? payout3t : null
+    payout3t: Number.isFinite(payout3t) ? payout3t : null,
+    parseDebug
   };
 }
 
@@ -604,12 +625,14 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
   let sourceUrl = null;
   let fetchedOfficialRaceIdentifier = null;
   let fetchedOfficialResultCombo = null;
+  let fetchedParseDebug = null;
 
   if (!result) {
     const official = await fetchOfficialRaceResult(meta);
     if (official?.top3) {
       fetchedOfficialRaceIdentifier = official?.officialRaceIdentifier || null;
       fetchedOfficialResultCombo = official?.combo || null;
+      fetchedParseDebug = official?.parseDebug || null;
       const expectedRaceKey =
         meta.raceDate && Number.isInteger(meta.venueId) && Number.isInteger(meta.raceNo)
           ? `${meta.raceDate.replace(/-/g, "")}_${meta.venueId}_${meta.raceNo}`
@@ -665,6 +688,9 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
   }
 
   const winningCombo = normalizeCombo(`${result.finish_1}-${result.finish_2}-${result.finish_3}`);
+  const firstLane = toInt(result.finish_1, null);
+  const secondLane = toInt(result.finish_2, null);
+  const thirdLane = toInt(result.finish_3, null);
   const payoutByCombo = buildPayoutMapFromSettlementLogs(raceId);
   const defaultPayout = toInt(result.payout_3t, 0);
   let bets = listBetsByRaceStmt.all(raceId);
@@ -682,6 +708,10 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
     parsed_venue_id: meta.venueId,
     parsed_race_no: meta.raceNo,
     fetched_official_race_identifier: fetchedOfficialRaceIdentifier,
+    parser_source_fields: fetchedParseDebug,
+    first_lane: firstLane,
+    second_lane: secondLane,
+    third_lane: thirdLane,
     fetched_result: winningCombo,
     placed_bets_found: bets.length,
     official_result_fetched: officialFetched,
@@ -745,6 +775,10 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
     fetched_result: winningCombo,
     fetched_official_race_identifier: fetchedOfficialRaceIdentifier,
     fetched_official_result_combo: fetchedOfficialResultCombo || winningCombo,
+    parser_source_fields: fetchedParseDebug,
+    first_lane: firstLane,
+    second_lane: secondLane,
+    third_lane: thirdLane,
     placed_bets_found: bets.length,
     matched_bets: hitCount,
     updated_rows: updatedRows,
