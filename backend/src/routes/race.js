@@ -133,6 +133,30 @@ function normalizeCombo(value) {
   return digits.slice(0, 3).join("-");
 }
 
+function dateKey(value) {
+  const text = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  return null;
+}
+
+function localTodayKey() {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getDateMode(targetDate) {
+  const target = dateKey(targetDate);
+  const today = localTodayKey();
+  if (!target) return { target, today, mode: "unknown", isFuture: false, isSameDay: false };
+  if (target > today) return { target, today, mode: "future", isFuture: true, isSameDay: false };
+  if (target === today) return { target, today, mode: "same_day", isFuture: false, isSameDay: true };
+  return { target, today, mode: "past", isFuture: false, isSameDay: false };
+}
+
 function classifyWeaknessCodes({
   predictedHead,
   actualHead,
@@ -731,9 +755,13 @@ raceRouter.get("/recommendations", async (req, res, next) => {
     }
 
     const limit = Math.max(1, Math.min(30, toInt(req.query?.limit, 12)));
-    const confidenceMin = Math.max(0, Math.min(100, toInt(req.query?.confidenceMin, 68)));
-    const maxChaos = Math.max(0, Math.min(100, toInt(req.query?.maxChaos, 65)));
-    const headStabilityMin = Math.max(0, Math.min(100, toInt(req.query?.headStabilityMin, 50)));
+    const dateMode = getDateMode(date);
+    const confidenceMinBase = Math.max(0, Math.min(100, toInt(req.query?.confidenceMin, 68)));
+    const maxChaosBase = Math.max(0, Math.min(100, toInt(req.query?.maxChaos, 65)));
+    const headStabilityMinBase = Math.max(0, Math.min(100, toInt(req.query?.headStabilityMin, 50)));
+    const confidenceMin = dateMode.isFuture ? Math.min(confidenceMinBase, 52) : confidenceMinBase;
+    const maxChaos = dateMode.isFuture ? Math.max(maxChaosBase, 82) : maxChaosBase;
+    const headStabilityMin = dateMode.isFuture ? Math.min(headStabilityMinBase, 38) : headStabilityMinBase;
     const raceNoList = String(req.query?.raceNos || "")
       .split(",")
       .map((v) => toInt(v))
@@ -747,9 +775,12 @@ raceRouter.get("/recommendations", async (req, res, next) => {
     const scanVenues = venueList.length
       ? venueList
       : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
-    const maxScan = Math.max(1, Math.min(240, toInt(req.query?.maxScan, 72)));
+    const scanAll = scanVenues.length * scanRaceNos.length;
+    const defaultMaxScan = dateMode.isFuture ? scanAll : 72;
+    const maxScan = Math.max(1, Math.min(scanAll, toInt(req.query?.maxScan, defaultMaxScan)));
 
     const recs = [];
+    const candidatePool = [];
     const errors = [];
     let scanned = 0;
 
@@ -995,13 +1026,6 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           const headStability = Number(raceStructure?.head_stability_score ?? 0);
           const chaosRisk = Number(raceStructure?.chaos_risk_score ?? raceIndexes?.are_index ?? 0);
 
-          const worthBetting =
-            mode === "FULL_BET" &&
-            confidence >= confidenceMin &&
-            headStability >= headStabilityMin &&
-            chaosRisk <= maxChaos;
-
-          if (!worthBetting) continue;
           const stakeAllocation = buildStakeAllocationPlan({
             raceDecision,
             ticketOptimization,
@@ -1016,8 +1040,9 @@ raceRouter.get("/recommendations", async (req, res, next) => {
               marketTrap
             })
           });
-
-          recs.push({
+          const provisional = dateMode.isFuture || mode !== "FULL_BET";
+          const provisionalLabel = provisional ? "暫定" : null;
+          const recItem = {
             raceId: `${date}_${venueId}_${raceNo}`,
             date,
             venueId: data.race.venueId,
@@ -1032,6 +1057,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             exhibition_ai_score: exhibitionAI?.exhibition_ai_score ?? null,
             head_stability_score: Number(headStability.toFixed(2)),
             chaos_risk_score: Number(chaosRisk.toFixed(2)),
+            provisional,
+            provisional_label: provisionalLabel,
             venueBias,
             marketTrap,
             raceFlow,
@@ -1056,7 +1083,18 @@ raceRouter.get("/recommendations", async (req, res, next) => {
               fetched_at: evData?.oddsData?.fetched_at || null,
               fetch_status: evData?.oddsData?.fetch_status || null
             }
-          });
+          };
+          const allowModes = dateMode.isFuture ? new Set(["FULL_BET", "SMALL_BET", "MICRO BET"]) : new Set(["FULL_BET"]);
+          const worthBetting =
+            allowModes.has(mode) &&
+            confidence >= confidenceMin &&
+            headStability >= headStabilityMin &&
+            chaosRisk <= maxChaos;
+
+          if (mode === "FULL_BET" || mode === "SMALL_BET" || mode === "MICRO BET") {
+            candidatePool.push(recItem);
+          }
+          if (worthBetting) recs.push(recItem);
         } catch (err) {
           errors.push({
             venueId,
@@ -1068,19 +1106,41 @@ raceRouter.get("/recommendations", async (req, res, next) => {
       if (scanned >= maxScan) break;
     }
 
-    recs.sort((a, b) => {
+    const sortByPriority = (a, b) => {
+      const modeRank = (x) => (x === "FULL_BET" ? 2 : x === "SMALL_BET" ? 1 : 0);
+      const modeDiff = modeRank(b.mode) - modeRank(a.mode);
+      if (modeDiff !== 0) return modeDiff;
       const c = Number(b.confidence || 0) - Number(a.confidence || 0);
       if (c !== 0) return c;
       return Number(b.head_stability_score || 0) - Number(a.head_stability_score || 0);
-    });
+    };
+    recs.sort(sortByPriority);
+    candidatePool.sort(sortByPriority);
+
+    const fallbackUsed = recs.length === 0;
+    const fallbackRows = fallbackUsed
+      ? candidatePool
+          .filter((row) => row.mode === "FULL_BET" || row.mode === "SMALL_BET")
+          .slice(0, Math.min(limit, 6))
+          .map((row) => ({
+            ...row,
+            provisional: true,
+            provisional_label: "暫定",
+            summary: row.summary || "暫定候補"
+          }))
+      : [];
+    const output = (fallbackUsed ? fallbackRows : recs).slice(0, limit);
 
     return res.json({
       date,
+      date_mode: dateMode.mode,
       participation_mode: participationMode || "active",
       scanned,
-      returned: Math.min(limit, recs.length),
-      recommendations: recs.slice(0, limit),
-      skipped_count: Math.max(0, scanned - recs.length),
+      returned: output.length,
+      recommendations: output,
+      fallback_used: fallbackUsed,
+      fallback_reason: fallbackUsed ? "no_full_bet_candidates" : null,
+      skipped_count: Math.max(0, scanned - output.length),
       errors: errors.slice(0, 30)
     });
   } catch (err) {
@@ -1100,6 +1160,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
     }
 
     const limit = Math.max(1, Math.min(50, toInt(req.query?.limit, 20)));
+    const dateMode = getDateMode(date);
     const raceNoList = String(req.query?.raceNos || "")
       .split(",")
       .map((v) => toInt(v))
@@ -1113,7 +1174,9 @@ raceRouter.get("/rankings", async (req, res, next) => {
     const scanVenues = venueList.length
       ? venueList
       : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
-    const maxScan = Math.max(1, Math.min(240, toInt(req.query?.maxScan, 96)));
+    const scanAll = scanVenues.length * scanRaceNos.length;
+    const defaultMaxScan = dateMode.isFuture ? scanAll : 96;
+    const maxScan = Math.max(1, Math.min(scanAll, toInt(req.query?.maxScan, defaultMaxScan)));
 
     const items = [];
     const errors = [];
@@ -1387,6 +1450,12 @@ raceRouter.get("/rankings", async (req, res, next) => {
             decision_mode: raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN",
             confidence: Number(toNum(raceDecision?.confidence, 0).toFixed(2)),
             main_head: Number(headSelectionRefined?.main_head) || null,
+            provisional:
+              dateMode.isFuture || String(raceDecision?.mode || raceRisk?.recommendation || "") !== "FULL_BET",
+            provisional_label:
+              dateMode.isFuture || String(raceDecision?.mode || raceRisk?.recommendation || "") !== "FULL_BET"
+                ? "暫定"
+                : null,
             summary: raceDecision?.summary || ticketGenerationV2?.summary || "評価中",
             raceId: `${date}_${data.race.venueId}_${data.race.raceNo}`,
             ticket_quality: Number(toNum(ticketOptimization?.ticket_confidence_score, 0).toFixed(2)),
@@ -1417,6 +1486,8 @@ raceRouter.get("/rankings", async (req, res, next) => {
       decision_mode: row.decision_mode,
       confidence: row.confidence,
       main_head: row.main_head,
+      provisional: !!row.provisional,
+      provisional_label: row.provisional_label || null,
       summary: row.summary,
       raceId: row.raceId,
       ticket_quality: row.ticket_quality,
@@ -1428,6 +1499,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
     return res.json({
       date,
       mode,
+      date_mode: dateMode.mode,
       scanned,
       returned: rankings.length,
       rankings,

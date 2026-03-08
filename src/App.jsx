@@ -1585,7 +1585,10 @@ export default function App() {
                     <article className="recommend-card" key={`${row.raceId}-${row.raceNo}`}>
                       <div className="recommend-card-head">
                         <strong>{row.venueId} {row.venueName || "-"} {row.raceNo}R</strong>
-                        <span className={`status-pill ${getRiskClass(row.mode)}`}>{row.mode || "-"}</span>
+                        <div className="row-actions">
+                          {row.provisional ? <span className="status-pill status-unsettled">{row.provisional_label || "暫定"}</span> : null}
+                          <span className={`status-pill ${getRiskClass(row.mode)}`}>{row.mode || "-"}</span>
+                        </div>
                       </div>
                       <div className="kv-list">
                         <div className="kv-row">
@@ -1660,7 +1663,10 @@ export default function App() {
                     <article className="recommend-card" key={`rk-${row.rank}-${row.venueId}-${row.raceNo}`}>
                       <div className="recommend-card-head">
                         <strong>#{row.rank} {row.venueId} {row.venueName || "-"} {row.raceNo}R</strong>
-                        <span className={`status-pill ${getRiskClass(row.decision_mode)}`}>{row.decision_mode || "-"}</span>
+                        <div className="row-actions">
+                          {row.provisional ? <span className="status-pill status-unsettled">{row.provisional_label || "暫定"}</span> : null}
+                          <span className={`status-pill ${getRiskClass(row.decision_mode)}`}>{row.decision_mode || "-"}</span>
+                        </div>
                       </div>
                       <div className="kv-list">
                         <div className="kv-row"><span>ranking_score</span><strong>{formatMaybeNumber(row.ranking_score, 2)}</strong></div>
