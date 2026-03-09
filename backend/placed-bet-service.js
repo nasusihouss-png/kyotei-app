@@ -23,6 +23,46 @@ function normalizeCombo(combo) {
   return digits.slice(0, 3).join("-");
 }
 
+function normalizeSelectionByBetType(betType, selectionValue) {
+  const type = String(betType || "trifecta").trim().toLowerCase();
+  const digits = (String(selectionValue || "").match(/[1-6]/g) || []).map((v) => Number(v));
+  const uniq = [...new Set(digits)];
+  const invalid = () => ({ value: null, type });
+
+  if (type === "trifecta") {
+    if (digits.length < 3) return invalid();
+    const lanes = digits.slice(0, 3);
+    if (new Set(lanes).size !== 3) return invalid();
+    return { value: lanes.join("-"), type };
+  }
+
+  if (type === "exacta") {
+    if (digits.length < 2) return invalid();
+    const lanes = digits.slice(0, 2);
+    if (lanes[0] === lanes[1]) return invalid();
+    return { value: lanes.join("-"), type };
+  }
+
+  if (type === "trio") {
+    if (uniq.length < 3) return invalid();
+    const lanes = uniq.slice(0, 3).sort((a, b) => a - b);
+    return { value: lanes.join("-"), type };
+  }
+
+  if (type === "quinella" || type === "wide") {
+    if (uniq.length < 2) return invalid();
+    const lanes = uniq.slice(0, 2).sort((a, b) => a - b);
+    return { value: lanes.join("-"), type };
+  }
+
+  if (type === "win" || type === "place") {
+    if (uniq.length < 1) return invalid();
+    return { value: String(uniq[0]), type };
+  }
+
+  return invalid();
+}
+
 function normalizeRaceDate(date) {
   const text = String(date || "").trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
@@ -92,6 +132,12 @@ function ensurePlacedBetsColumns() {
   if (!colNames.has("recommended_bet")) {
     db.exec("ALTER TABLE placed_bets ADD COLUMN recommended_bet INTEGER");
   }
+  if (!colNames.has("source")) {
+    db.exec("ALTER TABLE placed_bets ADD COLUMN source TEXT DEFAULT 'ai'");
+  }
+  if (!colNames.has("bet_type")) {
+    db.exec("ALTER TABLE placed_bets ADD COLUMN bet_type TEXT DEFAULT 'trifecta'");
+  }
 }
 
 ensurePlacedBetsColumns();
@@ -102,6 +148,8 @@ const insertPlacedBetStmt = db.prepare(`
     race_date,
     venue_id,
     race_no,
+    source,
+    bet_type,
     combo,
     bet_amount,
     bought_odds,
@@ -115,6 +163,8 @@ const insertPlacedBetStmt = db.prepare(`
     @race_date,
     @venue_id,
     @race_no,
+    @source,
+    @bet_type,
     @combo,
     @bet_amount,
     @bought_odds,
@@ -136,6 +186,13 @@ const updatePlacedBetStmt = db.prepare(`
   WHERE id = @id
 `);
 
+const getPlacedBetByIdStmt = db.prepare(`
+  SELECT id, bet_type
+  FROM placed_bets
+  WHERE id = ?
+  LIMIT 1
+`);
+
 const deletePlacedBetStmt = db.prepare(`
   DELETE FROM placed_bets
   WHERE id = ?
@@ -148,6 +205,8 @@ const listPlacedBetsStmt = db.prepare(`
     race_date,
     venue_id,
     race_no,
+    source,
+    bet_type,
     combo,
     bet_amount,
     bought_odds,
@@ -178,7 +237,7 @@ const getSettlementLogsByRaceStmt = db.prepare(`
 `);
 
 const listBetsByRaceStmt = db.prepare(`
-  SELECT id, combo, bet_amount
+  SELECT id, source, bet_type, combo, bet_amount
   FROM placed_bets
   WHERE race_id = ?
 `);
@@ -244,7 +303,7 @@ const getPlacedBetRaceMetaByIdStmt = db.prepare(`
 `);
 
 const listBetsByRaceMetaStmt = db.prepare(`
-  SELECT id, combo, bet_amount
+  SELECT id, source, bet_type, combo, bet_amount
   FROM placed_bets
   WHERE race_date = @race_date
     AND venue_id = @venue_id
@@ -268,6 +327,9 @@ export function createPlacedBet({
   race_date,
   venue_id,
   race_no,
+  source,
+  bet_type,
+  selection,
   combo,
   bet_amount,
   bought_odds,
@@ -279,7 +341,9 @@ export function createPlacedBet({
   const raceDate = normalizeRaceDate(race_date);
   const venueId = toInt(venue_id);
   const raceNo = toInt(race_no);
-  const normalizedCombo = normalizeCombo(combo);
+  const normalizedSource = String(source || "ai").trim().toLowerCase() === "manual" ? "manual" : "ai";
+  const normalizedBetType = String(bet_type || "trifecta").trim().toLowerCase();
+  const normalizedSelection = normalizeSelectionByBetType(normalizedBetType, selection || combo);
   const betAmount = toInt(bet_amount);
   const boughtOdds = toFloat(bought_odds);
   const recommendedProb = toFloat(recommended_prob);
@@ -299,11 +363,11 @@ export function createPlacedBet({
       message: "race_id or race_date+venue_id+race_no are required"
     };
   }
-  if (!normalizedCombo || normalizedCombo.split("-").length !== 3) {
+  if (!normalizedSelection?.value) {
     throw {
       statusCode: 400,
-      code: "invalid_combo",
-      message: "combo must be a trifecta format like 1-2-3"
+      code: "invalid_selection",
+      message: "selection format is invalid for the specified bet_type"
     };
   }
   if (!Number.isInteger(betAmount) || betAmount <= 0) {
@@ -319,7 +383,9 @@ export function createPlacedBet({
     race_date: raceDate,
     venue_id: venueId,
     race_no: raceNo,
-    combo: normalizedCombo,
+    source: normalizedSource,
+    bet_type: normalizedBetType,
+    combo: normalizedSelection.value,
     bet_amount: betAmount,
     bought_odds: boughtOdds,
     recommended_prob: recommendedProb,
@@ -362,13 +428,21 @@ export function updatePlacedBet(id, { combo, bet_amount, memo }) {
     };
   }
 
-  const normalizedCombo = normalizeCombo(combo);
+  const baseRow = getPlacedBetByIdStmt.get(betId);
+  if (!baseRow) {
+    throw {
+      statusCode: 404,
+      code: "bet_not_found",
+      message: "Bet record not found"
+    };
+  }
+  const normalizedSelection = normalizeSelectionByBetType(baseRow.bet_type || "trifecta", combo);
   const betAmount = toInt(bet_amount);
-  if (!normalizedCombo || normalizedCombo.split("-").length !== 3) {
+  if (!normalizedSelection?.value) {
     throw {
       statusCode: 400,
-      code: "invalid_combo",
-      message: "combo must be a trifecta format like 1-2-3"
+      code: "invalid_selection",
+      message: "selection format is invalid for the stored bet_type"
     };
   }
   if (!Number.isInteger(betAmount) || betAmount <= 0) {
@@ -381,7 +455,7 @@ export function updatePlacedBet(id, { combo, bet_amount, memo }) {
 
   const result = updatePlacedBetStmt.run({
     id: betId,
-    combo: normalizedCombo,
+    combo: normalizedSelection.value,
     bet_amount: betAmount,
     memo: memo ? String(memo) : null,
     updated_at: nowIso()
@@ -406,6 +480,12 @@ export function deletePlacedBet(id) {
 export function listPlacedBets() {
   return listPlacedBetsStmt.all().map((row) => ({
     ...row,
+    source: String(row.source || "ai").toLowerCase() === "manual" ? "manual" : "ai",
+    bet_type: String(row.bet_type || "trifecta").toLowerCase(),
+    selection: String(row.combo || ""),
+    stake: toInt(row.bet_amount, 0),
+    note: row.memo ?? null,
+    registered_at: row.created_at ?? null,
     hit_flag:
       row.hit_flag === null || row.hit_flag === undefined ? null : toInt(row.hit_flag, null),
     payout: toInt(row.payout, 0),
@@ -555,6 +635,39 @@ function parseOfficialRaceIdentifierFromHtml(html) {
     raceDate,
     raceKey: `${hd}_${venueId}_${raceNo}`
   };
+}
+
+function isWinningSelection({ betType, selection, resultRow }) {
+  const f1 = toInt(resultRow?.finish_1, null);
+  const f2 = toInt(resultRow?.finish_2, null);
+  const f3 = toInt(resultRow?.finish_3, null);
+  if (!Number.isInteger(f1) || !Number.isInteger(f2) || !Number.isInteger(f3)) return false;
+
+  const type = String(betType || "trifecta").toLowerCase();
+  const sel = normalizeSelectionByBetType(type, selection)?.value;
+  if (!sel) return false;
+  const top2 = [f1, f2];
+  const top3 = [f1, f2, f3];
+  const top2Set = new Set(top2);
+  const top3Set = new Set(top3);
+
+  if (type === "trifecta") return sel === `${f1}-${f2}-${f3}`;
+  if (type === "exacta") return sel === `${f1}-${f2}`;
+  if (type === "trio") {
+    const s = sel.split("-").map((v) => Number(v));
+    return s.length === 3 && s.every((v) => top3Set.has(v));
+  }
+  if (type === "quinella") {
+    const s = sel.split("-").map((v) => Number(v));
+    return s.length === 2 && s.every((v) => top2Set.has(v));
+  }
+  if (type === "wide") {
+    const s = sel.split("-").map((v) => Number(v));
+    return s.length === 2 && s.every((v) => top3Set.has(v));
+  }
+  if (type === "win") return Number(sel) === f1;
+  if (type === "place") return Number(sel) === f1 || Number(sel) === f2;
+  return false;
 }
 async function fetchOfficialRaceResult({ raceDate, venueId, raceNo }) {
   const hd = normalizeDateCompact(raceDate);
@@ -729,12 +842,25 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
     for (const bet of bets) {
       const combo = normalizeCombo(bet.combo);
       const betAmount = toInt(bet.bet_amount, 0);
-      const hit = combo === winningCombo ? 1 : 0;
+      const betType = String(bet?.bet_type || "trifecta").toLowerCase();
+      const selection = String(bet?.combo || "");
+      const hit = isWinningSelection({
+        betType,
+        selection,
+        resultRow: result
+      })
+        ? 1
+        : 0;
       if (hit) hitCount += 1;
 
       let payout = 0;
       if (hit) {
-        const unitPayout = payoutByCombo.get(combo) ?? defaultPayout;
+        const unitPayout =
+          betType === "trifecta"
+            ? payoutByCombo.get(combo) ?? defaultPayout
+            : betType === "exacta" || betType === "quinella"
+              ? toInt(result.payout_2t, 0)
+              : 0;
         const units = Math.max(1, Math.floor(betAmount / 100));
         payout = unitPayout > 0 ? unitPayout * units : 0;
       }

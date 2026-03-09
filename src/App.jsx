@@ -321,6 +321,38 @@ function splitCombo(combo) {
     .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6);
 }
 
+function normalizeSelectionByType(betType, input) {
+  const type = String(betType || "trifecta").toLowerCase();
+  const digits = (String(input || "").match(/[1-6]/g) || []).map((v) => Number(v));
+  const uniq = [...new Set(digits)];
+
+  if (type === "trifecta") {
+    if (digits.length < 3) return null;
+    const lanes = digits.slice(0, 3);
+    if (new Set(lanes).size !== 3) return null;
+    return lanes.join("-");
+  }
+  if (type === "exacta") {
+    if (digits.length < 2) return null;
+    const lanes = digits.slice(0, 2);
+    if (lanes[0] === lanes[1]) return null;
+    return lanes.join("-");
+  }
+  if (type === "trio") {
+    if (uniq.length < 3) return null;
+    return uniq.slice(0, 3).sort((a, b) => a - b).join("-");
+  }
+  if (type === "quinella" || type === "wide") {
+    if (uniq.length < 2) return null;
+    return uniq.slice(0, 2).sort((a, b) => a - b).join("-");
+  }
+  if (type === "win" || type === "place") {
+    if (uniq.length < 1) return null;
+    return String(uniq[0]);
+  }
+  return null;
+}
+
 function ComboBadge({ combo }) {
   const lanes = splitCombo(combo);
   if (lanes.length !== 3) return <span>{combo || "-"}</span>;
@@ -407,6 +439,10 @@ export default function App() {
     bet_amount: 100,
     memo: ""
   });
+  const [manualBetType, setManualBetType] = useState("trifecta");
+  const [manualSelectionsText, setManualSelectionsText] = useState("");
+  const [manualStake, setManualStake] = useState(100);
+  const [manualNote, setManualNote] = useState("");
   const [builderSlots, setBuilderSlots] = useState({ first: null, second: null, third: null });
   const [quickBetAmount, setQuickBetAmount] = useState(100);
   const [pendingTickets, setPendingTickets] = useState([]);
@@ -800,6 +836,8 @@ export default function App() {
       const nextTicket = {
         ...raceContext,
         raceKey,
+        source: ticket?.source || "ai",
+        bet_type: ticket?.bet_type || "trifecta",
         combo,
         bet_amount: rounded,
         memo: ticket?.memo ?? journalForm.memo ?? "",
@@ -885,6 +923,9 @@ export default function App() {
           race_date: t.race_date || journalForm.race_date,
           venue_id: Number(t.venue_id ?? journalForm.venue_id),
           race_no: Number(t.race_no ?? journalForm.race_no),
+          source: t.source || "ai",
+          bet_type: t.bet_type || "trifecta",
+          selection: t.combo,
           combo: t.combo,
           bet_amount: roundBetTo100(t.bet_amount),
           bought_odds: Number.isFinite(Number(t.odds)) ? Number(t.odds) : null,
@@ -907,6 +948,65 @@ export default function App() {
       setJournalNotice("ベット記録に保存しました");
     } catch (e) {
       setJournalError(e.message || "Failed to save placed bets");
+    } finally {
+      setBetSaving(false);
+    }
+  };
+
+  const onRegisterManualBets = async () => {
+    if (journalRaceNotRecommended) {
+      setJournalError("Not Recommended race. Betting is disabled for this race.");
+      return;
+    }
+    const lines = String(manualSelectionsText || "")
+      .split(/\r?\n|,/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+    if (!lines.length) {
+      setJournalError("手動ベットの組番を1件以上入力してください。");
+      return;
+    }
+    const stake = roundBetTo100(manualStake);
+    if (!Number.isFinite(Number(stake)) || Number(stake) <= 0) {
+      setJournalError("購入額は100円以上で入力してください。");
+      return;
+    }
+
+    const normalized = [];
+    for (const raw of lines) {
+      const selection = normalizeSelectionByType(manualBetType, raw);
+      if (!selection) {
+        setJournalError(`組番形式が不正です: ${raw}`);
+        return;
+      }
+      normalized.push(selection);
+    }
+
+    const uniqueSelections = [...new Set(normalized)];
+    setBetSaving(true);
+    setJournalError("");
+    try {
+      await createPlacedBetsBulk(
+        uniqueSelections.map((selection) => ({
+          race_id: journalForm.race_id || undefined,
+          race_date: journalForm.race_date,
+          venue_id: Number(journalForm.venue_id),
+          race_no: Number(journalForm.race_no),
+          source: "manual",
+          bet_type: manualBetType,
+          selection,
+          combo: selection,
+          bet_amount: stake,
+          memo: manualNote || null
+        }))
+      );
+      await loadJournal();
+      await loadPerformance();
+      setManualSelectionsText("");
+      setManualNote("");
+      setJournalNotice(`手動ベットを登録しました (${uniqueSelections.length}件)`);
+    } catch (e) {
+      setJournalError(e.message || "Failed to register manual bets");
     } finally {
       setBetSaving(false);
     }
@@ -948,6 +1048,8 @@ export default function App() {
       race_date: selectedRaceDate,
       venue_id: selectedVenueId,
       race_no: selectedRaceNo,
+      source: "ai",
+      bet_type: "trifecta",
       combo,
       bet_amount: defaultAmount,
       prob: bet?.prob,
@@ -2316,6 +2418,8 @@ export default function App() {
                     {pendingTicketsForCurrentRace.map((ticket) => (
                       <div key={`${ticket.raceKey}-${ticket.combo}`} className="list-row list-row-actions">
                         <strong><ComboBadge combo={ticket.combo} /></strong>
+                        <span className="chip">{ticket.source === "manual" ? "手動" : "AI"}</span>
+                        <span className="chip">{ticket.bet_type || "trifecta"}</span>
                         <span>
                           JPY
                           <input
@@ -2340,6 +2444,61 @@ export default function App() {
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div className="card" style={{ marginTop: 12 }}>
+                <h3>手動ベット登録</h3>
+                <div className="controls-grid">
+                  <label>
+                    <span>ベット種別</span>
+                    <select value={manualBetType} onChange={(e) => setManualBetType(e.target.value)}>
+                      <option value="trifecta">trifecta</option>
+                      <option value="exacta">exacta</option>
+                      <option value="trio">trio</option>
+                      <option value="quinella">quinella</option>
+                      <option value="wide">wide</option>
+                      <option value="win">win</option>
+                      <option value="place">place</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>購入額</span>
+                    <input
+                      type="number"
+                      min="100"
+                      step="100"
+                      value={manualStake}
+                      onChange={(e) => setManualStake(roundBetTo100(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    <span>メモ</span>
+                    <input
+                      value={manualNote}
+                      onChange={(e) => setManualNote(e.target.value)}
+                      placeholder="任意メモ"
+                    />
+                  </label>
+                </div>
+                <label style={{ display: "block", marginTop: 8 }}>
+                  <span>組番（複数可: 改行/カンマ区切り）</span>
+                  <textarea
+                    value={manualSelectionsText}
+                    onChange={(e) => setManualSelectionsText(e.target.value)}
+                    rows={3}
+                    placeholder={manualBetType === "win" || manualBetType === "place" ? "1,2,3" : "1-2-3\n2-1-3"}
+                  />
+                </label>
+                <div className="row-actions" style={{ marginTop: 8 }}>
+                  <button
+                    className="fetch-btn secondary"
+                    onClick={onRegisterManualBets}
+                    disabled={betSaving || journalRaceNotRecommended}
+                    title={journalRaceNotRecommended ? "Not Recommended race" : ""}
+                  >
+                    {betSaving ? "登録中..." : "手動ベットを登録"}
+                  </button>
+                </div>
               </div>
 
               <div className="controls-grid" style={{ marginTop: 10 }}>
@@ -2448,6 +2607,8 @@ export default function App() {
                               <div className="ticket-main">
                                 <div><span className="label">買い目</span><strong>{bet.combo}</strong></div>
                                 <div><span className="label">表示</span><strong><ComboBadge combo={bet.combo} /></strong></div>
+                                <div><span className="label">種別</span><strong>{bet.bet_type || "trifecta"}</strong></div>
+                                <div><span className="label">ソース</span><strong>{bet.source === "manual" ? "Manual" : "AI"}</strong></div>
                                 <div>
                                   <span className="label">購入額</span>
                                   {isEditing ? (
