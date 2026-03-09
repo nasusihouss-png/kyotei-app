@@ -702,6 +702,11 @@ raceRouter.get("/race", async (req, res, next) => {
       race: data.race,
       racers: data.racers,
       raceId,
+      is_recommended: String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() !== "SKIP",
+      recommendation_label:
+        String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() === "SKIP"
+          ? "Not Recommended"
+          : "Recommended",
       prediction,
       racePattern,
       buyType,
@@ -1049,6 +1054,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             venueName: data.race.venueName || null,
             raceNo: data.race.raceNo,
             mode,
+            is_recommended: mode !== "SKIP",
             confidence: Number(confidence.toFixed(2)),
             main_head: Number(headSelectionRefined?.main_head) || null,
             backup_heads: headSelectionRefined?.secondary_heads || [],
@@ -1448,6 +1454,8 @@ raceRouter.get("/rankings", async (req, res, next) => {
             raceNo: data.race.raceNo,
             ranking_score,
             decision_mode: raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN",
+            is_recommended:
+              String(raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN").toUpperCase() !== "SKIP",
             confidence: Number(toNum(raceDecision?.confidence, 0).toFixed(2)),
             main_head: Number(headSelectionRefined?.main_head) || null,
             provisional:
@@ -1484,6 +1492,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
       raceNo: row.raceNo,
       ranking_score: row.ranking_score,
       decision_mode: row.decision_mode,
+      is_recommended: !!row.is_recommended,
       confidence: row.confidence,
       main_head: row.main_head,
       provisional: !!row.provisional,

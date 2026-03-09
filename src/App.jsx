@@ -460,6 +460,15 @@ export default function App() {
   const valueDetection = data?.valueDetection || {};
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
   const raceDecision = data?.raceDecision || {};
+  const recommendationMode = String(
+    data?.raceDecision?.mode || raceRisk?.recommendation || data?.recommendation_label || ""
+  ).toUpperCase();
+  const isRecommendedRace =
+    typeof data?.is_recommended === "boolean"
+      ? data.is_recommended
+      : recommendationMode
+        ? recommendationMode !== "SKIP"
+        : true;
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
 
   const racersByLane = useMemo(() => {
@@ -566,6 +575,16 @@ export default function App() {
     () => pendingTickets.filter((t) => t.raceKey === currentRaceKey),
     [pendingTickets, currentRaceKey]
   );
+  const journalTargetMatchesLoadedRace = useMemo(() => {
+    if (!data) return false;
+    return (
+      String(journalForm.race_date || "") === String(race?.date || "") &&
+      Number(journalForm.venue_id) === Number(race?.venueId) &&
+      Number(journalForm.race_no) === Number(race?.raceNo)
+    );
+  }, [data, journalForm.race_date, journalForm.venue_id, journalForm.race_no, race?.date, race?.venueId, race?.raceNo]);
+  const journalRaceNotRecommended = !!data && journalTargetMatchesLoadedRace && !isRecommendedRace;
+  const disableBetActions = !isRecommendedRace;
   const builderCombo = useMemo(() => {
     const lanes = [builderSlots.first, builderSlots.second, builderSlots.third];
     if (lanes.some((v) => !Number.isInteger(v))) return "";
@@ -805,6 +824,10 @@ export default function App() {
   };
 
   const onAddPendingTicket = () => {
+    if (journalRaceNotRecommended) {
+      setJournalError("Not Recommended race. Betting is disabled for this race.");
+      return;
+    }
     const combo = normalizeCombo(journalForm.combo) || builderCombo;
     if (!combo || combo.split("-").length !== 3) {
       setJournalError("Please build a valid 3-lane combo before adding.");
@@ -832,6 +855,10 @@ export default function App() {
   };
 
   const onSavePendingTickets = async () => {
+    if (journalRaceNotRecommended) {
+      setJournalError("Not Recommended race. Betting is disabled for this race.");
+      return;
+    }
     let tickets = [...pendingTicketsForCurrentRace];
     const combo = normalizeCombo(journalForm.combo);
     if (tickets.length === 0 && combo && combo.split("-").length === 3) {
@@ -886,6 +913,10 @@ export default function App() {
   };
 
   const onUsePredictedTicket = (bet) => {
+    if (disableBetActions) {
+      setJournalError("Not Recommended race. Betting is disabled for this race.");
+      return;
+    }
     const combo = normalizeCombo(bet?.combo);
     if (!combo || combo.split("-").length !== 3) return;
 
@@ -1154,9 +1185,13 @@ export default function App() {
                     <div><span>展開パターン</span><strong>{data.racePattern || "-"}</strong></div>
                     <div><span>買いタイプ</span><strong>{data.buyType || "-"}</strong></div>
                     <div><span>推奨</span><strong className={`status-pill ${getRiskClass(raceRisk.recommendation)}`}>{raceRisk.recommendation || "-"}</strong></div>
+                    <div><span>参加可否</span><strong className={`status-pill ${isRecommendedRace ? "risk-full" : "risk-skip"}`}>{isRecommendedRace ? "Recommended" : "Not Recommended"}</strong></div>
                     <div><span>リスクスコア</span><strong>{raceRisk.risk_score ?? "-"}</strong></div>
                     <div><span>参加モード</span><strong>{raceRisk.participation_mode || "-"}</strong></div>
                   </div>
+                  {!isRecommendedRace ? (
+                    <p className="muted strategy-line">このレースは非推奨です。ベット追加は無効化されています。</p>
+                  ) : null}
                 </section>
 
                 <section className="analysis-grid">
@@ -1432,7 +1467,7 @@ export default function App() {
                           <span>p {formatMaybeNumber(bet.prob, 3)}</span>
                           <span>odds {formatMaybeNumber(bet.odds, 1)}</span>
                           <span>ev {formatMaybeNumber(bet.ev, 2)}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)}>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
                         </div>
@@ -1457,7 +1492,7 @@ export default function App() {
                             {getAvoidLevelLabel(bet.avoid_level)}
                           </span>
                           <span className="bet-amount-strong">金額 JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)}>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
                         </div>
@@ -1507,7 +1542,7 @@ export default function App() {
                             {getAvoidLevelLabel(row.avoid_level)}
                           </span>
                           <span className="bet-amount-strong">JPY {Number(row.recommended_bet || 0).toLocaleString()}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })}>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
                         </div>
@@ -1541,7 +1576,7 @@ export default function App() {
                             <span>p {formatMaybeNumber(row.prob, 4)}</span>
                             <span>odds {Number.isFinite(oddsByCombo.get(row.combo)) ? formatMaybeNumber(oddsByCombo.get(row.combo), 1) : "-"}</span>
                             <span>-</span>
-                            <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: oddsByCombo.get(row.combo), bet: 100 })}>
+                            <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: oddsByCombo.get(row.combo), bet: 100 })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                               記録に追加
                             </button>
                           </div>
@@ -1564,7 +1599,7 @@ export default function App() {
                           <span>本線</span>
                           <span>-</span>
                           <span>-</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo, bet: 100 })}>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo, bet: 100 })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
                         </div>
@@ -1575,7 +1610,7 @@ export default function App() {
                           <span>押さえ</span>
                           <span>-</span>
                           <span>-</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo, bet: 100 })}>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo, bet: 100 })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
                         </div>
@@ -1658,6 +1693,8 @@ export default function App() {
                                   ticket_type: ticket.ticket_type
                                 })
                               }
+                              disabled={disableBetActions}
+                              title={disableBetActions ? "Not Recommended race" : ""}
                             >
                               記録に追加
                             </button>
@@ -2214,10 +2251,13 @@ export default function App() {
                     placeholder="任意メモ"
                   />
                 </label>
-                <button className="fetch-btn secondary" onClick={onAddPendingTicket} disabled={betSaving}>
+                <button className="fetch-btn secondary" onClick={onAddPendingTicket} disabled={betSaving || journalRaceNotRecommended} title={journalRaceNotRecommended ? "Not Recommended race" : ""}>
                   チケット追加
                 </button>
               </div>
+              {journalRaceNotRecommended ? (
+                <p className="muted strategy-line">Not Recommended: このレースは非推奨のためベット追加/保存を制限中です。</p>
+              ) : null}
 
               <div className="builder-panel">
                 <p className="muted">ビジュアルチケットビルダー</p>
@@ -2265,7 +2305,7 @@ export default function App() {
               <div className="pending-list">
                 <div className="pending-head">
                   <h3>選択中チケット</h3>
-                  <button className="fetch-btn" onClick={onSavePendingTickets} disabled={betSaving}>
+                  <button className="fetch-btn" onClick={onSavePendingTickets} disabled={betSaving || journalRaceNotRecommended} title={journalRaceNotRecommended ? "Not Recommended race" : ""}>
                     {betSaving ? "保存中..." : "まとめて保存"}
                   </button>
                 </div>
