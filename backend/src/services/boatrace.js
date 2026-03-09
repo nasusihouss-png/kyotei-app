@@ -428,6 +428,8 @@ export async function getRaceData({ date, venueId, raceNo }) {
     source: {
       racelistUrl,
       beforeinfoUrl,
+      start_display_source: "official_pre_race_info",
+      fetched_at: new Date().toISOString(),
       cache: {
         hit: false,
         ttl_ms: BOATRACE_CACHE_TTL_MS

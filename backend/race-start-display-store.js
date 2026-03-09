@@ -14,6 +14,22 @@ function normalizeCombo(value) {
   return digits.slice(0, 3).join("-");
 }
 
+function ensureRaceStartDisplayColumns() {
+  const cols = db.prepare("PRAGMA table_info(race_start_displays)").all();
+  const names = new Set(cols.map((c) => String(c.name)));
+  if (!names.has("start_display_layout_mode")) {
+    db.exec("ALTER TABLE race_start_displays ADD COLUMN start_display_layout_mode TEXT");
+  }
+  if (!names.has("start_display_source")) {
+    db.exec("ALTER TABLE race_start_displays ADD COLUMN start_display_source TEXT");
+  }
+  if (!names.has("source_fetched_at")) {
+    db.exec("ALTER TABLE race_start_displays ADD COLUMN source_fetched_at TEXT");
+  }
+}
+
+ensureRaceStartDisplayColumns();
+
 const upsertSnapshotStmt = db.prepare(`
   INSERT INTO race_start_displays (
     race_id,
@@ -21,6 +37,9 @@ const upsertSnapshotStmt = db.prepare(`
     start_display_st_json,
     start_display_positions_json,
     start_display_signature,
+    start_display_layout_mode,
+    start_display_source,
+    source_fetched_at,
     prediction_snapshot_json,
     updated_at
   ) VALUES (
@@ -29,6 +48,9 @@ const upsertSnapshotStmt = db.prepare(`
     @start_display_st_json,
     @start_display_positions_json,
     @start_display_signature,
+    @start_display_layout_mode,
+    @start_display_source,
+    @source_fetched_at,
     @prediction_snapshot_json,
     @updated_at
   )
@@ -37,6 +59,9 @@ const upsertSnapshotStmt = db.prepare(`
     start_display_st_json = excluded.start_display_st_json,
     start_display_positions_json = excluded.start_display_positions_json,
     start_display_signature = excluded.start_display_signature,
+    start_display_layout_mode = excluded.start_display_layout_mode,
+    start_display_source = excluded.start_display_source,
+    source_fetched_at = excluded.source_fetched_at,
     prediction_snapshot_json = excluded.prediction_snapshot_json,
     updated_at = excluded.updated_at
 `);
@@ -87,14 +112,28 @@ function buildStartDisplaySt(racers) {
   return map;
 }
 
-function buildStartDisplayPositions(positions, order) {
+function buildStartDisplayPositions(positions, order, stMap) {
   if (Array.isArray(positions) && positions.length > 0) return positions;
-  return (Array.isArray(order) ? order : []).map((lane, idx) => {
+  const lanes = Array.isArray(order) ? order : [];
+  const stValues = lanes
+    .map((lane) => {
+      const raw = stMap?.[String(lane)];
+      const st = Number(raw);
+      return Number.isFinite(st) ? st : null;
+    })
+    .filter((v) => v !== null);
+  const minSt = stValues.length ? Math.min(...stValues) : null;
+  const maxSt = stValues.length ? Math.max(...stValues) : null;
+  const stRange = minSt !== null && maxSt !== null ? Math.max(0.001, maxSt - minSt) : 0.001;
+  return lanes.map((lane, idx) => {
     const numericLane = toNum(lane, null);
+    const st = Number(stMap?.[String(numericLane)]);
+    const stShift = Number.isFinite(st) && minSt !== null ? ((st - minSt) / stRange) * 12 : 6;
+    const baseX = idx * 16;
     return {
       lane: numericLane,
-      // Constructable default coordinates for stable UI rendering.
-      x: Number.isInteger(numericLane) ? 90 + numericLane * 12 : null,
+      // normalized x based on entry order + st gap (smaller ST = slightly forward)
+      x: Number.isInteger(numericLane) ? Number((baseX + stShift).toFixed(2)) : null,
       y: idx * 48
     };
   });
@@ -104,13 +143,19 @@ export function saveRaceStartDisplaySnapshot({
   raceId,
   racers,
   predictionSnapshot,
-  startDisplayPositions
+  startDisplayPositions,
+  sourceMeta
 }) {
   if (!raceId) return null;
   const order = buildStartDisplayOrder(racers);
   const stMap = buildStartDisplaySt(racers);
-  const positions = buildStartDisplayPositions(startDisplayPositions, order);
+  const positions = buildStartDisplayPositions(startDisplayPositions, order, stMap);
   const signature = order.join("-");
+  const now = nowIso();
+  const startDisplaySource =
+    sourceMeta?.start_display_source || (sourceMeta?.cache?.fallback ? "db_snapshot" : "official_pre_race_info");
+  const sourceFetchedAt = sourceMeta?.fetched_at || now;
+  const layoutMode = "normalized_entry_order";
 
   upsertSnapshotStmt.run({
     race_id: String(raceId),
@@ -118,8 +163,11 @@ export function saveRaceStartDisplaySnapshot({
     start_display_st_json: JSON.stringify(stMap),
     start_display_positions_json: JSON.stringify(positions),
     start_display_signature: signature || null,
+    start_display_layout_mode: layoutMode,
+    start_display_source: startDisplaySource,
+    source_fetched_at: sourceFetchedAt,
     prediction_snapshot_json: JSON.stringify(predictionSnapshot || {}),
-    updated_at: nowIso()
+    updated_at: now
   });
 
   return {
@@ -127,6 +175,10 @@ export function saveRaceStartDisplaySnapshot({
     start_display_st: stMap,
     start_display_positions: positions,
     start_display_signature: signature || null,
+    start_display_layout_mode: layoutMode,
+    start_display_source: startDisplaySource,
+    source_fetched_at: sourceFetchedAt,
+    updated_at: now,
     prediction_snapshot: predictionSnapshot || {}
   };
 }

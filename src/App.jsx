@@ -463,17 +463,30 @@ function getStartDisplayRows(startDisplay) {
     .map((v) => Number(v))
     .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6);
   const lanes = order.length ? order : [1, 2, 3, 4, 5, 6];
+  const stValues = lanes
+    .map((lane) => Number(stMap[String(lane)]))
+    .filter((v) => Number.isFinite(v));
+  const minSt = stValues.length ? Math.min(...stValues) : null;
+  const maxSt = stValues.length ? Math.max(...stValues) : null;
+  const stRange = minSt !== null && maxSt !== null ? Math.max(0.001, maxSt - minSt) : 0.001;
+
+  const computedXByLane = new Map();
+  lanes.forEach((lane, idx) => {
+    const st = Number(stMap[String(lane)]);
+    const stShift = Number.isFinite(st) && minSt !== null ? ((st - minSt) / stRange) * 12 : 6;
+    computedXByLane.set(lane, idx * 16 + stShift);
+  });
+
   const xValues = lanes
-    .map((lane) => positionsByLane.get(lane)?.x)
+    .map((lane) => positionsByLane.get(lane)?.x ?? computedXByLane.get(lane))
     .filter((v) => Number.isFinite(v));
   const minX = xValues.length ? Math.min(...xValues) : 0;
-  const maxX = xValues.length ? Math.max(...xValues) : 100;
+  const maxX = xValues.length ? Math.max(...xValues) : 95;
   const xRange = Math.max(1, maxX - minX);
 
   return lanes.map((lane, idx) => {
     const pos = positionsByLane.get(lane);
-    const fallbackX = idx * 18;
-    const x = Number.isFinite(pos?.x) ? pos.x : fallbackX;
+    const x = Number.isFinite(pos?.x) ? pos.x : computedXByLane.get(lane);
     const leftPct = Math.max(5, Math.min(95, ((x - minX) / xRange) * 90 + 5));
     const st = stMap[String(lane)];
     return {
@@ -493,6 +506,13 @@ function StartExhibitionDisplay({ startDisplay, compact = false }) {
 
   return (
     <div className={`start-display ${compact ? "compact" : ""}`}>
+      {!compact ? (
+        <p className="muted strategy-line">
+          source: {startDisplay?.start_display_source || "official_pre_race_info"} / layout:{" "}
+          {startDisplay?.start_display_layout_mode || "normalized_entry_order"}
+          {startDisplay?.source_fetched_at ? ` / updated: ${new Date(startDisplay.source_fetched_at).toLocaleString()}` : ""}
+        </p>
+      ) : null}
       {rows.map((row) => (
         <div key={`start-${row.lane}`} className="start-row">
           <div className="start-lane">
@@ -506,7 +526,7 @@ function StartExhibitionDisplay({ startDisplay, compact = false }) {
             </div>
           </div>
           <div className="start-st">
-            {row.st === null ? "-" : row.st.toFixed(2)}
+            {row.st === null ? "--" : row.st.toFixed(2)}
           </div>
         </div>
       ))}

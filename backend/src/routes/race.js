@@ -1280,6 +1280,7 @@ raceRouter.get("/race", async (req, res, next) => {
     const startDisplay = saveRaceStartDisplaySnapshot({
       raceId,
       racers: data.racers,
+      sourceMeta: data.source || {},
       predictionSnapshot: {
         raceDecision,
         top3: predictionWithEntry.top3,
@@ -3606,6 +3607,9 @@ raceRouter.get("/results-history", async (req, res, next) => {
           start_display_st_json,
           start_display_positions_json,
           start_display_signature,
+          start_display_layout_mode,
+          start_display_source,
+          source_fetched_at,
           prediction_snapshot_json,
           fetched_result,
           settled_result
@@ -3624,6 +3628,9 @@ raceRouter.get("/results-history", async (req, res, next) => {
           start_display_st: safeJsonParse(row.start_display_st_json, {}),
           start_display_positions: safeJsonParse(row.start_display_positions_json, []),
           start_display_signature: row.start_display_signature || null,
+          start_display_layout_mode: row.start_display_layout_mode || null,
+          start_display_source: row.start_display_source || null,
+          source_fetched_at: row.source_fetched_at || null,
           prediction_snapshot: safeJsonParse(row.prediction_snapshot_json, {}),
           fetched_result: row.fetched_result || null,
           settled_result: row.settled_result || null
