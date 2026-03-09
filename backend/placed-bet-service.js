@@ -336,6 +336,125 @@ const getRaceResultByMetaStmt = db.prepare(`
   LIMIT 1
 `);
 
+const latestPredictionByRaceIdStmt = db.prepare(`
+  SELECT race_id, recommendation, race_decision_json, created_at
+  FROM prediction_logs
+  WHERE race_id = ?
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+`);
+
+function normalizeRecommendationMode(value) {
+  const raw = String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+  if (raw === "FULL BET" || raw === "FULL_BET") return "FULL BET";
+  if (raw === "SMALL BET" || raw === "SMALL_BET") return "SMALL BET";
+  if (raw === "MICRO BET" || raw === "MICRO_BET") return "MICRO BET";
+  if (raw === "SKIP") return "SKIP";
+  return "UNKNOWN";
+}
+
+function deriveRaceRecommendationForRaceId(raceId) {
+  const rid = String(raceId || "").trim();
+  if (!rid) return { status: "unknown", mode: "UNKNOWN", source: "invalid_race_id" };
+  const row = latestPredictionByRaceIdStmt.get(rid);
+  if (!row) {
+    return {
+      status: "unknown",
+      mode: "UNKNOWN",
+      source: "prediction_not_found"
+    };
+  }
+  let mode = normalizeRecommendationMode(row.recommendation);
+  try {
+    const raceDecision = JSON.parse(row.race_decision_json || "{}");
+    const decisionMode = normalizeRecommendationMode(raceDecision?.mode);
+    if (decisionMode !== "UNKNOWN") mode = decisionMode;
+  } catch {
+    // keep fallback recommendation column
+  }
+  if (mode === "UNKNOWN") {
+    return {
+      status: "unknown",
+      mode: "UNKNOWN",
+      source: "mode_unknown",
+      created_at: row.created_at || null
+    };
+  }
+  return {
+    status: mode === "SKIP" ? "not_recommended" : "recommended",
+    mode,
+    source: "prediction_logs",
+    created_at: row.created_at || null
+  };
+}
+
+function resolveBetRaceMeta(input) {
+  const raceDate = normalizeRaceDate(input?.race_date);
+  const venueId = toInt(input?.venue_id);
+  const raceNo = toInt(input?.race_no);
+  const raceId = resolveRaceId({
+    raceId: input?.race_id,
+    raceDate,
+    venueId,
+    raceNo
+  });
+  return {
+    race_id: raceId,
+    race_date: raceDate,
+    venue_id: venueId,
+    race_no: raceNo
+  };
+}
+
+export function enforceRecommendationOnlyForBets(items, recommendationOnlyEnabled) {
+  if (!recommendationOnlyEnabled) return;
+  const rows = Array.isArray(items) ? items : [items];
+  const blocked = [];
+  const checked = [];
+
+  for (const row of rows) {
+    const meta = resolveBetRaceMeta(row || {});
+    if (!meta.race_id) {
+      blocked.push({
+        reason: "missing_race_identifier",
+        race_id: row?.race_id || null,
+        race_date: row?.race_date || null,
+        venue_id: row?.venue_id ?? null,
+        race_no: row?.race_no ?? null
+      });
+      continue;
+    }
+    const rec = deriveRaceRecommendationForRaceId(meta.race_id);
+    checked.push({
+      race_id: meta.race_id,
+      mode: rec.mode,
+      status: rec.status,
+      source: rec.source
+    });
+    if (rec.status !== "recommended") {
+      blocked.push({
+        race_id: meta.race_id,
+        reason: rec.status === "unknown" ? "recommendation_unavailable" : "not_recommended",
+        mode: rec.mode,
+        source: rec.source
+      });
+    }
+  }
+
+  if (blocked.length > 0) {
+    throw {
+      statusCode: 403,
+      code: "recommendation_only_blocked",
+      message: "Bet registration is blocked because this race is not currently recommended.",
+      debug: {
+        recommendation_only: true,
+        checked,
+        blocked
+      }
+    };
+  }
+}
+
 export function createPlacedBet({
   race_id,
   race_date,

@@ -56,6 +56,7 @@ import {
   updatePlacedBet,
   deletePlacedBet,
   listPlacedBets,
+  enforceRecommendationOnlyForBets,
   settlePlacedBetsForRace,
   getPlacedBetSummaries
 } from "../../placed-bet-service.js";
@@ -77,6 +78,26 @@ import {
 } from "../../learning-weight-engine.js";
 
 export const raceRouter = Router();
+
+function parseBooleanFlag(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const text = String(value).trim().toLowerCase();
+  if (["1", "true", "on", "yes", "y"].includes(text)) return true;
+  if (["0", "false", "off", "no", "n"].includes(text)) return false;
+  return fallback;
+}
+
+function resolveRecommendationOnlyMode(req) {
+  const envEnabled = parseBooleanFlag(process.env.RECOMMENDATION_ONLY, false);
+  const requestEnabled = parseBooleanFlag(
+    req?.body?.recommendation_only ??
+      req?.query?.recommendation_only ??
+      req?.headers?.["x-recommendation-only"],
+    false
+  );
+  // request can tighten to ON, but cannot disable server-level ON
+  return envEnabled || requestEnabled;
+}
 
 function safeJsonParse(value, fallback) {
   try {
@@ -2298,20 +2319,38 @@ raceRouter.get("/placed-bets", async (_req, res, next) => {
   }
 });
 
+raceRouter.get("/bet-policy", async (req, res, next) => {
+  try {
+    const envEnabled = parseBooleanFlag(process.env.RECOMMENDATION_ONLY, false);
+    const effective = resolveRecommendationOnlyMode(req);
+    return res.json({
+      recommendation_only_env: envEnabled,
+      recommendation_only_effective: effective
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 raceRouter.post("/placed-bets", async (req, res, next) => {
   try {
+    const recommendationOnly = resolveRecommendationOnlyMode(req);
     if (Array.isArray(req.body?.items) && req.body.items.length > 0) {
+      enforceRecommendationOnlyForBets(req.body.items, recommendationOnly);
       const ids = createPlacedBets(req.body.items);
       return res.status(201).json({
         ok: true,
-        ids
+        ids,
+        recommendation_only: recommendationOnly
       });
     }
 
+    enforceRecommendationOnlyForBets(req.body || {}, recommendationOnly);
     const id = createPlacedBet(req.body || {});
     return res.status(201).json({
       ok: true,
-      id
+      id,
+      recommendation_only: recommendationOnly
     });
   } catch (err) {
     return next(err);
