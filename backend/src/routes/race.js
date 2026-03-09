@@ -776,7 +776,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
       ? venueList
       : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
     const scanAll = scanVenues.length * scanRaceNos.length;
-    const defaultMaxScan = dateMode.isFuture ? scanAll : 72;
+    const defaultMaxScan = dateMode.isFuture ? scanAll : 144;
     const maxScan = Math.max(1, Math.min(scanAll, toInt(req.query?.maxScan, defaultMaxScan)));
 
     const recs = [];
@@ -1175,7 +1175,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
       ? venueList
       : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
     const scanAll = scanVenues.length * scanRaceNos.length;
-    const defaultMaxScan = dateMode.isFuture ? scanAll : 96;
+    const defaultMaxScan = dateMode.isFuture ? scanAll : 168;
     const maxScan = Math.max(1, Math.min(scanAll, toInt(req.query?.maxScan, defaultMaxScan)));
 
     const items = [];

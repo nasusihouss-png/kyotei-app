@@ -4,6 +4,37 @@ import "./App.css";
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 const API_BASE = API_BASE_URL ? `${API_BASE_URL}/api` : "/api";
 
+function localDateKey(base = new Date()) {
+  const yyyy = base.getFullYear();
+  const mm = String(base.getMonth() + 1).padStart(2, "0");
+  const dd = String(base.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+async function fetchJsonWithTimeout(url, options = {}) {
+  const timeoutMs = Number(options?.timeoutMs || 25000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body?.message || `Request failed (${response.status})`);
+    }
+    return body;
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error("Request timeout. Please retry.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const VENUES = [
   { id: 1, name: "Kiryu" },
   { id: 2, name: "Toda" },
@@ -54,19 +85,14 @@ async function fetchRaceData(date, venueId, raceNo) {
 async function fetchRecommendationsData(date) {
   const url = new URL(`${API_BASE}/recommendations`);
   url.searchParams.set("date", date);
-
-  const response = await fetch(url.toString());
-  if (!response.ok) throw new Error("Failed to fetch recommendations");
-  return response.json();
+  return fetchJsonWithTimeout(url.toString(), { timeoutMs: 30000 });
 }
 
 async function fetchRankingsData(date, mode = "hit_rate") {
   const url = new URL(`${API_BASE}/rankings`);
   url.searchParams.set("date", date);
   url.searchParams.set("mode", mode);
-  const response = await fetch(url.toString());
-  if (!response.ok) throw new Error("Failed to fetch rankings");
-  return response.json();
+  return fetchJsonWithTimeout(url.toString(), { timeoutMs: 30000 });
 }
 
 async function fetchStatsData() {
@@ -331,7 +357,7 @@ export default function App() {
     return params.get("admin") === "1";
   }, []);
   const [screen, setScreen] = useState("predict");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => localDateKey());
   const [venueId, setVenueId] = useState(1);
   const [raceNo, setRaceNo] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -374,7 +400,7 @@ export default function App() {
   const [editingDraft, setEditingDraft] = useState({ combo: "", bet_amount: "", memo: "" });
   const [journalForm, setJournalForm] = useState({
     race_id: "",
-    race_date: new Date().toISOString().slice(0, 10),
+    race_date: localDateKey(),
     venue_id: 1,
     race_no: 1,
     combo: "",
@@ -634,9 +660,15 @@ export default function App() {
     setRecommendationsError("");
     try {
       const result = await fetchRecommendationsData(date);
-      setRecommendationsData(Array.isArray(result?.recommendations) ? result.recommendations : []);
+      const rows = Array.isArray(result?.recommendations)
+        ? result.recommendations
+        : Array.isArray(result?.items)
+          ? result.items
+          : [];
+      setRecommendationsData(rows);
     } catch (e) {
       setRecommendationsError(e.message || "Failed to fetch recommendations");
+      setRecommendationsData([]);
     } finally {
       setRecommendationsLoading(false);
     }
@@ -647,9 +679,15 @@ export default function App() {
     setRankingsError("");
     try {
       const result = await fetchRankingsData(date, "hit_rate");
-      setRankingsData(Array.isArray(result?.rankings) ? result.rankings : []);
+      const rows = Array.isArray(result?.rankings)
+        ? result.rankings
+        : Array.isArray(result?.items)
+          ? result.items
+          : [];
+      setRankingsData(rows);
     } catch (e) {
       setRankingsError(e.message || "Failed to fetch rankings");
+      setRankingsData([]);
     } finally {
       setRankingsLoading(false);
     }
@@ -991,10 +1029,10 @@ export default function App() {
 
   const filteredGroupedBets = useMemo(() => {
     const now = new Date();
-    const today = now.toISOString().slice(0, 10);
+    const today = localDateKey(now);
     const weekAgo = new Date(now);
     weekAgo.setDate(now.getDate() - 7);
-    const weekAgoStr = weekAgo.toISOString().slice(0, 10);
+    const weekAgoStr = localDateKey(weekAgo);
     const monthStart = `${today.slice(0, 7)}-01`;
 
     return groupedPlacedBets.filter((group) => {
