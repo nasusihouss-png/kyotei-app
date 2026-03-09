@@ -26,6 +26,9 @@ function ensureRaceStartDisplayColumns() {
   if (!names.has("source_fetched_at")) {
     db.exec("ALTER TABLE race_start_displays ADD COLUMN source_fetched_at TEXT");
   }
+  if (!names.has("start_display_timing_json")) {
+    db.exec("ALTER TABLE race_start_displays ADD COLUMN start_display_timing_json TEXT");
+  }
 }
 
 ensureRaceStartDisplayColumns();
@@ -37,6 +40,7 @@ const upsertSnapshotStmt = db.prepare(`
     start_display_st_json,
     start_display_positions_json,
     start_display_signature,
+    start_display_timing_json,
     start_display_layout_mode,
     start_display_source,
     source_fetched_at,
@@ -48,6 +52,7 @@ const upsertSnapshotStmt = db.prepare(`
     @start_display_st_json,
     @start_display_positions_json,
     @start_display_signature,
+    @start_display_timing_json,
     @start_display_layout_mode,
     @start_display_source,
     @source_fetched_at,
@@ -59,6 +64,7 @@ const upsertSnapshotStmt = db.prepare(`
     start_display_st_json = excluded.start_display_st_json,
     start_display_positions_json = excluded.start_display_positions_json,
     start_display_signature = excluded.start_display_signature,
+    start_display_timing_json = excluded.start_display_timing_json,
     start_display_layout_mode = excluded.start_display_layout_mode,
     start_display_source = excluded.start_display_source,
     source_fetched_at = excluded.source_fetched_at,
@@ -112,6 +118,41 @@ function buildStartDisplaySt(racers) {
   return map;
 }
 
+function normalizeTimingRaw(raw) {
+  return String(raw || "").replace(/\s+/g, "").toUpperCase();
+}
+
+function buildStartDisplayTiming(racers, stMap) {
+  const map = {};
+  (Array.isArray(racers) ? racers : []).forEach((r) => {
+    const lane = toNum(r?.lane, null);
+    if (!Number.isInteger(lane)) return;
+    const raw = normalizeTimingRaw(r?.exhibitionStRaw);
+    const num = toNum(r?.exhibitionST ?? r?.exhibitionSt, null);
+    let type = "normal";
+    let display = Number.isFinite(num) ? num.toFixed(2) : "--";
+    let units = Number.isFinite(num) ? Math.max(0, Math.min(100, num * 10)) : null;
+    if (/^F\d{1,2}$/.test(raw)) {
+      type = "f";
+      display = raw;
+      units = Math.min(20, toNum(raw.slice(1), 0));
+    } else if (/^L\d{1,2}$/.test(raw)) {
+      type = "l";
+      display = raw;
+      units = Math.min(20, toNum(raw.slice(1), 0));
+    } else if (raw && !Number.isFinite(num) && stMap?.[String(lane)] === null) {
+      display = raw;
+    }
+    map[String(lane)] = {
+      raw: raw || null,
+      type,
+      units: Number.isFinite(units) ? Number(units.toFixed(2)) : null,
+      display
+    };
+  });
+  return map;
+}
+
 function buildStartDisplayPositions(positions, order, stMap) {
   if (Array.isArray(positions) && positions.length > 0) return positions;
   const lanes = Array.isArray(order) ? order : [];
@@ -149,6 +190,7 @@ export function saveRaceStartDisplaySnapshot({
   if (!raceId) return null;
   const order = buildStartDisplayOrder(racers);
   const stMap = buildStartDisplaySt(racers);
+  const timingMap = buildStartDisplayTiming(racers, stMap);
   const positions = buildStartDisplayPositions(startDisplayPositions, order, stMap);
   const signature = order.join("-");
   const now = nowIso();
@@ -163,6 +205,7 @@ export function saveRaceStartDisplaySnapshot({
     start_display_st_json: JSON.stringify(stMap),
     start_display_positions_json: JSON.stringify(positions),
     start_display_signature: signature || null,
+    start_display_timing_json: JSON.stringify(timingMap),
     start_display_layout_mode: layoutMode,
     start_display_source: startDisplaySource,
     source_fetched_at: sourceFetchedAt,
@@ -175,6 +218,7 @@ export function saveRaceStartDisplaySnapshot({
     start_display_st: stMap,
     start_display_positions: positions,
     start_display_signature: signature || null,
+    start_display_timing: timingMap,
     start_display_layout_mode: layoutMode,
     start_display_source: startDisplaySource,
     source_fetched_at: sourceFetchedAt,

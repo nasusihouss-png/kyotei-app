@@ -445,6 +445,9 @@ function getStartDisplayRows(startDisplay) {
   const stMap = startDisplay.start_display_st && typeof startDisplay.start_display_st === "object"
     ? startDisplay.start_display_st
     : {};
+  const timingMap = startDisplay.start_display_timing && typeof startDisplay.start_display_timing === "object"
+    ? startDisplay.start_display_timing
+    : {};
   const positionsRaw = Array.isArray(startDisplay.start_display_positions)
     ? startDisplay.start_display_positions
     : [];
@@ -464,7 +467,14 @@ function getStartDisplayRows(startDisplay) {
     .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6);
   const lanes = order.length ? order : [1, 2, 3, 4, 5, 6];
   const stValues = lanes
-    .map((lane) => Number(stMap[String(lane)]))
+    .map((lane) => {
+      const t = timingMap[String(lane)];
+      if (t && Number.isFinite(Number(t.units)) && String(t.type || "").toLowerCase() === "normal") {
+        return Number(t.units);
+      }
+      const st = Number(stMap[String(lane)]);
+      return Number.isFinite(st) ? st * 10 : null;
+    })
     .filter((v) => Number.isFinite(v));
   const minSt = stValues.length ? Math.min(...stValues) : null;
   const maxSt = stValues.length ? Math.max(...stValues) : null;
@@ -472,9 +482,25 @@ function getStartDisplayRows(startDisplay) {
 
   const computedXByLane = new Map();
   lanes.forEach((lane, idx) => {
-    const st = Number(stMap[String(lane)]);
-    const stShift = Number.isFinite(st) && minSt !== null ? ((st - minSt) / stRange) * 12 : 6;
-    computedXByLane.set(lane, idx * 16 + stShift);
+    const timing = timingMap[String(lane)] || {};
+    const timingType = String(timing?.type || "normal").toLowerCase();
+    const timingUnitsRaw = Number(timing?.units);
+    const fallbackSt = Number(stMap[String(lane)]);
+    const normalUnits = Number.isFinite(timingUnitsRaw)
+      ? timingUnitsRaw
+      : Number.isFinite(fallbackSt)
+        ? fallbackSt * 10
+        : null;
+    let xUnit = null;
+    if (timingType === "f" || timingType === "l") {
+      const penaltyUnits = Number.isFinite(timingUnitsRaw) ? timingUnitsRaw : 1;
+      xUnit = 100 + Math.max(0, Math.min(20, penaltyUnits));
+    } else if (normalUnits !== null) {
+      xUnit = 100 - Math.max(0, Math.min(100, normalUnits));
+    } else {
+      xUnit = 100 - (idx + 1) * 1.8;
+    }
+    computedXByLane.set(lane, xUnit);
   });
 
   const xValues = lanes
@@ -489,11 +515,15 @@ function getStartDisplayRows(startDisplay) {
     const x = Number.isFinite(pos?.x) ? pos.x : computedXByLane.get(lane);
     const leftPct = Math.max(5, Math.min(95, ((x - minX) / xRange) * 90 + 5));
     const st = stMap[String(lane)];
+    const timing = timingMap[String(lane)] || {};
+    const timingDisplay = timing?.display || (Number.isFinite(Number(st)) ? Number(st).toFixed(2) : "--");
     return {
       lane,
       order: idx + 1,
       leftPct,
-      st: Number.isFinite(Number(st)) ? Number(st) : null
+      xUnit: Number.isFinite(x) ? Number(x.toFixed(2)) : null,
+      st: Number.isFinite(Number(st)) ? Number(st) : null,
+      stDisplay: timingDisplay
     };
   });
 }
@@ -519,14 +549,20 @@ function StartExhibitionDisplay({ startDisplay, compact = false }) {
             <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
           </div>
           <div className="start-layout">
-            <div className="start-track" />
+            <div className="start-track start-track-120" />
+            <div className="start-zero-line" />
             <div className="start-marker-wrap" style={{ left: `${row.leftPct}%` }}>
               <span className={`start-marker ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
               <small>進入{row.order}</small>
             </div>
+            <div className="start-scale">
+              <span>100</span>
+              <span>0</span>
+              <span>-20</span>
+            </div>
           </div>
           <div className="start-st">
-            {row.st === null ? "--" : row.st.toFixed(2)}
+            {row.stDisplay || "--"}
           </div>
         </div>
       ))}
@@ -1609,55 +1645,53 @@ export default function App() {
                   <p className="muted strategy-line">手動周回展示評価と併用して最終判断に反映されます。</p>
                 </section>
 
-                <section className="card">
-                  <h2>手動周回展示評価（0-2）</h2>
-                  <p className="muted strategy-line">直線・ターン入口/出口・行き足・安定感を入力すると、ランキング/推奨/買い目へ軽く反映します。</p>
-                  <div className="manual-lap-grid">
-                    {Array.from({ length: 6 }, (_, idx) => idx + 1).map((lane) => (
-                      <div key={`lap-${lane}`} className="manual-lap-row">
-                        <div className="manual-lap-lane">
-                          <span className={`combo-dot ${BOAT_META[lane]?.className || ""}`}>{lane}</span>
-                        </div>
-                        {MANUAL_LAP_FIELDS.map((field) => (
-                          <label key={`lap-${lane}-${field.key}`} className="manual-lap-field">
-                            <span>{field.label}</span>
-                            <input
-                              type="number"
-                              min="0"
-                              max="2"
-                              step="1"
-                              value={manualLapScores?.[String(lane)]?.[field.key] ?? ""}
-                              onChange={(e) => onManualLapScoreChange(lane, field.key, e.target.value)}
-                            />
-                          </label>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                  <label className="manual-lap-memo">
-                    <span>メモ（任意）</span>
-                    <textarea
-                      value={manualLapMemo}
-                      onChange={(e) => setManualLapMemo(e.target.value)}
-                      placeholder="例: 2号艇のターン出口が良い、4号艇は旋回不安"
-                      rows={2}
-                    />
-                  </label>
-                  <div className="row-actions">
-                    <button className="fetch-btn" onClick={onSaveManualLapEvaluation} disabled={manualLapSaving}>
-                      {manualLapSaving ? "保存中..." : "評価を保存して再計算"}
-                    </button>
-                    {manualLapEvaluation?.updated_at ? (
-                      <span className="muted">最終更新: {new Date(manualLapEvaluation.updated_at).toLocaleString()}</span>
-                    ) : null}
-                  </div>
-                  {manualLapImpact?.enabled ? (
+                {adminMode ? (
+                  <section className="card">
+                    <h2>手動周回展示評価（管理用）</h2>
                     <p className="muted strategy-line">
-                      反映中: {manualLapImpact.applied_lane_count}艇 / 平均補正 {formatMaybeNumber(manualLapImpact.average_adjustment, 2)}
+                      本番ワークフローでは無効化されています。自動取得の展示データのみ予想に使用します。
                     </p>
-                  ) : null}
-                  {manualLapNotice ? <div className="notice-banner">{manualLapNotice}</div> : null}
-                </section>
+                    <div className="manual-lap-grid">
+                      {Array.from({ length: 6 }, (_, idx) => idx + 1).map((lane) => (
+                        <div key={`lap-${lane}`} className="manual-lap-row">
+                          <div className="manual-lap-lane">
+                            <span className={`combo-dot ${BOAT_META[lane]?.className || ""}`}>{lane}</span>
+                          </div>
+                          {MANUAL_LAP_FIELDS.map((field) => (
+                            <label key={`lap-${lane}-${field.key}`} className="manual-lap-field">
+                              <span>{field.label}</span>
+                              <input
+                                type="number"
+                                min="0"
+                                max="2"
+                                step="1"
+                                value={manualLapScores?.[String(lane)]?.[field.key] ?? ""}
+                                onChange={(e) => onManualLapScoreChange(lane, field.key, e.target.value)}
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                    <label className="manual-lap-memo">
+                      <span>メモ（任意）</span>
+                      <textarea
+                        value={manualLapMemo}
+                        onChange={(e) => setManualLapMemo(e.target.value)}
+                        rows={2}
+                      />
+                    </label>
+                    <div className="row-actions">
+                      <button className="fetch-btn" onClick={onSaveManualLapEvaluation} disabled={manualLapSaving}>
+                        {manualLapSaving ? "保存中..." : "保存（管理用）"}
+                      </button>
+                      {manualLapEvaluation?.updated_at ? (
+                        <span className="muted">最終更新: {new Date(manualLapEvaluation.updated_at).toLocaleString()}</span>
+                      ) : null}
+                    </div>
+                    {manualLapNotice ? <div className="notice-banner">{manualLapNotice}</div> : null}
+                  </section>
+                ) : null}
 
                 <section className={`card recommendation ${getRiskClass(raceRisk.recommendation)}`}>
                   <h2>総合推奨</h2>

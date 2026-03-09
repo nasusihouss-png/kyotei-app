@@ -65,8 +65,8 @@ import { saveRaceStartDisplaySnapshot, saveRaceStartDisplayResult } from "../../
 import { attachPredictionFeatureLogSettlement, savePredictionFeatureLog } from "../../prediction-feature-log.js";
 import { buildScenarioSuggestions } from "../../scenario-suggestion-engine.js";
 import { buildBetExplainability, buildRaceExplainability } from "../../explainability-engine.js";
+import { applyContenderSynergy } from "../../contender-synergy-engine.js";
 import {
-  applyManualLapToRanking,
   getManualLapEvaluation,
   saveManualLapEvaluation
 } from "../../manual-lap-evaluation-store.js";
@@ -584,7 +584,15 @@ function applyStartSignalToDecision(raceDecision, startSignals, entryMeta) {
   };
 }
 
-function computeRecommendationScore({ raceDecision, raceStructure, startSignals, entryMeta, race, learningWeights }) {
+function computeRecommendationScore({
+  raceDecision,
+  raceStructure,
+  startSignals,
+  entryMeta,
+  race,
+  learningWeights,
+  contenderSignals
+}) {
   const lw = learningWeights || {};
   const confidence = toNum(raceDecision?.confidence, 0);
   const headStability = toNum(raceStructure?.head_stability_score, 50);
@@ -607,6 +615,8 @@ function computeRecommendationScore({ raceDecision, raceStructure, startSignals,
   const gradeKey = String(race?.grade || race?.raceGrade || "").trim();
   const gradeAdj = toNum(lw?.grade_score_adjustments?.[gradeKey], 0) * gradeWeight;
   const sigAdj = toNum(lw?.start_signature_score_adjustments?.[String(startSignals?.signature || "")], 0);
+  const contenderConcentration = toNum(contenderSignals?.contender_concentration, 0);
+  const overlapCount = toNum((contenderSignals?.overlap_lanes || []).length, 0);
   const score = clamp(
     0,
     100,
@@ -616,6 +626,8 @@ function computeRecommendationScore({ raceDecision, raceStructure, startSignals,
       startStability * 0.24 * startWeight +
       (100 - chaosRisk) * 0.2 -
       entryPenalty +
+      contenderConcentration * 0.08 +
+      overlapCount * 2.2 +
       venueAdj +
       gradeAdj +
       sigAdj
@@ -828,8 +840,14 @@ raceRouter.get("/race", async (req, res, next) => {
     });
 
     const rankingBase = rankRace(entryAdjusted.racersWithFeatures);
-    const manualLapAdjusted = applyManualLapToRanking(rankingBase, manualLapEvaluation);
-    const ranking = manualLapAdjusted.ranking;
+    const contenderAdjusted = applyContenderSynergy(rankingBase);
+    const ranking = contenderAdjusted.ranking;
+    const manualLapImpact = {
+      enabled: false,
+      applied_lane_count: 0,
+      average_adjustment: 0,
+      note: "manual_lap_disabled"
+    };
     const preRaceAnalysis = analyzePreRaceForm({
       ranking,
       race: data.race
@@ -1110,7 +1128,8 @@ raceRouter.get("/race", async (req, res, next) => {
       startSignals,
       entryMeta,
       race: data.race,
-      learningWeights
+      learningWeights,
+      contenderSignals: contenderAdjusted.contenderSignals
     });
     const ticketGenerationV2 = generateTicketsV2({
       headSelection: headSelectionRefined,
@@ -1213,7 +1232,7 @@ raceRouter.get("/race", async (req, res, next) => {
       raceIndexes,
       entryMeta,
       startSignals,
-      manualLapImpact: manualLapAdjusted.manualLapImpact,
+      manualLapImpact,
       headSelection: headSelectionRefined,
       scenarioSuggestions
     });
@@ -1310,7 +1329,7 @@ raceRouter.get("/race", async (req, res, next) => {
       racers: data.racers,
       raceId,
       manualLapEvaluation,
-      manualLapImpact: manualLapAdjusted.manualLapImpact,
+      manualLapImpact,
       is_recommended: String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() !== "SKIP",
       recommendation_label:
         String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() === "SKIP"
@@ -1324,6 +1343,7 @@ raceRouter.get("/race", async (req, res, next) => {
       startSignalAnalysis: startSignals,
       recommendation_score,
       scenarioSuggestions,
+      contenderSignals: contenderAdjusted.contenderSignals,
       explainability: raceExplainability,
       learningWeights,
       prediction_before_entry_change,
@@ -1505,8 +1525,14 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceNo: data.race?.raceNo
           });
           const manualLapEvaluation = raceId ? getManualLapEvaluation(raceId) : null;
-          const manualLapAdjusted = applyManualLapToRanking(rankingBase, manualLapEvaluation);
-          const ranking = manualLapAdjusted.ranking;
+          const contenderAdjusted = applyContenderSynergy(rankingBase);
+          const ranking = contenderAdjusted.ranking;
+          const manualLapImpact = {
+            enabled: false,
+            applied_lane_count: 0,
+            average_adjustment: 0,
+            note: "manual_lap_disabled"
+          };
           const preRaceAnalysis = analyzePreRaceForm({ ranking, race: data.race });
           const pattern = analyzeRacePattern(ranking);
           const adjustedChaos = Math.min(
@@ -1754,7 +1780,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             startSignals,
             entryMeta,
             race: data.race,
-            learningWeights
+            learningWeights,
+            contenderSignals: contenderAdjusted.contenderSignals
           });
           const recItem = {
             raceId: raceId || `${String(date).replace(/-/g, "")}_${venueId}_${raceNo}`,
@@ -1782,8 +1809,9 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             entry_changed: entryMeta.entry_changed,
             entry_change_type: entryMeta.entry_change_type,
             recommendation_score,
-            manualLapImpact: manualLapAdjusted.manualLapImpact,
-            manual_lap_applied: !!manualLapAdjusted?.manualLapImpact?.enabled,
+            manualLapImpact,
+            manual_lap_applied: false,
+            contenderSignals: contenderAdjusted.contenderSignals,
             startSignalAnalysis: startSignals,
             tickets: stakeAllocation.tickets.slice(0, 4).map((t) => ({
               combo: t.combo,
@@ -1825,7 +1853,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceIndexes,
             entryMeta,
             startSignals,
-            manualLapImpact: manualLapAdjusted.manualLapImpact,
+            manualLapImpact,
             headSelection: headSelectionRefined,
             scenarioSuggestions
           });
@@ -1983,8 +2011,14 @@ raceRouter.get("/rankings", async (req, res, next) => {
             raceNo: data.race?.raceNo
           });
           const manualLapEvaluation = raceId ? getManualLapEvaluation(raceId) : null;
-          const manualLapAdjusted = applyManualLapToRanking(rankingBase, manualLapEvaluation);
-          const ranking = manualLapAdjusted.ranking;
+          const contenderAdjusted = applyContenderSynergy(rankingBase);
+          const ranking = contenderAdjusted.ranking;
+          const manualLapImpact = {
+            enabled: false,
+            applied_lane_count: 0,
+            average_adjustment: 0,
+            note: "manual_lap_disabled"
+          };
           const preRaceAnalysis = analyzePreRaceForm({
             ranking,
             race: data.race
@@ -2216,7 +2250,8 @@ raceRouter.get("/rankings", async (req, res, next) => {
             startSignals,
             entryMeta,
             race: data.race,
-            learningWeights
+            learningWeights,
+            contenderSignals: contenderAdjusted.contenderSignals
           });
 
           const ranking_score = mode === "hit_rate"
@@ -2273,8 +2308,9 @@ raceRouter.get("/rankings", async (req, res, next) => {
             actual_entry_order: entryMeta.actual_entry_order,
             entry_changed: entryMeta.entry_changed,
             entry_change_type: entryMeta.entry_change_type,
-            manualLapImpact: manualLapAdjusted.manualLapImpact,
-            manual_lap_applied: !!manualLapAdjusted?.manualLapImpact?.enabled
+            manualLapImpact,
+            manual_lap_applied: false,
+            contenderSignals: contenderAdjusted.contenderSignals
           });
         } catch (err) {
           errors.push({
@@ -2312,7 +2348,8 @@ raceRouter.get("/rankings", async (req, res, next) => {
       entry_changed: !!row.entry_changed,
       entry_change_type: row.entry_change_type || "none",
       manual_lap_applied: !!row.manual_lap_applied,
-      manualLapImpact: row.manualLapImpact || null
+      manualLapImpact: row.manualLapImpact || null,
+      contenderSignals: row.contenderSignals || null
     }));
 
     return res.json({
@@ -3607,6 +3644,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           start_display_st_json,
           start_display_positions_json,
           start_display_signature,
+          start_display_timing_json,
           start_display_layout_mode,
           start_display_source,
           source_fetched_at,
@@ -3628,6 +3666,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           start_display_st: safeJsonParse(row.start_display_st_json, {}),
           start_display_positions: safeJsonParse(row.start_display_positions_json, []),
           start_display_signature: row.start_display_signature || null,
+          start_display_timing: safeJsonParse(row.start_display_timing_json, {}),
           start_display_layout_mode: row.start_display_layout_mode || null,
           start_display_source: row.start_display_source || null,
           source_fetched_at: row.source_fetched_at || null,

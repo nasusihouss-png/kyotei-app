@@ -337,12 +337,14 @@ function parseBeforeinfo(html) {
     const entryCourseFromRow = toNumber(row2Cells.eq(1).text());
 
     const row3Cells = $row3.children("td");
-    const exhibitionStFromRow = toDecimal(row3Cells.eq(2).text());
+    const exhibitionStRawFromRow = normalizeSpace(row3Cells.eq(2).text()) || null;
+    const exhibitionStFromRow = toDecimal(exhibitionStRawFromRow);
 
     byLane.set(lane, {
       exhibitionTime,
       entryCourse: entryCourseFromRow,
       exhibitionSt: exhibitionStFromRow,
+      exhibitionStRaw: exhibitionStRawFromRow,
       tilt
     });
   });
@@ -354,14 +356,16 @@ function parseBeforeinfo(html) {
     const lane = toNumber($el.find(".table1_boatImage1Number").first().text());
     if (!lane) return;
 
-    const exhibitionSt = toDecimal($el.find(".table1_boatImage1Time").first().text());
+    const exhibitionStRaw = normalizeSpace($el.find(".table1_boatImage1Time").first().text()) || null;
+    const exhibitionSt = toDecimal(exhibitionStRaw);
     const entryCourse = idx + 1;
 
     const current = byLane.get(lane) || {};
     byLane.set(lane, {
       ...current,
       entryCourse: current.entryCourse ?? entryCourse,
-      exhibitionSt: current.exhibitionSt ?? exhibitionSt
+      exhibitionSt: current.exhibitionSt ?? exhibitionSt,
+      exhibitionStRaw: current.exhibitionStRaw ?? exhibitionStRaw
     });
   });
 
@@ -419,6 +423,7 @@ export async function getRaceData({ date, venueId, raceNo }) {
       ...racer,
       exhibitionTime: b.exhibitionTime ?? null,
       exhibitionSt: b.exhibitionSt ?? null,
+      exhibitionStRaw: b.exhibitionStRaw ?? null,
       entryCourse: b.entryCourse ?? null,
       tilt: b.tilt ?? null
     };
