@@ -61,6 +61,7 @@ import {
 } from "../../placed-bet-service.js";
 import { runSelfLearning } from "../../self-learning-engine.js";
 import { saveRaceStartDisplaySnapshot, saveRaceStartDisplayResult } from "../../race-start-display-store.js";
+import { attachPredictionFeatureLogSettlement, savePredictionFeatureLog } from "../../prediction-feature-log.js";
 
 export const raceRouter = Router();
 
@@ -863,6 +864,17 @@ raceRouter.get("/race", async (req, res, next) => {
         entry_changed: entryMeta.entry_changed,
         entry_change_type: entryMeta.entry_change_type
       }
+    });
+    savePredictionFeatureLog({
+      raceId,
+      race: data.race,
+      racers: data.racers,
+      startDisplay,
+      entryMeta,
+      raceDecision,
+      predictionSnapshot: predictionWithEntry,
+      predictionBeforeEntryChange: prediction_before_entry_change,
+      predictionAfterEntryChange: prediction_after_entry_change
     });
 
     return res.json({
@@ -1750,6 +1762,12 @@ raceRouter.post("/race/result", async (req, res, next) => {
     saveRaceStartDisplayResult({
       raceId,
       settledResult: top3.join("-")
+    });
+    attachPredictionFeatureLogSettlement({
+      raceId,
+      actualResult: top3.join("-"),
+      settledBetHitCount: comparison?.hitCount ?? null,
+      settledBetCount: comparison?.totalBets ?? null
     });
 
     const comparison = compareActualTop3VsPredictedBets(top3, predictedBets, {
@@ -2999,6 +3017,36 @@ raceRouter.get("/results-history", async (req, res, next) => {
     });
 
     return res.json({ items });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.get("/prediction-feature-logs", async (req, res, next) => {
+  try {
+    const limitRaw = Number(req.query?.limit);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 300) : 100;
+    const rows = db
+      .prepare(
+        `
+        SELECT *
+        FROM prediction_feature_logs
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+      `
+      )
+      .all(limit)
+      .map((row) => ({
+        ...row,
+        start_display_st: safeJsonParse(row.start_display_st_json, {}),
+        predicted_entry_order: safeJsonParse(row.predicted_entry_order_json, []),
+        actual_entry_order: safeJsonParse(row.actual_entry_order_json, []),
+        prediction_snapshot: safeJsonParse(row.prediction_snapshot_json, {}),
+        prediction_before_entry_change: safeJsonParse(row.prediction_before_entry_change_json, {}),
+        prediction_after_entry_change: safeJsonParse(row.prediction_after_entry_change_json, {})
+      }));
+
+    return res.json({ items: rows });
   } catch (err) {
     return next(err);
   }
