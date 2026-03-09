@@ -140,6 +140,12 @@ function ensurePlacedBetsColumns() {
   if (!colNames.has("bet_type")) {
     db.exec("ALTER TABLE placed_bets ADD COLUMN bet_type TEXT DEFAULT 'trifecta'");
   }
+  if (!colNames.has("copied_from_ai")) {
+    db.exec("ALTER TABLE placed_bets ADD COLUMN copied_from_ai INTEGER DEFAULT 0");
+  }
+  if (!colNames.has("ai_reference_id")) {
+    db.exec("ALTER TABLE placed_bets ADD COLUMN ai_reference_id TEXT");
+  }
 }
 
 ensurePlacedBetsColumns();
@@ -152,6 +158,8 @@ const insertPlacedBetStmt = db.prepare(`
     race_no,
     source,
     bet_type,
+    copied_from_ai,
+    ai_reference_id,
     combo,
     bet_amount,
     bought_odds,
@@ -167,6 +175,8 @@ const insertPlacedBetStmt = db.prepare(`
     @race_no,
     @source,
     @bet_type,
+    @copied_from_ai,
+    @ai_reference_id,
     @combo,
     @bet_amount,
     @bought_odds,
@@ -209,6 +219,8 @@ const listPlacedBetsStmt = db.prepare(`
     race_no,
     source,
     bet_type,
+    copied_from_ai,
+    ai_reference_id,
     combo,
     bet_amount,
     bought_odds,
@@ -331,6 +343,8 @@ export function createPlacedBet({
   race_no,
   source,
   bet_type,
+  copied_from_ai,
+  ai_reference_id,
   selection,
   combo,
   bet_amount,
@@ -345,6 +359,8 @@ export function createPlacedBet({
   const raceNo = toInt(race_no);
   const normalizedSource = String(source || "ai").trim().toLowerCase() === "manual" ? "manual" : "ai";
   const normalizedBetType = String(bet_type || "trifecta").trim().toLowerCase();
+  const copiedFromAi = toInt(copied_from_ai, 0) === 1 ? 1 : 0;
+  const aiReferenceId = ai_reference_id ? String(ai_reference_id) : null;
   const normalizedSelection = normalizeSelectionByBetType(normalizedBetType, selection || combo);
   const betAmount = toInt(bet_amount);
   const boughtOdds = toFloat(bought_odds);
@@ -387,6 +403,8 @@ export function createPlacedBet({
     race_no: raceNo,
     source: normalizedSource,
     bet_type: normalizedBetType,
+    copied_from_ai: copiedFromAi,
+    ai_reference_id: aiReferenceId,
     combo: normalizedSelection.value,
     bet_amount: betAmount,
     bought_odds: boughtOdds,
@@ -484,6 +502,8 @@ export function listPlacedBets() {
     ...row,
     source: String(row.source || "ai").toLowerCase() === "manual" ? "manual" : "ai",
     bet_type: String(row.bet_type || "trifecta").toLowerCase(),
+    copied_from_ai: toInt(row.copied_from_ai, 0) === 1 ? 1 : 0,
+    ai_reference_id: row.ai_reference_id ?? null,
     selection: String(row.combo || ""),
     stake: toInt(row.bet_amount, 0),
     note: row.memo ?? null,

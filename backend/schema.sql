@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS placed_bets (
   race_no INTEGER NOT NULL,
   source TEXT DEFAULT 'ai',
   bet_type TEXT DEFAULT 'trifecta',
+  copied_from_ai INTEGER DEFAULT 0,
+  ai_reference_id TEXT,
   combo TEXT NOT NULL,
   bet_amount INTEGER NOT NULL,
   bought_odds REAL,

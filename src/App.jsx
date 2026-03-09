@@ -528,6 +528,10 @@ export default function App() {
   const [manualSelectionsText, setManualSelectionsText] = useState("");
   const [manualStake, setManualStake] = useState(100);
   const [manualNote, setManualNote] = useState("");
+  const [manualCopiedMeta, setManualCopiedMeta] = useState({
+    copied_from_ai: false,
+    ai_reference_id: null
+  });
   const [builderSlots, setBuilderSlots] = useState({ first: null, second: null, third: null });
   const [quickBetAmount, setQuickBetAmount] = useState(100);
   const [pendingTickets, setPendingTickets] = useState([]);
@@ -1100,6 +1104,8 @@ export default function App() {
           race_no: Number(journalForm.race_no),
           source: "manual",
           bet_type: manualBetType,
+          copied_from_ai: manualCopiedMeta.copied_from_ai ? 1 : 0,
+          ai_reference_id: manualCopiedMeta.ai_reference_id || null,
           selection,
           combo: selection,
           bet_amount: stake,
@@ -1110,6 +1116,10 @@ export default function App() {
       await loadPerformance();
       setManualSelectionsText("");
       setManualNote("");
+      setManualCopiedMeta({
+        copied_from_ai: false,
+        ai_reference_id: null
+      });
       setJournalNotice(`手動ベットを登録しました (${uniqueSelections.length}件)`);
     } catch (e) {
       setJournalError(e.message || "Failed to register manual bets");
@@ -1162,6 +1172,49 @@ export default function App() {
       ev: bet?.ev,
       odds: bet?.odds
     });
+  };
+
+  const onCopyAiToManual = (bet, sourceTag = "ai_recommendation") => {
+    const combo = normalizeCombo(bet?.combo);
+    if (!combo || combo.split("-").length !== 3) {
+      setJournalError("コピー対象の組番が不正です。");
+      return;
+    }
+
+    const selectedRaceDate = race.date || date;
+    const selectedVenueId = Number(race.venueId ?? venueId);
+    const selectedRaceNo = Number(race.raceNo ?? raceNo);
+    const selectedRaceId =
+      data?.raceId ||
+      `${String(selectedRaceDate || "").replace(/-/g, "")}_${selectedVenueId}_${selectedRaceNo}`;
+    const defaultAmount = roundBetTo100(
+      bet?.recommended_bet ?? bet?.roundedBet ?? bet?.bet ?? 100
+    );
+
+    setScreen("journal");
+    setJournalForm((prev) => ({
+      ...prev,
+      race_id: selectedRaceId,
+      race_date: selectedRaceDate,
+      venue_id: selectedVenueId,
+      race_no: selectedRaceNo
+    }));
+    setManualBetType("trifecta");
+    setManualStake(defaultAmount);
+    setManualSelectionsText((prev) => {
+      const lines = String(prev || "")
+        .split(/\r?\n|,/)
+        .map((v) => v.trim())
+        .filter(Boolean);
+      if (lines.includes(combo)) return lines.join("\n");
+      return [...lines, combo].join("\n");
+    });
+    setManualCopiedMeta({
+      copied_from_ai: true,
+      ai_reference_id: `${selectedRaceId}:${sourceTag}`
+    });
+    setManualNote((prev) => prev || "AIコピー編集");
+    setJournalNotice("AI買い目を手動フォームへコピーしました");
   };
 
   const onStartEditBet = (bet) => {
@@ -1716,6 +1769,9 @@ export default function App() {
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
+                          <button className="fetch-btn secondary" onClick={() => onCopyAiToManual(bet, "ev_bet")} title="手動フォームへコピー">
+                            手動へコピー
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -1740,6 +1796,9 @@ export default function App() {
                           <span className="bet-amount-strong">金額 JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
+                          </button>
+                          <button className="fetch-btn secondary" onClick={() => onCopyAiToManual(bet, "recommended_bet")} title="手動フォームへコピー">
+                            手動へコピー
                           </button>
                         </div>
                       ))}
@@ -1791,6 +1850,9 @@ export default function App() {
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
+                          <button className="fetch-btn secondary" onClick={() => onCopyAiToManual({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet }, "optimized_ticket")} title="手動フォームへコピー">
+                            手動へコピー
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -1825,6 +1887,9 @@ export default function App() {
                             <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: oddsByCombo.get(row.combo), bet: 100 })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                               記録に追加
                             </button>
+                            <button className="fetch-btn secondary" onClick={() => onCopyAiToManual({ combo: row.combo, prob: row.prob, odds: oddsByCombo.get(row.combo), bet: 100 }, "simulation_top")} title="手動フォームへコピー">
+                              手動へコピー
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -1848,6 +1913,9 @@ export default function App() {
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo, bet: 100 })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
+                          <button className="fetch-btn secondary" onClick={() => onCopyAiToManual({ combo, bet: 100 }, "ticket_v2_primary")} title="手動フォームへコピー">
+                            手動へコピー
+                          </button>
                         </div>
                       ))}
                       {(ticketGenerationV2.secondary_tickets || []).slice(0, 8).map((combo, idx) => (
@@ -1858,6 +1926,9 @@ export default function App() {
                           <span>-</span>
                           <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo, bet: 100 })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
+                          </button>
+                          <button className="fetch-btn secondary" onClick={() => onCopyAiToManual({ combo, bet: 100 }, "ticket_v2_secondary")} title="手動フォームへコピー">
+                            手動へコピー
                           </button>
                         </div>
                       ))}
@@ -1956,6 +2027,24 @@ export default function App() {
                               title={disableBetActions ? "Not Recommended race" : ""}
                             >
                               記録に追加
+                            </button>
+                            <button
+                              className="fetch-btn secondary"
+                              onClick={() =>
+                                onCopyAiToManual(
+                                  {
+                                    combo: ticket.combo,
+                                    prob: ticket.prob,
+                                    odds: ticket.odds,
+                                    ev: ticket.ev,
+                                    bet: ticket.bet ?? 100
+                                  },
+                                  "recommendation_list"
+                                )
+                              }
+                              title="手動フォームへコピー"
+                            >
+                              手動へコピー
                             </button>
                           </div>
                         ))}
@@ -2665,6 +2754,7 @@ export default function App() {
                       <div key={`${ticket.raceKey}-${ticket.combo}`} className="list-row list-row-actions">
                         <strong><ComboBadge combo={ticket.combo} /></strong>
                         <span className="chip">{ticket.source === "manual" ? "手動" : "AI"}</span>
+                        {ticket.source === "manual" && ticket.copied_from_ai ? <span className="chip">AIコピー</span> : null}
                         <span className="chip">{ticket.bet_type || "trifecta"}</span>
                         <span>
                           JPY
@@ -2694,6 +2784,12 @@ export default function App() {
 
               <div className="card" style={{ marginTop: 12 }}>
                 <h3>手動ベット登録</h3>
+                {manualCopiedMeta.copied_from_ai ? (
+                  <div className="notice-banner" style={{ marginBottom: 8 }}>
+                    AI買い目コピー編集モード
+                    {manualCopiedMeta.ai_reference_id ? ` (${manualCopiedMeta.ai_reference_id})` : ""}
+                  </div>
+                ) : null}
                 <div className="controls-grid">
                   <label>
                     <span>ベット種別</span>
@@ -2736,6 +2832,20 @@ export default function App() {
                   />
                 </label>
                 <div className="row-actions" style={{ marginTop: 8 }}>
+                  {manualCopiedMeta.copied_from_ai ? (
+                    <button
+                      className="fetch-btn secondary"
+                      onClick={() =>
+                        setManualCopiedMeta({
+                          copied_from_ai: false,
+                          ai_reference_id: null
+                        })
+                      }
+                      type="button"
+                    >
+                      AIコピー解除
+                    </button>
+                  ) : null}
                   <button
                     className="fetch-btn secondary"
                     onClick={onRegisterManualBets}
