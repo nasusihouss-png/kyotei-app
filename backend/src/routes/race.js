@@ -62,6 +62,12 @@ import {
 import { runSelfLearning } from "../../self-learning-engine.js";
 import { saveRaceStartDisplaySnapshot, saveRaceStartDisplayResult } from "../../race-start-display-store.js";
 import { attachPredictionFeatureLogSettlement, savePredictionFeatureLog } from "../../prediction-feature-log.js";
+import {
+  getActiveLearningWeights,
+  getLatestLearningRun,
+  rollbackLearningWeights,
+  runLearningBatch
+} from "../../learning-weight-engine.js";
 
 export const raceRouter = Router();
 
@@ -463,24 +469,41 @@ function applyStartSignalToDecision(raceDecision, startSignals, entryMeta) {
   };
 }
 
-function computeRecommendationScore({ raceDecision, raceStructure, startSignals, entryMeta }) {
+function computeRecommendationScore({ raceDecision, raceStructure, startSignals, entryMeta, race, learningWeights }) {
+  const lw = learningWeights || {};
   const confidence = toNum(raceDecision?.confidence, 0);
   const headStability = toNum(raceStructure?.head_stability_score, 50);
   const chaosRisk = toNum(raceStructure?.chaos_risk_score, 50);
   const startStability = toNum(startSignals?.stability_score, 50);
   const mode = normalizeModeValue(raceDecision?.mode || "UNKNOWN");
   const modeBase = mode === "FULL_BET" ? 12 : mode === "SMALL_BET" ? 8 : mode === "MICRO_BET" ? 4 : 0;
+  const baseEntryPenalty = toNum(lw?.entry_changed_penalty, 6);
   const entryPenalty =
-    (entryMeta?.severity || "none") === "high" ? 8 : (entryMeta?.severity || "none") === "medium" ? 4 : 0;
+    (entryMeta?.severity || "none") === "high"
+      ? baseEntryPenalty
+      : (entryMeta?.severity || "none") === "medium"
+        ? baseEntryPenalty * 0.55
+        : 0;
+  const startWeight = clamp(0.8, 1.2, toNum(lw?.start_signal_weight, 1));
+  const venueWeight = clamp(0.8, 1.25, toNum(lw?.venue_correction_weight, 1));
+  const gradeWeight = clamp(0.8, 1.25, toNum(lw?.grade_correction_weight, 1));
+  const venueAdj =
+    toNum(lw?.venue_score_adjustments?.[String(toInt(race?.venueId, 0))], 0) * venueWeight;
+  const gradeKey = String(race?.grade || race?.raceGrade || "").trim();
+  const gradeAdj = toNum(lw?.grade_score_adjustments?.[gradeKey], 0) * gradeWeight;
+  const sigAdj = toNum(lw?.start_signature_score_adjustments?.[String(startSignals?.signature || "")], 0);
   const score = clamp(
     0,
     100,
     modeBase +
       confidence * 0.34 +
       headStability * 0.22 +
-      startStability * 0.24 +
+      startStability * 0.24 * startWeight +
       (100 - chaosRisk) * 0.2 -
-      entryPenalty
+      entryPenalty +
+      venueAdj +
+      gradeAdj +
+      sigAdj
   );
   return Number(score.toFixed(2));
 }
@@ -612,8 +635,10 @@ function calcHitRateRankingScore({
   marketTrap,
   ticketOptimization,
   startSignals,
-  recommendationScore
+  recommendationScore,
+  learningWeights
 }) {
+  const lw = learningWeights || {};
   const mode = String(raceDecision?.mode || "SMALL_BET").toUpperCase();
   const modeBase = mode === "FULL_BET" ? 18 : mode === "SMALL_BET" ? 11 : mode === "MICRO_BET" ? 7 : 0;
   const confidence = toNum(raceDecision?.confidence, 0);
@@ -625,20 +650,22 @@ function calcHitRateRankingScore({
   const ticketQuality = toNum(ticketOptimization?.ticket_confidence_score, 50);
   const startStability = toNum(startSignals?.stability_score, 50);
   const recScore = toNum(recommendationScore, 50);
+  const rankingWeight = clamp(0.88, 1.18, toNum(lw?.ranking_weight, 1));
+  const startWeight = clamp(0.8, 1.2, toNum(lw?.start_signal_weight, 1));
   const confidenceSeparationBoost = Math.max(0, confidence - 65) * 0.12;
   const confidenceLowPenalty = Math.max(0, 55 - confidence) * 0.16;
 
   const score = clamp(
     0,
     100,
-    modeBase +
+    modeBase * rankingWeight +
       recScore * 0.16 +
       confidence * 0.22 +
       confidenceSeparationBoost -
       confidenceLowPenalty +
       headStability * 0.2 +
       headGap * 0.14 +
-      startStability * 0.16 +
+      startStability * 0.16 * startWeight +
       (100 - chaosRisk) * 0.16 +
       valueBalance * 0.12 +
       ticketQuality * 0.12 -
@@ -659,6 +686,7 @@ raceRouter.get("/race", async (req, res, next) => {
     }
 
     const data = await getRaceData({ date, venueId, raceNo });
+    const learningWeights = getActiveLearningWeights();
     const raceId = saveRace(data);
     const entryMeta = buildEntryOrderMeta(data.racers);
     const baseFeatures = applyMotorPerformanceFeatures(
@@ -955,7 +983,9 @@ raceRouter.get("/race", async (req, res, next) => {
       raceDecision,
       raceStructure,
       startSignals,
-      entryMeta
+      entryMeta,
+      race: data.race,
+      learningWeights
     });
     const ticketGenerationV2 = generateTicketsV2({
       headSelection: headSelectionRefined,
@@ -1107,6 +1137,7 @@ raceRouter.get("/race", async (req, res, next) => {
       entry_change_type: entryMeta.entry_change_type,
       startSignalAnalysis: startSignals,
       recommendation_score,
+      learningWeights,
       prediction_before_entry_change,
       prediction_after_entry_change,
       racePattern,
@@ -1169,6 +1200,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
     const confidenceMin = dateMode.isFuture ? Math.min(confidenceMinBase, 52) : confidenceMinBase;
     const maxChaos = dateMode.isFuture ? Math.max(maxChaosBase, 82) : maxChaosBase;
     const headStabilityMin = dateMode.isFuture ? Math.min(headStabilityMinBase, 38) : headStabilityMinBase;
+    const learningWeights = getActiveLearningWeights();
     const raceNoList = String(req.query?.raceNos || "")
       .split(",")
       .map((v) => toInt(v))
@@ -1458,7 +1490,9 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceDecision,
             raceStructure,
             startSignals,
-            entryMeta
+            entryMeta,
+            race: data.race,
+            learningWeights
           });
           const recItem = {
             raceId: `${date}_${venueId}_${raceNo}`,
@@ -1510,7 +1544,10 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             }
           };
           const allowModes = dateMode.isFuture ? new Set(["FULL_BET", "SMALL_BET", "MICRO BET"]) : new Set(["FULL_BET"]);
-          const recommendationScoreMin = dateMode.isFuture ? 42 : 52;
+          const baseRecommendationThreshold = toNum(learningWeights?.recommendation_threshold, 52);
+          const recommendationScoreMin = dateMode.isFuture
+            ? Math.max(40, baseRecommendationThreshold - 10)
+            : baseRecommendationThreshold;
           const worthBetting =
             allowModes.has(mode) &&
             confidence >= confidenceMin &&
@@ -1862,7 +1899,9 @@ raceRouter.get("/rankings", async (req, res, next) => {
             raceDecision,
             raceStructure,
             startSignals,
-            entryMeta
+            entryMeta,
+            race: data.race,
+            learningWeights
           });
 
           const ranking_score = mode === "hit_rate"
@@ -1874,7 +1913,8 @@ raceRouter.get("/rankings", async (req, res, next) => {
               marketTrap,
               ticketOptimization,
               startSignals,
-              recommendationScore: recommendation_score
+              recommendationScore: recommendation_score,
+              learningWeights
             })
             : calcHitRateRankingScore({
               raceDecision,
@@ -1884,7 +1924,8 @@ raceRouter.get("/rankings", async (req, res, next) => {
               marketTrap,
               ticketOptimization,
               startSignals,
-              recommendationScore: recommendation_score
+              recommendationScore: recommendation_score,
+              learningWeights
             });
 
           items.push({
@@ -2840,6 +2881,46 @@ raceRouter.get("/start-entry-analysis", async (req, res, next) => {
       },
       ai_hit_rate_comparison: hitRateComparison
     });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.get("/learning/latest", async (_req, res, next) => {
+  try {
+    return res.json(getLatestLearningRun());
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.post("/learning/batch", async (req, res, next) => {
+  try {
+    const apply = String(req.body?.apply ?? "0") === "1" || req.body?.apply === true;
+    const dryRun = String(req.body?.dryRun ?? "1") !== "0" && req.body?.dryRun !== false;
+    const result = runLearningBatch({
+      apply,
+      dryRun
+    });
+    return res.json(result);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.post("/learning/rollback", async (req, res, next) => {
+  try {
+    const runId = toInt(req.body?.runId, null);
+    const result = rollbackLearningWeights({
+      runId
+    });
+    if (!result?.ok) {
+      return res.status(400).json({
+        error: "rollback_failed",
+        message: result?.message || "rollback failed"
+      });
+    }
+    return res.json(result);
   } catch (err) {
     return next(err);
   }

@@ -176,3 +176,22 @@ CREATE TABLE IF NOT EXISTS prediction_feature_logs (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (race_id) REFERENCES races(race_id)
 );
+
+CREATE TABLE IF NOT EXISTS learning_weight_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  mode TEXT NOT NULL,
+  sample_size INTEGER NOT NULL DEFAULT 0,
+  base_weights_json TEXT NOT NULL,
+  suggested_weights_json TEXT NOT NULL,
+  applied_weights_json TEXT,
+  summary TEXT,
+  reverted_from_run_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS learning_weight_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  active_weights_json TEXT NOT NULL,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  last_run_id INTEGER
+);
