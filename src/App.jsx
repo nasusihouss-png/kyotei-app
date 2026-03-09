@@ -466,54 +466,36 @@ function getStartDisplayRows(startDisplay) {
     .map((v) => Number(v))
     .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6);
   const lanes = order.length ? order : [1, 2, 3, 4, 5, 6];
-  const stValues = lanes
-    .map((lane) => {
-      const t = timingMap[String(lane)];
-      if (t && Number.isFinite(Number(t.units)) && String(t.type || "").toLowerCase() === "normal") {
-        return Number(t.units);
-      }
-      const st = Number(stMap[String(lane)]);
-      return Number.isFinite(st) ? st * 10 : null;
-    })
-    .filter((v) => Number.isFinite(v));
-  const minSt = stValues.length ? Math.min(...stValues) : null;
-  const maxSt = stValues.length ? Math.max(...stValues) : null;
-  const stRange = minSt !== null && maxSt !== null ? Math.max(0.001, maxSt - minSt) : 0.001;
-
-  const computedXByLane = new Map();
+  const axisPositionByLane = new Map();
   lanes.forEach((lane, idx) => {
     const timing = timingMap[String(lane)] || {};
     const timingType = String(timing?.type || "normal").toLowerCase();
-    const timingUnitsRaw = Number(timing?.units);
+    const axisFromTiming = Number(timing?.axis_position);
     const fallbackSt = Number(stMap[String(lane)]);
-    const normalUnits = Number.isFinite(timingUnitsRaw)
-      ? timingUnitsRaw
-      : Number.isFinite(fallbackSt)
-        ? fallbackSt * 10
-        : null;
-    let xUnit = null;
-    if (timingType === "f" || timingType === "l") {
-      const penaltyUnits = Number.isFinite(timingUnitsRaw) ? timingUnitsRaw : 1;
-      xUnit = 100 + Math.max(0, Math.min(20, penaltyUnits));
-    } else if (normalUnits !== null) {
-      xUnit = 100 - Math.max(0, Math.min(100, normalUnits));
+    const normalSt = Number.isFinite(fallbackSt)
+      ? Math.max(0, Math.min(0.99, fallbackSt))
+      : null;
+    let axisPosition = null;
+    if (Number.isFinite(axisFromTiming)) {
+      axisPosition = axisFromTiming;
+    } else if (timingType === "f" || timingType === "l") {
+      const raw = String(timing?.raw || "").toUpperCase();
+      const m = raw.match(/^[FL]\.?(\d{1,2})$/);
+      const penalty = m ? Number(m[1]) / 10 : 0.1;
+      axisPosition = 100 + Math.max(0, Math.min(20, penalty));
+    } else if (normalSt !== null) {
+      axisPosition = 100 - normalSt * 100;
     } else {
-      xUnit = 100 - (idx + 1) * 1.8;
+      axisPosition = 100 - (idx + 1) * 1.8;
     }
-    computedXByLane.set(lane, xUnit);
+    axisPositionByLane.set(lane, axisPosition);
   });
-
-  const xValues = lanes
-    .map((lane) => positionsByLane.get(lane)?.x ?? computedXByLane.get(lane))
-    .filter((v) => Number.isFinite(v));
-  const minX = xValues.length ? Math.min(...xValues) : 0;
-  const maxX = xValues.length ? Math.max(...xValues) : 95;
-  const xRange = Math.max(1, maxX - minX);
 
   return lanes.map((lane, idx) => {
     const pos = positionsByLane.get(lane);
-    const x = Number.isFinite(pos?.x) ? pos.x : computedXByLane.get(lane);
-    const leftPct = Math.max(5, Math.min(95, ((x - minX) / xRange) * 90 + 5));
+    const axis = Number.isFinite(pos?.x) ? pos.x : axisPositionByLane.get(lane);
+    const axisClamped = Math.max(0, Math.min(120, Number(axis)));
+    const leftPct = (axisClamped / 120) * 100;
     const st = stMap[String(lane)];
     const timing = timingMap[String(lane)] || {};
     const timingDisplay = timing?.display || (Number.isFinite(Number(st)) ? Number(st).toFixed(2) : "--");
@@ -521,7 +503,7 @@ function getStartDisplayRows(startDisplay) {
       lane,
       order: idx + 1,
       leftPct,
-      xUnit: Number.isFinite(x) ? Number(x.toFixed(2)) : null,
+      xUnit: Number.isFinite(axisClamped) ? Number(axisClamped.toFixed(2)) : null,
       st: Number.isFinite(Number(st)) ? Number(st) : null,
       stDisplay: timingDisplay
     };

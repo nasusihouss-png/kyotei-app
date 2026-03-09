@@ -122,6 +122,23 @@ function normalizeTimingRaw(raw) {
   return String(raw || "").replace(/\s+/g, "").toUpperCase();
 }
 
+function parsePenaltyTiming(raw, prefix) {
+  const normalized = normalizeTimingRaw(raw);
+  const re = new RegExp(`^${prefix}\\.?([0-9]{1,2})$`, "i");
+  const match = normalized.match(re);
+  if (!match) return null;
+  const n = Number(match[1]);
+  if (!Number.isFinite(n)) return null;
+  const signed = -(n / 10);
+  return {
+    raw: `${prefix}.${String(n).padStart(2, "0")}`,
+    type: prefix.toLowerCase() === "f" ? "f" : "l",
+    signed_seconds: Number(signed.toFixed(2)),
+    axis_position: Number((100 + Math.min(20, Math.max(0, n / 10))).toFixed(2)),
+    display: `${prefix}.${String(n).padStart(2, "0")}`
+  };
+}
+
 function buildStartDisplayTiming(racers, stMap) {
   const map = {};
   (Array.isArray(racers) ? racers : []).forEach((r) => {
@@ -129,24 +146,32 @@ function buildStartDisplayTiming(racers, stMap) {
     if (!Number.isInteger(lane)) return;
     const raw = normalizeTimingRaw(r?.exhibitionStRaw);
     const num = toNum(r?.exhibitionST ?? r?.exhibitionSt, null);
+    const fPenalty = parsePenaltyTiming(raw, "F");
+    const lPenalty = parsePenaltyTiming(raw, "L");
     let type = "normal";
     let display = Number.isFinite(num) ? num.toFixed(2) : "--";
-    let units = Number.isFinite(num) ? Math.max(0, Math.min(100, num * 10)) : null;
-    if (/^F\d{1,2}$/.test(raw)) {
-      type = "f";
-      display = raw;
-      units = Math.min(20, toNum(raw.slice(1), 0));
-    } else if (/^L\d{1,2}$/.test(raw)) {
-      type = "l";
-      display = raw;
-      units = Math.min(20, toNum(raw.slice(1), 0));
+    let signedSeconds = Number.isFinite(num) ? Number(num.toFixed(2)) : null;
+    let axisPosition = Number.isFinite(num)
+      ? Number((100 - Math.max(0, Math.min(0.99, num)) * 100).toFixed(2))
+      : null;
+    if (fPenalty) {
+      type = fPenalty.type;
+      display = fPenalty.display;
+      signedSeconds = fPenalty.signed_seconds;
+      axisPosition = fPenalty.axis_position;
+    } else if (lPenalty) {
+      type = lPenalty.type;
+      display = lPenalty.display;
+      signedSeconds = lPenalty.signed_seconds;
+      axisPosition = lPenalty.axis_position;
     } else if (raw && !Number.isFinite(num) && stMap?.[String(lane)] === null) {
       display = raw;
     }
     map[String(lane)] = {
       raw: raw || null,
       type,
-      units: Number.isFinite(units) ? Number(units.toFixed(2)) : null,
+      signed_seconds: Number.isFinite(signedSeconds) ? signedSeconds : null,
+      axis_position: Number.isFinite(axisPosition) ? axisPosition : null,
       display
     };
   });
