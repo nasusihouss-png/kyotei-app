@@ -2215,6 +2215,33 @@ export default function App() {
             </section>
 
             <section className="card">
+              <h2>AI / 手動ベット比較</h2>
+              <div className="stats-grid">
+                {[
+                  { key: "ai_bets", label: "AIベット" },
+                  { key: "manual_bets", label: "手動ベット" },
+                  { key: "copied_manual_bets", label: "AIコピー手動" },
+                  { key: "pure_manual_bets", label: "純手動" }
+                ].map((x) => {
+                  const s = analytics?.bet_source_comparison?.[x.key] || {};
+                  return (
+                    <article key={x.key} className="card stat-card">
+                      <span>{x.label}</span>
+                      <strong>{s.number_of_bets ?? 0}件</strong>
+                      <small>購入 JPY {(s.total_stake ?? 0).toLocaleString()}</small>
+                      <small>払戻 JPY {(s.total_payout ?? 0).toLocaleString()}</small>
+                      <small className={getProfitClass(s.total_profit_loss)}>
+                        P/L JPY {(s.total_profit_loss ?? 0).toLocaleString()}
+                      </small>
+                      <small>的中率 {formatMaybeNumber(s.hit_rate, 2)}%</small>
+                      <small>ROI {formatMaybeNumber(s.roi, 2)}%</small>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="card">
               <h2>日次 / 月次 / 年次サマリー</h2>
               <div className="stats-grid">
                 <article className="card stat-card">

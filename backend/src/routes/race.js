@@ -2297,7 +2297,7 @@ raceRouter.get("/analytics", async (req, res, next) => {
     const placedRows = db
       .prepare(
         `
-        SELECT id, race_id, race_date, venue_id, race_no, combo, bet_amount, bought_odds, recommended_prob, recommended_ev, recommended_bet, hit_flag, payout, profit_loss
+        SELECT id, race_id, race_date, venue_id, race_no, source, copied_from_ai, combo, bet_amount, bought_odds, recommended_prob, recommended_ev, recommended_bet, hit_flag, payout, profit_loss
         FROM placed_bets
       `
       )
@@ -2364,6 +2364,36 @@ raceRouter.get("/analytics", async (req, res, next) => {
       settled_count: totalSettled,
       hit_count: totalHit,
       ...calcRates({ bet: totalBet, payout: totalPayout, hit: totalHit, total: totalSettled })
+    };
+
+    const calcSourceBucket = (rows) => {
+      const bucketRows = Array.isArray(rows) ? rows : [];
+      const settled = bucketRows.filter((r) => r.hit_flag === 0 || r.hit_flag === 1);
+      const total_stake = sumRows(bucketRows, "bet_amount");
+      const total_payout = sumRows(bucketRows, "payout");
+      const total_profit_loss = sumRows(bucketRows, "profit_loss");
+      const hit_count = settled.filter((r) => toNum(r.hit_flag) === 1).length;
+      const number_of_bets = bucketRows.length;
+      return {
+        number_of_bets,
+        total_stake,
+        total_payout,
+        total_profit_loss,
+        hit_rate: pct(hit_count, settled.length),
+        roi: pct(total_payout, total_stake)
+      };
+    };
+
+    const aiRows = placedRows.filter((r) => String(r.source || "ai").toLowerCase() !== "manual");
+    const manualRows = placedRows.filter((r) => String(r.source || "ai").toLowerCase() === "manual");
+    const copiedManualRows = manualRows.filter((r) => toNum(r.copied_from_ai, 0) === 1);
+    const pureManualRows = manualRows.filter((r) => toNum(r.copied_from_ai, 0) !== 1);
+
+    const bet_source_comparison = {
+      ai_bets: calcSourceBucket(aiRows),
+      manual_bets: calcSourceBucket(manualRows),
+      copied_manual_bets: calcSourceBucket(copiedManualRows),
+      pure_manual_bets: calcSourceBucket(pureManualRows)
     };
 
     const byVenueMap = new Map();
@@ -2695,6 +2725,7 @@ raceRouter.get("/analytics", async (req, res, next) => {
     return res.json({
       total,
       periods: periodSummaries,
+      bet_source_comparison,
       venue_performance,
       mode_performance,
       head_prediction,
