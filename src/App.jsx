@@ -121,6 +121,12 @@ async function fetchSelfLearningData() {
   return response.json();
 }
 
+async function fetchStartEntryAnalysisData() {
+  const response = await fetch(`${API_BASE}/start-entry-analysis`);
+  if (!response.ok) throw new Error("Failed to fetch start/entry analysis");
+  return response.json();
+}
+
 async function submitRaceResult(payload) {
   const response = await fetch(`${API_BASE}/race/result`, {
     method: "POST",
@@ -485,6 +491,7 @@ export default function App() {
   const [analytics, setAnalytics] = useState(null);
   const [selfLearning, setSelfLearning] = useState(null);
   const [learningSnapshots, setLearningSnapshots] = useState([]);
+  const [startEntryAnalysis, setStartEntryAnalysis] = useState(null);
   const [history, setHistory] = useState([]);
   const [perfError, setPerfError] = useState("");
 
@@ -735,17 +742,19 @@ export default function App() {
     setStatsLoading(true);
     setPerfError("");
     try {
-      const [statsData, analyticsData, historyData, learningData] = await Promise.all([
+      const [statsData, analyticsData, historyData, learningData, startEntryData] = await Promise.all([
         fetchStatsData(),
         fetchAnalyticsData(date),
         fetchHistoryData(),
-        fetchSelfLearningData()
+        fetchSelfLearningData(),
+        fetchStartEntryAnalysisData()
       ]);
       setStats(statsData);
       setAnalytics(analyticsData || null);
       setHistory(Array.isArray(historyData?.items) ? historyData.items : []);
       setSelfLearning(learningData?.selfLearning || null);
       setLearningSnapshots(Array.isArray(learningData?.snapshots) ? learningData.snapshots : []);
+      setStartEntryAnalysis(startEntryData || null);
     } catch (e) {
       setPerfError(e.message || "Failed to load performance data");
     } finally {
@@ -2377,6 +2386,74 @@ export default function App() {
                   const s = stats?.by_recommendation_type?.[k] || {};
                   return <div key={k} className="card mini-stat"><h3>{k}</h3><p>レース: {s.total_races ?? 0}</p><p>購入: JPY {(s.total_bets ?? 0).toLocaleString()}</p><p>的中: {formatMaybeNumber(s.hit_rate, 2)}%</p><p>回収: {formatMaybeNumber(s.recovery_rate, 2)}%</p><p>損益: JPY {(s.total_profit_loss ?? 0).toLocaleString()}</p></div>;
                 })}
+              </div>
+            </section>
+
+            <section className="card">
+              <h2>スタート展示 / 進入変化集計</h2>
+              <div className="stats-grid">
+                <article className="card stat-card">
+                  <span>分析レース数</span>
+                  <strong>{startEntryAnalysis?.totals?.analyzed_races ?? 0}</strong>
+                  <small>entry_changed {startEntryAnalysis?.totals?.entry_changed_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>最速ST艇の1着率</span>
+                  <strong>{formatMaybeNumber(startEntryAnalysis?.fastest_st_boat_win_rate?.win_rate, 2)}%</strong>
+                  <small>
+                    {startEntryAnalysis?.fastest_st_boat_win_rate?.wins ?? 0}
+                    {" / "}
+                    {startEntryAnalysis?.fastest_st_boat_win_rate?.races ?? 0}
+                  </small>
+                </article>
+                <article className="card stat-card">
+                  <span>進入変化レース最多決着</span>
+                  <strong>{startEntryAnalysis?.entry_changed_summary?.most_common_finishing_order || "-"}</strong>
+                  <small>件数 {startEntryAnalysis?.entry_changed_summary?.most_common_finishing_order_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>AI的中率（進入変化あり）</span>
+                  <strong>{formatMaybeNumber(startEntryAnalysis?.ai_hit_rate_comparison?.entry_changed_true?.hit_rate, 2)}%</strong>
+                  <small>
+                    {startEntryAnalysis?.ai_hit_rate_comparison?.entry_changed_true?.hits ?? 0}
+                    {" / "}
+                    {startEntryAnalysis?.ai_hit_rate_comparison?.entry_changed_true?.races ?? 0}
+                  </small>
+                </article>
+                <article className="card stat-card">
+                  <span>AI的中率（進入変化なし）</span>
+                  <strong>{formatMaybeNumber(startEntryAnalysis?.ai_hit_rate_comparison?.entry_changed_false?.hit_rate, 2)}%</strong>
+                  <small>
+                    {startEntryAnalysis?.ai_hit_rate_comparison?.entry_changed_false?.hits ?? 0}
+                    {" / "}
+                    {startEntryAnalysis?.ai_hit_rate_comparison?.entry_changed_false?.races ?? 0}
+                  </small>
+                </article>
+              </div>
+
+              <div className="table-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>start_display_signature</th>
+                      <th>レース数</th>
+                      <th>最多決着</th>
+                      <th>AI的中率</th>
+                      <th>標本数</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(startEntryAnalysis?.by_signature || []).map((row) => (
+                      <tr key={`sig-${row.start_display_signature}`}>
+                        <td>{row.start_display_signature || "-"}</td>
+                        <td>{row.race_count ?? 0}</td>
+                        <td>{row.most_common_finishing_order || "-"}</td>
+                        <td>{formatMaybeNumber(row.ai_hit_rate, 2)}%</td>
+                        <td>{row.ai_hit_sample ?? 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </section>
 

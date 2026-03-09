@@ -2400,6 +2400,185 @@ raceRouter.get("/analytics", async (req, res, next) => {
   }
 });
 
+raceRouter.get("/start-entry-analysis", async (req, res, next) => {
+  try {
+    const startRows = db
+      .prepare(
+        `
+        SELECT race_id, start_display_signature, start_display_st_json
+        FROM race_start_displays
+      `
+      )
+      .all();
+
+    const resultsRows = db
+      .prepare(
+        `
+        SELECT race_id, finish_1, finish_2, finish_3
+        FROM results
+      `
+      )
+      .all();
+    const resultMap = new Map(resultsRows.map((r) => [String(r.race_id), r]));
+
+    const latestPredictionRows = db
+      .prepare(
+        `
+        SELECT pl.race_id, pl.top3_json, pl.prediction_json
+        FROM prediction_logs pl
+        INNER JOIN (
+          SELECT race_id, MAX(id) AS max_id
+          FROM prediction_logs
+          GROUP BY race_id
+        ) latest
+          ON latest.max_id = pl.id
+      `
+      )
+      .all();
+    const predictionMap = new Map(
+      latestPredictionRows.map((row) => [
+        String(row.race_id),
+        {
+          top3: safeJsonParse(row.top3_json, []),
+          prediction: safeJsonParse(row.prediction_json, {})
+        }
+      ])
+    );
+
+    const bySignature = new Map();
+    let fastestStRaces = 0;
+    let fastestStWins = 0;
+    let entryChangedCount = 0;
+    const changedFinishCounts = new Map();
+    const hitByEntryChanged = {
+      true: { races: 0, hits: 0 },
+      false: { races: 0, hits: 0 }
+    };
+
+    for (const row of startRows) {
+      const raceId = String(row.race_id);
+      const signature = String(row.start_display_signature || "unknown");
+      const result = resultMap.get(raceId);
+      const pred = predictionMap.get(raceId);
+      const actualCombo = result
+        ? `${toInt(result.finish_1, 0)}-${toInt(result.finish_2, 0)}-${toInt(result.finish_3, 0)}`
+        : null;
+      const predictedTop3 = Array.isArray(pred?.top3) ? pred.top3.map((v) => toInt(v, 0)).filter(Boolean) : [];
+      const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
+      const aiHit = !!(actualCombo && predictedCombo && actualCombo === predictedCombo);
+
+      if (!bySignature.has(signature)) {
+        bySignature.set(signature, {
+          start_display_signature: signature,
+          race_count: 0,
+          finish_counts: new Map(),
+          ai_hits: 0,
+          ai_total: 0
+        });
+      }
+      const sig = bySignature.get(signature);
+      sig.race_count += 1;
+      if (actualCombo) {
+        sig.finish_counts.set(actualCombo, toNum(sig.finish_counts.get(actualCombo), 0) + 1);
+      }
+      if (actualCombo && predictedCombo) {
+        sig.ai_total += 1;
+        if (aiHit) sig.ai_hits += 1;
+      }
+
+      const stMap = safeJsonParse(row.start_display_st_json, {});
+      const stEntries = Object.entries(stMap || {})
+        .map(([lane, st]) => ({
+          lane: toInt(lane, null),
+          st: Number(st)
+        }))
+        .filter((x) => Number.isInteger(x.lane) && Number.isFinite(x.st) && x.st >= 0)
+        .sort((a, b) => a.st - b.st);
+      const fastest = stEntries[0];
+      if (fastest && result) {
+        fastestStRaces += 1;
+        if (toInt(result.finish_1, 0) === fastest.lane) fastestStWins += 1;
+      }
+
+      const predictedEntryOrder = Array.isArray(pred?.prediction?.predicted_entry_order)
+        ? pred.prediction.predicted_entry_order
+        : [];
+      const actualEntryOrder = Array.isArray(pred?.prediction?.actual_entry_order)
+        ? pred.prediction.actual_entry_order
+        : String(signature || "")
+            .split("-")
+            .map((v) => toInt(v, null))
+            .filter((v) => Number.isInteger(v));
+      const inferredEntryChanged =
+        predictedEntryOrder.length > 0 &&
+        actualEntryOrder.length > 0 &&
+        predictedEntryOrder.join("-") !== actualEntryOrder.join("-");
+      const entryChanged =
+        typeof pred?.prediction?.entry_changed === "boolean" ? pred.prediction.entry_changed : inferredEntryChanged;
+
+      const key = entryChanged ? "true" : "false";
+      if (entryChanged) entryChangedCount += 1;
+      if (actualCombo && predictedCombo) {
+        hitByEntryChanged[key].races += 1;
+        if (aiHit) hitByEntryChanged[key].hits += 1;
+      }
+      if (entryChanged && actualCombo) {
+        changedFinishCounts.set(actualCombo, toNum(changedFinishCounts.get(actualCombo), 0) + 1);
+      }
+    }
+
+    const by_signature = Array.from(bySignature.values())
+      .map((s) => {
+        const topFinish = Array.from(s.finish_counts.entries()).sort((a, b) => b[1] - a[1])[0] || [null, 0];
+        return {
+          start_display_signature: s.start_display_signature,
+          race_count: s.race_count,
+          most_common_finishing_order: topFinish[0],
+          most_common_finishing_order_count: topFinish[1],
+          ai_hit_rate: s.ai_total ? Number(((s.ai_hits / s.ai_total) * 100).toFixed(2)) : 0,
+          ai_hit_sample: s.ai_total
+        };
+      })
+      .sort((a, b) => b.race_count - a.race_count)
+      .slice(0, 20);
+
+    const changedTop = Array.from(changedFinishCounts.entries()).sort((a, b) => b[1] - a[1])[0] || [null, 0];
+    const hitRateComparison = {
+      entry_changed_true: {
+        races: hitByEntryChanged.true.races,
+        hits: hitByEntryChanged.true.hits,
+        hit_rate: pct(hitByEntryChanged.true.hits, hitByEntryChanged.true.races)
+      },
+      entry_changed_false: {
+        races: hitByEntryChanged.false.races,
+        hits: hitByEntryChanged.false.hits,
+        hit_rate: pct(hitByEntryChanged.false.hits, hitByEntryChanged.false.races)
+      }
+    };
+
+    return res.json({
+      totals: {
+        analyzed_races: startRows.length,
+        entry_changed_count: entryChangedCount
+      },
+      by_signature,
+      fastest_st_boat_win_rate: {
+        races: fastestStRaces,
+        wins: fastestStWins,
+        win_rate: pct(fastestStWins, fastestStRaces)
+      },
+      entry_changed_summary: {
+        race_count: entryChangedCount,
+        most_common_finishing_order: changedTop[0],
+        most_common_finishing_order_count: changedTop[1]
+      },
+      ai_hit_rate_comparison: hitRateComparison
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 raceRouter.get("/self-learning", async (req, res, next) => {
   try {
     const mode = String(req.query?.mode || "proposal_only");
