@@ -62,6 +62,7 @@ import {
 import { runSelfLearning } from "../../self-learning-engine.js";
 import { saveRaceStartDisplaySnapshot, saveRaceStartDisplayResult } from "../../race-start-display-store.js";
 import { attachPredictionFeatureLogSettlement, savePredictionFeatureLog } from "../../prediction-feature-log.js";
+import { buildScenarioSuggestions } from "../../scenario-suggestion-engine.js";
 import {
   getActiveLearningWeights,
   getLatestLearningRun,
@@ -1070,6 +1071,17 @@ raceRouter.get("/race", async (req, res, next) => {
       }),
       bankrollPlan: stakeAllocation.bankrollPlan
     };
+    const scenarioSuggestions = buildScenarioSuggestions({
+      ranking,
+      raceFlow,
+      raceIndexes,
+      raceDecision,
+      entryMeta,
+      startSignals,
+      ticketOptimization: ticketOptimizationWithStake,
+      betPlan: bet_plan_with_stake,
+      ticketGenerationV2
+    });
 
     saveFeatureSnapshots(raceId, ranking);
 
@@ -1137,6 +1149,7 @@ raceRouter.get("/race", async (req, res, next) => {
       entry_change_type: entryMeta.entry_change_type,
       startSignalAnalysis: startSignals,
       recommendation_score,
+      scenarioSuggestions,
       learningWeights,
       prediction_before_entry_change,
       prediction_after_entry_change,
@@ -1171,6 +1184,7 @@ raceRouter.get("/race", async (req, res, next) => {
       ticketGenerationV2,
       aiEnhancement,
       ticketOptimization: ticketOptimizationWithStake,
+      scenarioSuggestions,
       raceDecision,
       valueDetection,
       marketTrap,
@@ -1543,6 +1557,27 @@ raceRouter.get("/recommendations", async (req, res, next) => {
               fetch_status: evData?.oddsData?.fetch_status || null
             }
           };
+          const scenarioSuggestions = buildScenarioSuggestions({
+            ranking,
+            raceFlow,
+            raceIndexes,
+            raceDecision,
+            entryMeta,
+            startSignals,
+            ticketOptimization,
+            betPlan: bet_plan,
+            ticketGenerationV2
+          });
+          recItem.scenario_type = scenarioSuggestions.scenario_type;
+          recItem.scenario_confidence = scenarioSuggestions.scenario_confidence;
+          recItem.scenarioSuggestions = scenarioSuggestions;
+          recItem.main_picks = scenarioSuggestions.main_picks;
+          recItem.backup_picks = scenarioSuggestions.backup_picks;
+          recItem.longshot_picks = scenarioSuggestions.longshot_picks;
+          recItem.tickets = recItem.tickets.map((t) => ({
+            ...t,
+            suggestion_bucket: scenarioSuggestions.bucket_by_combo?.[String(t.combo)] || t.ticket_type || "backup"
+          }));
           const allowModes = dateMode.isFuture ? new Set(["FULL_BET", "SMALL_BET", "MICRO BET"]) : new Set(["FULL_BET"]);
           const baseRecommendationThreshold = toNum(learningWeights?.recommendation_threshold, 52);
           const recommendationScoreMin = dateMode.isFuture

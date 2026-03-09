@@ -602,6 +602,7 @@ export default function App() {
   const ticketGenerationV2 = data?.ticketGenerationV2 || {};
   const ticketOptimization = data?.ticketOptimization || {};
   const valueDetection = data?.valueDetection || {};
+  const scenarioSuggestions = data?.scenarioSuggestions || {};
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
   const raceDecision = data?.raceDecision || {};
   const recommendationMode = String(
@@ -1934,6 +1935,41 @@ export default function App() {
                       ))}
                     </div>
                   </article>
+
+                  <article className="card">
+                    <h2>シナリオ別買い目</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>scenario_type</span><strong>{scenarioSuggestions.scenario_type || "-"}</strong></div>
+                      <div className="kv-row"><span>scenario_confidence</span><strong>{formatMaybeNumber(scenarioSuggestions.scenario_confidence, 1)}</strong></div>
+                    </div>
+                    <div className="list-stack">
+                      <div className="list-row">
+                        <span className={`ticket-type ${getTicketTypeClass("main")}`}>本線</span>
+                        <strong>
+                          {Array.isArray(scenarioSuggestions.main_picks) && scenarioSuggestions.main_picks.length
+                            ? scenarioSuggestions.main_picks.slice(0, 6).map((combo, idx) => <ComboBadge combo={combo} key={`sc-main-${combo}-${idx}`} />)
+                            : "-"}
+                        </strong>
+                      </div>
+                      <div className="list-row">
+                        <span className={`ticket-type ${getTicketTypeClass("backup")}`}>押さえ</span>
+                        <strong>
+                          {Array.isArray(scenarioSuggestions.backup_picks) && scenarioSuggestions.backup_picks.length
+                            ? scenarioSuggestions.backup_picks.slice(0, 6).map((combo, idx) => <ComboBadge combo={combo} key={`sc-back-${combo}-${idx}`} />)
+                            : "-"}
+                        </strong>
+                      </div>
+                      <div className="list-row">
+                        <span className={`ticket-type ${getTicketTypeClass("longshot")}`}>穴</span>
+                        <strong>
+                          {Array.isArray(scenarioSuggestions.longshot_picks) && scenarioSuggestions.longshot_picks.length
+                            ? scenarioSuggestions.longshot_picks.slice(0, 6).map((combo, idx) => <ComboBadge combo={combo} key={`sc-long-${combo}-${idx}`} />)
+                            : "-"}
+                        </strong>
+                      </div>
+                    </div>
+                    <p className="muted strategy-line">{scenarioSuggestions.summary || "-"}</p>
+                  </article>
                 </section>
 
                 <section className="card">
@@ -2007,7 +2043,9 @@ export default function App() {
                         {(Array.isArray(row.tickets) ? row.tickets : []).slice(0, 3).map((ticket, idx) => (
                           <div className="list-row list-row-actions" key={`${row.raceId}-${ticket.combo}-${idx}`}>
                             <strong><ComboBadge combo={ticket.combo} /></strong>
-                            <span className={`ticket-type ${getTicketTypeClass(ticket.ticket_type)}`}>{getTicketTypeLabel(ticket.ticket_type)}</span>
+                            <span className={`ticket-type ${getTicketTypeClass(ticket.suggestion_bucket || ticket.ticket_type)}`}>
+                              {getTicketTypeLabel(ticket.suggestion_bucket || ticket.ticket_type)}
+                            </span>
                             <span>p {Number.isFinite(Number(ticket.prob)) ? formatMaybeNumber(ticket.prob, 3) : "-"}</span>
                             <span>odds {Number.isFinite(Number(ticket.odds)) ? formatMaybeNumber(ticket.odds, 1) : "-"}</span>
                             <span>JPY {Number.isFinite(Number(ticket.bet)) ? Number(ticket.bet).toLocaleString() : "-"}</span>
