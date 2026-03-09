@@ -221,9 +221,10 @@ function formatMaybeNumber(value, digits = 2) {
 }
 
 function getRiskClass(recommendation) {
-  if (recommendation === "SKIP") return "risk-skip";
-  if (recommendation === "MICRO BET") return "risk-micro";
-  if (recommendation === "FULL BET") return "risk-full";
+  const rec = String(recommendation || "").toUpperCase();
+  if (rec === "SKIP") return "risk-skip";
+  if (rec === "MICRO BET" || rec === "MICRO_BET") return "risk-micro";
+  if (rec === "FULL BET" || rec === "FULL_BET") return "risk-full";
   return "risk-small";
 }
 
@@ -541,8 +542,26 @@ export default function App() {
 
   const race = data?.race || {};
   const startDisplay = data?.startDisplay || null;
-  const racers = Array.isArray(data?.racers) ? data.racers : [];
   const prediction = data?.prediction || {};
+  const racers = Array.isArray(data?.racers) ? data.racers : [];
+  const predictedEntryOrder = Array.isArray(data?.predicted_entry_order)
+    ? data.predicted_entry_order
+    : Array.isArray(prediction?.predicted_entry_order)
+      ? prediction.predicted_entry_order
+      : [];
+  const actualEntryOrder = Array.isArray(data?.actual_entry_order)
+    ? data.actual_entry_order
+    : Array.isArray(prediction?.actual_entry_order)
+      ? prediction.actual_entry_order
+      : [];
+  const entryChanged = typeof data?.entry_changed === "boolean"
+    ? data.entry_changed
+    : predictedEntryOrder.length > 0 &&
+      actualEntryOrder.length > 0 &&
+      predictedEntryOrder.join("-") !== actualEntryOrder.join("-");
+  const entryChangeType = data?.entry_change_type || prediction?.entry_change_type || "none";
+  const predictionBeforeEntryChange = data?.prediction_before_entry_change || prediction?.prediction_before_entry_change || null;
+  const predictionAfterEntryChange = data?.prediction_after_entry_change || prediction?.prediction_after_entry_change || null;
   const ranking = Array.isArray(prediction?.ranking) ? prediction.ranking : [];
   const top3 = Array.isArray(prediction?.top3) ? prediction.top3 : [];
   const evBets = Array.isArray(data?.ev_analysis?.best_ev_bets) ? data.ev_analysis.best_ev_bets.slice(0, 3) : [];
@@ -1402,6 +1421,39 @@ export default function App() {
                   </article>
 
                   <article className="card analysis-card">
+                    <h2>進入変化</h2>
+                    <div className="kv-list">
+                      <div className="kv-row">
+                        <span>entry_changed</span>
+                        <strong>{entryChanged ? "あり" : "なし"}</strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>entry_change_type</span>
+                        <strong>{entryChangeType || "-"}</strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>予測進入順</span>
+                        <strong><LanePills lanes={predictedEntryOrder} /></strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>実進入順</span>
+                        <strong><LanePills lanes={actualEntryOrder} /></strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>変化前 top3</span>
+                        <strong>{Array.isArray(predictionBeforeEntryChange?.top3) ? predictionBeforeEntryChange.top3.join("-") : "-"}</strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>変化後 top3</span>
+                        <strong>{Array.isArray(predictionAfterEntryChange?.top3) ? predictionAfterEntryChange.top3.join("-") : "-"}</strong>
+                      </div>
+                    </div>
+                    {entryChanged ? (
+                      <p className="muted strategy-line">進入変化を反映して予想・推奨を再計算しています。</p>
+                    ) : null}
+                  </article>
+
+                  <article className="card analysis-card">
                     <h2>レース指数</h2>
                     <div className="kv-list">
                       <div className="kv-row"><span>逃げ指数</span><strong>{formatMaybeNumber(raceIndexes.nige_index, 2)}</strong></div>
@@ -1845,6 +1897,7 @@ export default function App() {
                         <strong>{row.venueId} {row.venueName || "-"} {row.raceNo}R</strong>
                         <div className="row-actions">
                           {row.provisional ? <span className="status-pill status-unsettled">{row.provisional_label || "暫定"}</span> : null}
+                          {row.entry_changed ? <span className="status-pill risk-small">Entry changed</span> : null}
                           <span className={`status-pill ${getRiskClass(row.mode)}`}>{row.mode || "-"}</span>
                         </div>
                       </div>
@@ -1858,6 +1911,18 @@ export default function App() {
                           <strong><LanePills lanes={[Number(row.main_head)]} /></strong>
                         </div>
                       </div>
+                      {row.entry_changed ? (
+                        <div className="kv-list">
+                          <div className="kv-row">
+                            <span>予測進入順</span>
+                            <strong><LanePills lanes={row.predicted_entry_order || []} /></strong>
+                          </div>
+                          <div className="kv-row">
+                            <span>実進入順</span>
+                            <strong><LanePills lanes={row.actual_entry_order || []} /></strong>
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="ticket-mini-list">
                         {(Array.isArray(row.tickets) ? row.tickets : []).slice(0, 3).map((ticket, idx) => (
                           <div className="list-row list-row-actions" key={`${row.raceId}-${ticket.combo}-${idx}`}>
@@ -1925,6 +1990,7 @@ export default function App() {
                         <strong>#{row.rank} {row.venueId} {row.venueName || "-"} {row.raceNo}R</strong>
                         <div className="row-actions">
                           {row.provisional ? <span className="status-pill status-unsettled">{row.provisional_label || "暫定"}</span> : null}
+                          {row.entry_changed ? <span className="status-pill risk-small">Entry changed</span> : null}
                           <span className={`status-pill ${getRiskClass(row.decision_mode)}`}>{row.decision_mode || "-"}</span>
                         </div>
                       </div>
@@ -1935,6 +2001,9 @@ export default function App() {
                         <div className="kv-row"><span>ticket_quality</span><strong>{formatMaybeNumber(row.ticket_quality, 2)}</strong></div>
                         <div className="kv-row"><span>trap_score</span><strong>{formatMaybeNumber(row.trap_score, 2)}</strong></div>
                         <div className="kv-row"><span>value_balance_score</span><strong>{formatMaybeNumber(row.value_balance_score, 2)}</strong></div>
+                        {row.entry_changed ? (
+                          <div className="kv-row"><span>進入変化</span><strong>{row.entry_change_type || "あり"}</strong></div>
+                        ) : null}
                       </div>
                       <p className="muted strategy-line">{row.summary || "-"}</p>
                       <div className="row-actions">
@@ -2335,6 +2404,10 @@ export default function App() {
                         ) : null}
                       </div>
                       <div className="history-grid">
+                        <div>進入変化: {h.entry_changed ? "あり" : "なし"}</div>
+                        <div>進入タイプ: {h.entry_change_type || "-"}</div>
+                        <div>予測進入順: {Array.isArray(h.predicted_entry_order) && h.predicted_entry_order.length ? h.predicted_entry_order.join("-") : "-"}</div>
+                        <div>実進入順: {Array.isArray(h.actual_entry_order) && h.actual_entry_order.length ? h.actual_entry_order.join("-") : "-"}</div>
                         <div>予想上位: {Array.isArray(h.predicted_top3) && h.predicted_top3.length ? h.predicted_top3.join("-") : "-"}</div>
                         <div>確定結果: {Array.isArray(h.actual_top3) && h.actual_top3.length ? h.actual_top3.join("-") : "-"}</div>
                         <div>購入額: JPY {(h.totals?.bet_amount ?? 0).toLocaleString()}</div>

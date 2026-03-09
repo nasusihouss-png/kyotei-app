@@ -158,6 +158,137 @@ function getDateMode(targetDate) {
   return { target, today, mode: "past", isFuture: false, isSameDay: false };
 }
 
+function normalizeModeValue(mode) {
+  const raw = String(mode || "").toUpperCase();
+  if (raw === "FULL_BET") return "FULL_BET";
+  if (raw === "FULL BET") return "FULL_BET";
+  if (raw === "SMALL_BET") return "SMALL_BET";
+  if (raw === "SMALL BET") return "SMALL_BET";
+  if (raw === "MICRO_BET") return "MICRO_BET";
+  if (raw === "MICRO BET") return "MICRO_BET";
+  if (raw === "SKIP") return "SKIP";
+  return "UNKNOWN";
+}
+
+function denormalizeModeValue(mode) {
+  const m = normalizeModeValue(mode);
+  if (m === "FULL_BET") return "FULL BET";
+  if (m === "SMALL_BET") return "SMALL BET";
+  if (m === "MICRO_BET") return "MICRO BET";
+  if (m === "SKIP") return "SKIP";
+  return "UNKNOWN";
+}
+
+function downgradeModeForEntryChange(mode, severity) {
+  const m = normalizeModeValue(mode);
+  if (severity === "none") return m;
+  if (severity === "high") {
+    if (m === "FULL_BET") return "SMALL_BET";
+    if (m === "SMALL_BET") return "MICRO_BET";
+    return m;
+  }
+  if (severity === "medium") {
+    if (m === "FULL_BET") return "SMALL_BET";
+    return m;
+  }
+  return m;
+}
+
+function buildEntryOrderMeta(racers) {
+  const rows = Array.isArray(racers) ? racers : [];
+  const predicted_entry_order = rows
+    .map((r) => toInt(r?.lane))
+    .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6)
+    .sort((a, b) => a - b);
+  const actual_entry_order = rows
+    .map((r) => {
+      const lane = toInt(r?.lane);
+      const entry = toInt(r?.entryCourse, lane);
+      return {
+        lane,
+        entry
+      };
+    })
+    .filter((x) => Number.isInteger(x.lane))
+    .sort((a, b) => {
+      if (a.entry !== b.entry) return a.entry - b.entry;
+      return a.lane - b.lane;
+    })
+    .map((x) => x.lane);
+
+  const laneToEntry = new Map(
+    rows
+      .map((r) => [toInt(r?.lane), toInt(r?.entryCourse, toInt(r?.lane))])
+      .filter((x) => Number.isInteger(x[0]))
+  );
+
+  let changedCount = 0;
+  let maxShift = 0;
+  for (const lane of predicted_entry_order) {
+    const entry = laneToEntry.get(lane);
+    if (!Number.isInteger(entry)) continue;
+    if (entry !== lane) changedCount += 1;
+    maxShift = Math.max(maxShift, Math.abs(entry - lane));
+  }
+
+  const lane1Entry = laneToEntry.get(1);
+  const outerInvasion = rows.some((r) => {
+    const lane = toInt(r?.lane);
+    const entry = toInt(r?.entryCourse, lane);
+    return Number.isInteger(lane) && Number.isInteger(entry) && lane >= 4 && entry <= 3;
+  });
+  const entry_changed = changedCount > 0;
+
+  let entry_change_type = "none";
+  if (entry_changed) {
+    if (lane1Entry !== 1) entry_change_type = "lane1_lost_inside";
+    else if (outerInvasion) entry_change_type = "outer_invasion";
+    else if (changedCount >= 3) entry_change_type = "multi_shift";
+    else entry_change_type = "minor_shift";
+  }
+
+  let severity = "none";
+  if (entry_change_type === "lane1_lost_inside" || maxShift >= 2 || changedCount >= 3) severity = "high";
+  else if (entry_change_type === "outer_invasion" || changedCount >= 2) severity = "medium";
+  else if (entry_changed) severity = "low";
+
+  return {
+    predicted_entry_order,
+    actual_entry_order,
+    entry_changed,
+    entry_change_type,
+    changed_count: changedCount,
+    max_shift: maxShift,
+    severity
+  };
+}
+
+function applyEntryChangeToDecision(raceDecision, entryMeta) {
+  const meta = entryMeta || {};
+  const original = raceDecision || {};
+  const baseMode = normalizeModeValue(original.mode || "UNKNOWN");
+  const downgradedMode = downgradeModeForEntryChange(baseMode, meta.severity || "none");
+  const confidencePenalty =
+    meta.severity === "high" ? 12 : meta.severity === "medium" ? 7 : meta.severity === "low" ? 3 : 0;
+  const confidence = Math.max(0, Number(toNum(original.confidence, 0) - confidencePenalty).toFixed(2));
+  const reasonCodes = Array.isArray(original.reason_codes) ? [...original.reason_codes] : [];
+  if (meta.entry_changed && !reasonCodes.includes("ENTRY_ORDER_CHANGED")) {
+    reasonCodes.push("ENTRY_ORDER_CHANGED");
+  }
+  const summary = meta.entry_changed
+    ? `${original.summary || ""}${original.summary ? " / " : ""}進入変化考慮`
+    : original.summary || "";
+
+  return {
+    ...original,
+    mode: downgradedMode,
+    confidence,
+    reason_codes: reasonCodes,
+    summary,
+    entry_change_adjusted: !!meta.entry_changed
+  };
+}
+
 function classifyWeaknessCodes({
   predictedHead,
   actualHead,
@@ -323,6 +454,7 @@ raceRouter.get("/race", async (req, res, next) => {
 
     const data = await getRaceData({ date, venueId, raceNo });
     const raceId = saveRace(data);
+    const entryMeta = buildEntryOrderMeta(data.racers);
     const baseFeatures = applyMotorPerformanceFeatures(
       applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
     );
@@ -445,6 +577,14 @@ raceRouter.get("/race", async (req, res, next) => {
     const prediction = {
       ranking,
       top3: ranking.slice(0, 3).map((r) => r.racer.lane)
+    };
+    const prediction_before_entry_change = {
+      ranking: preRanking,
+      top3: preRanking.slice(0, 3).map((r) => r.racer.lane)
+    };
+    const prediction_after_entry_change = {
+      ranking,
+      top3: prediction.top3
     };
     const playerStartProfile = analyzePlayerStartProfiles({ ranking });
     const exhibitionAI = analyzeExhibitionAI({ ranking });
@@ -588,7 +728,7 @@ raceRouter.get("/race", async (req, res, next) => {
       ticketOptimization,
       probabilities
     });
-    const raceDecision = decideRaceSelection({
+    const rawRaceDecision = decideRaceSelection({
       raceStructure,
       preRaceAnalysis,
       roleCandidates,
@@ -601,6 +741,7 @@ raceRouter.get("/race", async (req, res, next) => {
       raceFlow,
       playerStartProfiles: playerStartProfile
     });
+    const raceDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
     const ticketGenerationV2 = generateTicketsV2({
       headSelection: headSelectionRefined,
       partnerSelection,
@@ -687,12 +828,22 @@ raceRouter.get("/race", async (req, res, next) => {
 
     saveFeatureSnapshots(raceId, ranking);
 
+    const predictionWithEntry = {
+      ...prediction,
+      predicted_entry_order: entryMeta.predicted_entry_order,
+      actual_entry_order: entryMeta.actual_entry_order,
+      entry_changed: entryMeta.entry_changed,
+      entry_change_type: entryMeta.entry_change_type,
+      prediction_before_entry_change,
+      prediction_after_entry_change
+    };
+
     savePredictionLog({
       raceId,
       racePattern,
       buyType,
       raceRisk,
-      prediction,
+      prediction: predictionWithEntry,
       raceDecision,
       probabilities,
       ev_analysis: evData.ev_analysis,
@@ -704,9 +855,13 @@ raceRouter.get("/race", async (req, res, next) => {
       racers: data.racers,
       predictionSnapshot: {
         raceDecision,
-        top3: prediction.top3,
+        top3: predictionWithEntry.top3,
         recommendation: raceRisk?.recommendation || null,
-        mode: raceDecision?.mode || null
+        mode: raceDecision?.mode || null,
+        predicted_entry_order: entryMeta.predicted_entry_order,
+        actual_entry_order: entryMeta.actual_entry_order,
+        entry_changed: entryMeta.entry_changed,
+        entry_change_type: entryMeta.entry_change_type
       }
     });
 
@@ -719,7 +874,13 @@ raceRouter.get("/race", async (req, res, next) => {
         String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() === "SKIP"
           ? "Not Recommended"
           : "Recommended",
-      prediction,
+      prediction: predictionWithEntry,
+      predicted_entry_order: entryMeta.predicted_entry_order,
+      actual_entry_order: entryMeta.actual_entry_order,
+      entry_changed: entryMeta.entry_changed,
+      entry_change_type: entryMeta.entry_change_type,
+      prediction_before_entry_change,
+      prediction_after_entry_change,
       racePattern,
       buyType,
       indexes,
@@ -808,6 +969,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
         scanned += 1;
         try {
           const data = await getRaceData({ date, venueId, raceNo });
+          const entryMeta = buildEntryOrderMeta(data.racers);
           const baseFeatures = applyMotorPerformanceFeatures(
             applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
           );
@@ -1011,7 +1173,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             ticketOptimization,
             probabilities
           });
-          const raceDecision = decideRaceSelection({
+          const rawRaceDecision = decideRaceSelection({
             raceStructure,
             preRaceAnalysis,
             roleCandidates,
@@ -1023,6 +1185,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             marketTrap,
             raceFlow
           });
+          const raceDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
             partnerSelection,
@@ -1081,6 +1244,10 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             venueBias,
             marketTrap,
             raceFlow,
+            predicted_entry_order: entryMeta.predicted_entry_order,
+            actual_entry_order: entryMeta.actual_entry_order,
+            entry_changed: entryMeta.entry_changed,
+            entry_change_type: entryMeta.entry_change_type,
             tickets: stakeAllocation.tickets.slice(0, 4).map((t) => ({
               combo: t.combo,
               prob: Number.isFinite(Number(t.prob)) ? Number(t.prob) : null,
@@ -1207,6 +1374,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
         scanned += 1;
         try {
           const data = await getRaceData({ date, venueId, raceNo });
+          const entryMeta = buildEntryOrderMeta(data.racers);
           const baseFeatures = applyMotorPerformanceFeatures(
             applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
           );
@@ -1400,7 +1568,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
             ticketOptimization,
             probabilities: []
           });
-          const raceDecision = decideRaceSelection({
+          const rawRaceDecision = decideRaceSelection({
             raceStructure,
             preRaceAnalysis,
             roleCandidates,
@@ -1412,6 +1580,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
             marketTrap,
             raceFlow
           });
+          const raceDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
             partnerSelection,
@@ -1484,7 +1653,11 @@ raceRouter.get("/rankings", async (req, res, next) => {
             value_balance_score: Number(toNum(valueDetection?.value_balance_score, 0).toFixed(2)),
             race_budget: Number(toNum(stakeAllocation?.bankrollPlan?.race_budget, 0)),
             playerStartProfile,
-            raceFlow
+            raceFlow,
+            predicted_entry_order: entryMeta.predicted_entry_order,
+            actual_entry_order: entryMeta.actual_entry_order,
+            entry_changed: entryMeta.entry_changed,
+            entry_change_type: entryMeta.entry_change_type
           });
         } catch (err) {
           errors.push({
@@ -1515,7 +1688,11 @@ raceRouter.get("/rankings", async (req, res, next) => {
       ticket_quality: row.ticket_quality,
       trap_score: row.trap_score,
       value_balance_score: row.value_balance_score,
-      race_budget: row.race_budget
+      race_budget: row.race_budget,
+      predicted_entry_order: row.predicted_entry_order || [],
+      actual_entry_order: row.actual_entry_order || [],
+      entry_changed: !!row.entry_changed,
+      entry_change_type: row.entry_change_type || "none"
     }));
 
     return res.json({
@@ -2575,6 +2752,20 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const result = resultMap.get(raceId) || null;
       const settlements = settlementByRace.get(raceId) || [];
       const startDisplay = startDisplayMap.get(raceId) || null;
+      const predictedEntryOrder = Array.isArray(prediction?.predicted_entry_order)
+        ? prediction.predicted_entry_order
+        : [];
+      const actualEntryOrder = Array.isArray(prediction?.actual_entry_order)
+        ? prediction.actual_entry_order
+        : Array.isArray(startDisplay?.start_display_order)
+          ? startDisplay.start_display_order
+          : [];
+      const entryChanged = typeof prediction?.entry_changed === "boolean"
+        ? prediction.entry_changed
+        : predictedEntryOrder.length > 0 &&
+          actualEntryOrder.length > 0 &&
+          predictedEntryOrder.join("-") !== actualEntryOrder.join("-");
+      const entryChangeType = prediction?.entry_change_type || (entryChanged ? "minor_shift" : "none");
 
       const predictedTop3 = Array.isArray(prediction?.top3) ? prediction.top3.slice(0, 3) : [];
       const actualTop3 = result
@@ -2605,6 +2796,12 @@ raceRouter.get("/results-history", async (req, res, next) => {
         venue_name: race.venue_name ?? null,
         race_no: race.race_no ?? null,
         recommendation: normalizeRecommendation(logRow.recommendation),
+        predicted_entry_order: predictedEntryOrder,
+        actual_entry_order: actualEntryOrder,
+        entry_changed: entryChanged,
+        entry_change_type: entryChangeType,
+        prediction_before_entry_change: prediction?.prediction_before_entry_change || null,
+        prediction_after_entry_change: prediction?.prediction_after_entry_change || null,
         predicted_top3: predictedTop3,
         actual_top3: actualTop3,
         hit_miss: hitMiss,
