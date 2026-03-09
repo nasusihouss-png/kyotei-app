@@ -73,6 +73,10 @@ function safeJsonParse(value, fallback) {
   }
 }
 
+function clamp(min, max, value) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function toNum(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
@@ -290,6 +294,197 @@ function applyEntryChangeToDecision(raceDecision, entryMeta) {
   };
 }
 
+function buildStartDisplaySignatureFromRacers(racers) {
+  const rows = Array.isArray(racers) ? racers : [];
+  return rows
+    .map((r) => ({
+      lane: toInt(r?.lane, null),
+      entry: toInt(r?.entryCourse, toInt(r?.lane, null))
+    }))
+    .filter((x) => Number.isInteger(x.lane))
+    .sort((a, b) => {
+      if (a.entry !== b.entry) return a.entry - b.entry;
+      return a.lane - b.lane;
+    })
+    .map((x) => x.lane)
+    .join("-");
+}
+
+function loadStartSignatureTrendContext() {
+  try {
+    const summary = db
+      .prepare(
+        `
+        SELECT
+          COALESCE(SUM(CASE WHEN hit_flag = 1 THEN 1 ELSE 0 END), 0) AS hits,
+          COALESCE(COUNT(*), 0) AS races
+        FROM prediction_feature_logs
+        WHERE hit_flag IN (0, 1)
+      `
+      )
+      .get();
+    const globalRaces = toNum(summary?.races, 0);
+    const globalHits = toNum(summary?.hits, 0);
+    const globalHitRate = globalRaces > 0 ? (globalHits / globalRaces) * 100 : 0;
+
+    const bySignatureRows = db
+      .prepare(
+        `
+        SELECT
+          start_display_signature,
+          COALESCE(SUM(CASE WHEN hit_flag = 1 THEN 1 ELSE 0 END), 0) AS hits,
+          COALESCE(COUNT(*), 0) AS races
+        FROM prediction_feature_logs
+        WHERE hit_flag IN (0, 1)
+          AND start_display_signature IS NOT NULL
+          AND TRIM(start_display_signature) <> ''
+        GROUP BY start_display_signature
+      `
+      )
+      .all();
+    const bySignature = new Map(
+      bySignatureRows.map((row) => [
+        String(row.start_display_signature),
+        {
+          races: toNum(row.races, 0),
+          hits: toNum(row.hits, 0),
+          hit_rate: toNum(row.races, 0) > 0 ? Number(((toNum(row.hits, 0) / toNum(row.races, 0)) * 100).toFixed(2)) : 0
+        }
+      ])
+    );
+    return {
+      globalHitRate: Number(globalHitRate.toFixed(2)),
+      globalRaces,
+      bySignature
+    };
+  } catch {
+    return {
+      globalHitRate: 0,
+      globalRaces: 0,
+      bySignature: new Map()
+    };
+  }
+}
+
+function analyzeStartSignals(racers, entryMeta, signatureTrendContext) {
+  const rows = Array.isArray(racers) ? racers : [];
+  const stRows = rows
+    .map((r) => ({
+      lane: toInt(r?.lane, null),
+      st: Number(r?.exhibitionST)
+    }))
+    .filter((x) => Number.isInteger(x.lane) && Number.isFinite(x.st) && x.st >= 0)
+    .sort((a, b) => a.st - b.st);
+
+  const signature = buildStartDisplaySignatureFromRacers(rows);
+  const fastest = stRows[0] || null;
+  const second = stRows[1] || null;
+  const slowCount = stRows.filter((x) => x.st >= 0.23).length;
+  const minSt = fastest ? fastest.st : null;
+  const maxSt = stRows.length ? stRows[stRows.length - 1].st : null;
+  const spread = Number.isFinite(minSt) && Number.isFinite(maxSt) ? Number((maxSt - minSt).toFixed(4)) : null;
+  const topGap =
+    fastest && second && Number.isFinite(fastest.st) && Number.isFinite(second.st)
+      ? Number((second.st - fastest.st).toFixed(4))
+      : null;
+
+  let stabilityScore = 50;
+  if (fastest) {
+    if (fastest.lane <= 2) stabilityScore += 12;
+    else if (fastest.lane <= 4) stabilityScore += 7;
+    else stabilityScore += 2;
+  }
+  if (Number.isFinite(spread)) {
+    if (spread > 0.16) stabilityScore -= 10;
+    else if (spread > 0.12) stabilityScore -= 6;
+    else if (spread < 0.07) stabilityScore += 6;
+  }
+  if (Number.isFinite(topGap)) {
+    if (topGap >= 0.06) stabilityScore += 4;
+    else if (topGap <= 0.015) stabilityScore -= 3;
+  }
+  stabilityScore -= Math.min(15, slowCount * 5);
+  if ((entryMeta?.severity || "none") === "high") stabilityScore -= 7;
+  else if ((entryMeta?.severity || "none") === "medium") stabilityScore -= 4;
+
+  const signatureTrend = signatureTrendContext?.bySignature?.get(signature) || null;
+  const globalHitRate = toNum(signatureTrendContext?.globalHitRate, 0);
+  let signatureAdjustment = 0;
+  if (signatureTrend && signatureTrend.races >= 20) {
+    const delta = signatureTrend.hit_rate - globalHitRate;
+    if (delta >= 8) signatureAdjustment += 5;
+    else if (delta >= 4) signatureAdjustment += 2;
+    else if (delta <= -8) signatureAdjustment -= 6;
+    else if (delta <= -4) signatureAdjustment -= 3;
+  }
+  stabilityScore = clamp(0, 100, stabilityScore + signatureAdjustment);
+
+  return {
+    signature,
+    fastest_st_lane: fastest?.lane ?? null,
+    st_spread: spread,
+    delayed_boat_count: slowCount,
+    top_st_gap: topGap,
+    stability_score: Number(stabilityScore.toFixed(2)),
+    signature_trend: signatureTrend
+      ? {
+          races: signatureTrend.races,
+          hit_rate: signatureTrend.hit_rate,
+          global_hit_rate: globalHitRate
+        }
+      : null
+  };
+}
+
+function applyStartSignalToDecision(raceDecision, startSignals, entryMeta) {
+  const original = raceDecision || {};
+  const currentMode = normalizeModeValue(original.mode || "UNKNOWN");
+  const s = toNum(startSignals?.stability_score, 50);
+  const severeEntry = (entryMeta?.severity || "none") === "high";
+
+  let mode = currentMode;
+  if (s < 34) mode = downgradeModeForEntryChange(mode, "high");
+  else if (s < 44) mode = downgradeModeForEntryChange(mode, "medium");
+  if (severeEntry && s < 46) mode = downgradeModeForEntryChange(mode, "high");
+
+  const baseConfidence = toNum(original.confidence, 0);
+  const confidenceAdjust = (s - 50) * 0.18 + (severeEntry ? -3 : 0);
+  const confidence = clamp(0, 100, Number((baseConfidence + confidenceAdjust).toFixed(2)));
+
+  const reasonCodes = Array.isArray(original.reason_codes) ? [...original.reason_codes] : [];
+  if (s < 44 && !reasonCodes.includes("START_SIGNAL_UNSTABLE")) reasonCodes.push("START_SIGNAL_UNSTABLE");
+  if (s >= 65 && !reasonCodes.includes("START_SIGNAL_STRONG")) reasonCodes.push("START_SIGNAL_STRONG");
+
+  return {
+    ...original,
+    mode,
+    confidence,
+    reason_codes: reasonCodes
+  };
+}
+
+function computeRecommendationScore({ raceDecision, raceStructure, startSignals, entryMeta }) {
+  const confidence = toNum(raceDecision?.confidence, 0);
+  const headStability = toNum(raceStructure?.head_stability_score, 50);
+  const chaosRisk = toNum(raceStructure?.chaos_risk_score, 50);
+  const startStability = toNum(startSignals?.stability_score, 50);
+  const mode = normalizeModeValue(raceDecision?.mode || "UNKNOWN");
+  const modeBase = mode === "FULL_BET" ? 12 : mode === "SMALL_BET" ? 8 : mode === "MICRO_BET" ? 4 : 0;
+  const entryPenalty =
+    (entryMeta?.severity || "none") === "high" ? 8 : (entryMeta?.severity || "none") === "medium" ? 4 : 0;
+  const score = clamp(
+    0,
+    100,
+    modeBase +
+      confidence * 0.34 +
+      headStability * 0.22 +
+      startStability * 0.24 +
+      (100 - chaosRisk) * 0.2 -
+      entryPenalty
+  );
+  return Number(score.toFixed(2));
+}
+
 function classifyWeaknessCodes({
   predictedHead,
   actualHead,
@@ -415,7 +610,9 @@ function calcHitRateRankingScore({
   headPrecision,
   valueDetection,
   marketTrap,
-  ticketOptimization
+  ticketOptimization,
+  startSignals,
+  recommendationScore
 }) {
   const mode = String(raceDecision?.mode || "SMALL_BET").toUpperCase();
   const modeBase = mode === "FULL_BET" ? 18 : mode === "SMALL_BET" ? 11 : mode === "MICRO_BET" ? 7 : 0;
@@ -426,14 +623,22 @@ function calcHitRateRankingScore({
   const valueBalance = toNum(valueDetection?.value_balance_score, 50);
   const trapScore = toNum(marketTrap?.trap_score, 35);
   const ticketQuality = toNum(ticketOptimization?.ticket_confidence_score, 50);
+  const startStability = toNum(startSignals?.stability_score, 50);
+  const recScore = toNum(recommendationScore, 50);
+  const confidenceSeparationBoost = Math.max(0, confidence - 65) * 0.12;
+  const confidenceLowPenalty = Math.max(0, 55 - confidence) * 0.16;
 
   const score = clamp(
     0,
     100,
     modeBase +
+      recScore * 0.16 +
       confidence * 0.22 +
+      confidenceSeparationBoost -
+      confidenceLowPenalty +
       headStability * 0.2 +
       headGap * 0.14 +
+      startStability * 0.16 +
       (100 - chaosRisk) * 0.16 +
       valueBalance * 0.12 +
       ticketQuality * 0.12 -
@@ -742,7 +947,16 @@ raceRouter.get("/race", async (req, res, next) => {
       raceFlow,
       playerStartProfiles: playerStartProfile
     });
-    const raceDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
+    const signatureTrendContext = loadStartSignatureTrendContext();
+    const startSignals = analyzeStartSignals(data.racers, entryMeta, signatureTrendContext);
+    const entryAdjustedDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
+    const raceDecision = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
+    const recommendation_score = computeRecommendationScore({
+      raceDecision,
+      raceStructure,
+      startSignals,
+      entryMeta
+    });
     const ticketGenerationV2 = generateTicketsV2({
       headSelection: headSelectionRefined,
       partnerSelection,
@@ -891,6 +1105,8 @@ raceRouter.get("/race", async (req, res, next) => {
       actual_entry_order: entryMeta.actual_entry_order,
       entry_changed: entryMeta.entry_changed,
       entry_change_type: entryMeta.entry_change_type,
+      startSignalAnalysis: startSignals,
+      recommendation_score,
       prediction_before_entry_change,
       prediction_after_entry_change,
       racePattern,
@@ -973,6 +1189,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
     const recs = [];
     const candidatePool = [];
     const errors = [];
+    const signatureTrendContext = loadStartSignatureTrendContext();
     let scanned = 0;
 
     for (const venueId of scanVenues) {
@@ -1197,7 +1414,9 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             marketTrap,
             raceFlow
           });
-          const raceDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
+          const startSignals = analyzeStartSignals(data.racers, entryMeta, signatureTrendContext);
+          const entryAdjustedDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
+          const raceDecision = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
             partnerSelection,
@@ -1235,6 +1454,12 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           });
           const provisional = dateMode.isFuture || mode !== "FULL_BET";
           const provisionalLabel = provisional ? "暫定" : null;
+          const recommendation_score = computeRecommendationScore({
+            raceDecision,
+            raceStructure,
+            startSignals,
+            entryMeta
+          });
           const recItem = {
             raceId: `${date}_${venueId}_${raceNo}`,
             date,
@@ -1260,6 +1485,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             actual_entry_order: entryMeta.actual_entry_order,
             entry_changed: entryMeta.entry_changed,
             entry_change_type: entryMeta.entry_change_type,
+            recommendation_score,
+            startSignalAnalysis: startSignals,
             tickets: stakeAllocation.tickets.slice(0, 4).map((t) => ({
               combo: t.combo,
               prob: Number.isFinite(Number(t.prob)) ? Number(t.prob) : null,
@@ -1283,11 +1510,13 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             }
           };
           const allowModes = dateMode.isFuture ? new Set(["FULL_BET", "SMALL_BET", "MICRO BET"]) : new Set(["FULL_BET"]);
+          const recommendationScoreMin = dateMode.isFuture ? 42 : 52;
           const worthBetting =
             allowModes.has(mode) &&
             confidence >= confidenceMin &&
             headStability >= headStabilityMin &&
-            chaosRisk <= maxChaos;
+            chaosRisk <= maxChaos &&
+            recommendation_score >= recommendationScoreMin;
 
           if (mode === "FULL_BET" || mode === "SMALL_BET" || mode === "MICRO BET") {
             candidatePool.push(recItem);
@@ -1308,6 +1537,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
       const modeRank = (x) => (x === "FULL_BET" ? 2 : x === "SMALL_BET" ? 1 : 0);
       const modeDiff = modeRank(b.mode) - modeRank(a.mode);
       if (modeDiff !== 0) return modeDiff;
+      const rs = Number(b.recommendation_score || 0) - Number(a.recommendation_score || 0);
+      if (rs !== 0) return rs;
       const c = Number(b.confidence || 0) - Number(a.confidence || 0);
       if (c !== 0) return c;
       return Number(b.head_stability_score || 0) - Number(a.head_stability_score || 0);
@@ -1378,6 +1609,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
 
     const items = [];
     const errors = [];
+    const signatureTrendContext = loadStartSignatureTrendContext();
     let scanned = 0;
 
     for (const venueId of scanVenues) {
@@ -1592,7 +1824,9 @@ raceRouter.get("/rankings", async (req, res, next) => {
             marketTrap,
             raceFlow
           });
-          const raceDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
+          const startSignals = analyzeStartSignals(data.racers, entryMeta, signatureTrendContext);
+          const entryAdjustedDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
+          const raceDecision = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
             partnerSelection,
@@ -1624,6 +1858,13 @@ raceRouter.get("/rankings", async (req, res, next) => {
             marketTrap
           });
 
+          const recommendation_score = computeRecommendationScore({
+            raceDecision,
+            raceStructure,
+            startSignals,
+            entryMeta
+          });
+
           const ranking_score = mode === "hit_rate"
             ? calcHitRateRankingScore({
               raceDecision,
@@ -1631,7 +1872,9 @@ raceRouter.get("/rankings", async (req, res, next) => {
               headPrecision,
               valueDetection,
               marketTrap,
-              ticketOptimization
+              ticketOptimization,
+              startSignals,
+              recommendationScore: recommendation_score
             })
             : calcHitRateRankingScore({
               raceDecision,
@@ -1639,7 +1882,9 @@ raceRouter.get("/rankings", async (req, res, next) => {
               headPrecision,
               valueDetection,
               marketTrap,
-              ticketOptimization
+              ticketOptimization,
+              startSignals,
+              recommendationScore: recommendation_score
             });
 
           items.push({
@@ -1666,6 +1911,8 @@ raceRouter.get("/rankings", async (req, res, next) => {
             race_budget: Number(toNum(stakeAllocation?.bankrollPlan?.race_budget, 0)),
             playerStartProfile,
             raceFlow,
+            recommendation_score,
+            startSignalAnalysis: startSignals,
             predicted_entry_order: entryMeta.predicted_entry_order,
             actual_entry_order: entryMeta.actual_entry_order,
             entry_changed: entryMeta.entry_changed,
@@ -1701,6 +1948,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
       trap_score: row.trap_score,
       value_balance_score: row.value_balance_score,
       race_budget: row.race_budget,
+      recommendation_score: row.recommendation_score,
       predicted_entry_order: row.predicted_entry_order || [],
       actual_entry_order: row.actual_entry_order || [],
       entry_changed: !!row.entry_changed,
