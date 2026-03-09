@@ -413,6 +413,15 @@
   gap: 2px;
 }
 
+.start-marker-missing {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.72rem;
+  color: var(--text-sub);
+}
+
 .start-marker {
   width: 24px;
   height: 24px;

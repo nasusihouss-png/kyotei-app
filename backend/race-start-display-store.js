@@ -134,7 +134,7 @@ function parsePenaltyTiming(raw, prefix) {
     raw: `${prefix}.${String(n).padStart(2, "0")}`,
     type: prefix.toLowerCase() === "f" ? "f" : "l",
     signed_seconds: Number(signed.toFixed(2)),
-    axis_position: Number((100 + Math.min(20, Math.max(0, n / 10))).toFixed(2)),
+    axis_position: Number((100 + Math.min(20, Math.max(0, n))).toFixed(2)),
     display: `${prefix}.${String(n).padStart(2, "0")}`
   };
 }

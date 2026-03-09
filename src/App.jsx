@@ -448,26 +448,15 @@ function getStartDisplayRows(startDisplay) {
   const timingMap = startDisplay.start_display_timing && typeof startDisplay.start_display_timing === "object"
     ? startDisplay.start_display_timing
     : {};
-  const positionsRaw = Array.isArray(startDisplay.start_display_positions)
-    ? startDisplay.start_display_positions
-    : [];
-  const positionsByLane = new Map();
-  positionsRaw.forEach((p) => {
-    const lane = Number(p?.lane);
-    if (Number.isFinite(lane) && lane >= 1 && lane <= 6) {
-      positionsByLane.set(lane, {
-        x: Number.isFinite(Number(p?.x)) ? Number(p.x) : null,
-        y: Number.isFinite(Number(p?.y)) ? Number(p.y) : null
-      });
-    }
-  });
 
   const order = orderRaw
     .map((v) => Number(v))
     .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6);
-  const lanes = order.length ? order : [1, 2, 3, 4, 5, 6];
+  const lanes = [1, 2, 3, 4, 5, 6];
+  const entryOrderByLane = new Map();
+  order.forEach((lane, idx) => entryOrderByLane.set(lane, idx + 1));
   const axisPositionByLane = new Map();
-  lanes.forEach((lane, idx) => {
+  lanes.forEach((lane) => {
     const timing = timingMap[String(lane)] || {};
     const timingType = String(timing?.type || "normal").toLowerCase();
     const axisFromTiming = Number(timing?.axis_position);
@@ -481,27 +470,24 @@ function getStartDisplayRows(startDisplay) {
     } else if (timingType === "f" || timingType === "l") {
       const raw = String(timing?.raw || "").toUpperCase();
       const m = raw.match(/^[FL]\.?(\d{1,2})$/);
-      const penalty = m ? Number(m[1]) / 10 : 0.1;
-      axisPosition = 100 + Math.max(0, Math.min(20, penalty));
+      const penalty = m ? Number(m[1]) : null;
+      axisPosition = Number.isFinite(penalty) ? 100 + Math.max(0, Math.min(20, penalty)) : null;
     } else if (normalSt !== null) {
-      axisPosition = 100 - normalSt * 100;
-    } else {
-      axisPosition = 100 - (idx + 1) * 1.8;
+      axisPosition = 100 - Math.round(normalSt * 100);
     }
-    axisPositionByLane.set(lane, axisPosition);
+    axisPositionByLane.set(lane, Number.isFinite(axisPosition) ? axisPosition : null);
   });
 
-  return lanes.map((lane, idx) => {
-    const pos = positionsByLane.get(lane);
-    const axis = Number.isFinite(pos?.x) ? pos.x : axisPositionByLane.get(lane);
-    const axisClamped = Math.max(0, Math.min(120, Number(axis)));
-    const leftPct = (axisClamped / 120) * 100;
+  return lanes.map((lane) => {
+    const axis = axisPositionByLane.get(lane);
+    const axisClamped = Number.isFinite(axis) ? Math.max(0, Math.min(120, Number(axis))) : null;
+    const leftPct = Number.isFinite(axisClamped) ? (axisClamped / 120) * 100 : null;
     const st = stMap[String(lane)];
     const timing = timingMap[String(lane)] || {};
     const timingDisplay = timing?.display || (Number.isFinite(Number(st)) ? Number(st).toFixed(2) : "--");
     return {
       lane,
-      order: idx + 1,
+      order: entryOrderByLane.get(lane) || null,
       leftPct,
       xUnit: Number.isFinite(axisClamped) ? Number(axisClamped.toFixed(2)) : null,
       st: Number.isFinite(Number(st)) ? Number(st) : null,
@@ -533,10 +519,14 @@ function StartExhibitionDisplay({ startDisplay, compact = false }) {
           <div className="start-layout">
             <div className="start-track start-track-120" />
             <div className="start-zero-line" />
-            <div className="start-marker-wrap" style={{ left: `${row.leftPct}%` }}>
-              <span className={`start-marker ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
-              <small>進入{row.order}</small>
-            </div>
+            {row.leftPct !== null ? (
+              <div className="start-marker-wrap" style={{ left: `${row.leftPct}%` }}>
+                <span className={`start-marker ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+                <small>{row.order ? `進入${row.order}` : "進入--"}</small>
+              </div>
+            ) : (
+              <div className="start-marker-missing">--</div>
+            )}
             <div className="start-scale">
               <span>100</span>
               <span>0</span>
