@@ -102,7 +102,7 @@ export function saveRaceStartDisplaySnapshot({
   predictionSnapshot,
   startDisplayPositions
 }) {
-  if (!raceId) return;
+  if (!raceId) return null;
   const order = buildStartDisplayOrder(racers);
   const stMap = buildStartDisplaySt(racers);
   const positions = buildStartDisplayPositions(startDisplayPositions, order);
@@ -117,6 +117,14 @@ export function saveRaceStartDisplaySnapshot({
     prediction_snapshot_json: JSON.stringify(predictionSnapshot || {}),
     updated_at: nowIso()
   });
+
+  return {
+    start_display_order: order,
+    start_display_st: stMap,
+    start_display_positions: positions,
+    start_display_signature: signature || null,
+    prediction_snapshot: predictionSnapshot || {}
+  };
 }
 
 export function saveRaceStartDisplayResult({ raceId, fetchedResult, settledResult }) {

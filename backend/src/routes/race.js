@@ -699,7 +699,7 @@ raceRouter.get("/race", async (req, res, next) => {
       bet_plan: bet_plan_with_stake
     });
 
-    saveRaceStartDisplaySnapshot({
+    const startDisplay = saveRaceStartDisplaySnapshot({
       raceId,
       racers: data.racers,
       predictionSnapshot: {
@@ -754,7 +754,8 @@ raceRouter.get("/race", async (req, res, next) => {
       raceDecision,
       valueDetection,
       marketTrap,
-      raceFlow
+      raceFlow,
+      startDisplay: startDisplay || null
     });
   } catch (err) {
     return next(err);
@@ -2526,9 +2527,39 @@ raceRouter.get("/results-history", async (req, res, next) => {
       `
       )
       .all();
+    const startDisplayRows = db
+      .prepare(
+        `
+        SELECT
+          race_id,
+          start_display_order_json,
+          start_display_st_json,
+          start_display_positions_json,
+          start_display_signature,
+          prediction_snapshot_json,
+          fetched_result,
+          settled_result
+        FROM race_start_displays
+      `
+      )
+      .all();
 
     const resultMap = new Map(resultsRows.map((r) => [r.race_id, r]));
     const raceMap = new Map(raceRows.map((r) => [r.race_id, r]));
+    const startDisplayMap = new Map(
+      startDisplayRows.map((row) => [
+        row.race_id,
+        {
+          start_display_order: safeJsonParse(row.start_display_order_json, []),
+          start_display_st: safeJsonParse(row.start_display_st_json, {}),
+          start_display_positions: safeJsonParse(row.start_display_positions_json, []),
+          start_display_signature: row.start_display_signature || null,
+          prediction_snapshot: safeJsonParse(row.prediction_snapshot_json, {}),
+          fetched_result: row.fetched_result || null,
+          settled_result: row.settled_result || null
+        }
+      ])
+    );
     const settlementByRace = new Map();
     for (const row of settlementRows) {
       const list = settlementByRace.get(row.race_id) || [];
@@ -2543,6 +2574,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const race = raceMap.get(raceId) || {};
       const result = resultMap.get(raceId) || null;
       const settlements = settlementByRace.get(raceId) || [];
+      const startDisplay = startDisplayMap.get(raceId) || null;
 
       const predictedTop3 = Array.isArray(prediction?.top3) ? prediction.top3.slice(0, 3) : [];
       const actualTop3 = result
@@ -2584,6 +2616,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           payout: toNum(s.payout),
           profit_loss: toNum(s.profit_loss)
         })),
+        startDisplay,
         recommended_bets: Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [],
         logged_at: logRow.created_at
       };

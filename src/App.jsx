@@ -382,6 +382,83 @@ function LanePills({ lanes }) {
   );
 }
 
+function getStartDisplayRows(startDisplay) {
+  if (!startDisplay || typeof startDisplay !== "object") return [];
+  const orderRaw = Array.isArray(startDisplay.start_display_order)
+    ? startDisplay.start_display_order
+    : [];
+  const stMap = startDisplay.start_display_st && typeof startDisplay.start_display_st === "object"
+    ? startDisplay.start_display_st
+    : {};
+  const positionsRaw = Array.isArray(startDisplay.start_display_positions)
+    ? startDisplay.start_display_positions
+    : [];
+  const positionsByLane = new Map();
+  positionsRaw.forEach((p) => {
+    const lane = Number(p?.lane);
+    if (Number.isFinite(lane) && lane >= 1 && lane <= 6) {
+      positionsByLane.set(lane, {
+        x: Number.isFinite(Number(p?.x)) ? Number(p.x) : null,
+        y: Number.isFinite(Number(p?.y)) ? Number(p.y) : null
+      });
+    }
+  });
+
+  const order = orderRaw
+    .map((v) => Number(v))
+    .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6);
+  const lanes = order.length ? order : [1, 2, 3, 4, 5, 6];
+  const xValues = lanes
+    .map((lane) => positionsByLane.get(lane)?.x)
+    .filter((v) => Number.isFinite(v));
+  const minX = xValues.length ? Math.min(...xValues) : 0;
+  const maxX = xValues.length ? Math.max(...xValues) : 100;
+  const xRange = Math.max(1, maxX - minX);
+
+  return lanes.map((lane, idx) => {
+    const pos = positionsByLane.get(lane);
+    const fallbackX = idx * 18;
+    const x = Number.isFinite(pos?.x) ? pos.x : fallbackX;
+    const leftPct = Math.max(5, Math.min(95, ((x - minX) / xRange) * 90 + 5));
+    const st = stMap[String(lane)];
+    return {
+      lane,
+      order: idx + 1,
+      leftPct,
+      st: Number.isFinite(Number(st)) ? Number(st) : null
+    };
+  });
+}
+
+function StartExhibitionDisplay({ startDisplay, compact = false }) {
+  const rows = useMemo(() => getStartDisplayRows(startDisplay), [startDisplay]);
+  if (!rows.length) {
+    return <p className="muted">No start exhibition data</p>;
+  }
+
+  return (
+    <div className={`start-display ${compact ? "compact" : ""}`}>
+      {rows.map((row) => (
+        <div key={`start-${row.lane}`} className="start-row">
+          <div className="start-lane">
+            <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+          </div>
+          <div className="start-layout">
+            <div className="start-track" />
+            <div className="start-marker-wrap" style={{ left: `${row.leftPct}%` }}>
+              <span className={`start-marker ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+              <small>進入{row.order}</small>
+            </div>
+          </div>
+          <div className="start-st">
+            {row.st === null ? "-" : row.st.toFixed(2)}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const adminMode = useMemo(() => {
     if (typeof window === "undefined") return false;
@@ -463,6 +540,7 @@ export default function App() {
   const venueName = useMemo(() => VENUES.find((v) => v.id === Number(venueId))?.name || "-", [venueId]);
 
   const race = data?.race || {};
+  const startDisplay = data?.startDisplay || null;
   const racers = Array.isArray(data?.racers) ? data.racers : [];
   const prediction = data?.prediction || {};
   const ranking = Array.isArray(prediction?.ranking) ? prediction.ranking : [];
@@ -1279,6 +1357,11 @@ export default function App() {
                     <div className="metric-item"><span>風速</span><strong>{race.windSpeed ?? "-"}</strong></div>
                     <div className="metric-item"><span>波高</span><strong>{race.waveHeight ?? "-"}</strong></div>
                   </div>
+                </section>
+
+                <section className="card">
+                  <h2>Start Exhibition</h2>
+                  <StartExhibitionDisplay startDisplay={startDisplay} />
                 </section>
 
                 <section className={`card recommendation ${getRiskClass(raceRisk.recommendation)}`}>
@@ -2237,6 +2320,19 @@ export default function App() {
                       <div className="history-head">
                         <strong>{h.race_date} {h.venue_name || h.venue_id} {h.race_no}R</strong>
                         <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
+                      </div>
+                      <div className="history-start-display">
+                        <h3>Start Exhibition</h3>
+                        <StartExhibitionDisplay startDisplay={h.startDisplay || null} compact />
+                        {h?.startDisplay?.prediction_snapshot ? (
+                          <p className="muted strategy-line">
+                            予測スナップショット:
+                            {" "}
+                            {Array.isArray(h.startDisplay.prediction_snapshot?.top3) && h.startDisplay.prediction_snapshot.top3.length
+                              ? h.startDisplay.prediction_snapshot.top3.join("-")
+                              : "-"}
+                          </p>
+                        ) : null}
                       </div>
                       <div className="history-grid">
                         <div>予想上位: {Array.isArray(h.predicted_top3) && h.predicted_top3.length ? h.predicted_top3.join("-") : "-"}</div>
