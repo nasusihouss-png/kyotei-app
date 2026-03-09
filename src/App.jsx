@@ -655,6 +655,7 @@ export default function App() {
   const ticketOptimization = data?.ticketOptimization || {};
   const valueDetection = data?.valueDetection || {};
   const scenarioSuggestions = data?.scenarioSuggestions || {};
+  const explainability = data?.explainability || {};
   const manualLapEvaluation = data?.manualLapEvaluation || null;
   const manualLapImpact = data?.manualLapImpact || null;
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
@@ -741,6 +742,8 @@ export default function App() {
             underpriced_flag: !!bet?.underpriced_flag,
             trap_flags: Array.isArray(bet?.trap_flags) ? bet.trap_flags : [],
             avoid_level: Number.isFinite(Number(bet?.avoid_level)) ? Number(bet.avoid_level) : 0,
+            explanation_tags: Array.isArray(bet?.explanation_tags) ? bet.explanation_tags : [],
+            explanation_summary: bet?.explanation_summary || null,
             recommended_bet: roundBetTo100(recommendedBet)
           };
         })
@@ -1610,6 +1613,14 @@ export default function App() {
                   {!isRecommendedRace ? (
                     <p className="muted strategy-line">このレースは非推奨です。ベット追加は無効化されています。</p>
                   ) : null}
+                  {(Array.isArray(explainability?.race_tags) && explainability.race_tags.length > 0) ? (
+                    <div className="chips-wrap">
+                      {explainability.race_tags.map((tag) => <span className="chip" key={`exp-tag-${tag}`}>{tag}</span>)}
+                    </div>
+                  ) : null}
+                  {explainability?.race_summary ? (
+                    <p className="muted strategy-line">{explainability.race_summary}</p>
+                  ) : null}
                 </section>
 
                 <section className="analysis-grid">
@@ -1933,25 +1944,33 @@ export default function App() {
                     <h2>推奨買い目（確率順）</h2>
                     <div className="list-stack">
                       {recommendedBetsByProb.map((bet, idx) => (
-                        <div key={`${bet.combo}-${idx}`} className="list-row list-row-actions">
-                          <strong><ComboBadge combo={bet.combo} /></strong>
-                          <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
-                          <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                          <span>odds {Number.isFinite(bet.odds) ? formatMaybeNumber(bet.odds, 1) : "-"}</span>
-                          <span>ev {formatMaybeNumber(bet.ev, 2)}</span>
-                          <span className={`ticket-value ${getValueTierClass(bet.bet_value_tier)}`}>
-                            {getValueTierLabel(bet.bet_value_tier)}
-                          </span>
-                          <span className={`ticket-trap ${getAvoidLevelClass(bet.avoid_level)}`}>
-                            {getAvoidLevelLabel(bet.avoid_level)}
-                          </span>
-                          <span className="bet-amount-strong">金額 JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
-                            記録に追加
-                          </button>
-                          <button className="fetch-btn secondary" onClick={() => onCopyAiToManual(bet, "recommended_bet")} title="手動フォームへコピー">
-                            手動へコピー
-                          </button>
+                        <div key={`${bet.combo}-${idx}`} className="list-stack">
+                          <div className="list-row list-row-actions">
+                            <strong><ComboBadge combo={bet.combo} /></strong>
+                            <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
+                            <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                            <span>odds {Number.isFinite(bet.odds) ? formatMaybeNumber(bet.odds, 1) : "-"}</span>
+                            <span>ev {formatMaybeNumber(bet.ev, 2)}</span>
+                            <span className={`ticket-value ${getValueTierClass(bet.bet_value_tier)}`}>
+                              {getValueTierLabel(bet.bet_value_tier)}
+                            </span>
+                            <span className={`ticket-trap ${getAvoidLevelClass(bet.avoid_level)}`}>
+                              {getAvoidLevelLabel(bet.avoid_level)}
+                            </span>
+                            <span className="bet-amount-strong">金額 JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
+                            <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
+                              記録に追加
+                            </button>
+                            <button className="fetch-btn secondary" onClick={() => onCopyAiToManual(bet, "recommended_bet")} title="手動フォームへコピー">
+                              手動へコピー
+                            </button>
+                          </div>
+                          {(Array.isArray(bet.explanation_tags) && bet.explanation_tags.length > 0) ? (
+                            <div className="chips-wrap">
+                              {bet.explanation_tags.slice(0, 4).map((tag) => <span className="chip" key={`bet-exp-${bet.combo}-${tag}`}>{tag}</span>)}
+                            </div>
+                          ) : null}
+                          {bet.explanation_summary ? <p className="muted strategy-line">{bet.explanation_summary}</p> : null}
                         </div>
                       ))}
                     </div>
@@ -1986,25 +2005,33 @@ export default function App() {
                     </div>
                     <div className="list-stack">
                       {(ticketOptimization.optimized_tickets || []).slice(0, 6).map((row, idx) => (
-                        <div key={`opt-${row.combo}-${idx}`} className="list-row list-row-actions">
-                          <strong><ComboBadge combo={row.combo} /></strong>
-                          <span className={`ticket-type ${getTicketTypeClass(row.ticket_type)}`}>{getTicketTypeLabel(row.ticket_type)}</span>
-                          <span>p {formatMaybeNumber(row.prob, 3)}</span>
-                          <span>odds {formatMaybeNumber(row.odds, 1)}</span>
-                          <span>ev {formatMaybeNumber(row.ev, 2)}</span>
-                          <span className={`ticket-value ${getValueTierClass(row.bet_value_tier)}`}>
-                            {getValueTierLabel(row.bet_value_tier)}
-                          </span>
-                          <span className={`ticket-trap ${getAvoidLevelClass(row.avoid_level)}`}>
-                            {getAvoidLevelLabel(row.avoid_level)}
-                          </span>
-                          <span className="bet-amount-strong">JPY {Number(row.recommended_bet || 0).toLocaleString()}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
-                            記録に追加
-                          </button>
-                          <button className="fetch-btn secondary" onClick={() => onCopyAiToManual({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet }, "optimized_ticket")} title="手動フォームへコピー">
-                            手動へコピー
-                          </button>
+                        <div key={`opt-${row.combo}-${idx}`} className="list-stack">
+                          <div className="list-row list-row-actions">
+                            <strong><ComboBadge combo={row.combo} /></strong>
+                            <span className={`ticket-type ${getTicketTypeClass(row.ticket_type)}`}>{getTicketTypeLabel(row.ticket_type)}</span>
+                            <span>p {formatMaybeNumber(row.prob, 3)}</span>
+                            <span>odds {formatMaybeNumber(row.odds, 1)}</span>
+                            <span>ev {formatMaybeNumber(row.ev, 2)}</span>
+                            <span className={`ticket-value ${getValueTierClass(row.bet_value_tier)}`}>
+                              {getValueTierLabel(row.bet_value_tier)}
+                            </span>
+                            <span className={`ticket-trap ${getAvoidLevelClass(row.avoid_level)}`}>
+                              {getAvoidLevelLabel(row.avoid_level)}
+                            </span>
+                            <span className="bet-amount-strong">JPY {Number(row.recommended_bet || 0).toLocaleString()}</span>
+                            <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
+                              記録に追加
+                            </button>
+                            <button className="fetch-btn secondary" onClick={() => onCopyAiToManual({ combo: row.combo, prob: row.prob, odds: row.odds, ev: row.ev, bet: row.recommended_bet }, "optimized_ticket")} title="手動フォームへコピー">
+                              手動へコピー
+                            </button>
+                          </div>
+                          {(Array.isArray(row.explanation_tags) && row.explanation_tags.length > 0) ? (
+                            <div className="chips-wrap">
+                              {row.explanation_tags.slice(0, 4).map((tag) => <span className="chip" key={`opt-exp-${row.combo}-${tag}`}>{tag}</span>)}
+                            </div>
+                          ) : null}
+                          {row.explanation_summary ? <p className="muted strategy-line">{row.explanation_summary}</p> : null}
                         </div>
                       ))}
                     </div>
@@ -2192,53 +2219,73 @@ export default function App() {
                       ) : null}
                       <div className="ticket-mini-list">
                         {(Array.isArray(row.tickets) ? row.tickets : []).slice(0, 3).map((ticket, idx) => (
-                          <div className="list-row list-row-actions" key={`${row.raceId}-${ticket.combo}-${idx}`}>
-                            <strong><ComboBadge combo={ticket.combo} /></strong>
-                            <span className={`ticket-type ${getTicketTypeClass(ticket.suggestion_bucket || ticket.ticket_type)}`}>
-                              {getTicketTypeLabel(ticket.suggestion_bucket || ticket.ticket_type)}
-                            </span>
-                            <span>p {Number.isFinite(Number(ticket.prob)) ? formatMaybeNumber(ticket.prob, 3) : "-"}</span>
-                            <span>odds {Number.isFinite(Number(ticket.odds)) ? formatMaybeNumber(ticket.odds, 1) : "-"}</span>
-                            <span>JPY {Number.isFinite(Number(ticket.bet)) ? Number(ticket.bet).toLocaleString() : "-"}</span>
-                            <button
-                              className="fetch-btn secondary"
-                              onClick={() =>
-                                onUsePredictedTicket({
-                                  combo: ticket.combo,
-                                  prob: ticket.prob,
-                                  odds: ticket.odds,
-                                  ev: ticket.ev,
-                                  bet: ticket.bet ?? 100,
-                                  ticket_type: ticket.ticket_type
-                                })
-                              }
-                              disabled={disableBetActions}
-                              title={disableBetActions ? "Not Recommended race" : ""}
-                            >
-                              記録に追加
-                            </button>
-                            <button
-                              className="fetch-btn secondary"
-                              onClick={() =>
-                                onCopyAiToManual(
-                                  {
+                          <div className="list-stack" key={`${row.raceId}-${ticket.combo}-${idx}`}>
+                            <div className="list-row list-row-actions">
+                              <strong><ComboBadge combo={ticket.combo} /></strong>
+                              <span className={`ticket-type ${getTicketTypeClass(ticket.suggestion_bucket || ticket.ticket_type)}`}>
+                                {getTicketTypeLabel(ticket.suggestion_bucket || ticket.ticket_type)}
+                              </span>
+                              <span>p {Number.isFinite(Number(ticket.prob)) ? formatMaybeNumber(ticket.prob, 3) : "-"}</span>
+                              <span>odds {Number.isFinite(Number(ticket.odds)) ? formatMaybeNumber(ticket.odds, 1) : "-"}</span>
+                              <span>JPY {Number.isFinite(Number(ticket.bet)) ? Number(ticket.bet).toLocaleString() : "-"}</span>
+                              <button
+                                className="fetch-btn secondary"
+                                onClick={() =>
+                                  onUsePredictedTicket({
                                     combo: ticket.combo,
                                     prob: ticket.prob,
                                     odds: ticket.odds,
                                     ev: ticket.ev,
-                                    bet: ticket.bet ?? 100
-                                  },
-                                  "recommendation_list"
-                                )
-                              }
-                              title="手動フォームへコピー"
-                            >
-                              手動へコピー
-                            </button>
+                                    bet: ticket.bet ?? 100,
+                                    ticket_type: ticket.ticket_type
+                                  })
+                                }
+                                disabled={disableBetActions}
+                                title={disableBetActions ? "Not Recommended race" : ""}
+                              >
+                                記録に追加
+                              </button>
+                              <button
+                                className="fetch-btn secondary"
+                                onClick={() =>
+                                  onCopyAiToManual(
+                                    {
+                                      combo: ticket.combo,
+                                      prob: ticket.prob,
+                                      odds: ticket.odds,
+                                      ev: ticket.ev,
+                                      bet: ticket.bet ?? 100
+                                    },
+                                    "recommendation_list"
+                                  )
+                                }
+                                title="手動フォームへコピー"
+                              >
+                                手動へコピー
+                              </button>
+                            </div>
+                            {(Array.isArray(ticket.explanation_tags) && ticket.explanation_tags.length > 0) ? (
+                              <div className="chips-wrap">
+                                {ticket.explanation_tags.slice(0, 4).map((tag) => (
+                                  <span className="chip" key={`rec-ticket-exp-${row.raceId}-${ticket.combo}-${tag}`}>{tag}</span>
+                                ))}
+                              </div>
+                            ) : null}
+                            {ticket.explanation_summary ? <p className="muted strategy-line">{ticket.explanation_summary}</p> : null}
                           </div>
                         ))}
                       </div>
                       <p className="muted strategy-line">{row.summary || "-"}</p>
+                      {(Array.isArray(row?.explainability?.race_tags) && row.explainability.race_tags.length > 0) ? (
+                        <div className="chips-wrap">
+                          {row.explainability.race_tags.slice(0, 6).map((tag) => (
+                            <span className="chip" key={`rec-exp-${row.raceId}-${tag}`}>{tag}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {row?.explainability?.race_summary ? (
+                        <p className="muted strategy-line">{row.explainability.race_summary}</p>
+                      ) : null}
                       <div className="row-actions">
                         <button className="fetch-btn" onClick={() => onOpenRecommendation(row)}>
                           詳細予想へ

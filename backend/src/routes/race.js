@@ -63,6 +63,7 @@ import { runSelfLearning } from "../../self-learning-engine.js";
 import { saveRaceStartDisplaySnapshot, saveRaceStartDisplayResult } from "../../race-start-display-store.js";
 import { attachPredictionFeatureLogSettlement, savePredictionFeatureLog } from "../../prediction-feature-log.js";
 import { buildScenarioSuggestions } from "../../scenario-suggestion-engine.js";
+import { buildBetExplainability, buildRaceExplainability } from "../../explainability-engine.js";
 import {
   applyManualLapToRanking,
   getManualLapEvaluation,
@@ -1090,6 +1091,52 @@ raceRouter.get("/race", async (req, res, next) => {
       betPlan: bet_plan_with_stake,
       ticketGenerationV2
     });
+    const raceExplainability = buildRaceExplainability({
+      raceDecision,
+      raceRisk,
+      raceFlow,
+      raceIndexes,
+      entryMeta,
+      startSignals,
+      manualLapImpact: manualLapAdjusted.manualLapImpact,
+      headSelection: headSelectionRefined,
+      scenarioSuggestions
+    });
+    const ticketExplainability = buildBetExplainability({
+      tickets: [
+        ...(Array.isArray(bet_plan_with_stake?.recommended_bets) ? bet_plan_with_stake.recommended_bets : []),
+        ...(Array.isArray(ticketOptimizationWithStake?.optimized_tickets) ? ticketOptimizationWithStake.optimized_tickets : [])
+      ],
+      bucketByCombo: scenarioSuggestions?.bucket_by_combo || {},
+      headSelection: headSelectionRefined,
+      entryMeta,
+      startSignals,
+      scenarioSuggestions
+    });
+    bet_plan_with_stake.recommended_bets = (Array.isArray(bet_plan_with_stake.recommended_bets)
+      ? bet_plan_with_stake.recommended_bets
+      : []
+    ).map((row) => {
+      const combo = normalizeCombo(row?.combo);
+      const exp = combo ? ticketExplainability[combo] : null;
+      return {
+        ...row,
+        explanation_tags: exp?.explanation_tags || [],
+        explanation_summary: exp?.explanation_summary || null
+      };
+    });
+    ticketOptimizationWithStake.optimized_tickets = (Array.isArray(ticketOptimizationWithStake.optimized_tickets)
+      ? ticketOptimizationWithStake.optimized_tickets
+      : []
+    ).map((row) => {
+      const combo = normalizeCombo(row?.combo);
+      const exp = combo ? ticketExplainability[combo] : null;
+      return {
+        ...row,
+        explanation_tags: exp?.explanation_tags || [],
+        explanation_summary: exp?.explanation_summary || null
+      };
+    });
 
     saveFeatureSnapshots(raceId, ranking);
 
@@ -1160,6 +1207,7 @@ raceRouter.get("/race", async (req, res, next) => {
       startSignalAnalysis: startSignals,
       recommendation_score,
       scenarioSuggestions,
+      explainability: raceExplainability,
       learningWeights,
       prediction_before_entry_change,
       prediction_after_entry_change,
@@ -1653,15 +1701,37 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             betPlan: bet_plan,
             ticketGenerationV2
           });
+          const raceExplainability = buildRaceExplainability({
+            raceDecision,
+            raceRisk,
+            raceFlow,
+            raceIndexes,
+            entryMeta,
+            startSignals,
+            manualLapImpact: manualLapAdjusted.manualLapImpact,
+            headSelection: headSelectionRefined,
+            scenarioSuggestions
+          });
           recItem.scenario_type = scenarioSuggestions.scenario_type;
           recItem.scenario_confidence = scenarioSuggestions.scenario_confidence;
           recItem.scenarioSuggestions = scenarioSuggestions;
+          recItem.explainability = raceExplainability;
           recItem.main_picks = scenarioSuggestions.main_picks;
           recItem.backup_picks = scenarioSuggestions.backup_picks;
           recItem.longshot_picks = scenarioSuggestions.longshot_picks;
+          const ticketExplainability = buildBetExplainability({
+            tickets: recItem.tickets,
+            bucketByCombo: scenarioSuggestions.bucket_by_combo || {},
+            headSelection: headSelectionRefined,
+            entryMeta,
+            startSignals,
+            scenarioSuggestions
+          });
           recItem.tickets = recItem.tickets.map((t) => ({
             ...t,
-            suggestion_bucket: scenarioSuggestions.bucket_by_combo?.[String(t.combo)] || t.ticket_type || "backup"
+            suggestion_bucket: scenarioSuggestions.bucket_by_combo?.[String(t.combo)] || t.ticket_type || "backup",
+            explanation_tags: ticketExplainability[String(t.combo)]?.explanation_tags || [],
+            explanation_summary: ticketExplainability[String(t.combo)]?.explanation_summary || null
           }));
           const allowModes = dateMode.isFuture ? new Set(["FULL_BET", "SMALL_BET", "MICRO BET"]) : new Set(["FULL_BET"]);
           const baseRecommendationThreshold = toNum(learningWeights?.recommendation_threshold, 52);
