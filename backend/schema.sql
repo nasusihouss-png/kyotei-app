@@ -142,6 +142,16 @@ CREATE TABLE IF NOT EXISTS race_start_displays (
   FOREIGN KEY (race_id) REFERENCES races(race_id)
 );
 
+CREATE TABLE IF NOT EXISTS manual_lap_exhibitions (
+  race_id TEXT PRIMARY KEY,
+  score_scale TEXT DEFAULT '0-2',
+  scores_json TEXT NOT NULL,
+  race_memo TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (race_id) REFERENCES races(race_id)
+);
+
 CREATE TABLE IF NOT EXISTS prediction_feature_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   race_id TEXT NOT NULL UNIQUE,

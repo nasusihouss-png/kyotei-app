@@ -71,6 +71,28 @@ const BOAT_META = {
   6: { label: "6", className: "lane-6", text: "green" }
 };
 
+const MANUAL_LAP_FIELDS = [
+  { key: "straight_line_score", label: "直線" },
+  { key: "turn_entry_score", label: "ターン入口" },
+  { key: "turn_exit_score", label: "ターン出口" },
+  { key: "acceleration_score", label: "行き足" },
+  { key: "stability_score", label: "安定感" }
+];
+
+function createManualLapDraft() {
+  const rows = {};
+  for (let lane = 1; lane <= 6; lane += 1) {
+    rows[String(lane)] = {
+      straight_line_score: "",
+      turn_entry_score: "",
+      turn_exit_score: "",
+      acceleration_score: "",
+      stability_score: ""
+    };
+  }
+  return rows;
+}
+
 async function fetchRaceData(date, venueId, raceNo) {
   const url = new URL(`${API_BASE}/race`);
   url.searchParams.set("date", date);
@@ -124,6 +146,32 @@ async function fetchSelfLearningData() {
 async function fetchStartEntryAnalysisData() {
   const response = await fetch(`${API_BASE}/start-entry-analysis`);
   if (!response.ok) throw new Error("Failed to fetch start/entry analysis");
+  return response.json();
+}
+
+async function fetchManualLapEvaluation({ raceId, date, venueId, raceNo }) {
+  const url = new URL(`${API_BASE}/manual-lap-evaluation`);
+  if (raceId) url.searchParams.set("raceId", raceId);
+  if (!raceId) {
+    url.searchParams.set("date", date);
+    url.searchParams.set("venueId", String(venueId));
+    url.searchParams.set("raceNo", String(raceNo));
+  }
+  const response = await fetch(url.toString());
+  if (!response.ok) throw new Error("Failed to fetch manual lap evaluation");
+  return response.json();
+}
+
+async function saveManualLapEvaluationApi(payload) {
+  const response = await fetch(`${API_BASE}/manual-lap-evaluation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.message || "Failed to save manual lap evaluation");
+  }
   return response.json();
 }
 
@@ -536,6 +584,10 @@ export default function App() {
   const [quickBetAmount, setQuickBetAmount] = useState(100);
   const [pendingTickets, setPendingTickets] = useState([]);
   const [journalFilter, setJournalFilter] = useState("all");
+  const [manualLapScores, setManualLapScores] = useState(createManualLapDraft);
+  const [manualLapMemo, setManualLapMemo] = useState("");
+  const [manualLapSaving, setManualLapSaving] = useState(false);
+  const [manualLapNotice, setManualLapNotice] = useState("");
 
   const laneButtons = useMemo(
     () => [
@@ -603,6 +655,8 @@ export default function App() {
   const ticketOptimization = data?.ticketOptimization || {};
   const valueDetection = data?.valueDetection || {};
   const scenarioSuggestions = data?.scenarioSuggestions || {};
+  const manualLapEvaluation = data?.manualLapEvaluation || null;
+  const manualLapImpact = data?.manualLapImpact || null;
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
   const raceDecision = data?.raceDecision || {};
   const recommendationMode = String(
@@ -813,6 +867,10 @@ export default function App() {
     try {
       const result = await fetchRaceData(date, venueId, raceNo);
       setData(result);
+      const savedScores = result?.manualLapEvaluation?.scores_by_lane;
+      setManualLapScores(savedScores && typeof savedScores === "object" ? savedScores : createManualLapDraft());
+      setManualLapMemo(result?.manualLapEvaluation?.race_memo || "");
+      setManualLapNotice("");
       setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
     } catch (e) {
       setError(e.message || "Failed to fetch race data");
@@ -872,6 +930,10 @@ export default function App() {
     try {
       const result = await fetchRaceData(date, nextVenueId, nextRaceNo);
       setData(result);
+      const savedScores = result?.manualLapEvaluation?.scores_by_lane;
+      setManualLapScores(savedScores && typeof savedScores === "object" ? savedScores : createManualLapDraft());
+      setManualLapMemo(result?.manualLapEvaluation?.race_memo || "");
+      setManualLapNotice("");
       setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
     } catch (e) {
       setError(e.message || "Failed to fetch race data");
@@ -929,6 +991,45 @@ export default function App() {
       }
       return next;
     });
+  };
+
+  const onManualLapScoreChange = (lane, field, value) => {
+    const normalized = value === "" ? "" : Math.max(0, Math.min(2, Number(value)));
+    setManualLapScores((prev) => ({
+      ...prev,
+      [String(lane)]: {
+        ...(prev[String(lane)] || {}),
+        [field]: normalized === "" ? "" : Math.trunc(normalized)
+      }
+    }));
+  };
+
+  const onSaveManualLapEvaluation = async () => {
+    const payload = {
+      raceId: data?.raceId || undefined,
+      date: race.date || date,
+      venueId: race.venueId || venueId,
+      raceNo: race.raceNo || raceNo,
+      scores_by_lane: manualLapScores,
+      race_memo: manualLapMemo
+    };
+    setManualLapSaving(true);
+    setManualLapNotice("");
+    setError("");
+    try {
+      await saveManualLapEvaluationApi(payload);
+      const result = await fetchRaceData(date, venueId, raceNo);
+      setData(result);
+      const savedScores = result?.manualLapEvaluation?.scores_by_lane;
+      setManualLapScores(savedScores && typeof savedScores === "object" ? savedScores : createManualLapDraft());
+      setManualLapMemo(result?.manualLapEvaluation?.race_memo || "");
+      setManualLapNotice("手動周回展示評価を保存し、予想へ反映しました。");
+      setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
+    } catch (e) {
+      setError(e.message || "Failed to save manual lap evaluation");
+    } finally {
+      setManualLapSaving(false);
+    }
   };
 
   const upsertPendingTicket = (ticket) => {
@@ -1444,6 +1545,56 @@ export default function App() {
                 <section className="card">
                   <h2>Start Exhibition</h2>
                   <StartExhibitionDisplay startDisplay={startDisplay} />
+                </section>
+
+                <section className="card">
+                  <h2>手動周回展示評価（0-2）</h2>
+                  <p className="muted strategy-line">直線・ターン入口/出口・行き足・安定感を入力すると、ランキング/推奨/買い目へ軽く反映します。</p>
+                  <div className="manual-lap-grid">
+                    {Array.from({ length: 6 }, (_, idx) => idx + 1).map((lane) => (
+                      <div key={`lap-${lane}`} className="manual-lap-row">
+                        <div className="manual-lap-lane">
+                          <span className={`combo-dot ${BOAT_META[lane]?.className || ""}`}>{lane}</span>
+                        </div>
+                        {MANUAL_LAP_FIELDS.map((field) => (
+                          <label key={`lap-${lane}-${field.key}`} className="manual-lap-field">
+                            <span>{field.label}</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="2"
+                              step="1"
+                              value={manualLapScores?.[String(lane)]?.[field.key] ?? ""}
+                              onChange={(e) => onManualLapScoreChange(lane, field.key, e.target.value)}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  <label className="manual-lap-memo">
+                    <span>メモ（任意）</span>
+                    <textarea
+                      value={manualLapMemo}
+                      onChange={(e) => setManualLapMemo(e.target.value)}
+                      placeholder="例: 2号艇のターン出口が良い、4号艇は旋回不安"
+                      rows={2}
+                    />
+                  </label>
+                  <div className="row-actions">
+                    <button className="fetch-btn" onClick={onSaveManualLapEvaluation} disabled={manualLapSaving}>
+                      {manualLapSaving ? "保存中..." : "評価を保存して再計算"}
+                    </button>
+                    {manualLapEvaluation?.updated_at ? (
+                      <span className="muted">最終更新: {new Date(manualLapEvaluation.updated_at).toLocaleString()}</span>
+                    ) : null}
+                  </div>
+                  {manualLapImpact?.enabled ? (
+                    <p className="muted strategy-line">
+                      反映中: {manualLapImpact.applied_lane_count}艇 / 平均補正 {formatMaybeNumber(manualLapImpact.average_adjustment, 2)}
+                    </p>
+                  ) : null}
+                  {manualLapNotice ? <div className="notice-banner">{manualLapNotice}</div> : null}
                 </section>
 
                 <section className={`card recommendation ${getRiskClass(raceRisk.recommendation)}`}>

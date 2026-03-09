@@ -64,6 +64,11 @@ import { saveRaceStartDisplaySnapshot, saveRaceStartDisplayResult } from "../../
 import { attachPredictionFeatureLogSettlement, savePredictionFeatureLog } from "../../prediction-feature-log.js";
 import { buildScenarioSuggestions } from "../../scenario-suggestion-engine.js";
 import {
+  applyManualLapToRanking,
+  getManualLapEvaluation,
+  saveManualLapEvaluation
+} from "../../manual-lap-evaluation-store.js";
+import {
   getActiveLearningWeights,
   getLatestLearningRun,
   rollbackLearningWeights,
@@ -689,6 +694,7 @@ raceRouter.get("/race", async (req, res, next) => {
     const data = await getRaceData({ date, venueId, raceNo });
     const learningWeights = getActiveLearningWeights();
     const raceId = saveRace(data);
+    const manualLapEvaluation = getManualLapEvaluation(raceId);
     const entryMeta = buildEntryOrderMeta(data.racers);
     const baseFeatures = applyMotorPerformanceFeatures(
       applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
@@ -705,7 +711,9 @@ raceRouter.get("/race", async (req, res, next) => {
       chaos_index: prePattern.indexes.chaos_index
     });
 
-    const ranking = rankRace(entryAdjusted.racersWithFeatures);
+    const rankingBase = rankRace(entryAdjusted.racersWithFeatures);
+    const manualLapAdjusted = applyManualLapToRanking(rankingBase, manualLapEvaluation);
+    const ranking = manualLapAdjusted.ranking;
     const preRaceAnalysis = analyzePreRaceForm({
       ranking,
       race: data.race
@@ -1137,6 +1145,8 @@ raceRouter.get("/race", async (req, res, next) => {
       race: data.race,
       racers: data.racers,
       raceId,
+      manualLapEvaluation,
+      manualLapImpact: manualLapAdjusted.manualLapImpact,
       is_recommended: String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() !== "SKIP",
       recommendation_label:
         String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() === "SKIP"
@@ -1190,6 +1200,71 @@ raceRouter.get("/race", async (req, res, next) => {
       marketTrap,
       raceFlow,
       startDisplay: startDisplay || null
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.get("/manual-lap-evaluation", async (req, res, next) => {
+  try {
+    const raceIdFromQuery = String(req.query?.raceId || "").trim();
+    const date = String(req.query?.date || "").trim();
+    const venueId = toInt(req.query?.venueId, null);
+    const raceNo = toInt(req.query?.raceNo, null);
+    const raceId =
+      raceIdFromQuery ||
+      buildRaceIdFromParts({
+        date,
+        venueId,
+        raceNo
+      });
+    if (!raceId) {
+      return res.status(400).json({
+        error: "bad_request",
+        message: "raceId or (date, venueId, raceNo) is required"
+      });
+    }
+    const row = getManualLapEvaluation(raceId);
+    return res.json({
+      raceId,
+      manualLapEvaluation: row || null
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.post("/manual-lap-evaluation", async (req, res, next) => {
+  try {
+    const raceIdFromBody = String(req.body?.raceId || "").trim();
+    const date = String(req.body?.date || "").trim();
+    const venueId = toInt(req.body?.venueId, null);
+    const raceNo = toInt(req.body?.raceNo, null);
+    const raceId =
+      raceIdFromBody ||
+      buildRaceIdFromParts({
+        date,
+        venueId,
+        raceNo
+      });
+    if (!raceId) {
+      return res.status(400).json({
+        error: "bad_request",
+        message: "raceId or (date, venueId, raceNo) is required"
+      });
+    }
+    const scoresByLane = req.body?.scores_by_lane || req.body?.scoresByLane || {};
+    const raceMemo = req.body?.race_memo ?? req.body?.raceMemo ?? null;
+    const saved = saveManualLapEvaluation({
+      raceId,
+      scoresByLane,
+      raceMemo
+    });
+    return res.json({
+      ok: true,
+      raceId,
+      manualLapEvaluation: saved
     });
   } catch (err) {
     return next(err);
@@ -1258,7 +1333,15 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             racePattern: prePattern.race_pattern,
             chaos_index: prePattern.indexes.chaos_index
           });
-          const ranking = rankRace(entryAdjusted.racersWithFeatures);
+          const rankingBase = rankRace(entryAdjusted.racersWithFeatures);
+          const raceId = buildRaceIdFromParts({
+            date: data.race?.date,
+            venueId: data.race?.venueId,
+            raceNo: data.race?.raceNo
+          });
+          const manualLapEvaluation = raceId ? getManualLapEvaluation(raceId) : null;
+          const manualLapAdjusted = applyManualLapToRanking(rankingBase, manualLapEvaluation);
+          const ranking = manualLapAdjusted.ranking;
           const preRaceAnalysis = analyzePreRaceForm({ ranking, race: data.race });
           const pattern = analyzeRacePattern(ranking);
           const adjustedChaos = Math.min(
@@ -1509,7 +1592,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             learningWeights
           });
           const recItem = {
-            raceId: `${date}_${venueId}_${raceNo}`,
+            raceId: raceId || `${String(date).replace(/-/g, "")}_${venueId}_${raceNo}`,
             date,
             venueId: data.race.venueId,
             venueName: data.race.venueName || null,
@@ -1534,6 +1617,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             entry_changed: entryMeta.entry_changed,
             entry_change_type: entryMeta.entry_change_type,
             recommendation_score,
+            manualLapImpact: manualLapAdjusted.manualLapImpact,
+            manual_lap_applied: !!manualLapAdjusted?.manualLapImpact?.enabled,
             startSignalAnalysis: startSignals,
             tickets: stakeAllocation.tickets.slice(0, 4).map((t) => ({
               combo: t.combo,
@@ -1704,7 +1789,15 @@ raceRouter.get("/rankings", async (req, res, next) => {
             racePattern: prePattern.race_pattern,
             chaos_index: prePattern.indexes.chaos_index
           });
-          const ranking = rankRace(entryAdjusted.racersWithFeatures);
+          const rankingBase = rankRace(entryAdjusted.racersWithFeatures);
+          const raceId = buildRaceIdFromParts({
+            date: data.race?.date,
+            venueId: data.race?.venueId,
+            raceNo: data.race?.raceNo
+          });
+          const manualLapEvaluation = raceId ? getManualLapEvaluation(raceId) : null;
+          const manualLapAdjusted = applyManualLapToRanking(rankingBase, manualLapEvaluation);
+          const ranking = manualLapAdjusted.ranking;
           const preRaceAnalysis = analyzePreRaceForm({
             ranking,
             race: data.race
@@ -1980,7 +2073,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
                 ? "暫定"
                 : null,
             summary: raceDecision?.summary || ticketGenerationV2?.summary || "評価中",
-            raceId: `${date}_${data.race.venueId}_${data.race.raceNo}`,
+            raceId: raceId || `${String(date).replace(/-/g, "")}_${data.race.venueId}_${data.race.raceNo}`,
             ticket_quality: Number(toNum(ticketOptimization?.ticket_confidence_score, 0).toFixed(2)),
             trap_score: Number(toNum(marketTrap?.trap_score, 0).toFixed(2)),
             value_balance_score: Number(toNum(valueDetection?.value_balance_score, 0).toFixed(2)),
@@ -1992,7 +2085,9 @@ raceRouter.get("/rankings", async (req, res, next) => {
             predicted_entry_order: entryMeta.predicted_entry_order,
             actual_entry_order: entryMeta.actual_entry_order,
             entry_changed: entryMeta.entry_changed,
-            entry_change_type: entryMeta.entry_change_type
+            entry_change_type: entryMeta.entry_change_type,
+            manualLapImpact: manualLapAdjusted.manualLapImpact,
+            manual_lap_applied: !!manualLapAdjusted?.manualLapImpact?.enabled
           });
         } catch (err) {
           errors.push({
@@ -2028,7 +2123,9 @@ raceRouter.get("/rankings", async (req, res, next) => {
       predicted_entry_order: row.predicted_entry_order || [],
       actual_entry_order: row.actual_entry_order || [],
       entry_changed: !!row.entry_changed,
-      entry_change_type: row.entry_change_type || "none"
+      entry_change_type: row.entry_change_type || "none",
+      manual_lap_applied: !!row.manual_lap_applied,
+      manualLapImpact: row.manualLapImpact || null
     }));
 
     return res.json({

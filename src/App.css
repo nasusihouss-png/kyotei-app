@@ -426,6 +426,69 @@
   font-size: 0.95rem;
 }
 
+.manual-lap-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.manual-lap-row {
+  display: grid;
+  grid-template-columns: 44px repeat(5, minmax(88px, 1fr));
+  gap: 8px;
+  align-items: end;
+  border: 1px solid rgba(122, 162, 207, 0.2);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(9, 17, 28, 0.55);
+}
+
+.manual-lap-lane {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+}
+
+.manual-lap-field {
+  display: grid;
+  gap: 4px;
+}
+
+.manual-lap-field span {
+  font-size: 0.72rem;
+  color: #9eb4cb;
+}
+
+.manual-lap-field input {
+  min-height: 42px;
+  border: 1px solid rgba(156, 163, 175, 0.35);
+  background: #0f1829;
+  color: var(--text-main);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.manual-lap-memo {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.manual-lap-memo span {
+  font-size: 0.8rem;
+  color: #9eb4cb;
+}
+
+.manual-lap-memo textarea {
+  width: 100%;
+  border: 1px solid rgba(156, 163, 175, 0.35);
+  background: #0f1829;
+  color: var(--text-main);
+  border-radius: 10px;
+  padding: 10px;
+  resize: vertical;
+}
+
 .list-stack,
 .history-stack {
   display: grid;
@@ -1037,6 +1100,10 @@ th {
   .win-prob-list {
     grid-template-columns: repeat(3, minmax(70px, 1fr));
   }
+
+  .manual-lap-row {
+    grid-template-columns: 44px repeat(2, minmax(88px, 1fr));
+  }
 }
 
 @media (max-width: 640px) {
@@ -1093,5 +1160,13 @@ th {
 
   .win-prob-list {
     grid-template-columns: repeat(2, minmax(90px, 1fr));
+  }
+
+  .manual-lap-row {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-lap-lane {
+    justify-content: flex-start;
   }
 }
