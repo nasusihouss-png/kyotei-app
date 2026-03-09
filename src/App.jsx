@@ -449,6 +449,37 @@ function getStartDisplayRows(startDisplay) {
     ? startDisplay.start_display_timing
     : {};
 
+  const parseToUnit = ({ raw, stValue }) => {
+    const text = String(raw ?? "").trim().toUpperCase();
+    const compact = text.replace(/\s+/g, "");
+    const fMatch = compact.match(/^F\.?(\d{1,2})$/);
+    if (fMatch) {
+      const n = Number(fMatch[1]);
+      if (Number.isFinite(n)) return 100 + n;
+    }
+    const lMatch = compact.match(/^L\.?(\d{1,2})$/);
+    if (lMatch) {
+      const n = Number(lMatch[1]);
+      if (Number.isFinite(n)) return 100 + n;
+    }
+
+    let st = null;
+    if (stValue !== null && stValue !== undefined && stValue !== "") {
+      const num = Number(stValue);
+      if (Number.isFinite(num)) st = num;
+    }
+    if (st === null && compact) {
+      if (/^0?\.\d{1,2}$/.test(compact)) {
+        const num = Number(compact.startsWith(".") ? `0${compact}` : compact);
+        if (Number.isFinite(num)) st = num;
+      }
+    }
+    if (st === null) return null;
+    const clipped = Math.max(0, Math.min(0.99, st));
+    const hundredths = Math.round(clipped * 100);
+    return 100 - hundredths;
+  };
+
   const order = orderRaw
     .map((v) => Number(v))
     .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6);
@@ -458,23 +489,11 @@ function getStartDisplayRows(startDisplay) {
   const axisPositionByLane = new Map();
   lanes.forEach((lane) => {
     const timing = timingMap[String(lane)] || {};
-    const timingType = String(timing?.type || "normal").toLowerCase();
-    const axisFromTiming = Number(timing?.axis_position);
     const fallbackSt = Number(stMap[String(lane)]);
-    const normalSt = Number.isFinite(fallbackSt)
-      ? Math.max(0, Math.min(0.99, fallbackSt))
-      : null;
-    let axisPosition = null;
-    if (Number.isFinite(axisFromTiming)) {
-      axisPosition = axisFromTiming;
-    } else if (timingType === "f" || timingType === "l") {
-      const raw = String(timing?.raw || "").toUpperCase();
-      const m = raw.match(/^[FL]\.?(\d{1,2})$/);
-      const penalty = m ? Number(m[1]) : null;
-      axisPosition = Number.isFinite(penalty) ? 100 + Math.max(0, Math.min(20, penalty)) : null;
-    } else if (normalSt !== null) {
-      axisPosition = 100 - Math.round(normalSt * 100);
-    }
+    const axisPosition = parseToUnit({
+      raw: timing?.raw ?? timing?.display ?? stMap[String(lane)],
+      stValue: Number.isFinite(fallbackSt) ? fallbackSt : null
+    });
     axisPositionByLane.set(lane, Number.isFinite(axisPosition) ? axisPosition : null);
   });
 
@@ -498,6 +517,24 @@ function getStartDisplayRows(startDisplay) {
 
 function StartExhibitionDisplay({ startDisplay, compact = false }) {
   const rows = useMemo(() => getStartDisplayRows(startDisplay), [startDisplay]);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const debugSamples = ["F.02", "F.01", "0.21", "F.03", "F.14", "F.04"];
+    const toUnit = (input) => {
+      const raw = String(input || "").trim().toUpperCase().replace(/\s+/g, "");
+      const m = raw.match(/^([FL])\.?(\d{1,2})$/);
+      if (m) return 100 + Number(m[2]);
+      const n = Number(raw.startsWith(".") ? `0${raw}` : raw);
+      if (!Number.isFinite(n)) return null;
+      return 100 - Math.round(Math.max(0, Math.min(0.99, n)) * 100);
+    };
+    const mapped = debugSamples.map((v) => {
+      const u = toUnit(v);
+      const p = Number.isFinite(u) ? Number(((u / 120) * 100).toFixed(3)) : null;
+      return { value: v, unit: u, percent: p };
+    });
+    console.info("[StartDisplayDebug]", mapped);
+  }, []);
   if (!rows.length) {
     return <p className="muted">No start exhibition data</p>;
   }

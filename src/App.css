@@ -406,8 +406,8 @@
 
 .start-marker-wrap {
   position: absolute;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  top: 2px;
+  transform: translateX(-50%);
   display: grid;
   justify-items: center;
   gap: 2px;
