@@ -2,6 +2,8 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 
 const BOATRACE_BASE = "https://www.boatrace.jp";
+const BOATRACE_CACHE_TTL_MS = Number(process.env.BOATRACE_CACHE_TTL_MS || 45000);
+const raceDataCache = new Map();
 
 function normalizeSpace(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -128,6 +130,34 @@ async function fetchHtml(url) {
   });
 
   return data;
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getCacheKey({ date, venueId, raceNo }) {
+  return `${String(date)}_${String(venueId)}_${String(raceNo)}`;
+}
+
+function getCachedRaceData(params) {
+  const key = getCacheKey(params);
+  const row = raceDataCache.get(key);
+  if (!row) return null;
+  if (Date.now() > row.expiresAt) {
+    raceDataCache.delete(key);
+    return null;
+  }
+  return cloneJson(row.data);
+}
+
+function setCachedRaceData(params, data) {
+  if (!Number.isFinite(BOATRACE_CACHE_TTL_MS) || BOATRACE_CACHE_TTL_MS <= 0) return;
+  const key = getCacheKey(params);
+  raceDataCache.set(key, {
+    data: cloneJson(data),
+    expiresAt: Date.now() + BOATRACE_CACHE_TTL_MS
+  });
 }
 
 function missingRequiredFields(racer) {
@@ -354,6 +384,20 @@ function parseBeforeinfo(html) {
 }
 
 export async function getRaceData({ date, venueId, raceNo }) {
+  const cached = getCachedRaceData({ date, venueId, raceNo });
+  if (cached) {
+    return {
+      ...cached,
+      source: {
+        ...(cached.source || {}),
+        cache: {
+          hit: true,
+          ttl_ms: BOATRACE_CACHE_TTL_MS
+        }
+      }
+    };
+  }
+
   const hd = normalizeDate(date);
   const jcd = normalizeVenueId(venueId);
   const rno = normalizeRaceNo(raceNo);
@@ -380,10 +424,14 @@ export async function getRaceData({ date, venueId, raceNo }) {
     };
   });
 
-  return {
+  const result = {
     source: {
       racelistUrl,
-      beforeinfoUrl
+      beforeinfoUrl,
+      cache: {
+        hit: false,
+        ttl_ms: BOATRACE_CACHE_TTL_MS
+      }
     },
     race: {
       date: `${hd.slice(0, 4)}-${hd.slice(4, 6)}-${hd.slice(6, 8)}`,
@@ -396,4 +444,6 @@ export async function getRaceData({ date, venueId, raceNo }) {
     },
     racers: mergedRacers
   };
+  setCachedRaceData({ date, venueId, raceNo }, result);
+  return result;
 }

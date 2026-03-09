@@ -604,6 +604,7 @@ export default function App() {
   const venueName = useMemo(() => VENUES.find((v) => v.id === Number(venueId))?.name || "-", [venueId]);
 
   const race = data?.race || {};
+  const sourceMeta = data?.source || {};
   const startDisplay = data?.startDisplay || null;
   const prediction = data?.prediction || {};
   const racers = Array.isArray(data?.racers) ? data.racers : [];
@@ -1548,6 +1549,44 @@ export default function App() {
                 <section className="card">
                   <h2>Start Exhibition</h2>
                   <StartExhibitionDisplay startDisplay={startDisplay} />
+                  <p className="muted strategy-line">
+                    {sourceMeta?.cache?.fallback === "db_snapshot"
+                      ? "公式取得失敗のため保存済みスナップショットを使用"
+                      : sourceMeta?.cache?.hit
+                        ? "バックエンドキャッシュを使用"
+                        : "公式事前情報から自動取得"}
+                  </p>
+                </section>
+
+                <section className="card">
+                  <h2>自動取得 展示関連データ</h2>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>艇番</th>
+                          <th>選手名</th>
+                          <th>展示タイム</th>
+                          <th>展示ST</th>
+                          <th>進入</th>
+                          <th>チルト</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {racers.map((racer, idx) => (
+                          <tr key={`auto-lap-${racer.lane}-${idx}`}>
+                            <td>{racer.lane ?? "-"}</td>
+                            <td>{racer.name || "-"}</td>
+                            <td>{formatMaybeNumber(racer.exhibitionTime, 2)}</td>
+                            <td>{formatMaybeNumber(racer.exhibitionST ?? racer.exhibitionSt, 2)}</td>
+                            <td>{racer.entryCourse ?? "-"}</td>
+                            <td>{formatMaybeNumber(racer.tilt, 1)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="muted strategy-line">手動周回展示評価と併用して最終判断に反映されます。</p>
                 </section>
 
                 <section className="card">

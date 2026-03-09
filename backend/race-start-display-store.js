@@ -81,7 +81,7 @@ function buildStartDisplaySt(racers) {
   (Array.isArray(racers) ? racers : []).forEach((r) => {
     const lane = toNum(r?.lane, null);
     if (!Number.isInteger(lane)) return;
-    const st = toNum(r?.exhibitionST, null);
+    const st = toNum(r?.exhibitionST ?? r?.exhibitionSt, null);
     map[String(lane)] = Number.isFinite(st) ? st : null;
   });
   return map;
@@ -89,11 +89,15 @@ function buildStartDisplaySt(racers) {
 
 function buildStartDisplayPositions(positions, order) {
   if (Array.isArray(positions) && positions.length > 0) return positions;
-  return (Array.isArray(order) ? order : []).map((lane, idx) => ({
-    lane,
-    x: null,
-    y: idx
-  }));
+  return (Array.isArray(order) ? order : []).map((lane, idx) => {
+    const numericLane = toNum(lane, null);
+    return {
+      lane: numericLane,
+      // Constructable default coordinates for stable UI rendering.
+      x: Number.isInteger(numericLane) ? 90 + numericLane * 12 : null,
+      y: idx * 48
+    };
+  });
 }
 
 export function saveRaceStartDisplaySnapshot({

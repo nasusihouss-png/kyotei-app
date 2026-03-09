@@ -344,6 +344,93 @@ function buildStartDisplaySignatureFromRacers(racers) {
     .join("-");
 }
 
+function loadRaceSnapshotFromDb({ date, venueId, raceNo }) {
+  const nullableNum = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const raceId = buildRaceIdFromParts({ date, venueId, raceNo });
+  if (!raceId) return null;
+
+  const raceRow = db
+    .prepare(
+      `
+      SELECT race_id, race_date, venue_id, venue_name, race_no, race_name, weather, wind_speed, wind_dir, wave_height
+      FROM races
+      WHERE race_id = ?
+      LIMIT 1
+    `
+    )
+    .get(raceId);
+  if (!raceRow) return null;
+
+  const entryRows = db
+    .prepare(
+      `
+      SELECT
+        lane,
+        registration_no,
+        name,
+        class,
+        branch,
+        age,
+        weight,
+        avg_st,
+        nationwide_win_rate,
+        local_win_rate,
+        motor2_rate,
+        boat2_rate,
+        exhibition_time,
+        exhibition_st,
+        entry_course,
+        tilt
+      FROM entries
+      WHERE race_id = ?
+      ORDER BY lane ASC
+    `
+    )
+    .all(raceId);
+  if (!Array.isArray(entryRows) || entryRows.length !== 6) return null;
+
+  return {
+    source: {
+      cache: {
+        hit: false,
+        fallback: "db_snapshot"
+      }
+    },
+    race: {
+      date: raceRow.race_date,
+      venueId: toInt(raceRow.venue_id, null),
+      venueName: raceRow.venue_name || null,
+      raceNo: toInt(raceRow.race_no, null),
+      raceName: raceRow.race_name || null,
+      weather: raceRow.weather || null,
+      windSpeed: nullableNum(raceRow.wind_speed),
+      windDirection: raceRow.wind_dir || null,
+      waveHeight: nullableNum(raceRow.wave_height)
+    },
+    racers: entryRows.map((r) => ({
+      lane: toInt(r.lane, null),
+      registrationNo: toInt(r.registration_no, null),
+      name: r.name || null,
+      class: r.class || null,
+      branch: r.branch || null,
+      age: toInt(r.age, null),
+      weight: nullableNum(r.weight),
+      avgSt: nullableNum(r.avg_st),
+      nationwideWinRate: nullableNum(r.nationwide_win_rate),
+      localWinRate: nullableNum(r.local_win_rate),
+      motor2Rate: nullableNum(r.motor2_rate),
+      boat2Rate: nullableNum(r.boat2_rate),
+      exhibitionTime: nullableNum(r.exhibition_time),
+      exhibitionSt: nullableNum(r.exhibition_st),
+      entryCourse: toInt(r.entry_course, null),
+      tilt: nullableNum(r.tilt)
+    }))
+  };
+}
+
 function loadStartSignatureTrendContext() {
   try {
     const summary = db
@@ -713,7 +800,14 @@ raceRouter.get("/race", async (req, res, next) => {
       });
     }
 
-    const data = await getRaceData({ date, venueId, raceNo });
+    let data;
+    try {
+      data = await getRaceData({ date, venueId, raceNo });
+    } catch (fetchErr) {
+      const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });
+      if (!fallback) throw fetchErr;
+      data = fallback;
+    }
     const learningWeights = getActiveLearningWeights();
     const raceId = saveRace(data);
     const manualLapEvaluation = getManualLapEvaluation(raceId);
@@ -1210,6 +1304,7 @@ raceRouter.get("/race", async (req, res, next) => {
     });
 
     return res.json({
+      source: data.source || {},
       race: data.race,
       racers: data.racers,
       raceId,
