@@ -125,3 +125,17 @@ CREATE TABLE IF NOT EXISTS self_learning_snapshots (
   applied_weights_json TEXT,
   summary TEXT
 );
+
+CREATE TABLE IF NOT EXISTS race_start_displays (
+  race_id TEXT PRIMARY KEY,
+  start_display_order_json TEXT,
+  start_display_st_json TEXT,
+  start_display_positions_json TEXT,
+  start_display_signature TEXT,
+  prediction_snapshot_json TEXT,
+  fetched_result TEXT,
+  settled_result TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (race_id) REFERENCES races(race_id)
+);

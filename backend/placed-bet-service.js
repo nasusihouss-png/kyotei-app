@@ -3,6 +3,7 @@ import { buildRaceIdFromParts } from "./result-utils.js";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { saveRaceResult } from "./save-result.js";
+import { saveRaceStartDisplayResult } from "./race-start-display-store.js";
 
 function toInt(value, fallback = null) {
   const n = Number(value);
@@ -913,6 +914,12 @@ export async function settlePlacedBetsForRace({ race_id, race_date, venue_id, ra
     settlement_attempted: true,
     db_commit_success: true
   };
+
+  saveRaceStartDisplayResult({
+    raceId,
+    fetchedResult: winningCombo,
+    settledResult: winningCombo
+  });
 
   console.info("[SETTLEMENT] completed", {
     ...settlement_debug,

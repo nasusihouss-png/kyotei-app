@@ -60,6 +60,7 @@ import {
   getPlacedBetSummaries
 } from "../../placed-bet-service.js";
 import { runSelfLearning } from "../../self-learning-engine.js";
+import { saveRaceStartDisplaySnapshot, saveRaceStartDisplayResult } from "../../race-start-display-store.js";
 
 export const raceRouter = Router();
 
@@ -696,6 +697,17 @@ raceRouter.get("/race", async (req, res, next) => {
       probabilities,
       ev_analysis: evData.ev_analysis,
       bet_plan: bet_plan_with_stake
+    });
+
+    saveRaceStartDisplaySnapshot({
+      raceId,
+      racers: data.racers,
+      predictionSnapshot: {
+        raceDecision,
+        top3: prediction.top3,
+        recommendation: raceRisk?.recommendation || null,
+        mode: raceDecision?.mode || null
+      }
     });
 
     return res.json({
@@ -1556,6 +1568,10 @@ raceRouter.post("/race/result", async (req, res, next) => {
       payout2t,
       payout3t,
       decisionType
+    });
+    saveRaceStartDisplayResult({
+      raceId,
+      settledResult: top3.join("-")
     });
 
     const comparison = compareActualTop3VsPredictedBets(top3, predictedBets, {
