@@ -120,9 +120,9 @@ function normalizeRaceNo(raceNoInput) {
   return raceNo;
 }
 
-async function fetchHtml(url) {
+async function fetchHtml(url, timeoutMs = 15000) {
   const { data } = await axios.get(url, {
-    timeout: 15000,
+    timeout: timeoutMs,
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
       "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
@@ -387,7 +387,7 @@ function parseBeforeinfo(html) {
   };
 }
 
-export async function getRaceData({ date, venueId, raceNo }) {
+export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000 }) {
   const cached = getCachedRaceData({ date, venueId, raceNo });
   if (cached) {
     return {
@@ -410,8 +410,8 @@ export async function getRaceData({ date, venueId, raceNo }) {
   const beforeinfoUrl = `${BOATRACE_BASE}/owpc/pc/race/beforeinfo?rno=${rno}&jcd=${jcd}&hd=${hd}`;
 
   const [racelistHtml, beforeinfoHtml] = await Promise.all([
-    fetchHtml(racelistUrl),
-    fetchHtml(beforeinfoUrl)
+    fetchHtml(racelistUrl, timeoutMs),
+    fetchHtml(beforeinfoUrl, timeoutMs)
   ]);
 
   const { racers } = parseRacersFromRacelist(racelistHtml);

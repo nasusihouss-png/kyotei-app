@@ -961,7 +961,7 @@ export default function App() {
       setRecommendationsData(rows);
     } catch (e) {
       setRecommendationsError(e.message || "Failed to fetch recommendations");
-      setRecommendationsData([]);
+      // keep last successful list for partial/stale display
     } finally {
       setRecommendationsLoading(false);
     }
@@ -980,7 +980,7 @@ export default function App() {
       setRankingsData(rows);
     } catch (e) {
       setRankingsError(e.message || "Failed to fetch rankings");
-      setRankingsData([]);
+      // keep last successful list for partial/stale display
     } finally {
       setRankingsLoading(false);
     }

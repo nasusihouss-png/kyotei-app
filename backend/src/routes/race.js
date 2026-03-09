@@ -431,6 +431,53 @@ function loadRaceSnapshotFromDb({ date, venueId, raceNo }) {
   };
 }
 
+async function resolveRaceDataForList({
+  date,
+  venueId,
+  raceNo,
+  allowRefresh,
+  refreshTimeoutMs
+}) {
+  const snapshot = loadRaceSnapshotFromDb({ date, venueId, raceNo });
+  if (snapshot) {
+    return {
+      data: snapshot,
+      usedCachedData: true,
+      partialData: false,
+      warning: null
+    };
+  }
+  if (!allowRefresh) {
+    return {
+      data: null,
+      usedCachedData: false,
+      partialData: true,
+      warning: "snapshot_not_found"
+    };
+  }
+  try {
+    const fresh = await getRaceData({
+      date,
+      venueId,
+      raceNo,
+      timeoutMs: refreshTimeoutMs
+    });
+    return {
+      data: fresh,
+      usedCachedData: false,
+      partialData: false,
+      warning: null
+    };
+  } catch (err) {
+    return {
+      data: null,
+      usedCachedData: false,
+      partialData: true,
+      warning: err?.message || "refresh_failed"
+    };
+  }
+}
+
 function loadStartSignatureTrendContext() {
   try {
     const summary = db
@@ -1491,11 +1538,18 @@ raceRouter.get("/recommendations", async (req, res, next) => {
     const scanAll = scanVenues.length * scanRaceNos.length;
     const defaultMaxScan = dateMode.isFuture ? scanAll : 144;
     const maxScan = Math.max(1, Math.min(scanAll, toInt(req.query?.maxScan, defaultMaxScan)));
+    const allowRefresh = parseBooleanFlag(req.query?.refresh, false);
+    const refreshTimeoutMs = Math.max(800, Math.min(5000, toInt(req.query?.refreshTimeoutMs, 1800)));
+    const refreshBudgetMs = Math.max(1500, Math.min(12000, toInt(req.query?.refreshBudgetMs, 5000)));
 
     const recs = [];
     const candidatePool = [];
     const errors = [];
+    const refreshWarnings = [];
     const signatureTrendContext = loadStartSignatureTrendContext();
+    const startedAt = Date.now();
+    let usedCachedCount = 0;
+    let partialData = false;
     let scanned = 0;
 
     for (const venueId of scanVenues) {
@@ -1503,7 +1557,25 @@ raceRouter.get("/recommendations", async (req, res, next) => {
         if (scanned >= maxScan) break;
         scanned += 1;
         try {
-          const data = await getRaceData({ date, venueId, raceNo });
+          const canRefresh = allowRefresh && Date.now() - startedAt <= refreshBudgetMs;
+          const resolved = await resolveRaceDataForList({
+            date,
+            venueId,
+            raceNo,
+            allowRefresh: canRefresh,
+            refreshTimeoutMs
+          });
+          if (resolved.warning) {
+            partialData = true;
+            refreshWarnings.push({
+              venueId,
+              raceNo,
+              warning: resolved.warning
+            });
+          }
+          if (!resolved.data) continue;
+          if (resolved.usedCachedData) usedCachedCount += 1;
+          const data = resolved.data;
           const entryMeta = buildEntryOrderMeta(data.racers);
           const baseFeatures = applyMotorPerformanceFeatures(
             applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
@@ -1939,6 +2011,10 @@ raceRouter.get("/recommendations", async (req, res, next) => {
       scanned,
       returned: output.length,
       recommendations: output,
+      used_cached_data: usedCachedCount > 0,
+      partial_data: partialData,
+      refresh_warnings: refreshWarnings.slice(0, 50),
+      refresh_mode: allowRefresh ? "best_effort" : "snapshot_first",
       fallback_used: fallbackUsed,
       fallback_reason: fallbackUsed ? "no_full_bet_candidates" : null,
       skipped_count: Math.max(0, scanned - output.length),
@@ -1978,10 +2054,17 @@ raceRouter.get("/rankings", async (req, res, next) => {
     const scanAll = scanVenues.length * scanRaceNos.length;
     const defaultMaxScan = dateMode.isFuture ? scanAll : 168;
     const maxScan = Math.max(1, Math.min(scanAll, toInt(req.query?.maxScan, defaultMaxScan)));
+    const allowRefresh = parseBooleanFlag(req.query?.refresh, false);
+    const refreshTimeoutMs = Math.max(800, Math.min(5000, toInt(req.query?.refreshTimeoutMs, 1800)));
+    const refreshBudgetMs = Math.max(1500, Math.min(12000, toInt(req.query?.refreshBudgetMs, 5000)));
 
     const items = [];
     const errors = [];
+    const refreshWarnings = [];
     const signatureTrendContext = loadStartSignatureTrendContext();
+    const startedAt = Date.now();
+    let usedCachedCount = 0;
+    let partialData = false;
     let scanned = 0;
 
     for (const venueId of scanVenues) {
@@ -1989,7 +2072,25 @@ raceRouter.get("/rankings", async (req, res, next) => {
         if (scanned >= maxScan) break;
         scanned += 1;
         try {
-          const data = await getRaceData({ date, venueId, raceNo });
+          const canRefresh = allowRefresh && Date.now() - startedAt <= refreshBudgetMs;
+          const resolved = await resolveRaceDataForList({
+            date,
+            venueId,
+            raceNo,
+            allowRefresh: canRefresh,
+            refreshTimeoutMs
+          });
+          if (resolved.warning) {
+            partialData = true;
+            refreshWarnings.push({
+              venueId,
+              raceNo,
+              warning: resolved.warning
+            });
+          }
+          if (!resolved.data) continue;
+          if (resolved.usedCachedData) usedCachedCount += 1;
+          const data = resolved.data;
           const entryMeta = buildEntryOrderMeta(data.racers);
           const baseFeatures = applyMotorPerformanceFeatures(
             applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
@@ -2359,6 +2460,10 @@ raceRouter.get("/rankings", async (req, res, next) => {
       scanned,
       returned: rankings.length,
       rankings,
+      used_cached_data: usedCachedCount > 0,
+      partial_data: partialData,
+      refresh_warnings: refreshWarnings.slice(0, 50),
+      refresh_mode: allowRefresh ? "best_effort" : "snapshot_first",
       errors: errors.slice(0, 40)
     });
   } catch (err) {
