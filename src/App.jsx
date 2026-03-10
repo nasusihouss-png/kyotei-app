@@ -902,6 +902,7 @@ export default function App() {
   }, [data, journalForm.race_date, journalForm.venue_id, journalForm.race_no, race?.date, race?.venueId, race?.raceNo]);
   const journalRaceNotRecommended = !!data && journalTargetMatchesLoadedRace && !isRecommendedRace;
   const disableBetActions = !isRecommendedRace;
+  const resultsVerificationOnly = true;
   const builderCombo = useMemo(() => {
     const lanes = [builderSlots.first, builderSlots.second, builderSlots.third];
     if (lanes.some((v) => !Number.isInteger(v))) return "";
@@ -2564,6 +2565,8 @@ export default function App() {
           <>
             {perfError && <div className="error-banner">{perfError}</div>}
             {verificationNotice && <div className="notice-banner">{verificationNotice}</div>}
+            {!resultsVerificationOnly && (
+              <>
 
             <section className="card">
               <div className="result-form-grid">
@@ -3016,9 +3019,11 @@ export default function App() {
                 </table>
               </div>
             </section>
+              </>
+            )}
 
             <section className="card">
-              <h2>レース結果トラッキング</h2>
+              <h2>AI予想検証（レース別）</h2>
               {history.length === 0 ? <p className="muted">履歴データはまだありません。</p> : (
                 <div className="history-stack">
                   {history.map((h) => (
@@ -3066,16 +3071,45 @@ export default function App() {
                         <div>実進入順: {Array.isArray(h.actual_entry_order) && h.actual_entry_order.length ? h.actual_entry_order.join("-") : "-"}</div>
                         <div>予想上位: {Array.isArray(h.predicted_top3) && h.predicted_top3.length ? h.predicted_top3.join("-") : "-"}</div>
                         <div>確定結果: {Array.isArray(h.actual_top3) && h.actual_top3.length ? h.actual_top3.join("-") : "-"}</div>
+                        <div>
+                          頭予想:
+                          {" "}
+                          {Array.isArray(h.predicted_top3) &&
+                          h.predicted_top3.length > 0 &&
+                          Array.isArray(h.actual_top3) &&
+                          h.actual_top3.length > 0 &&
+                          Number(h.predicted_top3[0]) === Number(h.actual_top3[0])
+                            ? "的中"
+                            : "不一致"}
+                        </div>
                         <div>confirmed result: {h.confirmed_result || "-"}</div>
                         <div>購入額: JPY {(h.totals?.bet_amount ?? 0).toLocaleString()}</div>
                         <div>払戻: JPY {(h.totals?.payout ?? 0).toLocaleString()}</div>
                         <div>損益: JPY {(h.totals?.profit_loss ?? 0).toLocaleString()}</div>
+                      </div>
+                      <div className="history-grid" style={{ marginTop: 8 }}>
+                        <div>
+                          AI推奨買い目:
+                          {" "}
+                          {Array.isArray(h.recommended_bets) && h.recommended_bets.length ? (
+                            h.recommended_bets.slice(0, 6).map((b, idx) => (
+                              <ComboBadge combo={b?.combo} key={`rec-${h.race_id}-${idx}`} />
+                            ))
+                          ) : "-"}
+                        </div>
                       </div>
                       {h.verification ? (
                         <div className="history-grid" style={{ marginTop: 8 }}>
                           <div>検証日時: {h.verification.verified_at ? new Date(h.verification.verified_at).toLocaleString() : "-"}</div>
                           <div>検証結果: {h.verification.hit_miss || "-"}</div>
                           <div>カテゴリ: {Array.isArray(h.verification.mismatch_categories) && h.verification.mismatch_categories.length ? h.verification.mismatch_categories.join(", ") : "-"}</div>
+                        </div>
+                      ) : null}
+                      {Array.isArray(h?.verification?.mismatch_categories) && h.verification.mismatch_categories.length ? (
+                        <div className="chips-wrap">
+                          {h.verification.mismatch_categories.map((tag) => (
+                            <span className="chip" key={`mismatch-${h.race_id}-${tag}`}>{tag}</span>
+                          ))}
                         </div>
                       ) : null}
                       {Array.isArray(h.bets) && h.bets.length > 0 && (
