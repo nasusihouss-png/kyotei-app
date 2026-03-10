@@ -973,6 +973,7 @@ raceRouter.get("/race", async (req, res, next) => {
       data = fallback;
     }
     const learningWeights = getActiveLearningWeights();
+    const learningState = getLatestLearningRun();
     const raceId = saveRace(data);
     const manualLapEvaluation = getManualLapEvaluation(raceId);
     const entryMeta = buildEntryOrderMeta(data.racers);
@@ -1543,6 +1544,10 @@ raceRouter.get("/race", async (req, res, next) => {
       contenderSignals: contenderAdjusted.contenderSignals,
       explainability: raceExplainability,
       learningWeights,
+      learningContext: {
+        active_last_run_id: learningState?.active_last_run_id || null,
+        active_updated_at: learningState?.active_updated_at || null
+      },
       prediction_before_entry_change,
       prediction_after_entry_change,
       racePattern,

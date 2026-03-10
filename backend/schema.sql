@@ -198,6 +198,45 @@ CREATE TABLE IF NOT EXISTS prediction_feature_logs (
   FOREIGN KEY (race_id) REFERENCES races(race_id)
 );
 
+CREATE TABLE IF NOT EXISTS prediction_feature_log_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  race_id TEXT NOT NULL,
+  race_key TEXT,
+  race_date TEXT,
+  venue_id INTEGER,
+  venue_name TEXT,
+  race_no INTEGER,
+  race_grade TEXT,
+  weather TEXT,
+  wind REAL,
+  wave REAL,
+  motor_rate_avg REAL,
+  boat_rate_avg REAL,
+  avg_st_avg REAL,
+  exhibition_time_avg REAL,
+  start_display_st_json TEXT,
+  start_display_signature TEXT,
+  predicted_entry_order_json TEXT,
+  actual_entry_order_json TEXT,
+  entry_changed INTEGER,
+  entry_change_type TEXT,
+  ranking_score REAL,
+  recommendation_score REAL,
+  confidence REAL,
+  recommendation_mode TEXT,
+  prediction_snapshot_json TEXT,
+  prediction_before_entry_change_json TEXT,
+  prediction_after_entry_change_json TEXT,
+  source_timestamp TEXT,
+  learning_run_id INTEGER,
+  learned_at TEXT,
+  actual_result TEXT,
+  hit_flag INTEGER,
+  settled_bet_hit_count INTEGER,
+  settled_bet_count INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS learning_weight_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
