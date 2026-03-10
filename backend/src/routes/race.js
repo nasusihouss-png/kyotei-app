@@ -262,7 +262,18 @@ function buildMismatchAnalysis({
   const categories = [];
   const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
   const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
-  const hitMiss = predictedCombo && actualCombo && predictedCombo === actualCombo ? "HIT" : "MISS";
+  const recBets = safeArray(predictedBets)
+    .map((b) => {
+      const raw =
+        typeof b === "string" || Array.isArray(b)
+          ? b
+          : b?.combo ?? b?.selection ?? null;
+      return normalizeCombo(raw);
+    })
+    .filter((x) => x && x.split("-").length === 3);
+  const recBetSet = new Set(recBets);
+  const hitMatchFound = !!(actualCombo && recBetSet.has(actualCombo));
+  const hitMiss = actualCombo ? (hitMatchFound ? "HIT" : "MISS") : "PENDING";
 
   const headCorrect =
     predictedTop3.length > 0 && actualTop3.length > 0 && Number(predictedTop3[0]) === Number(actualTop3[0]);
@@ -291,11 +302,8 @@ function buildMismatchAnalysis({
   if (!headCorrect && Number(topFeature?.motor_total_score) >= 12) categories.push("MOTOR_WEIGHT_BIAS");
   if (!headCorrect && Number(topFeature?.class_score) >= 8) categories.push("PLAYER_WEIGHT_BIAS");
 
-  const recBets = safeArray(predictedBets)
-    .map((b) => normalizeCombo(b?.combo))
-    .filter((x) => x && x.split("-").length === 3);
   if (recBets.length > 0 && actualCombo) {
-    const hasHitTicket = recBets.includes(actualCombo);
+    const hasHitTicket = recBetSet.has(actualCombo);
     if (!hasHitTicket && recBets.length <= 2) categories.push("UNDERSPREAD");
     if (!hasHitTicket && recBets.length >= 8) categories.push("OVERSPREAD");
   }
@@ -310,7 +318,10 @@ function buildMismatchAnalysis({
     second_third_correct: secondThirdCorrect,
     categories: [...new Set(categories)],
     predicted_combo: predictedCombo,
-    actual_combo: actualCombo
+    actual_combo: actualCombo,
+    verified_against_bets: [...recBetSet],
+    confirmed_result_canonical: actualCombo,
+    hit_match_found: hitMatchFound
   };
 }
 
@@ -4524,6 +4535,18 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       `
       )
       .get(raceId);
+    const latestVerificationRow = db
+      .prepare(
+        `
+        SELECT id, verification_summary_json
+        FROM race_verification_logs
+        WHERE race_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+    const latestVerificationSummary = safeJsonParse(latestVerificationRow?.verification_summary_json, {});
     if (!latestPrediction) {
       return res.status(409).json({
         ok: false,
@@ -4577,9 +4600,16 @@ raceRouter.post("/results/verify", async (req, res, next) => {
 
     const predictionJson = safeJsonParse(latestPrediction?.prediction_json, {});
     const betPlanJson = safeJsonParse(latestPrediction?.bet_plan_json, {});
-    const snapshotDisplayBets = Array.isArray(predictionJson?.ai_bets_display_snapshot)
+    const snapshotDisplayBetsFromPrediction = Array.isArray(predictionJson?.ai_bets_display_snapshot)
       ? predictionJson.ai_bets_display_snapshot
       : safeArray(betPlanJson?.recommended_bets);
+    const snapshotDisplayBetsFromVerification = Array.isArray(latestVerificationSummary?.ai_bets_display_snapshot)
+      ? latestVerificationSummary.ai_bets_display_snapshot
+      : [];
+    const snapshotDisplayBets =
+      snapshotDisplayBetsFromVerification.length > 0
+        ? snapshotDisplayBetsFromVerification
+        : snapshotDisplayBetsFromPrediction;
     const snapshotFullBets =
       predictionJson?.ai_bets_full_snapshot && typeof predictionJson.ai_bets_full_snapshot === "object"
         ? predictionJson.ai_bets_full_snapshot
@@ -4614,6 +4644,8 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       });
     }
     let predictedBets = snapshotDisplayBets;
+    const verificationBetSource =
+      snapshotDisplayBetsFromVerification.length > 0 ? "verification_snapshot" : "prediction_snapshot";
     let verifyWarning = null;
     if (predictedBets.length === 0 && predictedTop3.length === 3) {
       predictedBets = [{ combo: predictedTop3.join("-"), source: "top3_fallback" }];
@@ -4682,6 +4714,10 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       race_key: predictionJson?.race_key || raceId,
       ai_bets_display_snapshot: snapshotDisplayBets,
       ai_bets_full_snapshot: snapshotFullBets,
+      verification_bet_source: verificationBetSource,
+      verified_against_bets: analysis.verified_against_bets,
+      confirmed_result_canonical: analysis.confirmed_result_canonical,
+      hit_match_found: analysis.hit_match_found,
       learning_ready: analysis.categories.length > 0,
       warning: verifyWarning
     };
@@ -4764,6 +4800,10 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       persisted: !!insertInfo?.lastInsertRowid,
       summary_updated: true,
       learning_ready: analysis.categories.length > 0,
+      verified_against_bets: analysis.verified_against_bets,
+      confirmed_result_canonical: analysis.confirmed_result_canonical,
+      hit_match_found: analysis.hit_match_found,
+      verification_bet_source: verificationBetSource,
       continuous_learning: continuousLearning,
       confirmed_result: actualTop3.join("-"),
       settlement: settlement || null,
