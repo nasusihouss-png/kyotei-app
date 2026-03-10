@@ -34,6 +34,51 @@ function toDecimal(value) {
   return null;
 }
 
+function parseStartTimingRaw(value) {
+  const raw = normalizeSpace(value) || null;
+  if (!raw) {
+    return {
+      raw: null,
+      type: "missing",
+      numeric: null
+    };
+  }
+  const normalized = normalizeDigits(String(raw)).replace(/\s+/g, "").toUpperCase();
+  const fMatch = normalized.match(/^F\.?(\d{1,2})$/);
+  if (fMatch) {
+    const n = Number(fMatch[1]);
+    return {
+      raw,
+      type: "flying",
+      numeric: Number.isFinite(n) ? Number((-(n / 100)).toFixed(2)) : null
+    };
+  }
+  const lMatch = normalized.match(/^L\.?(\d{1,2})$/);
+  if (lMatch) {
+    const n = Number(lMatch[1]);
+    return {
+      raw,
+      type: "late",
+      numeric: Number.isFinite(n) ? Number((-(n / 100)).toFixed(2)) : null
+    };
+  }
+
+  const decimal = toDecimal(normalized);
+  if (decimal !== null) {
+    return {
+      raw,
+      type: "normal",
+      numeric: Number(decimal.toFixed(2))
+    };
+  }
+
+  return {
+    raw,
+    type: "unknown",
+    numeric: null
+  };
+}
+
 function extractFirstNumber(value) {
   const text = normalizeDigits(String(value || ""));
   const match = text.match(/\d+(?:\.\d+)?/);
@@ -318,6 +363,7 @@ function parseBeforeinfo(html) {
   const $ = cheerio.load(html);
 
   const byLane = new Map();
+  const rawByLane = new Map();
   const beforeRows = $("table.is-w748 tbody.is-fs12");
 
   beforeRows.each((_, tbody) => {
@@ -338,14 +384,23 @@ function parseBeforeinfo(html) {
 
     const row3Cells = $row3.children("td");
     const exhibitionStRawFromRow = normalizeSpace(row3Cells.eq(2).text()) || null;
-    const exhibitionStFromRow = toDecimal(exhibitionStRawFromRow);
+    const stParsedFromRow = parseStartTimingRaw(exhibitionStRawFromRow);
+    const exhibitionStFromRow = stParsedFromRow.type === "normal" ? stParsedFromRow.numeric : null;
 
     byLane.set(lane, {
       exhibitionTime,
       entryCourse: entryCourseFromRow,
       exhibitionSt: exhibitionStFromRow,
       exhibitionStRaw: exhibitionStRawFromRow,
+      exhibitionStType: stParsedFromRow.type,
+      exhibitionStNumeric: stParsedFromRow.numeric,
       tilt
+    });
+    rawByLane.set(lane, {
+      lane,
+      rawEntryCourse: normalizeSpace(row2Cells.eq(1).text()) || null,
+      rawSt: exhibitionStRawFromRow,
+      rawExhibitionTime: normalizeSpace($cells1.eq(4).text()) || null
     });
   });
 
@@ -357,15 +412,32 @@ function parseBeforeinfo(html) {
     if (!lane) return;
 
     const exhibitionStRaw = normalizeSpace($el.find(".table1_boatImage1Time").first().text()) || null;
-    const exhibitionSt = toDecimal(exhibitionStRaw);
+    const stParsed = parseStartTimingRaw(exhibitionStRaw);
+    const exhibitionSt = stParsed.type === "normal" ? stParsed.numeric : null;
     const entryCourse = idx + 1;
 
     const current = byLane.get(lane) || {};
+    const shouldPreferStartRowSt =
+      stParsed.type !== "missing" &&
+      stParsed.type !== "unknown" &&
+      (current.exhibitionStType === "missing" ||
+        current.exhibitionStType === "unknown" ||
+        current.exhibitionStRaw == null);
     byLane.set(lane, {
       ...current,
       entryCourse: current.entryCourse ?? entryCourse,
-      exhibitionSt: current.exhibitionSt ?? exhibitionSt,
-      exhibitionStRaw: current.exhibitionStRaw ?? exhibitionStRaw
+      exhibitionSt: shouldPreferStartRowSt ? exhibitionSt : current.exhibitionSt ?? exhibitionSt,
+      exhibitionStRaw: shouldPreferStartRowSt ? exhibitionStRaw : current.exhibitionStRaw ?? exhibitionStRaw,
+      exhibitionStType: shouldPreferStartRowSt ? stParsed.type : current.exhibitionStType ?? stParsed.type,
+      exhibitionStNumeric: shouldPreferStartRowSt
+        ? stParsed.numeric
+        : current.exhibitionStNumeric ?? stParsed.numeric
+    });
+    const rawCurrent = rawByLane.get(lane) || { lane };
+    rawByLane.set(lane, {
+      ...rawCurrent,
+      fallbackRawSt: exhibitionStRaw,
+      fallbackEntryCourse: entryCourse
     });
   });
 
@@ -378,6 +450,7 @@ function parseBeforeinfo(html) {
 
   return {
     byLane,
+    rawByLane,
     weather: {
       weather,
       windSpeed,
@@ -419,13 +492,17 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000 }) 
 
   const mergedRacers = racers.map((racer) => {
     const b = beforeinfo.byLane.get(racer.lane) || {};
+    const raw = beforeinfo.rawByLane.get(racer.lane) || {};
     return {
       ...racer,
       exhibitionTime: b.exhibitionTime ?? null,
       exhibitionSt: b.exhibitionSt ?? null,
       exhibitionStRaw: b.exhibitionStRaw ?? null,
+      exhibitionStType: b.exhibitionStType ?? null,
+      exhibitionStNumeric: b.exhibitionStNumeric ?? null,
       entryCourse: b.entryCourse ?? null,
-      tilt: b.tilt ?? null
+      tilt: b.tilt ?? null,
+      startRaw: raw
     };
   });
 

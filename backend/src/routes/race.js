@@ -1431,7 +1431,10 @@ raceRouter.get("/race", async (req, res, next) => {
       valueDetection,
       marketTrap,
       raceFlow,
-      startDisplay: startDisplay || null
+      startDisplay: startDisplay || null,
+      startDisplayDebug: Array.isArray(startDisplay?.start_display_debug)
+        ? startDisplay.start_display_debug
+        : []
     });
   } catch (err) {
     return next(err);
@@ -3750,6 +3753,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           start_display_positions_json,
           start_display_signature,
           start_display_timing_json,
+          start_display_raw_json,
           start_display_layout_mode,
           start_display_source,
           source_fetched_at,
@@ -3772,6 +3776,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           start_display_positions: safeJsonParse(row.start_display_positions_json, []),
           start_display_signature: row.start_display_signature || null,
           start_display_timing: safeJsonParse(row.start_display_timing_json, {}),
+          start_display_raw: safeJsonParse(row.start_display_raw_json, {}),
           start_display_layout_mode: row.start_display_layout_mode || null,
           start_display_source: row.start_display_source || null,
           source_fetched_at: row.source_fetched_at || null,

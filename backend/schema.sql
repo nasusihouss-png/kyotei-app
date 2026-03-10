@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS race_start_displays (
   start_display_positions_json TEXT,
   start_display_signature TEXT,
   start_display_timing_json TEXT,
+  start_display_raw_json TEXT,
   start_display_layout_mode TEXT,
   start_display_source TEXT,
   source_fetched_at TEXT,
