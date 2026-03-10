@@ -4201,12 +4201,18 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         message: "Verification cannot run yet because the confirmed race result is not available."
       });
     }
-    const predictedBets = safeArray(betPlanJson?.recommended_bets);
+    let predictedBets = safeArray(betPlanJson?.recommended_bets);
+    let verifyWarning = null;
+    if (predictedBets.length === 0 && predictedTop3.length === 3) {
+      predictedBets = [{ combo: predictedTop3.join("-"), source: "top3_fallback" }];
+      verifyWarning = "AI recommended bets were missing, fallback verification used predicted top3.";
+    }
     if (predictedBets.length === 0) {
       return res.status(409).json({
         ok: false,
         status: "VERIFY_FAILED",
         verification_performed: false,
+        reason_code: "MISSING_AI_RECOMMENDED_BETS",
         message: "Verification cannot run because AI recommended bets are missing."
       });
     }
@@ -4238,10 +4244,14 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       confidence: Number.isFinite(Number(featureLog?.confidence)) ? Number(featureLog.confidence) : null,
       recommendation_score: Number.isFinite(Number(featureLog?.recommendation_score))
         ? Number(featureLog.recommendation_score)
-        : null
+        : null,
+      learning_ready: analysis.categories.length > 0,
+      warning: verifyWarning
     };
 
-    db.prepare(
+    let insertInfo = null;
+    try {
+      insertInfo = db.prepare(
       `
       INSERT INTO race_verification_logs (
         race_id,
@@ -4254,9 +4264,9 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         hit_miss,
         mismatch_categories_json,
         verification_summary_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
-    ).run(
+      ).run(
       raceId,
       raceMeta?.race_date || null,
       Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
@@ -4267,7 +4277,17 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       analysis.hit_miss,
       JSON.stringify(analysis.categories),
       JSON.stringify(summary)
-    );
+      );
+    } catch (persistErr) {
+      return res.status(500).json({
+        ok: false,
+        status: "VERIFY_FAILED",
+        verification_performed: false,
+        reason_code: "PERSISTENCE_ERROR",
+        message: "Verification failed because persistence failed.",
+        error_detail: persistErr?.message || String(persistErr)
+      });
+    }
 
     const continuousLearning = runContinuousLearningIfNeeded({
       minNewVerified: 5,
@@ -4303,6 +4323,10 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       verification_performed: true,
       message: "Verification completed.",
       verification: summary,
+      warning: verifyWarning,
+      persisted: !!insertInfo?.lastInsertRowid,
+      summary_updated: true,
+      learning_ready: analysis.categories.length > 0,
       continuous_learning: continuousLearning,
       confirmed_result: actualTop3.join("-"),
       settlement: settlement || null,

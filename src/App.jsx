@@ -130,12 +130,33 @@ async function fetchHistoryData() {
 }
 
 async function verifyRaceResultApi(raceId) {
-  return fetchJsonWithTimeout(`${API_BASE}/results/verify`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ race_id: raceId }),
-    timeoutMs: 20000
-  });
+  const timeoutMs = 20000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_BASE}/results/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ race_id: raceId }),
+      signal: controller.signal
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const err = new Error(body?.message || `Verification request failed (${response.status})`);
+      err.payload = body;
+      throw err;
+    }
+    return body;
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      const timeoutErr = new Error("Verification request timeout. Please retry.");
+      timeoutErr.payload = { status: "VERIFY_FAILED", reason_code: "TIMEOUT" };
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function fetchAnalyticsData(date) {
@@ -641,6 +662,7 @@ export default function App() {
   const [verifyingRaceId, setVerifyingRaceId] = useState("");
   const [verificationNotice, setVerificationNotice] = useState("");
   const [verificationRunStatusByRace, setVerificationRunStatusByRace] = useState({});
+  const [verificationReasonByRace, setVerificationReasonByRace] = useState({});
 
   const [resultForm, setResultForm] = useState({
     raceId: "",
@@ -1526,6 +1548,7 @@ export default function App() {
     setPerfError("");
     setVerifyingRaceId(raceId);
     setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: "PENDING_RESULT" }));
+    setVerificationReasonByRace((prev) => ({ ...prev, [raceId]: "" }));
     try {
       const result = await verifyRaceResultApi(raceId);
       const cats = Array.isArray(result?.verification?.mismatch_categories)
@@ -1533,6 +1556,10 @@ export default function App() {
         : [];
       const status = String(result?.status || "VERIFIED").toUpperCase();
       setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: status }));
+      setVerificationReasonByRace((prev) => ({
+        ...prev,
+        [raceId]: result?.warning || result?.message || ""
+      }));
       setVerificationNotice(
         cats.length
           ? `検証完了: ${cats.join(", ")}`
@@ -1540,12 +1567,15 @@ export default function App() {
       );
       await loadPerformance();
     } catch (e) {
-      const msg = String(e?.message || "");
-      const status = msg.includes("confirmed race result is not available")
+      const payload = e?.payload || {};
+      const msg = String(payload?.message || e?.message || "");
+      const status = String(payload?.status || "").toUpperCase() === "NO_CONFIRMED_RESULT" ||
+        msg.includes("confirmed race result is not available")
         ? "NO_CONFIRMED_RESULT"
         : "VERIFY_FAILED";
       setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: status }));
-      setPerfError(e.message || "検証に失敗しました");
+      setVerificationReasonByRace((prev) => ({ ...prev, [raceId]: msg || "検証に失敗しました" }));
+      setPerfError(msg || "検証に失敗しました");
       await loadPerformance();
     } finally {
       setVerifyingRaceId("");
@@ -3121,24 +3151,30 @@ export default function App() {
                       {(() => {
                         const currentVerifyStatus =
                           verificationRunStatusByRace[h.race_id] || h.verification_status || "PENDING_RESULT";
+                        const verifyReason = verificationReasonByRace[h.race_id] || "";
                         return (
-                      <div className="history-head">
-                        <strong>{h.race_date} {h.venue_name || h.venue_id} {h.race_no}R</strong>
-                        <div className="row-actions">
-                          <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
-                          <span className={getVerifyStatusBadgeClass(currentVerifyStatus)}>
-                            {getVerifyStatusLabel(currentVerifyStatus)}
-                          </span>
-                          <button
-                            type="button"
-                            className="fetch-btn secondary"
-                            onClick={() => onVerifyRace(h.race_id)}
-                            disabled={verifyingRaceId === h.race_id}
-                          >
-                            {verifyingRaceId === h.race_id ? "検証中..." : "検証"}
-                          </button>
-                        </div>
-                      </div>
+                          <>
+                            <div className="history-head">
+                              <strong>{h.race_date} {h.venue_name || h.venue_id} {h.race_no}R</strong>
+                              <div className="row-actions">
+                                <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
+                                <span className={getVerifyStatusBadgeClass(currentVerifyStatus)}>
+                                  {getVerifyStatusLabel(currentVerifyStatus)}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="fetch-btn secondary"
+                                  onClick={() => onVerifyRace(h.race_id)}
+                                  disabled={verifyingRaceId === h.race_id}
+                                >
+                                  {verifyingRaceId === h.race_id ? "検証中..." : "検証"}
+                                </button>
+                              </div>
+                            </div>
+                            {currentVerifyStatus !== "VERIFIED" && verifyReason ? (
+                              <p className="muted strategy-line" style={{ marginTop: 6 }}>{verifyReason}</p>
+                            ) : null}
+                          </>
                         );
                       })()}
                       <div className="history-start-display">
