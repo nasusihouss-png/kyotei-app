@@ -3436,7 +3436,10 @@ export default function App() {
                         <div className="history-grid" style={{ marginTop: 8 }}>
                           <div>検証日時: {h.verification.verified_at ? new Date(h.verification.verified_at).toLocaleString() : "-"}</div>
                           <div>検証結果: {h.verification.hit_miss || "-"}</div>
+                          <div>verification_version: {h?.verification?.summary?.verification_version ?? "-"}</div>
+                          <div>verified_snapshot_id: {h?.verification?.summary?.verified_against_snapshot_id ?? "-"}</div>
                           <div>カテゴリ: {Array.isArray(h.verification.mismatch_categories) && h.verification.mismatch_categories.length ? h.verification.mismatch_categories.join(", ") : "-"}</div>
+                          <div>検証理由: {h?.verification?.summary?.verification_reason || "-"}</div>
                         </div>
                       ) : null}
                       {Array.isArray(h?.verification?.mismatch_categories) && h.verification.mismatch_categories.length ? (

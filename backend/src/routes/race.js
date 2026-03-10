@@ -4382,26 +4382,29 @@ raceRouter.get("/results-history", async (req, res, next) => {
         .map((row) => normalizeCombo(row?.combo ?? row))
         .filter((c) => c && c.split("-").length === 3);
       const hasValidBetSnapshot = displaySnapshotCombos.length > 0;
-      const hitMiss = !hasValidBetSnapshot
+      const computedHitMiss = !hasValidBetSnapshot
         ? "NOT_VERIFIABLE"
         : actualCombo
           ? (displaySnapshotCombos.includes(actualCombo) ? "HIT" : "MISS")
           : "PENDING";
+      const persistedHitMiss = String(verification?.hit_miss || "").toUpperCase();
+      const hitMiss = persistedHitMiss || computedHitMiss;
       const confirmedResult =
         actualCombo ||
         (startDisplay?.settled_result ? normalizeCombo(startDisplay.settled_result) : null) ||
         (startDisplay?.fetched_result ? normalizeCombo(startDisplay.fetched_result) : null) ||
         null;
+      const summaryStatus = String(verification?.summary?.verification_status || "").toUpperCase();
       const legacyFallbackVerified =
         !!verification?.summary?.warning &&
         String(verification.summary.warning).includes("fallback verification used predicted top3");
-      const verificationStatus = !hasValidBetSnapshot
+      const verificationStatus = summaryStatus || (!hasValidBetSnapshot
         ? "NO_BET_SNAPSHOT"
         : verification?.verified_at && !legacyFallbackVerified
           ? "VERIFIED"
           : confirmedResult
             ? "PENDING_RESULT"
-            : "NO_CONFIRMED_RESULT";
+            : "NO_CONFIRMED_RESULT");
       const verificationReason = !hasValidBetSnapshot
         ? "Saved AI bet snapshot is missing; verification was skipped."
         : legacyFallbackVerified
@@ -4625,9 +4628,9 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       ? latestVerificationSummary.ai_bets_display_snapshot
       : [];
     const snapshotDisplayBets =
-      snapshotDisplayBetsFromVerification.length > 0
-        ? snapshotDisplayBetsFromVerification
-        : snapshotDisplayBetsFromPrediction;
+      snapshotDisplayBetsFromPrediction.length > 0
+        ? snapshotDisplayBetsFromPrediction
+        : snapshotDisplayBetsFromVerification;
     const snapshotFullBets =
       predictionJson?.ai_bets_full_snapshot && typeof predictionJson.ai_bets_full_snapshot === "object"
         ? predictionJson.ai_bets_full_snapshot
@@ -4661,19 +4664,96 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         message: "Verification cannot run yet because the confirmed race result is not available."
       });
     }
-    let predictedBets = snapshotDisplayBets;
+    const predictedBets = snapshotDisplayBets;
     const verificationBetSource =
-      snapshotDisplayBetsFromVerification.length > 0 ? "verification_snapshot" : "prediction_snapshot";
+      snapshotDisplayBetsFromPrediction.length > 0
+        ? "prediction_snapshot"
+        : snapshotDisplayBetsFromVerification.length > 0
+          ? "verification_snapshot"
+          : "none";
+    const prevVerificationVersion = Number.isFinite(Number(latestVerificationSummary?.verification_version))
+      ? Number(latestVerificationSummary.verification_version)
+      : 0;
+    const nextVerificationVersion = prevVerificationVersion + 1;
+    const verifiedAgainstSnapshotId =
+      verificationBetSource === "prediction_snapshot"
+        ? (Number.isFinite(Number(latestPrediction?.id)) ? Number(latestPrediction.id) : null)
+        : (Number.isFinite(Number(latestVerificationSummary?.prediction_snapshot_id))
+            ? Number(latestVerificationSummary.prediction_snapshot_id)
+            : null);
     const canonicalSnapshotBets = safeArray(predictedBets)
       .map((row) => normalizeCombo(row?.combo ?? row))
       .filter((combo) => combo && combo.split("-").length === 3);
     if (canonicalSnapshotBets.length === 0) {
+      const summary = {
+        race_id: raceId,
+        race_date: raceMeta?.race_date || null,
+        venue_code: Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
+        venue_name: raceMeta?.venue_name || null,
+        race_no: Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
+        predicted_top3: safeArray(predictionJson?.top3).slice(0, 3),
+        actual_top3: actualTop3,
+        head_correct: null,
+        second_third_correct: null,
+        hit_miss: "NOT_VERIFIABLE",
+        mismatch_categories: ["NO_BET_SNAPSHOT"],
+        recommendation_mode: latestPrediction?.recommendation || featureLog?.recommendation_mode || null,
+        confidence: Number.isFinite(Number(featureLog?.confidence)) ? Number(featureLog.confidence) : null,
+        recommendation_score: Number.isFinite(Number(featureLog?.recommendation_score))
+          ? Number(featureLog.recommendation_score)
+          : null,
+        verification_status: "NO_BET_SNAPSHOT",
+        verification_reason: "Saved AI bet snapshot is missing; verification was skipped.",
+        verification_version: nextVerificationVersion,
+        prediction_snapshot_id: Number.isFinite(Number(latestPrediction?.id)) ? Number(latestPrediction.id) : null,
+        verified_against_snapshot_id: verifiedAgainstSnapshotId,
+        snapshot_created_at: predictionJson?.snapshot_created_at || latestPrediction?.created_at || null,
+        race_key: predictionJson?.race_key || raceId,
+        ai_bets_display_snapshot: [],
+        ai_bets_full_snapshot: predictionJson?.ai_bets_full_snapshot || null,
+        verification_bet_source: verificationBetSource,
+        verified_against_bets: [],
+        confirmed_result_canonical: actualTop3.length === 3 ? actualTop3.join("-") : null,
+        hit_match_found: false,
+        learning_ready: false,
+        warning: null
+      };
+      const insertInfo = db.prepare(
+        `
+        INSERT INTO race_verification_logs (
+          race_id,
+          race_date,
+          venue_code,
+          venue_name,
+          race_no,
+          predicted_top3,
+          actual_top3,
+          hit_miss,
+          mismatch_categories_json,
+          verification_summary_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+      ).run(
+        raceId,
+        raceMeta?.race_date || null,
+        Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
+        raceMeta?.venue_name || null,
+        Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
+        safeArray(predictionJson?.top3).slice(0, 3).join("-") || null,
+        actualTop3.length === 3 ? actualTop3.join("-") : null,
+        "NOT_VERIFIABLE",
+        JSON.stringify(["NO_BET_SNAPSHOT"]),
+        JSON.stringify(summary)
+      );
       return res.json({
         ok: true,
         status: "NO_BET_SNAPSHOT",
         verification_performed: false,
         message: "Verification skipped because saved AI bet snapshot is missing.",
         reason_code: "NO_BET_SNAPSHOT",
+        persisted: !!insertInfo?.lastInsertRowid,
+        verification_version: nextVerificationVersion,
+        verified_against_snapshot_id: verifiedAgainstSnapshotId,
         verification_bet_source: verificationBetSource,
         verified_against_bets: [],
         confirmed_result_canonical: actualTop3.length === 3 ? actualTop3.join("-") : null,
@@ -4730,7 +4810,11 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         predictionJson?.confidence_version ||
         predictionConfidenceScores?.confidence_version ||
         null,
+      verification_status: "VERIFIED",
+      verification_reason: verifyWarning || null,
+      verification_version: nextVerificationVersion,
       prediction_snapshot_id: Number.isFinite(Number(latestPrediction?.id)) ? Number(latestPrediction.id) : null,
+      verified_against_snapshot_id: verifiedAgainstSnapshotId,
       snapshot_created_at: predictionJson?.snapshot_created_at || latestPrediction?.created_at || null,
       race_key: predictionJson?.race_key || raceId,
       ai_bets_display_snapshot: snapshotDisplayBets,
@@ -4821,6 +4905,8 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       persisted: !!insertInfo?.lastInsertRowid,
       summary_updated: true,
       learning_ready: analysis.categories.length > 0,
+      verification_version: nextVerificationVersion,
+      verified_against_snapshot_id: verifiedAgainstSnapshotId,
       verified_against_bets: analysis.verified_against_bets,
       confirmed_result_canonical: analysis.confirmed_result_canonical,
       hit_match_found: analysis.hit_match_found,
