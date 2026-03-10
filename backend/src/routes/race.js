@@ -3570,7 +3570,17 @@ raceRouter.get("/start-entry-analysis", async (req, res, next) => {
 
 raceRouter.get("/learning/latest", async (_req, res, next) => {
   try {
-    return res.json(getLatestLearningRun());
+    const auto = parseBooleanFlag(_req.query?.auto, true);
+    const autoResult = auto
+      ? runContinuousLearningIfNeeded({
+          minNewLearningReady: 3,
+          minLearningReadyTotal: 10
+        })
+      : null;
+    return res.json({
+      ...getLatestLearningRun(),
+      auto_trigger: autoResult
+    });
   } catch (err) {
     return next(err);
   }
@@ -4290,8 +4300,8 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     }
 
     const continuousLearning = runContinuousLearningIfNeeded({
-      minNewVerified: 5,
-      minVerifiedTotal: 20
+      minNewLearningReady: 3,
+      minLearningReadyTotal: 10
     });
 
     console.info("[VERIFY]", {

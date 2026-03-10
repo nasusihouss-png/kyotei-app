@@ -270,6 +270,81 @@ function loadVerificationMismatchInsights() {
   };
 }
 
+function getVerificationQueueStats() {
+  const rows = db
+    .prepare(
+      `
+      SELECT id, mismatch_categories_json
+      FROM race_verification_logs
+      ORDER BY id ASC
+    `
+    )
+    .all();
+  const total = Array.isArray(rows) ? rows.length : 0;
+  const maxId = total > 0 ? toNum(rows[rows.length - 1]?.id, 0) : 0;
+  let learningReadyTotal = 0;
+  for (const row of rows) {
+    const categories = safeJsonParse(row?.mismatch_categories_json, []);
+    if (Array.isArray(categories) && categories.length > 0) learningReadyTotal += 1;
+  }
+  return {
+    rows,
+    total,
+    maxId,
+    learningReadyTotal
+  };
+}
+
+function loadPredictionFeatureInsights() {
+  const rows = db
+    .prepare(
+      `
+      SELECT
+        hit_flag,
+        motor_rate_avg,
+        exhibition_time_avg,
+        avg_st_avg,
+        ranking_score,
+        confidence,
+        entry_changed
+      FROM prediction_feature_logs
+      WHERE hit_flag IN (0, 1)
+    `
+    )
+    .all();
+  const bucket = {
+    hit: { count: 0, motor: 0, exTime: 0, avgSt: 0, rank: 0, conf: 0, entryChanged: 0 },
+    miss: { count: 0, motor: 0, exTime: 0, avgSt: 0, rank: 0, conf: 0, entryChanged: 0 }
+  };
+  for (const row of rows) {
+    const key = toNum(row?.hit_flag, 0) === 1 ? "hit" : "miss";
+    const b = bucket[key];
+    b.count += 1;
+    b.motor += toNum(row?.motor_rate_avg, 0);
+    b.exTime += toNum(row?.exhibition_time_avg, 0);
+    b.avgSt += toNum(row?.avg_st_avg, 0);
+    b.rank += toNum(row?.ranking_score, 0);
+    b.conf += toNum(row?.confidence, 0);
+    b.entryChanged += toNum(row?.entry_changed, 0) ? 1 : 0;
+  }
+  const avg = (sum, count) => (count > 0 ? sum / count : 0);
+  const hit = bucket.hit;
+  const miss = bucket.miss;
+  return {
+    sample_size: hit.count + miss.count,
+    hit_count: hit.count,
+    miss_count: miss.count,
+    deltas: {
+      motor_rate: Number((avg(hit.motor, hit.count) - avg(miss.motor, miss.count)).toFixed(4)),
+      exhibition_time: Number((avg(miss.exTime, miss.count) - avg(hit.exTime, hit.count)).toFixed(4)),
+      avg_st: Number((avg(miss.avgSt, miss.count) - avg(hit.avgSt, hit.count)).toFixed(4)),
+      ranking_score: Number((avg(hit.rank, hit.count) - avg(miss.rank, miss.count)).toFixed(4)),
+      confidence: Number((avg(hit.conf, hit.count) - avg(miss.conf, miss.count)).toFixed(4)),
+      entry_changed_rate: Number((avg(miss.entryChanged, miss.count) - avg(hit.entryChanged, hit.count)).toFixed(4))
+    }
+  };
+}
+
 export function getActiveLearningWeights() {
   const row = db.prepare(`SELECT active_weights_json FROM learning_weight_state WHERE id = 1`).get();
   return {
@@ -344,6 +419,7 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
     cap: 2.5
   });
   const verificationPack = loadVerificationMismatchInsights();
+  const featurePack = loadPredictionFeatureInsights();
 
   const sampleSize = toNum(venuePack?.global?.races, 0);
   const suggested = {
@@ -406,6 +482,30 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
       verificationAdjustments.push("recommendation_threshold:+0.6(OVERSPREAD)");
     }
   }
+  if (toNum(featurePack?.sample_size, 0) >= 40) {
+    const fd = featurePack?.deltas || {};
+    // Faster exhibition/avg_st separation in hit races -> trust start signal slightly more.
+    if (toNum(fd.exhibition_time, 0) >= 0.03 || toNum(fd.avg_st, 0) >= 0.015) {
+      suggested.start_signal_weight = Number(
+        clamp(0.85, 1.2, toNum(suggested.start_signal_weight, 1) + 0.015).toFixed(4)
+      );
+      verificationAdjustments.push("start_signal_weight:+0.015(FEATURE_INSIGHT)");
+    }
+    // If ranking/confidence separation is weak, tighten recommendation threshold slightly.
+    if (toNum(fd.ranking_score, 0) <= 3.5 && toNum(fd.confidence, 0) <= 2.0) {
+      suggested.recommendation_threshold = Number(
+        clamp(44, 68, toNum(suggested.recommendation_threshold, 52) + 0.5).toFixed(2)
+      );
+      verificationAdjustments.push("recommendation_threshold:+0.5(WEAK_SEPARATION)");
+    }
+    // Entry-changed misses are relatively frequent -> stronger entry penalty.
+    if (toNum(fd.entry_changed_rate, 0) >= 0.08) {
+      suggested.entry_changed_penalty = Number(
+        clamp(3, 12, toNum(suggested.entry_changed_penalty, 6) + 0.4).toFixed(3)
+      );
+      verificationAdjustments.push("entry_changed_penalty:+0.4(FEATURE_INSIGHT)");
+    }
+  }
 
   const summary = `sample=${sampleSize}, global_hit=${toNum(
     venuePack?.global?.hitRate,
@@ -437,7 +537,8 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
       verification_insights: {
         ...verificationPack,
         adjustments_applied: verificationAdjustments
-      }
+      },
+      feature_insights: featurePack
     };
   }
 
@@ -461,7 +562,8 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
     verification_insights: {
       ...verificationPack,
       adjustments_applied: verificationAdjustments
-    }
+    },
+    feature_insights: featurePack
   };
 }
 
@@ -504,19 +606,14 @@ export function getLatestLearningRun() {
   const latest = db.prepare(`SELECT * FROM learning_weight_runs ORDER BY id DESC LIMIT 1`).get();
   const state = db.prepare(`SELECT * FROM learning_weight_state WHERE id = 1`).get();
   const runtime = db.prepare(`SELECT * FROM learning_runtime_state WHERE id = 1`).get();
-  const verificationStats = db
-    .prepare(
-      `
-      SELECT
-        COALESCE(MAX(id), 0) AS max_id,
-        COALESCE(COUNT(*), 0) AS total
-      FROM race_verification_logs
-    `
-    )
-    .get();
+  const queue = getVerificationQueueStats();
   const lastProcessedId = toNum(runtime?.last_processed_verification_log_id, 0);
-  const currentMaxId = toNum(verificationStats?.max_id, 0);
-  const pending = Math.max(0, currentMaxId - lastProcessedId);
+  const pending = Math.max(0, toNum(queue?.maxId, 0) - lastProcessedId);
+  const learningReadyPending = (queue?.rows || []).filter((r) => {
+    if (toNum(r?.id, 0) <= lastProcessedId) return false;
+    const categories = safeJsonParse(r?.mismatch_categories_json, []);
+    return Array.isArray(categories) && categories.length > 0;
+  }).length;
   return {
     latest_run: latest
       ? {
@@ -542,48 +639,50 @@ export function getLatestLearningRun() {
       last_learning_run_id: runtime?.last_learning_run_id || null,
       last_learning_run_at: runtime?.last_learning_run_at || null,
       last_verified_records_used: toNum(runtime?.last_verified_records_used, 0),
-      verification_total: toNum(verificationStats?.total, 0),
-      verification_pending: pending
+      verification_total: toNum(queue?.total, 0),
+      verification_pending: pending,
+      learning_ready_total: toNum(queue?.learningReadyTotal, 0),
+      learning_ready_pending: learningReadyPending
     }
   };
 }
 
 export function runContinuousLearningIfNeeded({
-  minNewVerified = 5,
-  minVerifiedTotal = 20
+  minNewLearningReady = 3,
+  minLearningReadyTotal = 10
 } = {}) {
   const runtime = db.prepare(`SELECT * FROM learning_runtime_state WHERE id = 1`).get();
-  const verificationStats = db
-    .prepare(
-      `
-      SELECT
-        COALESCE(MAX(id), 0) AS max_id,
-        COALESCE(COUNT(*), 0) AS total
-      FROM race_verification_logs
-    `
-    )
-    .get();
-
-  const total = toNum(verificationStats?.total, 0);
-  const maxId = toNum(verificationStats?.max_id, 0);
+  const queue = getVerificationQueueStats();
+  const total = toNum(queue?.total, 0);
+  const maxId = toNum(queue?.maxId, 0);
+  const learningReadyTotal = toNum(queue?.learningReadyTotal, 0);
   const lastProcessed = toNum(runtime?.last_processed_verification_log_id, 0);
   const newVerified = Math.max(0, maxId - lastProcessed);
+  const newLearningReady = (queue?.rows || []).filter((r) => {
+    if (toNum(r?.id, 0) <= lastProcessed) return false;
+    const categories = safeJsonParse(r?.mismatch_categories_json, []);
+    return Array.isArray(categories) && categories.length > 0;
+  }).length;
 
-  if (total < minVerifiedTotal) {
+  if (learningReadyTotal < minLearningReadyTotal) {
     return {
       triggered: false,
-      reason: "insufficient_verified_total",
+      reason: "insufficient_learning_ready_total",
       total_verified: total,
-      new_verified: newVerified
+      new_verified: newVerified,
+      learning_ready_total: learningReadyTotal,
+      new_learning_ready: newLearningReady
     };
   }
 
-  if (newVerified < minNewVerified) {
+  if (newLearningReady < minNewLearningReady) {
     return {
       triggered: false,
-      reason: "not_enough_new_verified",
+      reason: "not_enough_new_learning_ready",
       total_verified: total,
-      new_verified: newVerified
+      new_verified: newVerified,
+      learning_ready_total: learningReadyTotal,
+      new_learning_ready: newLearningReady
     };
   }
 
@@ -603,13 +702,15 @@ export function runContinuousLearningIfNeeded({
       updated_at = ?
     WHERE id = 1
   `
-  ).run(maxId, toNum(batch?.run_id, null), nowIso(), total, nowIso());
+  ).run(maxId, toNum(batch?.run_id, null), nowIso(), learningReadyTotal, nowIso());
 
   return {
     triggered: true,
     reason: "applied",
     total_verified: total,
     new_verified: newVerified,
+    learning_ready_total: learningReadyTotal,
+    new_learning_ready: newLearningReady,
     run_id: toNum(batch?.run_id, null),
     summary: batch?.summary || null
   };

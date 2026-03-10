@@ -2677,11 +2677,14 @@ export default function App() {
                       : "-"}
                   </strong>
                   <small>run_id: {learningLatest?.continuous_learning?.last_learning_run_id ?? "-"}</small>
+                  {learningLatest?.auto_trigger?.reason ? (
+                    <small>auto: {learningLatest.auto_trigger.reason}</small>
+                  ) : null}
                 </article>
                 <article className="card stat-card">
                   <span>前回学習の検証使用件数</span>
                   <strong>{learningLatest?.continuous_learning?.last_verified_records_used ?? 0}</strong>
-                  <small>未学習検証: {learningLatest?.continuous_learning?.verification_pending ?? 0}</small>
+                  <small>未学習(learning-ready): {learningLatest?.continuous_learning?.learning_ready_pending ?? 0}</small>
                 </article>
               </div>
             </section>
