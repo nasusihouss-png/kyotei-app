@@ -4378,18 +4378,35 @@ raceRouter.get("/results-history", async (req, res, next) => {
 
       const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
       const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
-      const hitMiss =
-        predictedCombo && actualCombo ? (predictedCombo === actualCombo ? "HIT" : "MISS") : "PENDING";
+      const displaySnapshotCombos = (Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot : [])
+        .map((row) => normalizeCombo(row?.combo ?? row))
+        .filter((c) => c && c.split("-").length === 3);
+      const hasValidBetSnapshot = displaySnapshotCombos.length > 0;
+      const hitMiss = !hasValidBetSnapshot
+        ? "NOT_VERIFIABLE"
+        : actualCombo
+          ? (displaySnapshotCombos.includes(actualCombo) ? "HIT" : "MISS")
+          : "PENDING";
       const confirmedResult =
         actualCombo ||
         (startDisplay?.settled_result ? normalizeCombo(startDisplay.settled_result) : null) ||
         (startDisplay?.fetched_result ? normalizeCombo(startDisplay.fetched_result) : null) ||
         null;
-      const verificationStatus = verification?.verified_at
-        ? "VERIFIED"
-        : confirmedResult
-          ? "PENDING_RESULT"
-          : "NO_CONFIRMED_RESULT";
+      const legacyFallbackVerified =
+        !!verification?.summary?.warning &&
+        String(verification.summary.warning).includes("fallback verification used predicted top3");
+      const verificationStatus = !hasValidBetSnapshot
+        ? "NO_BET_SNAPSHOT"
+        : verification?.verified_at && !legacyFallbackVerified
+          ? "VERIFIED"
+          : confirmedResult
+            ? "PENDING_RESULT"
+            : "NO_CONFIRMED_RESULT";
+      const verificationReason = !hasValidBetSnapshot
+        ? "Saved AI bet snapshot is missing; verification was skipped."
+        : legacyFallbackVerified
+          ? "Legacy verification used top3 fallback; re-verify after snapshot is available."
+          : null;
 
       const totals = settlements.reduce(
         (acc, s) => {
@@ -4457,6 +4474,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
         confirmed_result: confirmedResult,
         hit_miss: hitMiss,
         verification_status: verificationStatus,
+        verification_reason: verificationReason,
         totals,
         bets: settlements.map((s) => ({
           combo: s.combo,
@@ -4646,20 +4664,23 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     let predictedBets = snapshotDisplayBets;
     const verificationBetSource =
       snapshotDisplayBetsFromVerification.length > 0 ? "verification_snapshot" : "prediction_snapshot";
-    let verifyWarning = null;
-    if (predictedBets.length === 0 && predictedTop3.length === 3) {
-      predictedBets = [{ combo: predictedTop3.join("-"), source: "top3_fallback" }];
-      verifyWarning = "AI recommended bets were missing, fallback verification used predicted top3.";
-    }
-    if (predictedBets.length === 0) {
-      return res.status(409).json({
-        ok: false,
-        status: "VERIFY_FAILED",
+    const canonicalSnapshotBets = safeArray(predictedBets)
+      .map((row) => normalizeCombo(row?.combo ?? row))
+      .filter((combo) => combo && combo.split("-").length === 3);
+    if (canonicalSnapshotBets.length === 0) {
+      return res.json({
+        ok: true,
+        status: "NO_BET_SNAPSHOT",
         verification_performed: false,
-        reason_code: "MISSING_AI_RECOMMENDED_BETS",
-        message: "Verification cannot run because AI recommended bets are missing."
+        message: "Verification skipped because saved AI bet snapshot is missing.",
+        reason_code: "NO_BET_SNAPSHOT",
+        verification_bet_source: verificationBetSource,
+        verified_against_bets: [],
+        confirmed_result_canonical: actualTop3.length === 3 ? actualTop3.join("-") : null,
+        hit_match_found: false
       });
     }
+    let verifyWarning = null;
     const raceRisk = {
       recommendation: latestPrediction?.recommendation || featureLog?.recommendation_mode || null
     };

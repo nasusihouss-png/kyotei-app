@@ -345,6 +345,9 @@ function getVerifyStatusLabel(status) {
   if (s === "VERIFIED") return "VERIFIED";
   if (s === "VERIFY_FAILED") return "VERIFY_FAILED";
   if (s === "NO_CONFIRMED_RESULT") return "NO_CONFIRMED_RESULT";
+  if (s === "NO_BET_SNAPSHOT") return "NO_BET_SNAPSHOT";
+  if (s === "VERIFY_SKIPPED") return "VERIFY_SKIPPED";
+  if (s === "NOT_VERIFIABLE") return "NOT_VERIFIABLE";
   return "PENDING_RESULT";
 }
 
@@ -352,6 +355,7 @@ function getVerifyStatusBadgeClass(status) {
   const s = String(status || "").toUpperCase();
   if (s === "VERIFIED") return "badge hit";
   if (s === "VERIFY_FAILED") return "badge miss";
+  if (s === "NO_BET_SNAPSHOT" || s === "VERIFY_SKIPPED" || s === "NOT_VERIFIABLE") return "badge pending";
   return "badge pending";
 }
 
@@ -1631,19 +1635,25 @@ export default function App() {
         ...prev,
         [raceId]: result?.warning || result?.message || ""
       }));
-      setVerificationNotice(
-        cats.length
-          ? `検証完了: ${cats.join(", ")}`
-          : "検証完了: ミスマッチカテゴリなし"
-      );
+      if (status === "NO_BET_SNAPSHOT" || status === "VERIFY_SKIPPED" || status === "NOT_VERIFIABLE") {
+        setVerificationNotice(result?.message || "検証スキップ: AI買い目スナップショットがありません");
+      } else {
+        setVerificationNotice(
+          cats.length
+            ? `検証完了: ${cats.join(", ")}`
+            : "検証完了: ミスマッチカテゴリなし"
+        );
+      }
       await loadPerformance();
     } catch (e) {
       const payload = e?.payload || {};
       const msg = String(payload?.message || e?.message || "");
-      const status = String(payload?.status || "").toUpperCase() === "NO_CONFIRMED_RESULT" ||
-        msg.includes("confirmed race result is not available")
-        ? "NO_CONFIRMED_RESULT"
-        : "VERIFY_FAILED";
+      const rawStatus = String(payload?.status || "").toUpperCase();
+      const status = rawStatus === "NO_BET_SNAPSHOT"
+        ? "NO_BET_SNAPSHOT"
+        : rawStatus === "NO_CONFIRMED_RESULT" || msg.includes("confirmed race result is not available")
+          ? "NO_CONFIRMED_RESULT"
+          : "VERIFY_FAILED";
       setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: status }));
       setVerificationReasonByRace((prev) => ({ ...prev, [raceId]: msg || "検証に失敗しました" }));
       setPerfError(msg || "検証に失敗しました");
@@ -3294,7 +3304,11 @@ export default function App() {
                       {(() => {
                         const currentVerifyStatus =
                           verificationRunStatusByRace[h.race_id] || h.verification_status || "PENDING_RESULT";
-                        const verifyReason = verificationReasonByRace[h.race_id] || "";
+                        const verifyReason =
+                          verificationReasonByRace[h.race_id] ||
+                          h.verification_reason ||
+                          h?.verification?.summary?.warning ||
+                          "";
                         return (
                           <>
                             <div className="history-head">
