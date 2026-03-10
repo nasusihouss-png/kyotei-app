@@ -79,6 +79,19 @@ import {
 
 export const raceRouter = Router();
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS race_verification_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    race_id TEXT NOT NULL,
+    verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    predicted_top3 TEXT,
+    actual_top3 TEXT,
+    hit_miss TEXT,
+    mismatch_categories_json TEXT,
+    verification_summary_json TEXT
+  );
+`);
+
 function parseBooleanFlag(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   const text = String(value).trim().toLowerCase();
@@ -216,6 +229,73 @@ function denormalizeModeValue(mode) {
   if (m === "MICRO_BET") return "MICRO BET";
   if (m === "SKIP") return "SKIP";
   return "UNKNOWN";
+}
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function buildMismatchAnalysis({
+  predictedTop3,
+  actualTop3,
+  predictedBets,
+  predictionJson,
+  raceRisk,
+  featureLog
+}) {
+  const categories = [];
+  const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
+  const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
+  const hitMiss = predictedCombo && actualCombo && predictedCombo === actualCombo ? "HIT" : "MISS";
+
+  const headCorrect =
+    predictedTop3.length > 0 && actualTop3.length > 0 && Number(predictedTop3[0]) === Number(actualTop3[0]);
+  if (headCorrect) categories.push("HEAD_HIT");
+  else categories.push("HEAD_MISS");
+
+  const secondThirdCorrect =
+    predictedTop3.length >= 3 &&
+    actualTop3.length >= 3 &&
+    Number(predictedTop3[1]) === Number(actualTop3[1]) &&
+    Number(predictedTop3[2]) === Number(actualTop3[2]);
+  if (!secondThirdCorrect) categories.push("PARTNER_MISS");
+
+  const entryChanged = !!predictionJson?.entry_changed;
+  if (entryChanged && hitMiss === "MISS") categories.push("ENTRY_CHANGE_IMPACT");
+
+  const reasonCodes = safeArray(raceRisk?.skip_reason_codes).map((x) => String(x || "").toUpperCase());
+  if (reasonCodes.includes("CHAOS_HIGH") || reasonCodes.includes("ARE_INDEX_HIGH")) {
+    if (hitMiss === "MISS") categories.push("CHAOS_UNDERESTIMATED");
+  }
+
+  const ranked = safeArray(predictionJson?.ranking);
+  const topRank = ranked[0] || {};
+  const topFeature = topRank?.features || {};
+  if (!headCorrect && Number(topFeature?.exhibition_rank) === 1) categories.push("EXHIBITION_WEIGHT_BIAS");
+  if (!headCorrect && Number(topFeature?.motor_total_score) >= 12) categories.push("MOTOR_WEIGHT_BIAS");
+  if (!headCorrect && Number(topFeature?.class_score) >= 8) categories.push("PLAYER_WEIGHT_BIAS");
+
+  const recBets = safeArray(predictedBets)
+    .map((b) => normalizeCombo(b?.combo))
+    .filter((x) => x && x.split("-").length === 3);
+  if (recBets.length > 0 && actualCombo) {
+    const hasHitTicket = recBets.includes(actualCombo);
+    if (!hasHitTicket && recBets.length <= 2) categories.push("UNDERSPREAD");
+    if (!hasHitTicket && recBets.length >= 8) categories.push("OVERSPREAD");
+  }
+
+  if (featureLog?.entry_changed && hitMiss === "MISS" && !categories.includes("ENTRY_CHANGE_IMPACT")) {
+    categories.push("ENTRY_CHANGE_IMPACT");
+  }
+
+  return {
+    hit_miss: hitMiss,
+    head_correct: headCorrect,
+    second_third_correct: secondThirdCorrect,
+    categories: [...new Set(categories)],
+    predicted_combo: predictedCombo,
+    actual_combo: actualCombo
+  };
 }
 
 function downgradeModeForEntryChange(mode, severity) {
@@ -1878,6 +1958,11 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           const confidence = Number(raceDecision?.confidence ?? 0);
           const headStability = Number(raceStructure?.head_stability_score ?? 0);
           const chaosRisk = Number(raceStructure?.chaos_risk_score ?? raceIndexes?.are_index ?? 0);
+          const headFixedOk = !!headConfidence?.head_fixed_ok;
+          const headFixedConfidence = Number(headConfidence?.head_confidence ?? 0);
+          const headGapScore = Number(headPrecision?.head_gap_score ?? 0);
+          const top3Concentration = Number(raceStructure?.top3_concentration_score ?? 0);
+          const unstableEntryPattern = !!entryMeta?.entry_changed && chaosRisk >= 62;
 
           const stakeAllocation = buildStakeAllocationPlan({
             raceDecision,
@@ -1917,6 +2002,9 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             backup_heads: headSelectionRefined?.secondary_heads || [],
             head_win_score: headPrecision?.head_win_score ?? null,
             head_gap_score: headPrecision?.head_gap_score ?? null,
+            head_fixed_ok: headFixedOk,
+            head_confidence: Number(headFixedConfidence.toFixed(4)),
+            top3_concentration_score: Number(top3Concentration.toFixed(2)),
             exhibition_ai_score: exhibitionAI?.exhibition_ai_score ?? null,
             head_stability_score: Number(headStability.toFixed(2)),
             chaos_risk_score: Number(chaosRisk.toFixed(2)),
@@ -2010,11 +2098,17 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             headStability >= headStabilityMin &&
             chaosRisk <= maxChaos &&
             recommendation_score >= recommendationScoreMin;
+          const strongHeadFixed =
+            headFixedOk &&
+            headFixedConfidence >= (dateMode.isFuture ? 0.56 : 0.62) &&
+            headGapScore >= (dateMode.isFuture ? 6 : 9) &&
+            top3Concentration >= (dateMode.isFuture ? 45 : 52) &&
+            !unstableEntryPattern;
 
           if (mode === "FULL_BET" || mode === "SMALL_BET" || mode === "MICRO BET") {
             candidatePool.push(recItem);
           }
-          if (worthBetting) recs.push(recItem);
+          if (worthBetting && strongHeadFixed) recs.push(recItem);
         } catch (err) {
           errors.push({
             venueId,
@@ -2042,7 +2136,11 @@ raceRouter.get("/recommendations", async (req, res, next) => {
     const fallbackUsed = recs.length === 0;
     const fallbackRows = fallbackUsed
       ? candidatePool
-          .filter((row) => row.mode === "FULL_BET" || row.mode === "SMALL_BET")
+          .filter(
+            (row) =>
+              (row.mode === "FULL_BET" || row.mode === "SMALL_BET") &&
+              (row.head_fixed_ok || row.head_confidence >= 0.54)
+          )
           .slice(0, Math.min(limit, 6))
           .map((row) => ({
             ...row,
@@ -3810,6 +3908,20 @@ raceRouter.get("/results-history", async (req, res, next) => {
       `
       )
       .all();
+    const verificationRows = db
+      .prepare(
+        `
+        SELECT v.race_id, v.verified_at, v.hit_miss, v.mismatch_categories_json, v.verification_summary_json
+        FROM race_verification_logs v
+        INNER JOIN (
+          SELECT race_id, MAX(id) AS max_id
+          FROM race_verification_logs
+          GROUP BY race_id
+        ) latest
+          ON latest.max_id = v.id
+      `
+      )
+      .all();
 
     const resultMap = new Map(resultsRows.map((r) => [r.race_id, r]));
     const raceMap = new Map(raceRows.map((r) => [r.race_id, r]));
@@ -3838,6 +3950,17 @@ raceRouter.get("/results-history", async (req, res, next) => {
       list.push(row);
       settlementByRace.set(row.race_id, list);
     }
+    const verificationMap = new Map(
+      verificationRows.map((row) => [
+        row.race_id,
+        {
+          verified_at: row.verified_at || null,
+          hit_miss: row.hit_miss || null,
+          mismatch_categories: safeJsonParse(row.mismatch_categories_json, []),
+          summary: safeJsonParse(row.verification_summary_json, {})
+        }
+      ])
+    );
 
     const items = latestPredictionRows.map((logRow) => {
       const raceId = logRow.race_id;
@@ -3847,6 +3970,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const result = resultMap.get(raceId) || null;
       const settlements = settlementByRace.get(raceId) || [];
       const startDisplay = startDisplayMap.get(raceId) || null;
+      const verification = verificationMap.get(raceId) || null;
       const predictedEntryOrder = Array.isArray(prediction?.predicted_entry_order)
         ? prediction.predicted_entry_order
         : [];
@@ -3909,12 +4033,128 @@ raceRouter.get("/results-history", async (req, res, next) => {
           profit_loss: toNum(s.profit_loss)
         })),
         startDisplay,
+        verification,
         recommended_bets: Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [],
         logged_at: logRow.created_at
       };
     });
 
     return res.json({ items });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.post("/results/verify", async (req, res, next) => {
+  try {
+    const raceId = String(req.body?.race_id || req.body?.raceId || "").trim();
+    if (!raceId) {
+      return res.status(400).json({
+        error: "bad_request",
+        message: "race_id is required"
+      });
+    }
+
+    const latestPrediction = db
+      .prepare(
+        `
+        SELECT prediction_json, bet_plan_json, recommendation
+        FROM prediction_logs
+        WHERE race_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+    const resultRow = db
+      .prepare(
+        `
+        SELECT finish_1, finish_2, finish_3
+        FROM results
+        WHERE race_id = ?
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+    if (!resultRow) {
+      return res.status(400).json({
+        error: "result_not_found",
+        message: "actual race result is not available yet"
+      });
+    }
+
+    const featureLog = db
+      .prepare(
+        `
+        SELECT entry_changed, recommendation_mode, confidence, recommendation_score
+        FROM prediction_feature_logs
+        WHERE race_id = ?
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+
+    const predictionJson = safeJsonParse(latestPrediction?.prediction_json, {});
+    const betPlanJson = safeJsonParse(latestPrediction?.bet_plan_json, {});
+    const predictedTop3 = safeArray(predictionJson?.top3)
+      .map((x) => toInt(x, null))
+      .filter((x) => Number.isInteger(x))
+      .slice(0, 3);
+    const actualTop3 = [toInt(resultRow.finish_1, null), toInt(resultRow.finish_2, null), toInt(resultRow.finish_3, null)]
+      .filter((x) => Number.isInteger(x))
+      .slice(0, 3);
+    const predictedBets = safeArray(betPlanJson?.recommended_bets);
+    const raceRisk = {
+      recommendation: latestPrediction?.recommendation || featureLog?.recommendation_mode || null
+    };
+
+    const analysis = buildMismatchAnalysis({
+      predictedTop3,
+      actualTop3,
+      predictedBets,
+      predictionJson,
+      raceRisk,
+      featureLog
+    });
+    const summary = {
+      race_id: raceId,
+      predicted_top3: predictedTop3,
+      actual_top3: actualTop3,
+      head_correct: analysis.head_correct,
+      second_third_correct: analysis.second_third_correct,
+      hit_miss: analysis.hit_miss,
+      mismatch_categories: analysis.categories,
+      recommendation_mode: latestPrediction?.recommendation || featureLog?.recommendation_mode || null,
+      confidence: Number.isFinite(Number(featureLog?.confidence)) ? Number(featureLog.confidence) : null,
+      recommendation_score: Number.isFinite(Number(featureLog?.recommendation_score))
+        ? Number(featureLog.recommendation_score)
+        : null
+    };
+
+    db.prepare(
+      `
+      INSERT INTO race_verification_logs (
+        race_id,
+        predicted_top3,
+        actual_top3,
+        hit_miss,
+        mismatch_categories_json,
+        verification_summary_json
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `
+    ).run(
+      raceId,
+      analysis.predicted_combo,
+      analysis.actual_combo,
+      analysis.hit_miss,
+      JSON.stringify(analysis.categories),
+      JSON.stringify(summary)
+    );
+
+    return res.json({
+      ok: true,
+      verification: summary
+    });
   } catch (err) {
     return next(err);
   }

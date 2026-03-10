@@ -129,6 +129,19 @@ async function fetchHistoryData() {
   return response.json();
 }
 
+async function verifyRaceResultApi(raceId) {
+  const response = await fetch(`${API_BASE}/results/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ race_id: raceId })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body?.message || "Failed to verify race");
+  }
+  return body;
+}
+
 async function fetchAnalyticsData(date) {
   const url = new URL(`${API_BASE}/analytics`);
   if (date) url.searchParams.set("date", date);
@@ -607,6 +620,8 @@ export default function App() {
   const [startEntryAnalysis, setStartEntryAnalysis] = useState(null);
   const [history, setHistory] = useState([]);
   const [perfError, setPerfError] = useState("");
+  const [verifyingRaceId, setVerifyingRaceId] = useState("");
+  const [verificationNotice, setVerificationNotice] = useState("");
 
   const [resultForm, setResultForm] = useState({
     raceId: "",
@@ -816,6 +831,28 @@ export default function App() {
         .sort((a, b) => (Number.isFinite(b?.prob) ? b.prob : -1) - (Number.isFinite(a?.prob) ? a.prob : -1)),
     [recommendedBets, probabilityByCombo, evBets, oddsByCombo]
   );
+  const finalRecommendedBets = useMemo(() => {
+    const optimized = Array.isArray(ticketOptimization?.optimized_tickets)
+      ? ticketOptimization.optimized_tickets
+      : [];
+    if (optimized.length > 0) {
+      return optimized
+        .map((row) => ({
+          combo: row?.combo,
+          prob: Number.isFinite(Number(row?.prob)) ? Number(row.prob) : probabilityByCombo.get(row?.combo) ?? null,
+          odds: Number.isFinite(Number(row?.odds)) ? Number(row.odds) : oddsByCombo.get(row?.combo) ?? null,
+          ev: Number.isFinite(Number(row?.ev)) ? Number(row.ev) : null,
+          ticket_type: row?.ticket_type || "backup",
+          recommended_bet: roundBetTo100(row?.recommended_bet ?? 100),
+          explanation_tags: Array.isArray(row?.explanation_tags) ? row.explanation_tags : [],
+          explanation_summary: row?.explanation_summary || null
+        }))
+        .sort((a, b) => (Number.isFinite(b?.prob) ? b.prob : -1) - (Number.isFinite(a?.prob) ? a.prob : -1))
+        .slice(0, 8);
+    }
+    return recommendedBetsByProb.slice(0, 8);
+  }, [ticketOptimization, recommendedBetsByProb, probabilityByCombo, oddsByCombo]);
+  const showInternalBetBreakdown = false;
   const simulatedCombos = useMemo(
     () => (Array.isArray(data?.simulation?.top_combinations) ? data.simulation.top_combinations.slice(0, 5) : []),
     [data]
@@ -908,7 +945,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (screen === "performance") {
+    if (screen === "results") {
       loadPerformance();
     }
   }, [screen]);
@@ -929,6 +966,12 @@ export default function App() {
       loadRankings();
     }
   }, [screen, date]);
+
+  useEffect(() => {
+    if (!verificationNotice) return;
+    const t = setTimeout(() => setVerificationNotice(""), 2200);
+    return () => clearTimeout(t);
+  }, [verificationNotice]);
 
   const onFetch = async () => {
     setLoading(true);
@@ -1422,6 +1465,28 @@ export default function App() {
     }
   };
 
+  const onVerifyRace = async (raceId) => {
+    if (!raceId) return;
+    setPerfError("");
+    setVerifyingRaceId(raceId);
+    try {
+      const result = await verifyRaceResultApi(raceId);
+      const cats = Array.isArray(result?.verification?.mismatch_categories)
+        ? result.verification.mismatch_categories
+        : [];
+      setVerificationNotice(
+        cats.length
+          ? `検証完了: ${cats.join(", ")}`
+          : "検証完了: ミスマッチカテゴリなし"
+      );
+      await loadPerformance();
+    } catch (e) {
+      setPerfError(e.message || "検証に失敗しました");
+    } finally {
+      setVerifyingRaceId("");
+    }
+  };
+
   const onSettleRace = async (group) => {
     const raceId = group?.raceId;
     setSettlingRaceId(String(raceId));
@@ -1575,9 +1640,7 @@ export default function App() {
           <div className="screen-tabs">
             <button className={screen === "predict" ? "tab on" : "tab"} onClick={() => setScreen("predict")}>予想</button>
             <button className={screen === "recommend" ? "tab on" : "tab"} onClick={() => setScreen("recommend")}>おすすめ</button>
-            <button className={screen === "rankings" ? "tab on" : "tab"} onClick={() => setScreen("rankings")}>ランキング</button>
-            <button className={screen === "performance" ? "tab on" : "tab"} onClick={() => setScreen("performance")}>実績</button>
-            <button className={screen === "journal" ? "tab on" : "tab"} onClick={() => setScreen("journal")}>ベット記録</button>
+            <button className={screen === "results" ? "tab on" : "tab"} onClick={() => setScreen("results")}>結果</button>
           </div>
         </section>
 
@@ -2022,6 +2085,7 @@ export default function App() {
                     <p className="muted strategy-line">{valueDetection.summary || "-"}</p>
                   </article>
 
+                  {showInternalBetBreakdown && (
                   <article className="card">
                     <h2>EV上位買い目</h2>
                     <div className="list-stack">
@@ -2041,11 +2105,12 @@ export default function App() {
                       ))}
                     </div>
                   </article>
+                  )}
 
                   <article className="card">
-                    <h2>推奨買い目（確率順）</h2>
+                    <h2>最終推奨買い目（実行用）</h2>
                     <div className="list-stack">
-                      {recommendedBetsByProb.map((bet, idx) => (
+                      {finalRecommendedBets.map((bet, idx) => (
                         <div key={`${bet.combo}-${idx}`} className="list-stack">
                           <div className="list-row list-row-actions">
                             <strong><ComboBadge combo={bet.combo} /></strong>
@@ -2078,6 +2143,7 @@ export default function App() {
                     </div>
                   </article>
 
+                  {showInternalBetBreakdown && (
                   <article className="card">
                     <h2>オッズ取得</h2>
                     <div className="kv-list">
@@ -2096,7 +2162,9 @@ export default function App() {
                       ))}
                     </div>
                   </article>
+                  )}
 
+                  {showInternalBetBreakdown && (
                   <article className="card">
                     <h2>最適化チケット</h2>
                     <div className="kv-list">
@@ -2138,6 +2206,7 @@ export default function App() {
                       ))}
                     </div>
                   </article>
+                  )}
 
                   <article className="card ranking-card">
                     <h2>AI総合評価ランキング</h2>
@@ -2155,7 +2224,7 @@ export default function App() {
                     </div>
                   </article>
 
-                  {simulatedCombos.length > 0 && (
+                  {showInternalBetBreakdown && simulatedCombos.length > 0 && (
                     <article className="card">
                       <h2>シミュレーション上位</h2>
                       <div className="list-stack">
@@ -2177,6 +2246,7 @@ export default function App() {
                     </article>
                   )}
 
+                  {showInternalBetBreakdown && (
                   <article className="card">
                     <h2>戦略チケット（V2）</h2>
                     <div className="kv-list">
@@ -2215,7 +2285,9 @@ export default function App() {
                       ))}
                     </div>
                   </article>
+                  )}
 
+                  {showInternalBetBreakdown && (
                   <article className="card">
                     <h2>シナリオ別買い目</h2>
                     <div className="kv-list">
@@ -2250,6 +2322,7 @@ export default function App() {
                     </div>
                     <p className="muted strategy-line">{scenarioSuggestions.summary || "-"}</p>
                   </article>
+                  )}
                 </section>
 
                 <section className="card">
@@ -2301,6 +2374,14 @@ export default function App() {
                         <div className="kv-row">
                           <span>confidence</span>
                           <strong>{formatMaybeNumber(row.confidence, 2)}</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>頭固定信頼度</span>
+                          <strong>{formatMaybeNumber((Number(row.head_confidence || 0)) * 100, 1)}%</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>頭固定判定</span>
+                          <strong>{row.head_fixed_ok ? "固定向き" : "準固定"}</strong>
                         </div>
                         <div className="kv-row">
                           <span>頭本命</span>
@@ -2455,9 +2536,10 @@ export default function App() {
           </>
         )}
 
-        {screen === "performance" && (
+        {screen === "results" && (
           <>
             {perfError && <div className="error-banner">{perfError}</div>}
+            {verificationNotice && <div className="notice-banner">{verificationNotice}</div>}
 
             <section className="card">
               <div className="result-form-grid">
@@ -2919,7 +3001,16 @@ export default function App() {
                     <div key={h.race_id} className="history-item">
                       <div className="history-head">
                         <strong>{h.race_date} {h.venue_name || h.venue_id} {h.race_no}R</strong>
-                        <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
+                        <div className="row-actions">
+                          <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
+                          <button
+                            className="fetch-btn secondary"
+                            onClick={() => onVerifyRace(h.race_id)}
+                            disabled={verifyingRaceId === h.race_id}
+                          >
+                            {verifyingRaceId === h.race_id ? "検証中..." : "検証"}
+                          </button>
+                        </div>
                       </div>
                       <div className="history-start-display">
                         <h3>Start Exhibition</h3>
@@ -2945,6 +3036,13 @@ export default function App() {
                         <div>払戻: JPY {(h.totals?.payout ?? 0).toLocaleString()}</div>
                         <div>損益: JPY {(h.totals?.profit_loss ?? 0).toLocaleString()}</div>
                       </div>
+                      {h.verification ? (
+                        <div className="history-grid" style={{ marginTop: 8 }}>
+                          <div>検証日時: {h.verification.verified_at ? new Date(h.verification.verified_at).toLocaleString() : "-"}</div>
+                          <div>検証結果: {h.verification.hit_miss || "-"}</div>
+                          <div>カテゴリ: {Array.isArray(h.verification.mismatch_categories) && h.verification.mismatch_categories.length ? h.verification.mismatch_categories.join(", ") : "-"}</div>
+                        </div>
+                      ) : null}
                       {Array.isArray(h.bets) && h.bets.length > 0 && (
                         <div className="table-wrap">
                           <table>

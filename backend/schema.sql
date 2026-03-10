@@ -212,3 +212,14 @@ CREATE TABLE IF NOT EXISTS learning_weight_state (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   last_run_id INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS race_verification_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  race_id TEXT NOT NULL,
+  verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  predicted_top3 TEXT,
+  actual_top3 TEXT,
+  hit_miss TEXT,
+  mismatch_categories_json TEXT,
+  verification_summary_json TEXT
+);
