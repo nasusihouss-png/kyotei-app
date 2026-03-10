@@ -3948,6 +3948,20 @@ raceRouter.get("/results-history", async (req, res, next) => {
       `
       )
       .all();
+    const featureEventRows = db
+      .prepare(
+        `
+        SELECT e.*
+        FROM prediction_feature_log_events e
+        INNER JOIN (
+          SELECT race_id, MAX(id) AS max_id
+          FROM prediction_feature_log_events
+          GROUP BY race_id
+        ) latest
+          ON latest.max_id = e.id
+      `
+      )
+      .all();
     const verificationRows = db
       .prepare(
         `
@@ -3984,6 +3998,23 @@ raceRouter.get("/results-history", async (req, res, next) => {
         }
       ])
     );
+    const featureEventMap = new Map(
+      featureEventRows.map((row) => [
+        String(row.race_id),
+        {
+          start_display_order: safeJsonParse(row.start_display_order_json, []),
+          start_display_st: safeJsonParse(row.start_display_st_json, {}),
+          start_display_timing: safeJsonParse(row.start_display_timing_json, {}),
+          start_display_raw: safeJsonParse(row.start_display_raw_json, {}),
+          start_display_signature: row.start_display_signature || null,
+          source_fetched_at: row.source_timestamp || null,
+          start_display_source: "prediction_snapshot_event",
+          prediction_snapshot: safeJsonParse(row.prediction_snapshot_json, {}),
+          predicted_entry_order: safeJsonParse(row.predicted_entry_order_json, []),
+          actual_entry_order: safeJsonParse(row.actual_entry_order_json, [])
+        }
+      ])
+    );
     const settlementByRace = new Map();
     for (const row of settlementRows) {
       const list = settlementByRace.get(row.race_id) || [];
@@ -4009,7 +4040,33 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const race = raceMap.get(raceId) || {};
       const result = resultMap.get(raceId) || null;
       const settlements = settlementByRace.get(raceId) || [];
-      const startDisplay = startDisplayMap.get(raceId) || null;
+      const mutableStartDisplay = startDisplayMap.get(raceId) || null;
+      const eventStartDisplay = featureEventMap.get(raceId) || null;
+      const hasStartDisplaySource = !!mutableStartDisplay || !!eventStartDisplay;
+      const startDisplay = hasStartDisplaySource
+        ? {
+            ...(mutableStartDisplay || {}),
+            ...(eventStartDisplay || {}),
+            start_display_order:
+              (Array.isArray(eventStartDisplay?.start_display_order) && eventStartDisplay.start_display_order.length
+                ? eventStartDisplay.start_display_order
+                : Array.isArray(mutableStartDisplay?.start_display_order)
+                  ? mutableStartDisplay.start_display_order
+                  : []),
+            start_display_st:
+              (eventStartDisplay?.start_display_st && Object.keys(eventStartDisplay.start_display_st).length
+                ? eventStartDisplay.start_display_st
+                : mutableStartDisplay?.start_display_st || {}),
+            start_display_timing:
+              (eventStartDisplay?.start_display_timing && Object.keys(eventStartDisplay.start_display_timing).length
+                ? eventStartDisplay.start_display_timing
+                : mutableStartDisplay?.start_display_timing || {}),
+            source_fetched_at:
+              eventStartDisplay?.source_fetched_at || mutableStartDisplay?.source_fetched_at || null,
+            prediction_snapshot:
+              eventStartDisplay?.prediction_snapshot || mutableStartDisplay?.prediction_snapshot || {}
+          }
+        : null;
       const verification = verificationMap.get(raceId) || null;
       const predictedEntryOrder = Array.isArray(prediction?.predicted_entry_order)
         ? prediction.predicted_entry_order

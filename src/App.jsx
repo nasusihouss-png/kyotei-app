@@ -179,6 +179,15 @@ async function fetchLearningLatestData() {
   return response.json();
 }
 
+async function runLearningBatchApi({ apply = true, dryRun = false } = {}) {
+  return fetchJsonWithTimeout(`${API_BASE}/learning/batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apply, dryRun }),
+    timeoutMs: 30000
+  });
+}
+
 async function fetchStartEntryAnalysisData() {
   const response = await fetch(`${API_BASE}/start-entry-analysis`);
   if (!response.ok) throw new Error("Failed to fetch start/entry analysis");
@@ -344,6 +353,15 @@ function getVerifyStatusBadgeClass(status) {
   if (s === "VERIFIED") return "badge hit";
   if (s === "VERIFY_FAILED") return "badge miss";
   return "badge pending";
+}
+
+function getLearningAutoReasonLabel(reason) {
+  const r = String(reason || "");
+  if (!r) return "-";
+  if (r === "applied") return "学習を実行しました";
+  if (r === "insufficient_learning_ready_total") return "学習準備完了データ数がしきい値未満";
+  if (r === "not_enough_new_learning_ready") return "新規の学習準備完了データが不足";
+  return r;
 }
 
 function getTicketTypeLabel(ticketType) {
@@ -655,6 +673,8 @@ export default function App() {
   const [analytics, setAnalytics] = useState(null);
   const [selfLearning, setSelfLearning] = useState(null);
   const [learningLatest, setLearningLatest] = useState(null);
+  const [learningRunLoading, setLearningRunLoading] = useState(false);
+  const [learningRunNotice, setLearningRunNotice] = useState("");
   const [learningSnapshots, setLearningSnapshots] = useState([]);
   const [startEntryAnalysis, setStartEntryAnalysis] = useState(null);
   const [history, setHistory] = useState([]);
@@ -1048,6 +1068,12 @@ export default function App() {
     return () => clearTimeout(t);
   }, [verificationNotice]);
 
+  useEffect(() => {
+    if (!learningRunNotice) return;
+    const t = setTimeout(() => setLearningRunNotice(""), 2800);
+    return () => clearTimeout(t);
+  }, [learningRunNotice]);
+
   const onFetch = async () => {
     setLoading(true);
     setError("");
@@ -1063,6 +1089,21 @@ export default function App() {
       setError(e.message || "Failed to fetch race data");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const onRunLearningNow = async () => {
+    setLearningRunLoading(true);
+    try {
+      const result = await runLearningBatchApi({ apply: true, dryRun: false });
+      setLearningRunNotice(
+        `学習実行完了: run_id=${result?.run_id ?? "-"}, sample=${result?.sample_size ?? 0}`
+      );
+      await loadPerformance();
+    } catch (e) {
+      setPerfError(e.message || "学習実行に失敗しました");
+    } finally {
+      setLearningRunLoading(false);
     }
   };
 
@@ -2635,9 +2676,18 @@ export default function App() {
           <>
             {perfError && <div className="error-banner">{perfError}</div>}
             {verificationNotice && <div className="notice-banner">{verificationNotice}</div>}
+            {learningRunNotice && <div className="notice-banner">{learningRunNotice}</div>}
 
             <section className="card">
               <h2>検証進捗（AI改善ワークフロー）</h2>
+              <p className="muted strategy-line">
+                検証済み: 検証ログ保存済み件数 / Learning-ready: ミスマッチ分類付き件数 / 未学習: まだ学習バッチに反映されていない件数
+              </p>
+              <div className="row-actions" style={{ marginTop: 8 }}>
+                <button className="fetch-btn secondary" onClick={onRunLearningNow} disabled={learningRunLoading}>
+                  {learningRunLoading ? "学習実行中..." : "今すぐ学習実行"}
+                </button>
+              </div>
               <div className="stats-grid">
                 <article className="card stat-card">
                   <span>総レース記録</span>
@@ -2678,11 +2728,11 @@ export default function App() {
                   </strong>
                   <small>run_id: {learningLatest?.continuous_learning?.last_learning_run_id ?? "-"}</small>
                   {learningLatest?.auto_trigger?.reason ? (
-                    <small>auto: {learningLatest.auto_trigger.reason}</small>
+                    <small>auto: {getLearningAutoReasonLabel(learningLatest.auto_trigger.reason)}</small>
                   ) : null}
                 </article>
                 <article className="card stat-card">
-                  <span>前回学習の検証使用件数</span>
+                  <span>前回学習で使用した検証件数</span>
                   <strong>{learningLatest?.continuous_learning?.last_verified_records_used ?? 0}</strong>
                   <small>未学習(learning-ready): {learningLatest?.continuous_learning?.learning_ready_pending ?? 0}</small>
                 </article>
@@ -3183,6 +3233,29 @@ export default function App() {
                       <div className="history-start-display">
                         <h3>Start Exhibition</h3>
                         <StartExhibitionDisplay startDisplay={h.startDisplay || null} compact />
+                        <div className="history-grid" style={{ marginTop: 6 }}>
+                          <div>
+                            展示順:
+                            {" "}
+                            {Array.isArray(h?.startDisplay?.start_display_order) && h.startDisplay.start_display_order.length
+                              ? h.startDisplay.start_display_order.join("-")
+                              : "-"}
+                          </div>
+                          <div>
+                            ST保存:
+                            {" "}
+                            {h?.startDisplay?.start_display_st && Object.keys(h.startDisplay.start_display_st).length
+                              ? "あり"
+                              : "なし"}
+                          </div>
+                          <div>
+                            取得時刻:
+                            {" "}
+                            {h?.startDisplay?.source_fetched_at
+                              ? new Date(h.startDisplay.source_fetched_at).toLocaleString()
+                              : "-"}
+                          </div>
+                        </div>
                         {h?.startDisplay?.prediction_snapshot ? (
                           <p className="muted strategy-line">
                             予測スナップショット:

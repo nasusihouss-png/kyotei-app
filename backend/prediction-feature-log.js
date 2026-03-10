@@ -72,7 +72,10 @@ db.exec(`
     boat_rate_avg REAL,
     avg_st_avg REAL,
     exhibition_time_avg REAL,
+    start_display_order_json TEXT,
     start_display_st_json TEXT,
+    start_display_timing_json TEXT,
+    start_display_raw_json TEXT,
     start_display_signature TEXT,
     predicted_entry_order_json TEXT,
     actual_entry_order_json TEXT,
@@ -96,6 +99,22 @@ db.exec(`
   )
 `);
 
+function ensurePredictionFeatureEventColumns() {
+  const cols = db.prepare("PRAGMA table_info(prediction_feature_log_events)").all();
+  const names = new Set(cols.map((c) => String(c.name)));
+  if (!names.has("start_display_order_json")) {
+    db.exec("ALTER TABLE prediction_feature_log_events ADD COLUMN start_display_order_json TEXT");
+  }
+  if (!names.has("start_display_timing_json")) {
+    db.exec("ALTER TABLE prediction_feature_log_events ADD COLUMN start_display_timing_json TEXT");
+  }
+  if (!names.has("start_display_raw_json")) {
+    db.exec("ALTER TABLE prediction_feature_log_events ADD COLUMN start_display_raw_json TEXT");
+  }
+}
+
+ensurePredictionFeatureEventColumns();
+
 const upsertSnapshotStmt = db.prepare(`
   INSERT INTO prediction_feature_logs (
     race_id,
@@ -111,7 +130,10 @@ const upsertSnapshotStmt = db.prepare(`
     boat_rate_avg,
     avg_st_avg,
     exhibition_time_avg,
+    start_display_order_json,
     start_display_st_json,
+    start_display_timing_json,
+    start_display_raw_json,
     start_display_signature,
     predicted_entry_order_json,
     actual_entry_order_json,
@@ -139,7 +161,10 @@ const upsertSnapshotStmt = db.prepare(`
     @boat_rate_avg,
     @avg_st_avg,
     @exhibition_time_avg,
+    @start_display_order_json,
     @start_display_st_json,
+    @start_display_timing_json,
+    @start_display_raw_json,
     @start_display_signature,
     @predicted_entry_order_json,
     @actual_entry_order_json,
@@ -309,7 +334,10 @@ export function savePredictionFeatureLog({
     boat_rate_avg: avgBy(racers, "boat2Rate"),
     avg_st_avg: avgBy(racers, "avgSt"),
     exhibition_time_avg: avgBy(racers, "exhibitionTime"),
+    start_display_order_json: JSON.stringify(startDisplay?.start_display_order || []),
     start_display_st_json: JSON.stringify(startDisplay?.start_display_st || {}),
+    start_display_timing_json: JSON.stringify(startDisplay?.start_display_timing || {}),
+    start_display_raw_json: JSON.stringify(startDisplay?.start_display_raw || {}),
     start_display_signature: startDisplay?.start_display_signature || null,
     predicted_entry_order_json: JSON.stringify(entryMeta?.predicted_entry_order || []),
     actual_entry_order_json: JSON.stringify(entryMeta?.actual_entry_order || []),
