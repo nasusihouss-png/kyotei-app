@@ -298,6 +298,14 @@ function buildMismatchAnalysis({
   };
 }
 
+function parseTop3FromCombo(comboLike) {
+  const digits = String(comboLike || "")
+    .match(/[1-6]/g)
+    || [];
+  if (digits.length < 3) return [];
+  return digits.slice(0, 3).map((x) => Number(x));
+}
+
 function downgradeModeForEntryChange(mode, severity) {
   const m = normalizeModeValue(mode);
   if (severity === "none") return m;
@@ -4076,11 +4084,24 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       `
       )
       .get(raceId);
+    const startDisplayResultRow = db
+      .prepare(
+        `
+        SELECT fetched_result, settled_result
+        FROM race_start_displays
+        WHERE race_id = ?
+        LIMIT 1
+      `
+      )
+      .get(raceId);
     if (!resultRow) {
-      return res.status(400).json({
-        error: "result_not_found",
-        message: "actual race result is not available yet"
-      });
+      const comboFallback = String(startDisplayResultRow?.settled_result || startDisplayResultRow?.fetched_result || "").trim();
+      if (!comboFallback) {
+        return res.status(400).json({
+          error: "result_not_found",
+          message: "actual race result is not available yet (results table and start-display result are both empty)"
+        });
+      }
     }
 
     const featureLog = db
@@ -4100,9 +4121,19 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       .map((x) => toInt(x, null))
       .filter((x) => Number.isInteger(x))
       .slice(0, 3);
-    const actualTop3 = [toInt(resultRow.finish_1, null), toInt(resultRow.finish_2, null), toInt(resultRow.finish_3, null)]
+    let actualTop3 = [toInt(resultRow?.finish_1, null), toInt(resultRow?.finish_2, null), toInt(resultRow?.finish_3, null)]
       .filter((x) => Number.isInteger(x))
       .slice(0, 3);
+    if (actualTop3.length < 3) {
+      const comboFallback = String(startDisplayResultRow?.settled_result || startDisplayResultRow?.fetched_result || "").trim();
+      actualTop3 = parseTop3FromCombo(comboFallback);
+    }
+    if (actualTop3.length < 3) {
+      return res.status(400).json({
+        error: "result_not_parseable",
+        message: "actual race result exists but could not be normalized into top3"
+      });
+    }
     const predictedBets = safeArray(betPlanJson?.recommended_bets);
     const raceRisk = {
       recommendation: latestPrediction?.recommendation || featureLog?.recommendation_mode || null
@@ -4150,6 +4181,14 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       JSON.stringify(analysis.categories),
       JSON.stringify(summary)
     );
+
+    console.info("[VERIFY]", {
+      race_id: raceId,
+      predicted_top3: predictedTop3,
+      actual_top3: actualTop3,
+      hit_miss: analysis.hit_miss,
+      mismatch_categories: analysis.categories
+    });
 
     return res.json({
       ok: true,

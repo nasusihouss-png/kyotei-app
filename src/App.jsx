@@ -130,16 +130,12 @@ async function fetchHistoryData() {
 }
 
 async function verifyRaceResultApi(raceId) {
-  const response = await fetch(`${API_BASE}/results/verify`, {
+  return fetchJsonWithTimeout(`${API_BASE}/results/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ race_id: raceId })
+    body: JSON.stringify({ race_id: raceId }),
+    timeoutMs: 20000
   });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(body?.message || "Failed to verify race");
-  }
-  return body;
 }
 
 async function fetchAnalyticsData(date) {
@@ -1466,7 +1462,10 @@ export default function App() {
   };
 
   const onVerifyRace = async (raceId) => {
-    if (!raceId) return;
+    if (!raceId) {
+      setPerfError("検証対象の race_id が見つかりません");
+      return;
+    }
     setPerfError("");
     setVerifyingRaceId(raceId);
     try {
@@ -3004,6 +3003,7 @@ export default function App() {
                         <div className="row-actions">
                           <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
                           <button
+                            type="button"
                             className="fetch-btn secondary"
                             onClick={() => onVerifyRace(h.race_id)}
                             disabled={verifyingRaceId === h.race_id}
