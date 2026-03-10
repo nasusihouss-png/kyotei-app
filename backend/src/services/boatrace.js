@@ -417,12 +417,9 @@ function parseBeforeinfo(html) {
     const entryCourse = idx + 1;
 
     const current = byLane.get(lane) || {};
-    const shouldPreferStartRowSt =
-      stParsed.type !== "missing" &&
-      stParsed.type !== "unknown" &&
-      (current.exhibitionStType === "missing" ||
-        current.exhibitionStType === "unknown" ||
-        current.exhibitionStRaw == null);
+    // If the dedicated start-exhibition block has a valid ST token, always prefer it.
+    // This avoids keeping generic ST-like values from other rows.
+    const shouldPreferStartRowSt = stParsed.type !== "missing" && stParsed.type !== "unknown";
     byLane.set(lane, {
       ...current,
       entryCourse: current.entryCourse ?? entryCourse,
@@ -460,8 +457,8 @@ function parseBeforeinfo(html) {
   };
 }
 
-export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000 }) {
-  const cached = getCachedRaceData({ date, venueId, raceNo });
+export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, forceRefresh = false }) {
+  const cached = forceRefresh ? null : getCachedRaceData({ date, venueId, raceNo });
   if (cached) {
     return {
       ...cached,

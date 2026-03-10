@@ -851,6 +851,7 @@ function calcHitRateRankingScore({
 raceRouter.get("/race", async (req, res, next) => {
   try {
     const { date, venueId, raceNo, participationMode } = req.query;
+    const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, false);
 
     if (!date || !venueId || !raceNo) {
       return res.status(400).json({
@@ -861,7 +862,7 @@ raceRouter.get("/race", async (req, res, next) => {
 
     let data;
     try {
-      data = await getRaceData({ date, venueId, raceNo });
+      data = await getRaceData({ date, venueId, raceNo, forceRefresh });
     } catch (fetchErr) {
       const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });
       if (!fallback) throw fetchErr;
@@ -1358,6 +1359,50 @@ raceRouter.get("/race", async (req, res, next) => {
         entry_change_type: entryMeta.entry_change_type
       }
     });
+    const includeStartDebug = parseBooleanFlag(req.query?.debugStart, false);
+    const startExhibitionDebug = includeStartDebug
+      ? {
+          race_key: {
+            race_id: raceId,
+            date: data?.race?.date || null,
+            venue_id: data?.race?.venueId ?? null,
+            race_no: data?.race?.raceNo ?? null
+          },
+          source_timestamp: data?.source?.fetched_at || null,
+          layer1_raw_fetch: (Array.isArray(data?.racers) ? data.racers : [])
+            .map((r) => ({
+              boat_no: toInt(r?.lane, null),
+              raw_entry_order: toInt(r?.startRaw?.fallbackEntryCourse ?? r?.entryCourse, null),
+              raw_st_string: r?.startRaw?.fallbackRawSt ?? r?.startRaw?.rawSt ?? r?.exhibitionStRaw ?? null,
+              source_block:
+                r?.startRaw?.fallbackRawSt != null
+                  ? "start_exhibition_block(.table1_boatImage1)"
+                  : "beforeinfo_table(table.is-w748)",
+              raw_beforeinfo_st: r?.startRaw?.rawSt ?? null,
+              raw_start_exhibition_st: r?.startRaw?.fallbackRawSt ?? null
+            }))
+            .sort((a, b) => toInt(a.boat_no, 0) - toInt(b.boat_no, 0)),
+          layer2_normalized_by_boat: (Array.isArray(data?.racers) ? data.racers : [])
+            .map((r) => ({
+              boat_no: toInt(r?.lane, null),
+              normalized_entry_order: toInt(r?.entryCourse, null),
+              normalized_st_raw: r?.exhibitionStRaw ?? null,
+              normalized_st_type: r?.exhibitionStType ?? "missing",
+              normalized_st_numeric: nullableNum(r?.exhibitionStNumeric)
+            }))
+            .sort((a, b) => toInt(a.boat_no, 0) - toInt(b.boat_no, 0)),
+          layer3_render_input: (Array.isArray(startDisplay?.start_display_debug) ? startDisplay.start_display_debug : [])
+            .map((row) => ({
+              displayed_boat_no: toInt(row?.lane, null),
+              displayed_entry_label: toInt(row?.entry_order, null),
+              displayed_st_string:
+                startDisplay?.start_display_timing?.[String(toInt(row?.lane, 0))]?.display ?? "--",
+              computed_visual_unit: nullableNum(row?.visual_unit),
+              computed_percent_position: nullableNum(row?.visual_percent)
+            }))
+            .sort((a, b) => toInt(a.displayed_boat_no, 0) - toInt(b.displayed_boat_no, 0))
+        }
+      : null;
     savePredictionFeatureLog({
       raceId,
       race: data.race,
@@ -1434,7 +1479,8 @@ raceRouter.get("/race", async (req, res, next) => {
       startDisplay: startDisplay || null,
       startDisplayDebug: Array.isArray(startDisplay?.start_display_debug)
         ? startDisplay.start_display_debug
-        : []
+        : [],
+      startExhibitionDebug
     });
   } catch (err) {
     return next(err);
