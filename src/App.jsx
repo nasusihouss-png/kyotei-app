@@ -355,6 +355,20 @@ function getVerifyStatusBadgeClass(status) {
   return "badge pending";
 }
 
+function getConfidenceBandLabel(band) {
+  const b = String(band || "").toLowerCase();
+  if (b === "high") return "High";
+  if (b === "medium") return "Medium";
+  return "Caution";
+}
+
+function getConfidenceBandClass(band) {
+  const b = String(band || "").toLowerCase();
+  if (b === "high") return "risk-full";
+  if (b === "medium") return "risk-small";
+  return "risk-skip";
+}
+
 function getLearningAutoReasonLabel(reason) {
   const r = String(reason || "");
   if (!r) return "-";
@@ -802,6 +816,8 @@ export default function App() {
   const manualLapImpact = data?.manualLapImpact || null;
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
   const raceDecision = data?.raceDecision || {};
+  const participationDecision = data?.participationDecision || {};
+  const confidenceScores = data?.confidenceScores || raceDecision?.confidence_scores || {};
   const recommendationMode = String(
     data?.raceDecision?.mode || raceRisk?.recommendation || data?.recommendation_label || ""
   ).toUpperCase();
@@ -811,6 +827,20 @@ export default function App() {
       : recommendationMode
         ? recommendationMode !== "SKIP"
         : true;
+  const participationLabel =
+    participationDecision?.decision === "recommended"
+      ? "Recommended"
+      : participationDecision?.decision === "watch"
+        ? "Watch / Borderline"
+        : participationDecision?.decision === "not_recommended"
+          ? "Not Recommended"
+          : (isRecommendedRace ? "Recommended" : "Not Recommended");
+  const participationClass =
+    participationDecision?.decision === "recommended"
+      ? "risk-full"
+      : participationDecision?.decision === "watch"
+        ? "risk-small"
+        : "risk-skip";
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
 
   const racersByLane = useMemo(() => {
@@ -1907,12 +1937,40 @@ export default function App() {
                     <div><span>展開パターン</span><strong>{data.racePattern || "-"}</strong></div>
                     <div><span>買いタイプ</span><strong>{data.buyType || "-"}</strong></div>
                     <div><span>推奨</span><strong className={`status-pill ${getRiskClass(raceRisk.recommendation)}`}>{raceRisk.recommendation || "-"}</strong></div>
-                    <div><span>参加可否</span><strong className={`status-pill ${isRecommendedRace ? "risk-full" : "risk-skip"}`}>{isRecommendedRace ? "Recommended" : "Not Recommended"}</strong></div>
+                    <div><span>参加可否</span><strong className={`status-pill ${participationClass}`}>{participationLabel}</strong></div>
                     <div><span>リスクスコア</span><strong>{raceRisk.risk_score ?? "-"}</strong></div>
                     <div><span>参加モード</span><strong>{raceRisk.participation_mode || "-"}</strong></div>
+                    <div>
+                      <span>頭固定信頼度</span>
+                      <strong>
+                        {formatMaybeNumber(confidenceScores?.head_fixed_confidence_pct, 1)}%
+                        {" "}
+                        <span className={`status-pill ${getConfidenceBandClass(confidenceScores?.head_fixed_band)}`}>
+                          {getConfidenceBandLabel(confidenceScores?.head_fixed_band)}
+                        </span>
+                      </strong>
+                    </div>
+                    <div>
+                      <span>推奨買い目信頼度</span>
+                      <strong>
+                        {formatMaybeNumber(confidenceScores?.recommended_bet_confidence_pct, 1)}%
+                        {" "}
+                        <span className={`status-pill ${getConfidenceBandClass(confidenceScores?.recommended_bet_band)}`}>
+                          {getConfidenceBandLabel(confidenceScores?.recommended_bet_band)}
+                        </span>
+                      </strong>
+                    </div>
                   </div>
+                  {participationDecision?.summary ? (
+                    <p className="muted strategy-line">{participationDecision.summary}</p>
+                  ) : null}
                   {!isRecommendedRace ? (
-                    <p className="muted strategy-line">このレースは非推奨です。ベット追加は無効化されています。</p>
+                    <p className="muted strategy-line">このレースは見送り判定です。ベット追加は無効化されています。</p>
+                  ) : null}
+                  {(Array.isArray(participationDecision?.reason_tags) && participationDecision.reason_tags.length > 0) ? (
+                    <div className="chips-wrap">
+                      {participationDecision.reason_tags.map((tag) => <span className="chip" key={`pd-tag-${tag}`}>{tag}</span>)}
+                    </div>
                   ) : null}
                   {(Array.isArray(explainability?.race_tags) && explainability.race_tags.length > 0) ? (
                     <div className="chips-wrap">
@@ -2504,6 +2562,23 @@ export default function App() {
                           {row.provisional ? <span className="status-pill status-unsettled">{row.provisional_label || "暫定"}</span> : null}
                           {row.entry_changed ? <span className="status-pill risk-small">Entry changed</span> : null}
                           <span className={`status-pill ${getRiskClass(row.mode)}`}>{row.mode || "-"}</span>
+                          {row?.participationDecision?.decision ? (
+                            <span
+                              className={`status-pill ${
+                                row.participationDecision.decision === "recommended"
+                                  ? "risk-full"
+                                  : row.participationDecision.decision === "watch"
+                                    ? "risk-small"
+                                    : "risk-skip"
+                              }`}
+                            >
+                              {row.participationDecision.decision === "recommended"
+                                ? "Recommended"
+                                : row.participationDecision.decision === "watch"
+                                  ? "Watch"
+                                  : "Not Recommended"}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                       <div className="kv-list">
@@ -2513,6 +2588,14 @@ export default function App() {
                         </div>
                         <div className="kv-row">
                           <span>頭固定信頼度</span>
+                          <strong>{formatMaybeNumber(row?.confidenceScores?.head_fixed_confidence_pct, 1)}%</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>買い目信頼度</span>
+                          <strong>{formatMaybeNumber(row?.confidenceScores?.recommended_bet_confidence_pct, 1)}%</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>頭固定信頼度(従来)</span>
                           <strong>{formatMaybeNumber((Number(row.head_confidence || 0)) * 100, 1)}%</strong>
                         </div>
                         <div className="kv-row">
@@ -2599,6 +2682,13 @@ export default function App() {
                         <div className="chips-wrap">
                           {row.explainability.race_tags.slice(0, 6).map((tag) => (
                             <span className="chip" key={`rec-exp-${row.raceId}-${tag}`}>{tag}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {(Array.isArray(row?.participation_reason_tags) && row.participation_reason_tags.length > 0) ? (
+                        <div className="chips-wrap">
+                          {row.participation_reason_tags.slice(0, 6).map((tag) => (
+                            <span className="chip" key={`rec-part-${row.raceId}-${tag}`}>{tag}</span>
                           ))}
                         </div>
                       ) : null}

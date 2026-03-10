@@ -82,12 +82,12 @@ export function decideRaceSelection({
   const venueRiskPenalty = Math.max(0, venue_chaos_factor - 62) * 0.18;
   const venueHeadBoost = Math.max(0, venue_inner_reliability - 58) * 0.12;
   if (
-    race_select_score + venueHeadBoost - venueRiskPenalty >= 72 &&
-    chaos_risk_score <= 56 + (venue_inner_reliability >= 60 ? 2 : 0) &&
-    head_stability_score >= 64
+    race_select_score + venueHeadBoost - venueRiskPenalty >= 66 &&
+    chaos_risk_score <= 64 + (venue_inner_reliability >= 60 ? 2 : 0) &&
+    head_stability_score >= 56
   ) {
     mode = "FULL_BET";
-  } else if (race_select_score < 50 || chaos_risk_score >= 74 || head_stability_score < 42) {
+  } else if (race_select_score < 42 || chaos_risk_score >= 88 || head_stability_score < 34) {
     mode = "SKIP";
   }
 

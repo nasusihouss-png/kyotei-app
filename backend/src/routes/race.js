@@ -786,6 +786,192 @@ function computeRecommendationScore({
   return Number(score.toFixed(2));
 }
 
+const CONFIDENCE_VERSION = "v1.1";
+const PARTICIPATION_CONFIDENCE_THRESHOLDS = {
+  participate: {
+    headFixedMin: 75,
+    betMin: 68
+  },
+  watch: {
+    headMin: 60,
+    betMin: 55
+  }
+};
+
+function buildParticipationDecision({
+  raceDecision,
+  raceRisk,
+  raceStructure,
+  entryMeta,
+  confidenceScores
+}) {
+  const mode = normalizeModeValue(raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN");
+  const confidence = toNum(raceDecision?.confidence, 0);
+  const headStability = toNum(raceStructure?.head_stability_score, 50);
+  const chaosRisk = toNum(raceStructure?.chaos_risk_score, 50);
+  const entrySeverity = String(entryMeta?.severity || "none");
+  const headFixed = toNum(confidenceScores?.head_fixed_confidence_pct, 50);
+  const betConf = toNum(confidenceScores?.recommended_bet_confidence_pct, 50);
+  const cautionFlags = Array.isArray(confidenceScores?.confidence_reason_tags)
+    ? confidenceScores.confidence_reason_tags
+    : [];
+  const hasStrongCaution =
+    cautionFlags.includes("ENTRY_CHANGE_PENALTY") ||
+    cautionFlags.includes("ST_CHAOS") ||
+    cautionFlags.includes("INSUFFICIENT_EXHIBITION_DATA");
+
+  const reasonTags = [];
+  if (mode === "SKIP") reasonTags.push("DECISION_SKIP");
+  if (headFixed < 60) reasonTags.push("HEAD_CONFIDENCE_LOW");
+  if (entrySeverity === "high") reasonTags.push("ENTRY_CHANGE_PENALTY");
+  if (chaosRisk >= 70) reasonTags.push("ST_CHAOS");
+  if (cautionFlags.includes("INSUFFICIENT_EXHIBITION_DATA")) reasonTags.push("INSUFFICIENT_EXHIBITION_DATA");
+  if (cautionFlags.includes("WEAK_MOTOR_EXHIBITION_OVERLAP")) reasonTags.push("WEAK_MOTOR_EXHIBITION_OVERLAP");
+  if (cautionFlags.includes("LEARNED_CAUTION_PENALTY")) reasonTags.push("LEARNED_CAUTION_PENALTY");
+  if (cautionFlags.includes("START_SIGNAL_UNSTABLE")) reasonTags.push("START_SIGNAL_UNSTABLE");
+  if (headStability >= 62) reasonTags.push("HEAD_STABILITY_GOOD");
+  if (headFixed >= 75) reasonTags.push("HEAD_CONFIDENCE_GOOD");
+  if (betConf >= 68) reasonTags.push("BET_CONFIDENCE_GOOD");
+
+  let decision = "watch";
+  if (
+    mode !== "SKIP" &&
+    headFixed >= PARTICIPATION_CONFIDENCE_THRESHOLDS.participate.headFixedMin &&
+    betConf >= PARTICIPATION_CONFIDENCE_THRESHOLDS.participate.betMin &&
+    !hasStrongCaution
+  ) {
+    decision = "recommended";
+  } else if (
+    headFixed <= 59 ||
+    betConf <= 54 ||
+    (mode === "SKIP" && hasStrongCaution && confidence < 55) ||
+    chaosRisk >= 90
+  ) {
+    decision = "not_recommended";
+  }
+
+  const summary =
+    decision === "recommended"
+      ? "参加推奨"
+      : decision === "watch"
+        ? "様子見（境界）"
+        : "見送り";
+
+  return {
+    decision,
+    is_recommended: decision !== "not_recommended",
+    summary,
+    reason_tags: [...new Set(reasonTags)],
+    metrics: {
+      head_fixed_confidence_pct: Number(headFixed.toFixed(2)),
+      recommended_bet_confidence_pct: Number(betConf.toFixed(2)),
+      confidence_version: CONFIDENCE_VERSION
+    },
+    confidence_version: CONFIDENCE_VERSION
+  };
+}
+
+function buildConfidenceScores({
+  raceDecision,
+  headConfidence,
+  ticketOptimization,
+  raceStructure,
+  startSignals,
+  entryMeta,
+  learningWeights,
+  ranking,
+  preRaceAnalysis,
+  contenderSignals,
+  scenarioSuggestions
+}) {
+  const clampPct = (v) => Number(clamp(0, 100, toNum(v, 0)).toFixed(2));
+  const headBase = clampPct(toNum(headConfidence?.head_confidence, 0.5) * 100);
+  const headStability = clampPct(raceStructure?.head_stability_score);
+  const chaosRisk = clampPct(raceStructure?.chaos_risk_score);
+  const startStability = clampPct(startSignals?.stability_score);
+  const raceConf = clampPct(raceDecision?.confidence);
+  const ticketConf = clampPct(ticketOptimization?.ticket_confidence_score);
+  const top3Concentration = clampPct(raceStructure?.top3_concentration_score);
+  const scenarioConfidence = clampPct(toNum(scenarioSuggestions?.scenario_confidence, 0.5) * 100);
+  const contenderOverlap = clampPct(toNum((contenderSignals?.overlap_lanes || []).length, 0) * 20);
+  const formScore = clampPct(preRaceAnalysis?.pre_race_form_score);
+  const topRows = (Array.isArray(ranking) ? ranking : []).slice(0, 3);
+  const playerSignal = clampPct(
+    topRows.length
+      ? topRows.reduce((acc, row) => acc + toNum(row?.score, 0), 0) / topRows.length / 4
+      : 50
+  );
+  const motorSignal = clampPct(
+    topRows.length
+      ? topRows.reduce((acc, row) => acc + toNum(row?.features?.motor_total_score, 0), 0) / topRows.length * 5
+      : 50
+  );
+  const exhibitionSignal = clampPct(
+    topRows.length
+      ? 100 -
+          (topRows.reduce((acc, row) => acc + toNum(row?.features?.exhibition_rank, 6), 0) / topRows.length - 1) * 20
+      : 50
+  );
+  const entrySeverity = String(entryMeta?.severity || "none");
+  const entryPenalty = entrySeverity === "high" ? 10 : entrySeverity === "medium" ? 6 : entrySeverity === "low" ? 3 : 0;
+  const learnedCaution = Math.max(0, toNum(learningWeights?.recommendation_threshold, 52) - 54) * 0.7;
+  const missingDataPenalty = (() => {
+    const missPlayer = playerSignal <= 0 ? 1 : 0;
+    const missMotor = motorSignal <= 0 ? 1 : 0;
+    const missEx = exhibitionSignal <= 0 ? 1 : 0;
+    return Math.min(12, (missPlayer + missMotor + missEx) * 4);
+  })();
+
+  const headFixed = clampPct(
+    headBase * 0.38 +
+      headStability * 0.16 +
+      startStability * 0.1 +
+      top3Concentration * 0.08 +
+      playerSignal * 0.1 +
+      motorSignal * 0.08 +
+      exhibitionSignal * 0.06 +
+      formScore * 0.04 -
+      entryPenalty -
+      learnedCaution -
+      missingDataPenalty
+  );
+  const betConfidence = clampPct(
+    ticketConf * 0.34 +
+      raceConf * 0.16 +
+      (100 - chaosRisk) * 0.14 +
+      headFixed * 0.14 +
+      scenarioConfidence * 0.08 +
+      contenderOverlap * 0.08 +
+      top3Concentration * 0.06 -
+      learnedCaution * 0.6 -
+      Math.max(0, missingDataPenalty - 4)
+  );
+  const raceConfidence = clampPct((raceConf * 0.6 + headFixed * 0.2 + betConfidence * 0.2));
+
+  const toBand = (pct) => (pct >= 75 ? "high" : pct >= 55 ? "medium" : "caution");
+  const confidenceReasonTags = [];
+  if (headFixed < 60) confidenceReasonTags.push("HEAD_CONFIDENCE_LOW");
+  if (betConfidence < 55) confidenceReasonTags.push("BET_CONFIDENCE_LOW");
+  if (entrySeverity !== "none") confidenceReasonTags.push("ENTRY_CHANGE_PENALTY");
+  if (chaosRisk >= 70) confidenceReasonTags.push("ST_CHAOS");
+  if (missingDataPenalty >= 8) confidenceReasonTags.push("INSUFFICIENT_EXHIBITION_DATA");
+  if (contenderOverlap < 40) confidenceReasonTags.push("WEAK_MOTOR_EXHIBITION_OVERLAP");
+  if (learnedCaution >= 3.5) confidenceReasonTags.push("LEARNED_CAUTION_PENALTY");
+  if (startStability < 44) confidenceReasonTags.push("START_SIGNAL_UNSTABLE");
+  return {
+    head_fixed_confidence_pct: headFixed,
+    recommended_bet_confidence_pct: betConfidence,
+    race_confidence_pct: raceConfidence,
+    head_fixed_band: toBand(headFixed),
+    recommended_bet_band: toBand(betConfidence),
+    race_band: toBand(raceConfidence),
+    head_confidence: headFixed,
+    bet_confidence: betConfidence,
+    confidence_reason_tags: [...new Set(confidenceReasonTags)],
+    confidence_version: CONFIDENCE_VERSION
+  };
+}
+
 function classifyWeaknessCodes({
   predictedHead,
   actualHead,
@@ -1427,12 +1613,38 @@ raceRouter.get("/race", async (req, res, next) => {
 
     saveFeatureSnapshots(raceId, ranking);
 
+    const confidenceScores = buildConfidenceScores({
+      raceDecision,
+      headConfidence,
+      ticketOptimization: ticketOptimizationWithStake,
+      raceStructure,
+      startSignals,
+      entryMeta,
+      learningWeights,
+      ranking,
+      preRaceAnalysis,
+      contenderSignals: contenderAdjusted.contenderSignals,
+      scenarioSuggestions
+    });
+    const participationDecision = buildParticipationDecision({
+      raceDecision,
+      raceRisk,
+      raceStructure,
+      entryMeta,
+      confidenceScores
+    });
     const predictionWithEntry = {
       ...prediction,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,
       entry_changed: entryMeta.entry_changed,
       entry_change_type: entryMeta.entry_change_type,
+      confidence_scores: confidenceScores,
+      head_confidence: confidenceScores.head_confidence,
+      bet_confidence: confidenceScores.bet_confidence,
+      participation_decision: participationDecision.decision,
+      confidence_reason_tags: confidenceScores.confidence_reason_tags,
+      confidence_version: confidenceScores.confidence_version,
       prediction_before_entry_change,
       prediction_after_entry_change
     };
@@ -1520,7 +1732,6 @@ raceRouter.get("/race", async (req, res, next) => {
       predictionBeforeEntryChange: prediction_before_entry_change,
       predictionAfterEntryChange: prediction_after_entry_change
     });
-
     return res.json({
       source: data.source || {},
       race: data.race,
@@ -1528,11 +1739,15 @@ raceRouter.get("/race", async (req, res, next) => {
       raceId,
       manualLapEvaluation,
       manualLapImpact,
-      is_recommended: String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() !== "SKIP",
+      is_recommended: !!participationDecision?.is_recommended,
       recommendation_label:
-        String(raceDecision?.mode || raceRisk?.recommendation || "").toUpperCase() === "SKIP"
-          ? "Not Recommended"
-          : "Recommended",
+        participationDecision?.decision === "recommended"
+          ? "Recommended"
+          : participationDecision?.decision === "watch"
+            ? "Watch"
+            : "Not Recommended",
+      participationDecision,
+      confidenceScores,
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,
@@ -2085,6 +2300,26 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             betPlan: bet_plan,
             ticketGenerationV2
           });
+          const confidenceScores = buildConfidenceScores({
+            raceDecision,
+            headConfidence,
+            ticketOptimization,
+            raceStructure,
+            startSignals,
+            entryMeta,
+            learningWeights,
+            ranking,
+            preRaceAnalysis,
+            contenderSignals: contenderAdjusted.contenderSignals,
+            scenarioSuggestions
+          });
+          const participationDecisionFinal = buildParticipationDecision({
+            raceDecision,
+            raceRisk,
+            raceStructure,
+            entryMeta,
+            confidenceScores
+          });
           const raceExplainability = buildRaceExplainability({
             raceDecision,
             raceRisk,
@@ -2100,6 +2335,9 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           recItem.scenario_confidence = scenarioSuggestions.scenario_confidence;
           recItem.scenarioSuggestions = scenarioSuggestions;
           recItem.explainability = raceExplainability;
+          recItem.participationDecision = participationDecisionFinal;
+          recItem.participation_reason_tags = participationDecisionFinal.reason_tags || [];
+          recItem.confidenceScores = confidenceScores;
           recItem.main_picks = scenarioSuggestions.main_picks;
           recItem.backup_picks = scenarioSuggestions.backup_picks;
           recItem.longshot_picks = scenarioSuggestions.longshot_picks;
@@ -2117,16 +2355,18 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             explanation_tags: ticketExplainability[String(t.combo)]?.explanation_tags || [],
             explanation_summary: ticketExplainability[String(t.combo)]?.explanation_summary || null
           }));
-          const allowModes = dateMode.isFuture ? new Set(["FULL_BET", "SMALL_BET", "MICRO BET"]) : new Set(["FULL_BET"]);
-          const baseRecommendationThreshold = toNum(learningWeights?.recommendation_threshold, 52);
+          const allowModes = dateMode.isFuture
+            ? new Set(["FULL_BET", "SMALL_BET", "MICRO BET"])
+            : new Set(["FULL_BET", "SMALL_BET"]);
+          const baseRecommendationThreshold = clamp(46, 58, toNum(learningWeights?.recommendation_threshold, 52));
           const recommendationScoreMin = dateMode.isFuture
             ? Math.max(40, baseRecommendationThreshold - 10)
-            : baseRecommendationThreshold;
+            : Math.max(44, baseRecommendationThreshold - 4);
           const worthBetting =
             allowModes.has(mode) &&
-            confidence >= confidenceMin &&
-            headStability >= headStabilityMin &&
-            chaosRisk <= maxChaos &&
+            confidence >= Math.max(44, confidenceMin - 6) &&
+            headStability >= Math.max(40, headStabilityMin - 6) &&
+            chaosRisk <= Math.max(72, maxChaos + 7) &&
             recommendation_score >= recommendationScoreMin;
           const strongHeadFixed =
             headFixedOk &&
@@ -2138,7 +2378,14 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           if (mode === "FULL_BET" || mode === "SMALL_BET" || mode === "MICRO BET") {
             candidatePool.push(recItem);
           }
-          if (worthBetting && strongHeadFixed) recs.push(recItem);
+          const includePrimary =
+            participationDecisionFinal.decision === "recommended" &&
+            (strongHeadFixed || confidence >= (dateMode.isFuture ? 56 : 62));
+          const includeWatch =
+            participationDecisionFinal.decision === "watch" &&
+            worthBetting &&
+            confidence >= (dateMode.isFuture ? 48 : 54);
+          if (includePrimary || includeWatch) recs.push(recItem);
         } catch (err) {
           errors.push({
             venueId,
@@ -2169,7 +2416,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           .filter(
             (row) =>
               (row.mode === "FULL_BET" || row.mode === "SMALL_BET") &&
-              (row.head_fixed_ok || row.head_confidence >= 0.54)
+              (row.head_fixed_ok || row.head_confidence >= 0.5) &&
+              (row.participationDecision?.decision === "recommended" || row.participationDecision?.decision === "watch")
           )
           .slice(0, Math.min(limit, 6))
           .map((row) => ({
@@ -4253,6 +4501,10 @@ raceRouter.post("/results/verify", async (req, res, next) => {
 
     const predictionJson = safeJsonParse(latestPrediction?.prediction_json, {});
     const betPlanJson = safeJsonParse(latestPrediction?.bet_plan_json, {});
+    const predictionConfidenceScores =
+      predictionJson?.confidence_scores && typeof predictionJson.confidence_scores === "object"
+        ? predictionJson.confidence_scores
+        : {};
     const predictedTop3 = safeArray(predictionJson?.top3)
       .map((x) => toInt(x, null))
       .filter((x) => Number.isInteger(x))
@@ -4317,6 +4569,26 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       recommendation_score: Number.isFinite(Number(featureLog?.recommendation_score))
         ? Number(featureLog.recommendation_score)
         : null,
+      head_confidence: Number.isFinite(Number(predictionJson?.head_confidence))
+        ? Number(predictionJson.head_confidence)
+        : Number.isFinite(Number(predictionConfidenceScores?.head_confidence))
+          ? Number(predictionConfidenceScores.head_confidence)
+          : null,
+      bet_confidence: Number.isFinite(Number(predictionJson?.bet_confidence))
+        ? Number(predictionJson.bet_confidence)
+        : Number.isFinite(Number(predictionConfidenceScores?.bet_confidence))
+          ? Number(predictionConfidenceScores.bet_confidence)
+          : null,
+      participation_decision: predictionJson?.participation_decision || null,
+      confidence_reason_tags: Array.isArray(predictionJson?.confidence_reason_tags)
+        ? predictionJson.confidence_reason_tags
+        : Array.isArray(predictionConfidenceScores?.confidence_reason_tags)
+          ? predictionConfidenceScores.confidence_reason_tags
+          : [],
+      confidence_version:
+        predictionJson?.confidence_version ||
+        predictionConfidenceScores?.confidence_version ||
+        null,
       learning_ready: analysis.categories.length > 0,
       warning: verifyWarning
     };
