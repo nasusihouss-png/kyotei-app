@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS results (
 CREATE TABLE IF NOT EXISTS prediction_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   race_id TEXT NOT NULL,
+  race_date TEXT,
+  venue_code INTEGER,
+  venue_name TEXT,
+  race_no INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   race_pattern TEXT,
   buy_type TEXT,
@@ -216,6 +220,10 @@ CREATE TABLE IF NOT EXISTS learning_weight_state (
 CREATE TABLE IF NOT EXISTS race_verification_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   race_id TEXT NOT NULL,
+  race_date TEXT,
+  venue_code INTEGER,
+  venue_name TEXT,
+  race_no INTEGER,
   verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
   predicted_top3 TEXT,
   actual_top3 TEXT,

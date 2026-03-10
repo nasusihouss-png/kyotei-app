@@ -74,6 +74,7 @@ import {
   getActiveLearningWeights,
   getLatestLearningRun,
   rollbackLearningWeights,
+  runContinuousLearningIfNeeded,
   runLearningBatch
 } from "../../learning-weight-engine.js";
 
@@ -83,6 +84,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS race_verification_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     race_id TEXT NOT NULL,
+    race_date TEXT,
+    venue_code INTEGER,
+    venue_name TEXT,
+    race_no INTEGER,
     verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
     predicted_top3 TEXT,
     actual_top3 TEXT,
@@ -91,6 +96,17 @@ db.exec(`
     verification_summary_json TEXT
   );
 `);
+
+function ensureVerificationLogColumns() {
+  const cols = db.prepare("PRAGMA table_info(race_verification_logs)").all();
+  const names = new Set(cols.map((c) => String(c.name)));
+  if (!names.has("race_date")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN race_date TEXT");
+  if (!names.has("venue_code")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN venue_code INTEGER");
+  if (!names.has("venue_name")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN venue_name TEXT");
+  if (!names.has("race_no")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN race_no INTEGER");
+}
+
+ensureVerificationLogColumns();
 
 function parseBooleanFlag(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -1422,6 +1438,7 @@ raceRouter.get("/race", async (req, res, next) => {
 
     savePredictionLog({
       raceId,
+      race: data?.race || null,
       racePattern,
       buyType,
       raceRisk,
@@ -4028,10 +4045,10 @@ raceRouter.get("/results-history", async (req, res, next) => {
 
       return {
         race_id: raceId,
-        race_date: race.race_date ?? null,
-        venue_id: race.venue_id ?? null,
-        venue_name: race.venue_name ?? null,
-        race_no: race.race_no ?? null,
+        race_date: race.race_date ?? verification?.summary?.race_date ?? null,
+        venue_id: race.venue_id ?? verification?.summary?.venue_code ?? null,
+        venue_name: race.venue_name ?? verification?.summary?.venue_name ?? null,
+        race_no: race.race_no ?? verification?.summary?.race_no ?? null,
         recommendation: normalizeRecommendation(logRow.recommendation),
         predicted_entry_order: predictedEntryOrder,
         actual_entry_order: actualEntryOrder,
@@ -4151,6 +4168,16 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       `
       )
       .get(raceId);
+    const raceMeta = db
+      .prepare(
+        `
+        SELECT race_date, venue_id, venue_name, race_no
+        FROM races
+        WHERE race_id = ?
+        LIMIT 1
+      `
+      )
+      .get(raceId);
 
     const predictionJson = safeJsonParse(latestPrediction?.prediction_json, {});
     const betPlanJson = safeJsonParse(latestPrediction?.bet_plan_json, {});
@@ -4197,6 +4224,10 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     });
     const summary = {
       race_id: raceId,
+      race_date: raceMeta?.race_date || null,
+      venue_code: Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
+      venue_name: raceMeta?.venue_name || null,
+      race_no: Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
       predicted_top3: predictedTop3,
       actual_top3: actualTop3,
       head_correct: analysis.head_correct,
@@ -4214,21 +4245,34 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       `
       INSERT INTO race_verification_logs (
         race_id,
+        race_date,
+        venue_code,
+        venue_name,
+        race_no,
         predicted_top3,
         actual_top3,
         hit_miss,
         mismatch_categories_json,
         verification_summary_json
-      ) VALUES (?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
     ).run(
       raceId,
+      raceMeta?.race_date || null,
+      Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
+      raceMeta?.venue_name || null,
+      Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
       analysis.predicted_combo,
       analysis.actual_combo,
       analysis.hit_miss,
       JSON.stringify(analysis.categories),
       JSON.stringify(summary)
     );
+
+    const continuousLearning = runContinuousLearningIfNeeded({
+      minNewVerified: 5,
+      minVerifiedTotal: 20
+    });
 
     console.info("[VERIFY]", {
       race_id: raceId,
@@ -4259,6 +4303,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       verification_performed: true,
       message: "Verification completed.",
       verification: summary,
+      continuous_learning: continuousLearning,
       confirmed_result: actualTop3.join("-"),
       settlement: settlement || null,
       updated_result_fields: {

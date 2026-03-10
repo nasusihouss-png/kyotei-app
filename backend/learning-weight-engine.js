@@ -62,6 +62,31 @@ function ensureLearningTables() {
       VALUES (1, ?, ?, NULL)
     `).run(JSON.stringify(DEFAULT_BATCH_WEIGHTS), nowIso());
   }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS learning_runtime_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      last_processed_verification_log_id INTEGER NOT NULL DEFAULT 0,
+      last_learning_run_id INTEGER,
+      last_learning_run_at TEXT,
+      last_verified_records_used INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  const runtime = db.prepare(`SELECT id FROM learning_runtime_state WHERE id = 1`).get();
+  if (!runtime) {
+    db.prepare(
+      `
+      INSERT INTO learning_runtime_state (
+        id,
+        last_processed_verification_log_id,
+        last_learning_run_id,
+        last_learning_run_at,
+        last_verified_records_used,
+        updated_at
+      ) VALUES (1, 0, NULL, NULL, 0, ?)
+    `
+    ).run(nowIso());
+  }
 }
 
 ensureLearningTables();
@@ -478,6 +503,20 @@ export function rollbackLearningWeights({ runId = null } = {}) {
 export function getLatestLearningRun() {
   const latest = db.prepare(`SELECT * FROM learning_weight_runs ORDER BY id DESC LIMIT 1`).get();
   const state = db.prepare(`SELECT * FROM learning_weight_state WHERE id = 1`).get();
+  const runtime = db.prepare(`SELECT * FROM learning_runtime_state WHERE id = 1`).get();
+  const verificationStats = db
+    .prepare(
+      `
+      SELECT
+        COALESCE(MAX(id), 0) AS max_id,
+        COALESCE(COUNT(*), 0) AS total
+      FROM race_verification_logs
+    `
+    )
+    .get();
+  const lastProcessedId = toNum(runtime?.last_processed_verification_log_id, 0);
+  const currentMaxId = toNum(verificationStats?.max_id, 0);
+  const pending = Math.max(0, currentMaxId - lastProcessedId);
   return {
     latest_run: latest
       ? {
@@ -497,6 +536,81 @@ export function getLatestLearningRun() {
       ...safeJsonParse(state?.active_weights_json, {})
     },
     active_updated_at: state?.updated_at || null,
-    active_last_run_id: state?.last_run_id || null
+    active_last_run_id: state?.last_run_id || null,
+    continuous_learning: {
+      last_processed_verification_log_id: lastProcessedId,
+      last_learning_run_id: runtime?.last_learning_run_id || null,
+      last_learning_run_at: runtime?.last_learning_run_at || null,
+      last_verified_records_used: toNum(runtime?.last_verified_records_used, 0),
+      verification_total: toNum(verificationStats?.total, 0),
+      verification_pending: pending
+    }
+  };
+}
+
+export function runContinuousLearningIfNeeded({
+  minNewVerified = 5,
+  minVerifiedTotal = 20
+} = {}) {
+  const runtime = db.prepare(`SELECT * FROM learning_runtime_state WHERE id = 1`).get();
+  const verificationStats = db
+    .prepare(
+      `
+      SELECT
+        COALESCE(MAX(id), 0) AS max_id,
+        COALESCE(COUNT(*), 0) AS total
+      FROM race_verification_logs
+    `
+    )
+    .get();
+
+  const total = toNum(verificationStats?.total, 0);
+  const maxId = toNum(verificationStats?.max_id, 0);
+  const lastProcessed = toNum(runtime?.last_processed_verification_log_id, 0);
+  const newVerified = Math.max(0, maxId - lastProcessed);
+
+  if (total < minVerifiedTotal) {
+    return {
+      triggered: false,
+      reason: "insufficient_verified_total",
+      total_verified: total,
+      new_verified: newVerified
+    };
+  }
+
+  if (newVerified < minNewVerified) {
+    return {
+      triggered: false,
+      reason: "not_enough_new_verified",
+      total_verified: total,
+      new_verified: newVerified
+    };
+  }
+
+  const batch = runLearningBatch({
+    apply: true,
+    dryRun: false
+  });
+
+  db.prepare(
+    `
+    UPDATE learning_runtime_state
+    SET
+      last_processed_verification_log_id = ?,
+      last_learning_run_id = ?,
+      last_learning_run_at = ?,
+      last_verified_records_used = ?,
+      updated_at = ?
+    WHERE id = 1
+  `
+  ).run(maxId, toNum(batch?.run_id, null), nowIso(), total, nowIso());
+
+  return {
+    triggered: true,
+    reason: "applied",
+    total_verified: total,
+    new_verified: newVerified,
+    run_id: toNum(batch?.run_id, null),
+    summary: batch?.summary || null
   };
 }

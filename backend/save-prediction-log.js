@@ -6,6 +6,18 @@ function ensurePredictionLogColumns() {
   if (!names.has("race_decision_json")) {
     db.exec("ALTER TABLE prediction_logs ADD COLUMN race_decision_json TEXT");
   }
+  if (!names.has("race_date")) {
+    db.exec("ALTER TABLE prediction_logs ADD COLUMN race_date TEXT");
+  }
+  if (!names.has("venue_code")) {
+    db.exec("ALTER TABLE prediction_logs ADD COLUMN venue_code INTEGER");
+  }
+  if (!names.has("venue_name")) {
+    db.exec("ALTER TABLE prediction_logs ADD COLUMN venue_name TEXT");
+  }
+  if (!names.has("race_no")) {
+    db.exec("ALTER TABLE prediction_logs ADD COLUMN race_no INTEGER");
+  }
 }
 
 ensurePredictionLogColumns();
@@ -13,6 +25,10 @@ ensurePredictionLogColumns();
 const insertPredictionLog = db.prepare(`
   INSERT INTO prediction_logs (
     race_id,
+    race_date,
+    venue_code,
+    venue_name,
+    race_no,
     race_pattern,
     buy_type,
     risk_score,
@@ -25,6 +41,10 @@ const insertPredictionLog = db.prepare(`
     bet_plan_json
   ) VALUES (
     @race_id,
+    @race_date,
+    @venue_code,
+    @venue_name,
+    @race_no,
     @race_pattern,
     @buy_type,
     @risk_score,
@@ -40,6 +60,7 @@ const insertPredictionLog = db.prepare(`
 
 export function savePredictionLog({
   raceId,
+  race,
   racePattern,
   buyType,
   raceRisk,
@@ -51,6 +72,10 @@ export function savePredictionLog({
 }) {
   insertPredictionLog.run({
     race_id: raceId,
+    race_date: race?.date ?? null,
+    venue_code: Number.isFinite(Number(race?.venueId)) ? Number(race.venueId) : null,
+    venue_name: race?.venueName ?? null,
+    race_no: Number.isFinite(Number(race?.raceNo)) ? Number(race.raceNo) : null,
     race_pattern: racePattern ?? null,
     buy_type: buyType ?? null,
     risk_score: raceRisk?.risk_score ?? null,

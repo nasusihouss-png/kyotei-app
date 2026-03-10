@@ -152,6 +152,12 @@ async function fetchSelfLearningData() {
   return response.json();
 }
 
+async function fetchLearningLatestData() {
+  const response = await fetch(`${API_BASE}/learning/latest`);
+  if (!response.ok) throw new Error("Failed to fetch learning latest");
+  return response.json();
+}
+
 async function fetchStartEntryAnalysisData() {
   const response = await fetch(`${API_BASE}/start-entry-analysis`);
   if (!response.ok) throw new Error("Failed to fetch start/entry analysis");
@@ -627,6 +633,7 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [analytics, setAnalytics] = useState(null);
   const [selfLearning, setSelfLearning] = useState(null);
+  const [learningLatest, setLearningLatest] = useState(null);
   const [learningSnapshots, setLearningSnapshots] = useState([]);
   const [startEntryAnalysis, setStartEntryAnalysis] = useState(null);
   const [history, setHistory] = useState([]);
@@ -951,12 +958,13 @@ export default function App() {
     setStatsLoading(true);
     setPerfError("");
     try {
-      const [statsData, analyticsData, historyData, learningData, startEntryData] = await Promise.all([
+      const [statsData, analyticsData, historyData, learningData, startEntryData, learningLatestData] = await Promise.all([
         fetchStatsData(),
         fetchAnalyticsData(date),
         fetchHistoryData(),
         fetchSelfLearningData(),
-        fetchStartEntryAnalysisData()
+        fetchStartEntryAnalysisData(),
+        fetchLearningLatestData()
       ]);
       setStats(statsData);
       setAnalytics(analyticsData || null);
@@ -964,6 +972,7 @@ export default function App() {
       setSelfLearning(learningData?.selfLearning || null);
       setLearningSnapshots(Array.isArray(learningData?.snapshots) ? learningData.snapshots : []);
       setStartEntryAnalysis(startEntryData || null);
+      setLearningLatest(learningLatestData || null);
     } catch (e) {
       setPerfError(e.message || "Failed to load performance data");
     } finally {
@@ -2629,6 +2638,20 @@ export default function App() {
                       : "-"}
                   </strong>
                   <small>学習バッチ入力対象</small>
+                </article>
+                <article className="card stat-card">
+                  <span>最新学習実行</span>
+                  <strong>
+                    {learningLatest?.continuous_learning?.last_learning_run_at
+                      ? new Date(learningLatest.continuous_learning.last_learning_run_at).toLocaleString()
+                      : "-"}
+                  </strong>
+                  <small>run_id: {learningLatest?.continuous_learning?.last_learning_run_id ?? "-"}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>前回学習の検証使用件数</span>
+                  <strong>{learningLatest?.continuous_learning?.last_verified_records_used ?? 0}</strong>
+                  <small>未学習検証: {learningLatest?.continuous_learning?.verification_pending ?? 0}</small>
                 </article>
               </div>
             </section>
