@@ -201,6 +201,50 @@ function buildStartSignalWeight(base) {
   return Number(clamp(0.85, 1.2, base + delta).toFixed(4));
 }
 
+function loadVerificationMismatchInsights() {
+  const rows = db
+    .prepare(
+      `
+      SELECT v.race_id, v.hit_miss, v.mismatch_categories_json
+      FROM race_verification_logs v
+      INNER JOIN (
+        SELECT race_id, MAX(id) AS max_id
+        FROM race_verification_logs
+        GROUP BY race_id
+      ) latest
+        ON latest.max_id = v.id
+    `
+    )
+    .all();
+
+  const total = Array.isArray(rows) ? rows.length : 0;
+  const bucket = {
+    HEAD_MISS: 0,
+    PARTNER_MISS: 0,
+    ENTRY_CHANGE_IMPACT: 0,
+    EXHIBITION_WEIGHT_BIAS: 0,
+    MOTOR_WEIGHT_BIAS: 0,
+    PLAYER_WEIGHT_BIAS: 0,
+    UNDERSPREAD: 0,
+    OVERSPREAD: 0
+  };
+
+  for (const row of rows) {
+    const categories = safeJsonParse(row?.mismatch_categories_json, []);
+    const set = new Set(Array.isArray(categories) ? categories.map((x) => String(x || "").toUpperCase()) : []);
+    for (const code of Object.keys(bucket)) {
+      if (set.has(code)) bucket[code] += 1;
+    }
+  }
+
+  const rate = (value) => (total > 0 ? Number(((value / total) * 100).toFixed(2)) : 0);
+  return {
+    sample_size: total,
+    counts: bucket,
+    rates: Object.fromEntries(Object.entries(bucket).map(([k, v]) => [k, rate(v)]))
+  };
+}
+
 export function getActiveLearningWeights() {
   const row = db.prepare(`SELECT active_weights_json FROM learning_weight_state WHERE id = 1`).get();
   return {
@@ -274,6 +318,7 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
     scale: 1.2,
     cap: 2.5
   });
+  const verificationPack = loadVerificationMismatchInsights();
 
   const sampleSize = toNum(venuePack?.global?.races, 0);
   const suggested = {
@@ -288,13 +333,64 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
     grade_score_adjustments: gradePack.adjustments,
     start_signature_score_adjustments: signaturePack.adjustments
   };
+  const verificationAdjustments = [];
+  const vr = verificationPack?.rates || {};
+  if (toNum(verificationPack?.sample_size, 0) >= 20) {
+    if (toNum(vr.HEAD_MISS, 0) >= 45) {
+      suggested.ranking_weight = Number(clamp(0.88, 1.18, toNum(suggested.ranking_weight, 1) - 0.03).toFixed(4));
+      verificationAdjustments.push("ranking_weight:-0.03(HEAD_MISS)");
+    } else if (toNum(vr.HEAD_MISS, 0) <= 28) {
+      suggested.ranking_weight = Number(clamp(0.88, 1.18, toNum(suggested.ranking_weight, 1) + 0.01).toFixed(4));
+      verificationAdjustments.push("ranking_weight:+0.01(HEAD_STABLE)");
+    }
+
+    if (toNum(vr.ENTRY_CHANGE_IMPACT, 0) >= 20) {
+      const bump = clamp(0.3, 1.4, toNum(vr.ENTRY_CHANGE_IMPACT, 0) / 20);
+      suggested.entry_changed_penalty = Number(
+        clamp(3, 12, toNum(suggested.entry_changed_penalty, 6) + bump).toFixed(3)
+      );
+      verificationAdjustments.push(`entry_changed_penalty:+${bump.toFixed(2)}`);
+    }
+
+    if (toNum(vr.EXHIBITION_WEIGHT_BIAS, 0) >= 16) {
+      suggested.start_signal_weight = Number(
+        clamp(0.85, 1.2, toNum(suggested.start_signal_weight, 1) - 0.03).toFixed(4)
+      );
+      verificationAdjustments.push("start_signal_weight:-0.03(EXHIBITION_BIAS)");
+    }
+
+    const mpBias = Math.max(toNum(vr.MOTOR_WEIGHT_BIAS, 0), toNum(vr.PLAYER_WEIGHT_BIAS, 0));
+    if (mpBias >= 14) {
+      suggested.recommendation_threshold = Number(
+        clamp(44, 68, toNum(suggested.recommendation_threshold, 52) + 0.8).toFixed(2)
+      );
+      verificationAdjustments.push("recommendation_threshold:+0.8(MOTOR/PLAYER_BIAS)");
+    }
+
+    const underRate = toNum(vr.UNDERSPREAD, 0);
+    const overRate = toNum(vr.OVERSPREAD, 0);
+    if (underRate >= overRate + 8) {
+      suggested.recommendation_threshold = Number(
+        clamp(44, 68, toNum(suggested.recommendation_threshold, 52) - 0.6).toFixed(2)
+      );
+      verificationAdjustments.push("recommendation_threshold:-0.6(UNDERSPREAD)");
+    } else if (overRate >= underRate + 8) {
+      suggested.recommendation_threshold = Number(
+        clamp(44, 68, toNum(suggested.recommendation_threshold, 52) + 0.6).toFixed(2)
+      );
+      verificationAdjustments.push("recommendation_threshold:+0.6(OVERSPREAD)");
+    }
+  }
 
   const summary = `sample=${sampleSize}, global_hit=${toNum(
     venuePack?.global?.hitRate,
     0
   ).toFixed(2)}%, venueAdj=${Object.keys(venuePack.adjustments).length}, gradeAdj=${
     Object.keys(gradePack.adjustments).length
-  }, sigAdj=${Object.keys(signaturePack.adjustments).length}`;
+  }, sigAdj=${Object.keys(signaturePack.adjustments).length}, verified=${toNum(
+    verificationPack?.sample_size,
+    0
+  )}, vAdj=${verificationAdjustments.length}`;
 
   if (!apply || dryRun) {
     const runId = persistLearningRun({
@@ -312,7 +408,11 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
       base_weights: base,
       suggested_weights: suggested,
       applied_weights: null,
-      summary
+      summary,
+      verification_insights: {
+        ...verificationPack,
+        adjustments_applied: verificationAdjustments
+      }
     };
   }
 
@@ -332,7 +432,11 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
     base_weights: base,
     suggested_weights: suggested,
     applied_weights: suggested,
-    summary
+    summary,
+    verification_insights: {
+      ...verificationPack,
+      adjustments_applied: verificationAdjustments
+    }
   };
 }
 

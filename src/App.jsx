@@ -903,6 +903,37 @@ export default function App() {
   const journalRaceNotRecommended = !!data && journalTargetMatchesLoadedRace && !isRecommendedRace;
   const disableBetActions = !isRecommendedRace;
   const resultsVerificationOnly = true;
+  const verificationSummary = useMemo(() => {
+    const items = Array.isArray(history) ? history : [];
+    const total = items.length;
+    let verified = 0;
+    let learningReady = 0;
+    let latestVerifiedAt = null;
+    for (const row of items) {
+      const isVerified =
+        String(row?.verification_status || "").toUpperCase() === "VERIFIED" ||
+        !!row?.verification?.verified_at;
+      if (!isVerified) continue;
+      verified += 1;
+      const categories = Array.isArray(row?.verification?.mismatch_categories)
+        ? row.verification.mismatch_categories
+        : [];
+      if (categories.length > 0) learningReady += 1;
+      const ts = row?.verification?.verified_at ? new Date(row.verification.verified_at) : null;
+      if (ts && Number.isFinite(ts.getTime())) {
+        if (!latestVerifiedAt || ts.getTime() > latestVerifiedAt.getTime()) latestVerifiedAt = ts;
+      }
+    }
+    const unverified = Math.max(0, total - verified);
+    return {
+      total,
+      verified,
+      unverified,
+      verificationRate: total > 0 ? Number(((verified / total) * 100).toFixed(2)) : 0,
+      learningReady,
+      latestVerifiedAt: latestVerifiedAt ? latestVerifiedAt.toISOString() : null
+    };
+  }, [history]);
   const builderCombo = useMemo(() => {
     const lanes = [builderSlots.first, builderSlots.second, builderSlots.third];
     if (lanes.some((v) => !Number.isInteger(v))) return "";
@@ -2565,6 +2596,42 @@ export default function App() {
           <>
             {perfError && <div className="error-banner">{perfError}</div>}
             {verificationNotice && <div className="notice-banner">{verificationNotice}</div>}
+
+            <section className="card">
+              <h2>検証進捗（AI改善ワークフロー）</h2>
+              <div className="stats-grid">
+                <article className="card stat-card">
+                  <span>総レース記録</span>
+                  <strong>{verificationSummary.total}</strong>
+                </article>
+                <article className="card stat-card">
+                  <span>検証済み</span>
+                  <strong>{verificationSummary.verified}</strong>
+                </article>
+                <article className="card stat-card">
+                  <span>未検証</span>
+                  <strong>{verificationSummary.unverified}</strong>
+                </article>
+                <article className="card stat-card">
+                  <span>検証率</span>
+                  <strong>{formatMaybeNumber(verificationSummary.verificationRate, 2)}%</strong>
+                </article>
+                <article className="card stat-card">
+                  <span>Learning-ready</span>
+                  <strong>{verificationSummary.learningReady}</strong>
+                  <small>ミスマッチ分類保存済み</small>
+                </article>
+                <article className="card stat-card">
+                  <span>最新検証</span>
+                  <strong>
+                    {verificationSummary.latestVerifiedAt
+                      ? new Date(verificationSummary.latestVerifiedAt).toLocaleString()
+                      : "-"}
+                  </strong>
+                  <small>学習バッチ入力対象</small>
+                </article>
+              </div>
+            </section>
             {!resultsVerificationOnly && (
               <>
 
