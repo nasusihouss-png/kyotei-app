@@ -4003,6 +4003,16 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
       const hitMiss =
         predictedCombo && actualCombo ? (predictedCombo === actualCombo ? "HIT" : "MISS") : "PENDING";
+      const confirmedResult =
+        actualCombo ||
+        (startDisplay?.settled_result ? normalizeCombo(startDisplay.settled_result) : null) ||
+        (startDisplay?.fetched_result ? normalizeCombo(startDisplay.fetched_result) : null) ||
+        null;
+      const verificationStatus = verification?.verified_at
+        ? "VERIFIED"
+        : confirmedResult
+          ? "PENDING_RESULT"
+          : "NO_CONFIRMED_RESULT";
 
       const totals = settlements.reduce(
         (acc, s) => {
@@ -4031,7 +4041,9 @@ raceRouter.get("/results-history", async (req, res, next) => {
         prediction_after_entry_change: prediction?.prediction_after_entry_change || null,
         predicted_top3: predictedTop3,
         actual_top3: actualTop3,
+        confirmed_result: confirmedResult,
         hit_miss: hitMiss,
+        verification_status: verificationStatus,
         totals,
         bets: settlements.map((s) => ({
           combo: s.combo,
@@ -4063,6 +4075,31 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       });
     }
 
+    let settlement = null;
+    try {
+      settlement = await settlePlacedBetsForRace({ race_id: raceId });
+    } catch (settleErr) {
+      if (settleErr?.code === "result_not_found") {
+        return res.status(409).json({
+          ok: false,
+          status: "NO_CONFIRMED_RESULT",
+          verification_performed: false,
+          message: "Verification cannot run yet because the confirmed race result is not available.",
+          debug: settleErr?.debug || null
+        });
+      }
+      if (settleErr?.code === "official_result_race_mismatch") {
+        return res.status(409).json({
+          ok: false,
+          status: "VERIFY_FAILED",
+          verification_performed: false,
+          message: "Verification failed due to official race mismatch.",
+          debug: settleErr?.debug || null
+        });
+      }
+      throw settleErr;
+    }
+
     const latestPrediction = db
       .prepare(
         `
@@ -4074,10 +4111,19 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       `
       )
       .get(raceId);
+    if (!latestPrediction) {
+      return res.status(409).json({
+        ok: false,
+        status: "VERIFY_FAILED",
+        verification_performed: false,
+        message: "Verification cannot run because prediction snapshot is missing."
+      });
+    }
+
     const resultRow = db
       .prepare(
         `
-        SELECT finish_1, finish_2, finish_3
+        SELECT finish_1, finish_2, finish_3, payout_3t
         FROM results
         WHERE race_id = ?
         LIMIT 1
@@ -4094,15 +4140,6 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       `
       )
       .get(raceId);
-    if (!resultRow) {
-      const comboFallback = String(startDisplayResultRow?.settled_result || startDisplayResultRow?.fetched_result || "").trim();
-      if (!comboFallback) {
-        return res.status(400).json({
-          error: "result_not_found",
-          message: "actual race result is not available yet (results table and start-display result are both empty)"
-        });
-      }
-    }
 
     const featureLog = db
       .prepare(
@@ -4129,12 +4166,23 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       actualTop3 = parseTop3FromCombo(comboFallback);
     }
     if (actualTop3.length < 3) {
-      return res.status(400).json({
+      return res.status(409).json({
+        ok: false,
+        status: "NO_CONFIRMED_RESULT",
+        verification_performed: false,
         error: "result_not_parseable",
-        message: "actual race result exists but could not be normalized into top3"
+        message: "Verification cannot run yet because the confirmed race result is not available."
       });
     }
     const predictedBets = safeArray(betPlanJson?.recommended_bets);
+    if (predictedBets.length === 0) {
+      return res.status(409).json({
+        ok: false,
+        status: "VERIFY_FAILED",
+        verification_performed: false,
+        message: "Verification cannot run because AI recommended bets are missing."
+      });
+    }
     const raceRisk = {
       recommendation: latestPrediction?.recommendation || featureLog?.recommendation_mode || null
     };
@@ -4190,9 +4238,37 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       mismatch_categories: analysis.categories
     });
 
+    const settledAgg = db
+      .prepare(
+        `
+        SELECT
+          COALESCE(SUM(bet_amount), 0) AS total_bet_amount,
+          COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout,
+          COALESCE(SUM(COALESCE(profit_loss, 0)), 0) AS total_profit_loss,
+          COALESCE(SUM(CASE WHEN hit_flag = 1 THEN 1 ELSE 0 END), 0) AS hit_count,
+          COALESCE(SUM(CASE WHEN hit_flag = 0 THEN 1 ELSE 0 END), 0) AS miss_count
+        FROM placed_bets
+        WHERE race_id = ?
+      `
+      )
+      .get(raceId);
+
     return res.json({
       ok: true,
-      verification: summary
+      status: "VERIFIED",
+      verification_performed: true,
+      message: "Verification completed.",
+      verification: summary,
+      confirmed_result: actualTop3.join("-"),
+      settlement: settlement || null,
+      updated_result_fields: {
+        payout_3t: Number.isFinite(Number(resultRow?.payout_3t)) ? Number(resultRow.payout_3t) : null,
+        total_bet_amount: Number(settledAgg?.total_bet_amount || 0),
+        total_payout: Number(settledAgg?.total_payout || 0),
+        total_profit_loss: Number(settledAgg?.total_profit_loss || 0),
+        hit_count: Number(settledAgg?.hit_count || 0),
+        miss_count: Number(settledAgg?.miss_count || 0)
+      }
     });
   } catch (err) {
     return next(err);

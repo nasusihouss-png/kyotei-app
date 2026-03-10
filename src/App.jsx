@@ -304,6 +304,21 @@ function getProfitClass(value) {
   return "profit-neutral";
 }
 
+function getVerifyStatusLabel(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "VERIFIED") return "VERIFIED";
+  if (s === "VERIFY_FAILED") return "VERIFY_FAILED";
+  if (s === "NO_CONFIRMED_RESULT") return "NO_CONFIRMED_RESULT";
+  return "PENDING_RESULT";
+}
+
+function getVerifyStatusBadgeClass(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "VERIFIED") return "badge hit";
+  if (s === "VERIFY_FAILED") return "badge miss";
+  return "badge pending";
+}
+
 function getTicketTypeLabel(ticketType) {
   const t = String(ticketType || "").toLowerCase();
   if (t === "main") return "本線";
@@ -618,6 +633,7 @@ export default function App() {
   const [perfError, setPerfError] = useState("");
   const [verifyingRaceId, setVerifyingRaceId] = useState("");
   const [verificationNotice, setVerificationNotice] = useState("");
+  const [verificationRunStatusByRace, setVerificationRunStatusByRace] = useState({});
 
   const [resultForm, setResultForm] = useState({
     raceId: "",
@@ -1468,11 +1484,14 @@ export default function App() {
     }
     setPerfError("");
     setVerifyingRaceId(raceId);
+    setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: "PENDING_RESULT" }));
     try {
       const result = await verifyRaceResultApi(raceId);
       const cats = Array.isArray(result?.verification?.mismatch_categories)
         ? result.verification.mismatch_categories
         : [];
+      const status = String(result?.status || "VERIFIED").toUpperCase();
+      setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: status }));
       setVerificationNotice(
         cats.length
           ? `検証完了: ${cats.join(", ")}`
@@ -1480,7 +1499,13 @@ export default function App() {
       );
       await loadPerformance();
     } catch (e) {
+      const msg = String(e?.message || "");
+      const status = msg.includes("confirmed race result is not available")
+        ? "NO_CONFIRMED_RESULT"
+        : "VERIFY_FAILED";
+      setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: status }));
       setPerfError(e.message || "検証に失敗しました");
+      await loadPerformance();
     } finally {
       setVerifyingRaceId("");
     }
@@ -2998,10 +3023,17 @@ export default function App() {
                 <div className="history-stack">
                   {history.map((h) => (
                     <div key={h.race_id} className="history-item">
+                      {(() => {
+                        const currentVerifyStatus =
+                          verificationRunStatusByRace[h.race_id] || h.verification_status || "PENDING_RESULT";
+                        return (
                       <div className="history-head">
                         <strong>{h.race_date} {h.venue_name || h.venue_id} {h.race_no}R</strong>
                         <div className="row-actions">
                           <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
+                          <span className={getVerifyStatusBadgeClass(currentVerifyStatus)}>
+                            {getVerifyStatusLabel(currentVerifyStatus)}
+                          </span>
                           <button
                             type="button"
                             className="fetch-btn secondary"
@@ -3012,6 +3044,8 @@ export default function App() {
                           </button>
                         </div>
                       </div>
+                        );
+                      })()}
                       <div className="history-start-display">
                         <h3>Start Exhibition</h3>
                         <StartExhibitionDisplay startDisplay={h.startDisplay || null} compact />
@@ -3032,6 +3066,7 @@ export default function App() {
                         <div>実進入順: {Array.isArray(h.actual_entry_order) && h.actual_entry_order.length ? h.actual_entry_order.join("-") : "-"}</div>
                         <div>予想上位: {Array.isArray(h.predicted_top3) && h.predicted_top3.length ? h.predicted_top3.join("-") : "-"}</div>
                         <div>確定結果: {Array.isArray(h.actual_top3) && h.actual_top3.length ? h.actual_top3.join("-") : "-"}</div>
+                        <div>confirmed result: {h.confirmed_result || "-"}</div>
                         <div>購入額: JPY {(h.totals?.bet_amount ?? 0).toLocaleString()}</div>
                         <div>払戻: JPY {(h.totals?.payout ?? 0).toLocaleString()}</div>
                         <div>損益: JPY {(h.totals?.profit_loss ?? 0).toLocaleString()}</div>
