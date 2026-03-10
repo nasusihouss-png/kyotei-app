@@ -4167,7 +4167,8 @@ raceRouter.get("/logs", async (req, res, next) => {
 raceRouter.get("/results-history", async (req, res, next) => {
   try {
     const limitRaw = Number(req.query?.limit);
-    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 300;
+    const statusFilter = String(req.query?.status || "all").toLowerCase();
 
     const latestPredictionRows = db
       .prepare(
@@ -4180,7 +4181,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           GROUP BY race_id
         ) latest
           ON latest.max_id = pl.id
-        ORDER BY pl.id DESC
+        ORDER BY COALESCE(pl.created_at, '') DESC, pl.id DESC
         LIMIT ?
       `
       )
@@ -4376,53 +4377,6 @@ raceRouter.get("/results-history", async (req, res, next) => {
         ? [result.finish_1, result.finish_2, result.finish_3].filter((v) => Number.isFinite(Number(v)))
         : [];
 
-      const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
-      const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
-      const displaySnapshotCombos = (Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot : [])
-        .map((row) => normalizeCombo(row?.combo ?? row))
-        .filter((c) => c && c.split("-").length === 3);
-      const hasValidBetSnapshot = displaySnapshotCombos.length > 0;
-      const computedHitMiss = !hasValidBetSnapshot
-        ? "NOT_VERIFIABLE"
-        : actualCombo
-          ? (displaySnapshotCombos.includes(actualCombo) ? "HIT" : "MISS")
-          : "PENDING";
-      const persistedHitMiss = String(verification?.hit_miss || "").toUpperCase();
-      const hitMiss = persistedHitMiss || computedHitMiss;
-      const confirmedResult =
-        actualCombo ||
-        (startDisplay?.settled_result ? normalizeCombo(startDisplay.settled_result) : null) ||
-        (startDisplay?.fetched_result ? normalizeCombo(startDisplay.fetched_result) : null) ||
-        null;
-      const summaryStatus = String(verification?.summary?.verification_status || "").toUpperCase();
-      const legacyFallbackVerified =
-        !!verification?.summary?.warning &&
-        String(verification.summary.warning).includes("fallback verification used predicted top3");
-      const verificationStatus = summaryStatus || (!hasValidBetSnapshot
-        ? "NO_BET_SNAPSHOT"
-        : verification?.verified_at && !legacyFallbackVerified
-          ? "VERIFIED"
-          : confirmedResult
-            ? "PENDING_RESULT"
-            : "NO_CONFIRMED_RESULT");
-      const verificationReason = !hasValidBetSnapshot
-        ? "Saved AI bet snapshot is missing; verification was skipped."
-        : legacyFallbackVerified
-          ? "Legacy verification used top3 fallback; re-verify after snapshot is available."
-          : null;
-
-      const totals = settlements.reduce(
-        (acc, s) => {
-          acc.bet_amount += toNum(s.bet_amount);
-          acc.payout += toNum(s.payout);
-          acc.profit_loss += toNum(s.profit_loss);
-          if (toNum(s.hit_flag)) acc.hit_count += 1;
-          acc.bet_count += 1;
-          return acc;
-        },
-        { bet_amount: 0, payout: 0, profit_loss: 0, hit_count: 0, bet_count: 0 }
-      );
-
       const latestLogDisplayBets = Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [];
       const snapshotDisplayFromPrediction = Array.isArray(prediction?.ai_bets_display_snapshot)
         ? prediction.ai_bets_display_snapshot
@@ -4458,6 +4412,52 @@ raceRouter.get("/results-history", async (req, res, next) => {
         : prediction?.ai_bets_display_snapshot
           ? "prediction_snapshot"
           : "legacy_bet_plan";
+      const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
+      const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
+      const displaySnapshotCombos = (Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot : [])
+        .map((row) => normalizeCombo(row?.combo ?? row))
+        .filter((c) => c && c.split("-").length === 3);
+      const hasValidBetSnapshot = displaySnapshotCombos.length > 0;
+      const computedHitMiss = !hasValidBetSnapshot
+        ? "NOT_VERIFIABLE"
+        : actualCombo
+          ? (displaySnapshotCombos.includes(actualCombo) ? "HIT" : "MISS")
+          : "PENDING";
+      const persistedHitMiss = String(verification?.hit_miss || "").toUpperCase();
+      const hitMiss = persistedHitMiss || computedHitMiss;
+      const confirmedResult =
+        actualCombo ||
+        (startDisplay?.settled_result ? normalizeCombo(startDisplay.settled_result) : null) ||
+        (startDisplay?.fetched_result ? normalizeCombo(startDisplay.fetched_result) : null) ||
+        null;
+      const summaryStatus = String(verification?.summary?.verification_status || "").toUpperCase();
+      const legacyFallbackVerified =
+        !!verification?.summary?.warning &&
+        String(verification.summary.warning).includes("fallback verification used predicted top3");
+      const verificationStatus = summaryStatus || (!hasValidBetSnapshot
+        ? "NO_BET_SNAPSHOT"
+        : verification?.verified_at && !legacyFallbackVerified
+          ? (hitMiss === "HIT" ? "VERIFIED_HIT" : hitMiss === "MISS" ? "VERIFIED_MISS" : "VERIFIED")
+          : confirmedResult
+            ? "UNVERIFIED"
+            : "NO_CONFIRMED_RESULT");
+      const verificationReason = !hasValidBetSnapshot
+        ? "Saved AI bet snapshot is missing; verification was skipped."
+        : legacyFallbackVerified
+          ? "Legacy verification used top3 fallback; re-verify after snapshot is available."
+          : null;
+
+      const totals = settlements.reduce(
+        (acc, s) => {
+          acc.bet_amount += toNum(s.bet_amount);
+          acc.payout += toNum(s.payout);
+          acc.profit_loss += toNum(s.profit_loss);
+          if (toNum(s.hit_flag)) acc.hit_count += 1;
+          acc.bet_count += 1;
+          return acc;
+        },
+        { bet_amount: 0, payout: 0, profit_loss: 0, hit_count: 0, bet_count: 0 }
+      );
 
       return {
         race_id: raceId,
@@ -4504,7 +4504,17 @@ raceRouter.get("/results-history", async (req, res, next) => {
       };
     });
 
-    return res.json({ items });
+    const filtered = items.filter((row) => {
+      const status = String(row?.verification_status || "").toLowerCase();
+      if (statusFilter === "all") return true;
+      if (statusFilter === "verified") return status.startsWith("verified");
+      if (statusFilter === "unverified") return status === "unverified";
+      if (statusFilter === "failed") return status === "verify_failed";
+      if (statusFilter === "missing") return status === "no_bet_snapshot" || status === "no_confirmed_result";
+      return true;
+    });
+
+    return res.json({ items: filtered });
   } catch (err) {
     return next(err);
   }

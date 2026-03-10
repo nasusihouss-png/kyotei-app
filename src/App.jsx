@@ -124,7 +124,7 @@ async function fetchStatsData() {
 }
 
 async function fetchHistoryData() {
-  const response = await fetch(`${API_BASE}/results-history?limit=100`);
+  const response = await fetch(`${API_BASE}/results-history?limit=500`);
   if (!response.ok) throw new Error("Failed to fetch results history");
   return response.json();
 }
@@ -342,8 +342,11 @@ function getProfitClass(value) {
 
 function getVerifyStatusLabel(status) {
   const s = String(status || "").toUpperCase();
+  if (s === "VERIFIED_HIT") return "VERIFIED_HIT";
+  if (s === "VERIFIED_MISS") return "VERIFIED_MISS";
   if (s === "VERIFIED") return "VERIFIED";
   if (s === "VERIFY_FAILED") return "VERIFY_FAILED";
+  if (s === "UNVERIFIED") return "UNVERIFIED";
   if (s === "NO_CONFIRMED_RESULT") return "NO_CONFIRMED_RESULT";
   if (s === "NO_BET_SNAPSHOT") return "NO_BET_SNAPSHOT";
   if (s === "VERIFY_SKIPPED") return "VERIFY_SKIPPED";
@@ -353,7 +356,8 @@ function getVerifyStatusLabel(status) {
 
 function getVerifyStatusBadgeClass(status) {
   const s = String(status || "").toUpperCase();
-  if (s === "VERIFIED") return "badge hit";
+  if (s === "VERIFIED" || s === "VERIFIED_HIT") return "badge hit";
+  if (s === "VERIFIED_MISS") return "badge miss";
   if (s === "VERIFY_FAILED") return "badge miss";
   if (s === "NO_BET_SNAPSHOT" || s === "VERIFY_SKIPPED" || s === "NOT_VERIFIABLE") return "badge pending";
   return "badge pending";
@@ -701,6 +705,7 @@ export default function App() {
   const [verificationNotice, setVerificationNotice] = useState("");
   const [verificationRunStatusByRace, setVerificationRunStatusByRace] = useState({});
   const [verificationReasonByRace, setVerificationReasonByRace] = useState({});
+  const [resultsStatusFilter, setResultsStatusFilter] = useState("all");
 
   const [resultForm, setResultForm] = useState({
     raceId: "",
@@ -994,7 +999,7 @@ export default function App() {
     let latestVerifiedAt = null;
     for (const row of items) {
       const isVerified =
-        String(row?.verification_status || "").toUpperCase() === "VERIFIED" ||
+        String(row?.verification_status || "").toUpperCase().startsWith("VERIFIED") ||
         !!row?.verification?.verified_at;
       if (!isVerified) continue;
       verified += 1;
@@ -1017,6 +1022,20 @@ export default function App() {
       latestVerifiedAt: latestVerifiedAt ? latestVerifiedAt.toISOString() : null
     };
   }, [history]);
+  const filteredHistory = useMemo(() => {
+    const items = Array.isArray(history) ? history : [];
+    if (resultsStatusFilter === "all") return items;
+    return items.filter((row) => {
+      const status = String(row?.verification_status || "").toLowerCase();
+      if (resultsStatusFilter === "unverified") return status === "unverified";
+      if (resultsStatusFilter === "verified") return status.startsWith("verified");
+      if (resultsStatusFilter === "failed") return status === "verify_failed";
+      if (resultsStatusFilter === "missing") {
+        return status === "no_bet_snapshot" || status === "no_confirmed_result" || status === "not_verifiable";
+      }
+      return true;
+    });
+  }, [history, resultsStatusFilter]);
   const builderCombo = useMemo(() => {
     const lanes = [builderSlots.first, builderSlots.second, builderSlots.third];
     if (lanes.some((v) => !Number.isInteger(v))) return "";
@@ -3297,9 +3316,21 @@ export default function App() {
 
             <section className="card">
               <h2>AI予想検証（レース別）</h2>
-              {history.length === 0 ? <p className="muted">履歴データはまだありません。</p> : (
+              <div className="inline-controls" style={{ marginBottom: 10 }}>
+                <label>
+                  <span>表示</span>
+                  <select value={resultsStatusFilter} onChange={(e) => setResultsStatusFilter(e.target.value)}>
+                    <option value="all">all</option>
+                    <option value="unverified">unverified</option>
+                    <option value="verified">verified</option>
+                    <option value="failed">failed</option>
+                    <option value="missing">missing data</option>
+                  </select>
+                </label>
+              </div>
+              {filteredHistory.length === 0 ? <p className="muted">履歴データはまだありません。</p> : (
                 <div className="history-stack">
-                  {history.map((h) => (
+                  {filteredHistory.map((h) => (
                     <div key={h.race_id} className="history-item">
                       {(() => {
                         const currentVerifyStatus =
