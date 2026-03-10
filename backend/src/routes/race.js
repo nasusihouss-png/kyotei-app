@@ -1645,6 +1645,32 @@ raceRouter.get("/race", async (req, res, next) => {
       participation_decision: participationDecision.decision,
       confidence_reason_tags: confidenceScores.confidence_reason_tags,
       confidence_version: confidenceScores.confidence_version,
+      snapshot_created_at: new Date().toISOString(),
+      race_key: raceId,
+      ai_bets_full_snapshot: {
+        recommended_bets: Array.isArray(bet_plan_with_stake?.recommended_bets)
+          ? bet_plan_with_stake.recommended_bets
+          : [],
+        optimized_tickets: Array.isArray(ticketOptimizationWithStake?.optimized_tickets)
+          ? ticketOptimizationWithStake.optimized_tickets
+          : [],
+        ticket_generation_v2: {
+          primary_tickets: Array.isArray(ticketGenerationV2?.primary_tickets)
+            ? ticketGenerationV2.primary_tickets
+            : [],
+          secondary_tickets: Array.isArray(ticketGenerationV2?.secondary_tickets)
+            ? ticketGenerationV2.secondary_tickets
+            : []
+        },
+        scenario_suggestions: {
+          main_picks: Array.isArray(scenarioSuggestions?.main_picks) ? scenarioSuggestions.main_picks : [],
+          backup_picks: Array.isArray(scenarioSuggestions?.backup_picks) ? scenarioSuggestions.backup_picks : [],
+          longshot_picks: Array.isArray(scenarioSuggestions?.longshot_picks) ? scenarioSuggestions.longshot_picks : []
+        }
+      },
+      ai_bets_display_snapshot: Array.isArray(bet_plan_with_stake?.recommended_bets)
+        ? bet_plan_with_stake.recommended_bets
+        : [],
       prediction_before_entry_change,
       prediction_after_entry_change
     };
@@ -4135,7 +4161,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
     const latestPredictionRows = db
       .prepare(
         `
-        SELECT pl.race_id, pl.recommendation, pl.prediction_json, pl.bet_plan_json, pl.created_at
+        SELECT pl.id, pl.race_id, pl.recommendation, pl.prediction_json, pl.bet_plan_json, pl.created_at
         FROM prediction_logs pl
         INNER JOIN (
           SELECT race_id, MAX(id) AS max_id
@@ -4316,6 +4342,9 @@ raceRouter.get("/results-history", async (req, res, next) => {
           }
         : null;
       const verification = verificationMap.get(raceId) || null;
+      const verificationSummary = verification?.summary && typeof verification.summary === "object"
+        ? verification.summary
+        : {};
       const predictedEntryOrder = Array.isArray(prediction?.predicted_entry_order)
         ? prediction.predicted_entry_order
         : [];
@@ -4363,6 +4392,42 @@ raceRouter.get("/results-history", async (req, res, next) => {
         { bet_amount: 0, payout: 0, profit_loss: 0, hit_count: 0, bet_count: 0 }
       );
 
+      const latestLogDisplayBets = Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [];
+      const snapshotDisplayFromPrediction = Array.isArray(prediction?.ai_bets_display_snapshot)
+        ? prediction.ai_bets_display_snapshot
+        : latestLogDisplayBets;
+      const snapshotFullFromPrediction =
+        prediction?.ai_bets_full_snapshot && typeof prediction.ai_bets_full_snapshot === "object"
+          ? prediction.ai_bets_full_snapshot
+          : {
+              recommended_bets: latestLogDisplayBets,
+              optimized_tickets: [],
+              ticket_generation_v2: { primary_tickets: [], secondary_tickets: [] },
+              scenario_suggestions: { main_picks: [], backup_picks: [], longshot_picks: [] }
+            };
+      const aiBetsDisplaySnapshot = Array.isArray(verificationSummary?.ai_bets_display_snapshot)
+        ? verificationSummary.ai_bets_display_snapshot
+        : snapshotDisplayFromPrediction;
+      const aiBetsFullSnapshot =
+        verificationSummary?.ai_bets_full_snapshot && typeof verificationSummary.ai_bets_full_snapshot === "object"
+          ? verificationSummary.ai_bets_full_snapshot
+          : snapshotFullFromPrediction;
+      const snapshotCreatedAt =
+        verificationSummary?.snapshot_created_at ||
+        prediction?.snapshot_created_at ||
+        logRow.created_at ||
+        null;
+      const predictionSnapshotId = Number.isFinite(Number(verificationSummary?.prediction_snapshot_id))
+        ? Number(verificationSummary.prediction_snapshot_id)
+        : Number.isFinite(Number(logRow.id))
+          ? Number(logRow.id)
+          : null;
+      const aiBetsSnapshotSource = verificationSummary?.ai_bets_display_snapshot
+        ? "verification_snapshot"
+        : prediction?.ai_bets_display_snapshot
+          ? "prediction_snapshot"
+          : "legacy_bet_plan";
+
       return {
         race_id: raceId,
         race_date: race.race_date ?? verification?.summary?.race_date ?? null,
@@ -4391,7 +4456,18 @@ raceRouter.get("/results-history", async (req, res, next) => {
         })),
         startDisplay,
         verification,
-        recommended_bets: Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [],
+        prediction_snapshot_id: predictionSnapshotId,
+        snapshot_created_at: snapshotCreatedAt,
+        ai_bets_snapshot_source: aiBetsSnapshotSource,
+        ai_bets_full_snapshot: aiBetsFullSnapshot,
+        ai_bets_display_snapshot: aiBetsDisplaySnapshot,
+        ai_bets_latest_log: latestLogDisplayBets,
+        debug_bet_compare: {
+          saved_display_snapshot: aiBetsDisplaySnapshot,
+          displayed_in_results: aiBetsDisplaySnapshot,
+          latest_log_bets: latestLogDisplayBets
+        },
+        recommended_bets: aiBetsDisplaySnapshot,
         logged_at: logRow.created_at
       };
     });
@@ -4440,7 +4516,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     const latestPrediction = db
       .prepare(
         `
-        SELECT prediction_json, bet_plan_json, recommendation
+        SELECT id, prediction_json, bet_plan_json, recommendation, created_at
         FROM prediction_logs
         WHERE race_id = ?
         ORDER BY id DESC
@@ -4501,6 +4577,18 @@ raceRouter.post("/results/verify", async (req, res, next) => {
 
     const predictionJson = safeJsonParse(latestPrediction?.prediction_json, {});
     const betPlanJson = safeJsonParse(latestPrediction?.bet_plan_json, {});
+    const snapshotDisplayBets = Array.isArray(predictionJson?.ai_bets_display_snapshot)
+      ? predictionJson.ai_bets_display_snapshot
+      : safeArray(betPlanJson?.recommended_bets);
+    const snapshotFullBets =
+      predictionJson?.ai_bets_full_snapshot && typeof predictionJson.ai_bets_full_snapshot === "object"
+        ? predictionJson.ai_bets_full_snapshot
+        : {
+            recommended_bets: safeArray(betPlanJson?.recommended_bets),
+            optimized_tickets: [],
+            ticket_generation_v2: { primary_tickets: [], secondary_tickets: [] },
+            scenario_suggestions: { main_picks: [], backup_picks: [], longshot_picks: [] }
+          };
     const predictionConfidenceScores =
       predictionJson?.confidence_scores && typeof predictionJson.confidence_scores === "object"
         ? predictionJson.confidence_scores
@@ -4525,7 +4613,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         message: "Verification cannot run yet because the confirmed race result is not available."
       });
     }
-    let predictedBets = safeArray(betPlanJson?.recommended_bets);
+    let predictedBets = snapshotDisplayBets;
     let verifyWarning = null;
     if (predictedBets.length === 0 && predictedTop3.length === 3) {
       predictedBets = [{ combo: predictedTop3.join("-"), source: "top3_fallback" }];
@@ -4589,6 +4677,11 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         predictionJson?.confidence_version ||
         predictionConfidenceScores?.confidence_version ||
         null,
+      prediction_snapshot_id: Number.isFinite(Number(latestPrediction?.id)) ? Number(latestPrediction.id) : null,
+      snapshot_created_at: predictionJson?.snapshot_created_at || latestPrediction?.created_at || null,
+      race_key: predictionJson?.race_key || raceId,
+      ai_bets_display_snapshot: snapshotDisplayBets,
+      ai_bets_full_snapshot: snapshotFullBets,
       learning_ready: analysis.categories.length > 0,
       warning: verifyWarning
     };

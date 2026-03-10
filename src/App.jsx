@@ -3383,13 +3383,41 @@ export default function App() {
                         <div>
                           AI推奨買い目:
                           {" "}
-                          {Array.isArray(h.recommended_bets) && h.recommended_bets.length ? (
-                            h.recommended_bets.slice(0, 6).map((b, idx) => (
+                          {Array.isArray(h.ai_bets_display_snapshot) && h.ai_bets_display_snapshot.length ? (
+                            h.ai_bets_display_snapshot.map((b, idx) => (
                               <ComboBadge combo={b?.combo} key={`rec-${h.race_id}-${idx}`} />
                             ))
                           ) : "-"}
                         </div>
+                        <div>
+                          スナップショット件数:
+                          {" "}
+                          {Array.isArray(h.ai_bets_display_snapshot) ? h.ai_bets_display_snapshot.length : 0}
+                        </div>
+                        <div>snapshot_id: {h.prediction_snapshot_id ?? "-"}</div>
+                        <div>snapshot_source: {h.ai_bets_snapshot_source || "-"}</div>
+                        <div>
+                          snapshot_at:
+                          {" "}
+                          {h.snapshot_created_at ? new Date(h.snapshot_created_at).toLocaleString() : "-"}
+                        </div>
+                        <div>
+                          最新ログ件数:
+                          {" "}
+                          {Array.isArray(h.ai_bets_latest_log) ? h.ai_bets_latest_log.length : 0}
+                        </div>
                       </div>
+                      {Array.isArray(h.ai_bets_latest_log) && h.ai_bets_latest_log.length > 0 ? (
+                        <div className="history-grid" style={{ marginTop: 6 }}>
+                          <div>
+                            比較(最新ログ):
+                            {" "}
+                            {h.ai_bets_latest_log.map((b, idx) => (
+                              <ComboBadge combo={b?.combo} key={`rec-latest-${h.race_id}-${idx}`} />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                       {h.verification ? (
                         <div className="history-grid" style={{ marginTop: 8 }}>
                           <div>検証日時: {h.verification.verified_at ? new Date(h.verification.verified_at).toLocaleString() : "-"}</div>
