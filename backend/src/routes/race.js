@@ -917,12 +917,32 @@ function computeRecommendationScore({
 const CONFIDENCE_VERSION = "v1.1";
 const PARTICIPATION_CONFIDENCE_THRESHOLDS = {
   participate: {
-    headFixedMin: 75,
-    betMin: 68
+    headFixedMin: 70,
+    betMin: 62
   },
   watch: {
-    headMin: 60,
-    betMin: 55
+    headMin: 56,
+    betMin: 50
+  }
+};
+
+const PARTICIPATION_TUNING = {
+  skip: {
+    chaosRiskHardMin: 92,
+    lowHeadHardMax: 54,
+    lowBetHardMax: 48,
+    skipModeConfidenceHardMax: 50
+  },
+  caution: {
+    headStrongCautionMin: 60,
+    betStrongCautionMin: 54
+  },
+  positiveBoost: {
+    formationClarityMin: 62,
+    formationClarityBaseBoost: 4,
+    formationConfidenceBoostScale: 0.12,
+    slitAlertPerLaneBoost: 3,
+    attackScenarioExtraBoost: 2
   }
 };
 
@@ -931,7 +951,9 @@ function buildParticipationDecision({
   raceRisk,
   raceStructure,
   entryMeta,
-  confidenceScores
+  confidenceScores,
+  scenarioSuggestions,
+  raceFlow
 }) {
   const mode = normalizeModeValue(raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN");
   const confidence = toNum(raceDecision?.confidence, 0);
@@ -943,6 +965,28 @@ function buildParticipationDecision({
   const cautionFlags = Array.isArray(confidenceScores?.confidence_reason_tags)
     ? confidenceScores.confidence_reason_tags
     : [];
+  const formationPatternClarity = Math.max(
+    toNum(raceDecision?.factors?.formation_pattern_clarity_score, 0),
+    toNum(raceStructure?.formation_pattern_clarity_score, 0),
+    toNum(scenarioSuggestions?.scenario_confidence, 0)
+  );
+  const slitAlertLanes = Array.isArray(raceFlow?.slit_alert_lanes) ? raceFlow.slit_alert_lanes : [];
+  const slitAlertCount = slitAlertLanes.length;
+  const flowMode = String(raceFlow?.race_flow_mode || "").toLowerCase();
+  const isAttackScenario = flowMode === "sashi" || flowMode === "makuri" || flowMode === "makurizashi";
+  const formationBoost =
+    formationPatternClarity >= PARTICIPATION_TUNING.positiveBoost.formationClarityMin
+      ? PARTICIPATION_TUNING.positiveBoost.formationClarityBaseBoost +
+        Math.max(0, formationPatternClarity - PARTICIPATION_TUNING.positiveBoost.formationClarityMin) *
+          PARTICIPATION_TUNING.positiveBoost.formationConfidenceBoostScale
+      : 0;
+  const slitBoost =
+    slitAlertCount > 0
+      ? slitAlertCount * PARTICIPATION_TUNING.positiveBoost.slitAlertPerLaneBoost +
+        (isAttackScenario ? PARTICIPATION_TUNING.positiveBoost.attackScenarioExtraBoost : 0)
+      : 0;
+  const adjustedHeadFixed = Math.min(100, headFixed + formationBoost * 0.45 + slitBoost * 0.35);
+  const adjustedBetConf = Math.min(100, betConf + formationBoost * 0.4 + slitBoost * 0.55);
   const hasStrongCaution =
     cautionFlags.includes("ENTRY_CHANGE_PENALTY") ||
     cautionFlags.includes("ST_CHAOS") ||
@@ -957,23 +1001,31 @@ function buildParticipationDecision({
   if (cautionFlags.includes("WEAK_MOTOR_EXHIBITION_OVERLAP")) reasonTags.push("WEAK_MOTOR_EXHIBITION_OVERLAP");
   if (cautionFlags.includes("LEARNED_CAUTION_PENALTY")) reasonTags.push("LEARNED_CAUTION_PENALTY");
   if (cautionFlags.includes("START_SIGNAL_UNSTABLE")) reasonTags.push("START_SIGNAL_UNSTABLE");
+  if (formationBoost > 0) reasonTags.push("FORMATION_PATTERN_CLEAR");
+  if (slitBoost > 0) reasonTags.push("SLIT_ALERT_POSITIVE");
   if (headStability >= 62) reasonTags.push("HEAD_STABILITY_GOOD");
-  if (headFixed >= 75) reasonTags.push("HEAD_CONFIDENCE_GOOD");
-  if (betConf >= 68) reasonTags.push("BET_CONFIDENCE_GOOD");
+  if (adjustedHeadFixed >= 72) reasonTags.push("HEAD_CONFIDENCE_GOOD");
+  if (adjustedBetConf >= 64) reasonTags.push("BET_CONFIDENCE_GOOD");
 
   let decision = "watch";
   if (
     mode !== "SKIP" &&
-    headFixed >= PARTICIPATION_CONFIDENCE_THRESHOLDS.participate.headFixedMin &&
-    betConf >= PARTICIPATION_CONFIDENCE_THRESHOLDS.participate.betMin &&
-    !hasStrongCaution
+    adjustedHeadFixed >= PARTICIPATION_CONFIDENCE_THRESHOLDS.participate.headFixedMin &&
+    adjustedBetConf >= PARTICIPATION_CONFIDENCE_THRESHOLDS.participate.betMin &&
+    (
+      !hasStrongCaution ||
+      (
+        adjustedHeadFixed >= PARTICIPATION_TUNING.caution.headStrongCautionMin &&
+        adjustedBetConf >= PARTICIPATION_TUNING.caution.betStrongCautionMin
+      )
+    )
   ) {
     decision = "recommended";
   } else if (
-    headFixed <= 59 ||
-    betConf <= 54 ||
-    (mode === "SKIP" && hasStrongCaution && confidence < 55) ||
-    chaosRisk >= 90
+    adjustedHeadFixed <= PARTICIPATION_TUNING.skip.lowHeadHardMax ||
+    adjustedBetConf <= PARTICIPATION_TUNING.skip.lowBetHardMax ||
+    (mode === "SKIP" && hasStrongCaution && confidence < PARTICIPATION_TUNING.skip.skipModeConfidenceHardMax) ||
+    chaosRisk >= PARTICIPATION_TUNING.skip.chaosRiskHardMin
   ) {
     decision = "not_recommended";
   }
@@ -993,6 +1045,10 @@ function buildParticipationDecision({
     metrics: {
       head_fixed_confidence_pct: Number(headFixed.toFixed(2)),
       recommended_bet_confidence_pct: Number(betConf.toFixed(2)),
+      adjusted_head_fixed_confidence_pct: Number(adjustedHeadFixed.toFixed(2)),
+      adjusted_recommended_bet_confidence_pct: Number(adjustedBetConf.toFixed(2)),
+      formation_pattern_clarity_score: Number(formationPatternClarity.toFixed(2)),
+      slit_alert_count: slitAlertCount,
       confidence_version: CONFIDENCE_VERSION
     },
     confidence_version: CONFIDENCE_VERSION
@@ -1759,7 +1815,9 @@ raceRouter.get("/race", async (req, res, next) => {
       raceRisk,
       raceStructure,
       entryMeta,
-      confidenceScores
+      confidenceScores,
+      scenarioSuggestions,
+      raceFlow
     });
     const snapshotCreatedAt = new Date().toISOString();
     const modelVersion = "prediction_snapshot_v2";
@@ -2575,7 +2633,9 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceRisk,
             raceStructure,
             entryMeta,
-            confidenceScores
+            confidenceScores,
+            scenarioSuggestions,
+            raceFlow
           });
           const raceExplainability = buildRaceExplainability({
             raceDecision,
