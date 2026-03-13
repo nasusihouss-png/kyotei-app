@@ -34,6 +34,9 @@ export const DEFAULT_BATCH_WEIGHTS = {
   start_signature_score_adjustments: {}
 };
 
+export const AUTO_LEARNING_MIN_NEW_READY = 2;
+export const AUTO_LEARNING_MIN_READY_TOTAL = 8;
+
 function ensureLearningTables() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS learning_weight_runs (
@@ -87,6 +90,14 @@ function ensureLearningTables() {
       ) VALUES (1, 0, NULL, NULL, 0, ?)
     `
     ).run(nowIso());
+  }
+  const runtimeCols = db.prepare(`PRAGMA table_info(learning_runtime_state)`).all();
+  const runtimeColNames = new Set(runtimeCols.map((c) => String(c.name)));
+  if (!runtimeColNames.has("last_remaining_learning_ready")) {
+    db.exec("ALTER TABLE learning_runtime_state ADD COLUMN last_remaining_learning_ready INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!runtimeColNames.has("last_used_learning_ready_count")) {
+    db.exec("ALTER TABLE learning_runtime_state ADD COLUMN last_used_learning_ready_count INTEGER NOT NULL DEFAULT 0");
   }
 }
 
@@ -258,10 +269,7 @@ function getVerificationQueueStats() {
   const maxId = total > 0 ? toNum(rows[rows.length - 1]?.id, 0) : 0;
   let learningReadyTotal = 0;
   for (const row of rows) {
-    const categories = safeJsonParse(row?.mismatch_categories_json, []);
-    const explicitReady = Number(row?.learning_ready) === 1;
-    const verified = String(row?.verification_status || "").toUpperCase().startsWith("VERIFIED");
-    if (verified && (explicitReady || (Array.isArray(categories) && categories.length > 0))) learningReadyTotal += 1;
+    if (isLearningReadyVerificationRow(row)) learningReadyTotal += 1;
   }
   return {
     rows,
@@ -269,6 +277,51 @@ function getVerificationQueueStats() {
     maxId,
     learningReadyTotal
   };
+}
+
+function isLearningReadyVerificationRow(row) {
+  const categories = safeJsonParse(row?.mismatch_categories_json, []);
+  const explicitReady = Number(row?.learning_ready) === 1;
+  const verified = String(row?.verification_status || "").toUpperCase().startsWith("VERIFIED");
+  return verified && (explicitReady || (Array.isArray(categories) && categories.length > 0));
+}
+
+function countPendingLearningReady(rows, lastProcessedId) {
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    if (toNum(row?.id, 0) <= toNum(lastProcessedId, 0)) return false;
+    return isLearningReadyVerificationRow(row);
+  }).length;
+}
+
+function updateLearningRuntimeState({
+  lastProcessedVerificationLogId,
+  runId,
+  runAt,
+  usedVerificationCount,
+  remainingLearningReady
+}) {
+  db.prepare(
+    `
+    UPDATE learning_runtime_state
+    SET
+      last_processed_verification_log_id = ?,
+      last_learning_run_id = ?,
+      last_learning_run_at = ?,
+      last_verified_records_used = ?,
+      last_used_learning_ready_count = ?,
+      last_remaining_learning_ready = ?,
+      updated_at = ?
+    WHERE id = 1
+  `
+  ).run(
+    toNum(lastProcessedVerificationLogId, 0),
+    toNum(runId, null),
+    runAt || nowIso(),
+    toNum(usedVerificationCount, 0),
+    toNum(usedVerificationCount, 0),
+    toNum(remainingLearningReady, 0),
+    nowIso()
+  );
 }
 
 function loadPredictionFeatureInsights() {
@@ -536,6 +589,40 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
   };
 }
 
+export function applyLearningBatchManually({ apply = true, dryRun = false } = {}) {
+  const queue = getVerificationQueueStats();
+  const runtime = db.prepare(`SELECT * FROM learning_runtime_state WHERE id = 1`).get();
+  const lastProcessed = toNum(runtime?.last_processed_verification_log_id, 0);
+  const usedVerificationCount = countPendingLearningReady(queue?.rows || [], lastProcessed);
+  const batch = runLearningBatch({ apply, dryRun });
+  const runAt = nowIso();
+
+  if (apply && !dryRun) {
+    updateLearningRuntimeState({
+      lastProcessedVerificationLogId: toNum(queue?.maxId, 0),
+      runId: batch?.run_id,
+      runAt,
+      usedVerificationCount,
+      remainingLearningReady: 0
+    });
+  }
+
+  return {
+    ...batch,
+    learning_runtime: {
+      last_learning_run_at: apply && !dryRun ? runAt : runtime?.last_learning_run_at || null,
+      last_learning_run_id: apply && !dryRun ? toNum(batch?.run_id, null) : toNum(runtime?.last_learning_run_id, null),
+      used_verification_count: usedVerificationCount,
+      remaining_unlearned_count: apply && !dryRun ? 0 : countPendingLearningReady(queue?.rows || [], lastProcessed),
+      threshold: {
+        min_learning_ready_total: AUTO_LEARNING_MIN_READY_TOTAL,
+        min_new_learning_ready: AUTO_LEARNING_MIN_NEW_READY
+      },
+      manual_run: true
+    }
+  };
+}
+
 export function rollbackLearningWeights({ runId = null } = {}) {
   let targetRun = null;
   if (runId) {
@@ -578,11 +665,7 @@ export function getLatestLearningRun() {
   const queue = getVerificationQueueStats();
   const lastProcessedId = toNum(runtime?.last_processed_verification_log_id, 0);
   const pending = Math.max(0, toNum(queue?.maxId, 0) - lastProcessedId);
-  const learningReadyPending = (queue?.rows || []).filter((r) => {
-    if (toNum(r?.id, 0) <= lastProcessedId) return false;
-    const categories = safeJsonParse(r?.mismatch_categories_json, []);
-    return Array.isArray(categories) && categories.length > 0;
-  }).length;
+  const learningReadyPending = countPendingLearningReady(queue?.rows || [], lastProcessedId);
   return {
     latest_run: latest
       ? {
@@ -608,17 +691,22 @@ export function getLatestLearningRun() {
       last_learning_run_id: runtime?.last_learning_run_id || null,
       last_learning_run_at: runtime?.last_learning_run_at || null,
       last_verified_records_used: toNum(runtime?.last_verified_records_used, 0),
+      last_remaining_learning_ready: toNum(runtime?.last_remaining_learning_ready, learningReadyPending),
       verification_total: toNum(queue?.total, 0),
       verification_pending: pending,
       learning_ready_total: toNum(queue?.learningReadyTotal, 0),
-      learning_ready_pending: learningReadyPending
+      learning_ready_pending: learningReadyPending,
+      threshold: {
+        min_learning_ready_total: AUTO_LEARNING_MIN_READY_TOTAL,
+        min_new_learning_ready: AUTO_LEARNING_MIN_NEW_READY
+      }
     }
   };
 }
 
 export function runContinuousLearningIfNeeded({
-  minNewLearningReady = 3,
-  minLearningReadyTotal = 10
+  minNewLearningReady = AUTO_LEARNING_MIN_NEW_READY,
+  minLearningReadyTotal = AUTO_LEARNING_MIN_READY_TOTAL
 } = {}) {
   const runtime = db.prepare(`SELECT * FROM learning_runtime_state WHERE id = 1`).get();
   const queue = getVerificationQueueStats();
@@ -627,11 +715,7 @@ export function runContinuousLearningIfNeeded({
   const learningReadyTotal = toNum(queue?.learningReadyTotal, 0);
   const lastProcessed = toNum(runtime?.last_processed_verification_log_id, 0);
   const newVerified = Math.max(0, maxId - lastProcessed);
-  const newLearningReady = (queue?.rows || []).filter((r) => {
-    if (toNum(r?.id, 0) <= lastProcessed) return false;
-    const categories = safeJsonParse(r?.mismatch_categories_json, []);
-    return Array.isArray(categories) && categories.length > 0;
-  }).length;
+  const newLearningReady = countPendingLearningReady(queue?.rows || [], lastProcessed);
 
   if (learningReadyTotal < minLearningReadyTotal) {
     return {
@@ -659,19 +743,14 @@ export function runContinuousLearningIfNeeded({
     apply: true,
     dryRun: false
   });
-
-  db.prepare(
-    `
-    UPDATE learning_runtime_state
-    SET
-      last_processed_verification_log_id = ?,
-      last_learning_run_id = ?,
-      last_learning_run_at = ?,
-      last_verified_records_used = ?,
-      updated_at = ?
-    WHERE id = 1
-  `
-  ).run(maxId, toNum(batch?.run_id, null), nowIso(), learningReadyTotal, nowIso());
+  const runAt = nowIso();
+  updateLearningRuntimeState({
+    lastProcessedVerificationLogId: maxId,
+    runId: batch?.run_id,
+    runAt,
+    usedVerificationCount: newLearningReady,
+    remainingLearningReady: 0
+  });
 
   return {
     triggered: true,
@@ -681,6 +760,13 @@ export function runContinuousLearningIfNeeded({
     learning_ready_total: learningReadyTotal,
     new_learning_ready: newLearningReady,
     run_id: toNum(batch?.run_id, null),
-    summary: batch?.summary || null
+    summary: batch?.summary || null,
+    run_at: runAt,
+    used_verification_count: newLearningReady,
+    remaining_unlearned_count: 0,
+    threshold: {
+      min_learning_ready_total: minLearningReadyTotal,
+      min_new_learning_ready: minNewLearningReady
+    }
   };
 }

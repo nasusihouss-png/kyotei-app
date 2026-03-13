@@ -1161,8 +1161,10 @@ export default function App() {
     setLearningRunLoading(true);
     try {
       const result = await runLearningBatchApi({ apply: true, dryRun: false });
+      const usedCount = Number(result?.learning_runtime?.used_verification_count ?? 0);
+      const remainingCount = Number(result?.learning_runtime?.remaining_unlearned_count ?? 0);
       setLearningRunNotice(
-        `学習実行完了: run_id=${result?.run_id ?? "-"}, sample=${result?.sample_size ?? 0}`
+        `学習実行完了: run_id=${result?.run_id ?? "-"}, sample=${result?.sample_size ?? 0}, used=${usedCount}, remaining=${remainingCount}`
       );
       await loadPerformance();
     } catch (e) {

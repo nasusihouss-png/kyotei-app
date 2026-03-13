@@ -74,8 +74,8 @@ import {
   getActiveLearningWeights,
   getLatestLearningRun,
   rollbackLearningWeights,
-  runContinuousLearningIfNeeded,
-  runLearningBatch
+  applyLearningBatchManually,
+  runContinuousLearningIfNeeded
 } from "../../learning-weight-engine.js";
 import {
   buildVerifiedLearningRows,
@@ -4100,7 +4100,7 @@ raceRouter.post("/learning/batch", async (req, res, next) => {
   try {
     const apply = String(req.body?.apply ?? "0") === "1" || req.body?.apply === true;
     const dryRun = String(req.body?.dryRun ?? "1") !== "0" && req.body?.dryRun !== false;
-    const result = runLearningBatch({
+    const result = applyLearningBatchManually({
       apply,
       dryRun
     });
