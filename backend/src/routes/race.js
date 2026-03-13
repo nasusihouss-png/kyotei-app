@@ -4632,6 +4632,16 @@ raceRouter.get("/results-history", async (req, res, next) => {
               : "missing_final_recommended_bets_snapshot";
       const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
       const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
+      const currentPredictionSnapshotId = Number.isFinite(Number(snapshotRow.id))
+        ? Number(snapshotRow.id)
+        : null;
+      const verificationAgainstSnapshotId = Number.isFinite(Number(verification?.verified_against_snapshot_id))
+        ? Number(verification.verified_against_snapshot_id)
+        : Number.isFinite(Number(verificationSummary?.verified_against_snapshot_id))
+          ? Number(verificationSummary.verified_against_snapshot_id)
+          : Number.isFinite(Number(verificationSummary?.prediction_snapshot_id))
+            ? Number(verificationSummary.prediction_snapshot_id)
+            : null;
       const displaySnapshotCombos = (Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot : [])
         .map((row) => normalizeCombo(row?.combo ?? row))
         .filter((c) => c && c.split("-").length === 3);
@@ -4639,13 +4649,26 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const verificationUsedSavedBetSnapshot =
         finalRecommendedFromVerification.length > 0 ||
         legacyDisplaySnapshotFromVerification.length > 0;
+      const verificationSnapshotOutdated =
+        hasValidBetSnapshot &&
+        !!verification &&
+        Number.isFinite(currentPredictionSnapshotId) &&
+        Number.isFinite(verificationAgainstSnapshotId) &&
+        currentPredictionSnapshotId !== verificationAgainstSnapshotId;
       const computedHitMiss = !hasValidBetSnapshot
         ? "NOT_VERIFIABLE"
         : actualCombo
           ? (displaySnapshotCombos.includes(actualCombo) ? "HIT" : "MISS")
           : "PENDING";
       const persistedHitMiss = String(verification?.hit_miss || "").toUpperCase();
-      const recoveredSnapshotNeedsReverify = hasValidBetSnapshot && !!verification && !verificationUsedSavedBetSnapshot;
+      const recoveredSnapshotNeedsReverify =
+        hasValidBetSnapshot &&
+        !!verification &&
+        (
+          !verificationUsedSavedBetSnapshot ||
+          verificationSnapshotOutdated ||
+          String(verificationSummary?.verification_status || "").toUpperCase() === "NO_BET_SNAPSHOT"
+        );
       const hitMiss = recoveredSnapshotNeedsReverify ? computedHitMiss : (persistedHitMiss || computedHitMiss);
       const confirmedResult =
         actualCombo ||
@@ -4668,7 +4691,9 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const verificationReason = !hasValidBetSnapshot
         ? "No final recommended bet snapshot saved."
         : recoveredSnapshotNeedsReverify
-          ? "Recovered final recommended bet snapshot from historical prediction storage. Re-run verification to persist updated HIT/MISS."
+          ? verificationSnapshotOutdated
+            ? "A newer or better prediction snapshot is available. Re-run verification to persist updated HIT/MISS."
+            : "Recovered final recommended bet snapshot from historical prediction storage. Re-run verification to persist updated HIT/MISS."
         : legacyFallbackVerified
           ? "Legacy verification used top3 fallback; re-verify after snapshot is available."
           : null;
@@ -4790,7 +4815,18 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       raceId,
       snapshotId: Number.isFinite(requestedSnapshotId) ? requestedSnapshotId : null
     });
-    const latestVerificationRow = Number.isFinite(requestedSnapshotId)
+    const latestRaceVerificationRow = db
+      .prepare(
+        `
+        SELECT *
+        FROM race_verification_logs
+        WHERE race_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+    const latestVerificationRowForRequestedSnapshot = Number.isFinite(requestedSnapshotId)
       ? db
           .prepare(
             `
@@ -4803,18 +4839,13 @@ raceRouter.post("/results/verify", async (req, res, next) => {
           `
           )
           .get(Number(requestedSnapshotId), Number(requestedSnapshotId))
-      : db
-          .prepare(
-            `
-            SELECT *
-            FROM race_verification_logs
-            WHERE race_id = ?
-            ORDER BY id DESC
-            LIMIT 1
-          `
-          )
-          .get(raceId);
+      : latestRaceVerificationRow;
+    const latestVerificationRow = latestRaceVerificationRow;
     const latestVerificationSummary = safeJsonParse(latestVerificationRow?.verification_summary_json, {});
+    const latestRequestedVerificationSummary = safeJsonParse(
+      latestVerificationRowForRequestedSnapshot?.verification_summary_json,
+      {}
+    );
     if (!latestPrediction) {
       return res.status(409).json({
         ok: false,
@@ -4870,8 +4901,8 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     const betPlanJson = safeJsonParse(latestPrediction?.bet_plan_json, {});
     const snapshotDisplayBetsFromPrediction = normalizeSavedBetSnapshotItems(predictionJson?.final_recommended_bets_snapshot);
     const legacySnapshotDisplayBetsFromPrediction = normalizeSavedBetSnapshotItems(predictionJson?.ai_bets_display_snapshot);
-    const snapshotDisplayBetsFromVerification = normalizeSavedBetSnapshotItems(latestVerificationSummary?.final_recommended_bets_snapshot);
-    const legacySnapshotDisplayBetsFromVerification = normalizeSavedBetSnapshotItems(latestVerificationSummary?.ai_bets_display_snapshot);
+    const snapshotDisplayBetsFromVerification = normalizeSavedBetSnapshotItems(latestRequestedVerificationSummary?.final_recommended_bets_snapshot);
+    const legacySnapshotDisplayBetsFromVerification = normalizeSavedBetSnapshotItems(latestRequestedVerificationSummary?.ai_bets_display_snapshot);
     const snapshotDisplayBets =
       snapshotDisplayBetsFromPrediction.length > 0
         ? snapshotDisplayBetsFromPrediction
@@ -4920,7 +4951,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         : legacySnapshotDisplayBetsFromPrediction.length > 0
           ? "prediction_snapshot_legacy_display"
           : snapshotDisplayBetsFromVerification.length > 0
-          ? "verification_snapshot"
+            ? "verification_snapshot"
           : legacySnapshotDisplayBetsFromVerification.length > 0
             ? "verification_snapshot_legacy_display"
           : "none";
