@@ -3228,12 +3228,16 @@ export default function App() {
                             h.ai_bets_display_snapshot.map((b, idx) => (
                               <ComboBadge combo={b?.combo} key={`rec-${h.race_id}-${idx}`} />
                             ))
-                          ) : "-"}
+                          ) : "No final recommended bet snapshot saved"}
                         </div>
                         <div>
                           スナップショット件数:
                           {" "}
-                          {Array.isArray(h.ai_bets_display_snapshot) ? h.ai_bets_display_snapshot.length : 0}
+                          {Number.isFinite(Number(h.final_recommended_bets_count))
+                            ? Number(h.final_recommended_bets_count)
+                            : Array.isArray(h.ai_bets_display_snapshot)
+                              ? h.ai_bets_display_snapshot.length
+                              : 0}
                         </div>
                         <div>snapshot_id: {h.prediction_snapshot_id ?? "-"}</div>
                         <div>snapshot_source: {h.ai_bets_snapshot_source || "-"}</div>
@@ -3257,6 +3261,32 @@ export default function App() {
                               <ComboBadge combo={b?.combo} key={`rec-latest-${h.race_id}-${idx}`} />
                             ))}
                           </div>
+                        </div>
+                      ) : null}
+                      {Array.isArray(h.ai_bets_display_snapshot) && h.ai_bets_display_snapshot.length > 0 ? (
+                        <div className="table-wrap" style={{ marginTop: 8 }}>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>AI推奨買い目</th>
+                                <th>確率</th>
+                                <th>オッズ</th>
+                                <th>EV</th>
+                                <th>金額</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {h.ai_bets_display_snapshot.map((bet, idx) => (
+                                <tr key={`final-bet-${h.history_id || h.race_id}-${idx}`}>
+                                  <td><ComboBadge combo={bet?.combo} /></td>
+                                  <td>{formatMaybeNumber(bet?.prob, 3)}</td>
+                                  <td>{formatMaybeNumber(bet?.odds, 1)}</td>
+                                  <td>{formatMaybeNumber(bet?.ev, 2)}</td>
+                                  <td>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       ) : null}
                       {h.verification ? (

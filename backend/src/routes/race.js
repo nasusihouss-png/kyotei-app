@@ -265,6 +265,61 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function buildFinalRecommendedBetsSnapshot({
+  recommendedBets,
+  optimizedTickets,
+  fallbackLimit = 8
+}) {
+  const normalizedOptimized = safeArray(optimizedTickets)
+    .map((row) => ({
+      combo: row?.combo,
+      prob: Number.isFinite(Number(row?.prob)) ? Number(row.prob) : null,
+      odds: Number.isFinite(Number(row?.odds)) ? Number(row.odds) : null,
+      ev: Number.isFinite(Number(row?.ev)) ? Number(row.ev) : null,
+      ticket_type: row?.ticket_type || "backup",
+      recommended_bet: Number.isFinite(Number(row?.recommended_bet))
+        ? Number(row.recommended_bet)
+        : 100,
+      explanation_tags: Array.isArray(row?.explanation_tags) ? row.explanation_tags : [],
+      explanation_summary: row?.explanation_summary || null
+    }))
+    .filter((row) => normalizeCombo(row?.combo));
+
+  if (normalizedOptimized.length > 0) {
+    return {
+      snapshot_source: "optimized_tickets",
+      items: normalizedOptimized
+        .sort((a, b) => (Number.isFinite(b?.prob) ? b.prob : -1) - (Number.isFinite(a?.prob) ? a.prob : -1))
+        .slice(0, fallbackLimit)
+    };
+  }
+
+  const normalizedRecommended = safeArray(recommendedBets)
+    .map((row) => ({
+      ...row,
+      combo: row?.combo,
+      prob: Number.isFinite(Number(row?.prob)) ? Number(row.prob) : null,
+      odds: Number.isFinite(Number(row?.odds)) ? Number(row.odds) : null,
+      ev: Number.isFinite(Number(row?.ev)) ? Number(row.ev) : null,
+      ticket_type: row?.ticket_type || "backup",
+      recommended_bet: Number.isFinite(Number(row?.recommended_bet))
+        ? Number(row.recommended_bet)
+        : Number.isFinite(Number(row?.bet))
+          ? Number(row.bet)
+          : 100,
+      explanation_tags: Array.isArray(row?.explanation_tags) ? row.explanation_tags : [],
+      explanation_summary: row?.explanation_summary || null
+    }))
+    .filter((row) => normalizeCombo(row?.combo));
+
+  return {
+    snapshot_source: normalizedRecommended.length > 0 ? "bet_plan_recommended_bets" : "missing_final_recommended_bets_snapshot",
+    items: normalizedRecommended
+      .sort((a, b) => (Number.isFinite(b?.prob) ? b.prob : -1) - (Number.isFinite(a?.prob) ? a.prob : -1))
+      .slice(0, fallbackLimit)
+  };
+}
+
 function insertVerificationRecord({
   raceId,
   raceMeta,
@@ -1714,6 +1769,10 @@ raceRouter.get("/race", async (req, res, next) => {
     });
     const snapshotCreatedAt = new Date().toISOString();
     const modelVersion = "prediction_snapshot_v2";
+    const finalRecommendedSnapshot = buildFinalRecommendedBetsSnapshot({
+      recommendedBets: bet_plan_with_stake?.recommended_bets,
+      optimizedTickets: ticketOptimizationWithStake?.optimized_tickets
+    });
     const startDisplay = saveRaceStartDisplaySnapshot({
       raceId,
       racers: data.racers,
@@ -1838,6 +1897,9 @@ raceRouter.get("/race", async (req, res, next) => {
       snapshot_created_at: snapshotCreatedAt,
       race_key: raceId,
       model_version: modelVersion,
+      final_recommended_bets_snapshot: finalRecommendedSnapshot.items,
+      final_recommended_bets_count: finalRecommendedSnapshot.items.length,
+      final_recommended_bets_snapshot_source: finalRecommendedSnapshot.snapshot_source,
       snapshot_context: snapshotContext,
       learning_context: learningContext,
       ai_bets_full_snapshot: {
@@ -1861,9 +1923,7 @@ raceRouter.get("/race", async (req, res, next) => {
           longshot_picks: Array.isArray(scenarioSuggestions?.longshot_picks) ? scenarioSuggestions.longshot_picks : []
         }
       },
-      ai_bets_display_snapshot: Array.isArray(bet_plan_with_stake?.recommended_bets)
-        ? bet_plan_with_stake.recommended_bets
-        : [],
+      ai_bets_display_snapshot: finalRecommendedSnapshot.items,
       prediction_before_entry_change,
       prediction_after_entry_change
     };
@@ -4530,9 +4590,14 @@ raceRouter.get("/results-history", async (req, res, next) => {
         : [];
 
       const latestLogDisplayBets = Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [];
-      const snapshotDisplayFromPrediction = Array.isArray(prediction?.ai_bets_display_snapshot)
-        ? prediction.ai_bets_display_snapshot
-        : latestLogDisplayBets;
+      const finalRecommendedFromPrediction = Array.isArray(prediction?.final_recommended_bets_snapshot)
+        ? prediction.final_recommended_bets_snapshot
+        : [];
+      const snapshotDisplayFromPrediction = finalRecommendedFromPrediction.length > 0
+        ? finalRecommendedFromPrediction
+        : Array.isArray(prediction?.ai_bets_display_snapshot)
+          ? prediction.ai_bets_display_snapshot
+          : [];
       const snapshotFullFromPrediction =
         prediction?.ai_bets_full_snapshot && typeof prediction.ai_bets_full_snapshot === "object"
           ? prediction.ai_bets_full_snapshot
@@ -4542,9 +4607,11 @@ raceRouter.get("/results-history", async (req, res, next) => {
               ticket_generation_v2: { primary_tickets: [], secondary_tickets: [] },
               scenario_suggestions: { main_picks: [], backup_picks: [], longshot_picks: [] }
             };
-      const aiBetsDisplaySnapshot = Array.isArray(verificationSummary?.ai_bets_display_snapshot)
-        ? verificationSummary.ai_bets_display_snapshot
-        : snapshotDisplayFromPrediction;
+      const aiBetsDisplaySnapshot = Array.isArray(verificationSummary?.final_recommended_bets_snapshot)
+        ? verificationSummary.final_recommended_bets_snapshot
+        : Array.isArray(verificationSummary?.ai_bets_display_snapshot)
+          ? verificationSummary.ai_bets_display_snapshot
+          : snapshotDisplayFromPrediction;
       const aiBetsFullSnapshot =
         verificationSummary?.ai_bets_full_snapshot && typeof verificationSummary.ai_bets_full_snapshot === "object"
           ? verificationSummary.ai_bets_full_snapshot
@@ -4560,11 +4627,15 @@ raceRouter.get("/results-history", async (req, res, next) => {
         : Number.isFinite(Number(snapshotRow.id))
           ? Number(snapshotRow.id)
           : null;
-      const aiBetsSnapshotSource = verificationSummary?.ai_bets_display_snapshot
-        ? "verification_snapshot"
-        : prediction?.ai_bets_display_snapshot
-          ? "prediction_snapshot"
-          : "legacy_bet_plan";
+      const aiBetsSnapshotSource = verificationSummary?.final_recommended_bets_snapshot
+        ? "verification_final_recommended_bets_snapshot"
+        : verificationSummary?.ai_bets_display_snapshot
+          ? "verification_snapshot"
+          : prediction?.final_recommended_bets_snapshot
+            ? (prediction?.final_recommended_bets_snapshot_source || "prediction_final_recommended_bets_snapshot")
+            : prediction?.ai_bets_display_snapshot
+              ? "prediction_snapshot"
+              : "missing_final_recommended_bets_snapshot";
       const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
       const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
       const displaySnapshotCombos = (Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot : [])
@@ -4647,6 +4718,8 @@ raceRouter.get("/results-history", async (req, res, next) => {
         ai_bets_snapshot_source: aiBetsSnapshotSource,
         ai_bets_full_snapshot: aiBetsFullSnapshot,
         ai_bets_display_snapshot: aiBetsDisplaySnapshot,
+        final_recommended_bets_snapshot: aiBetsDisplaySnapshot,
+        final_recommended_bets_count: Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot.length : 0,
         ai_bets_latest_log: latestLogDisplayBets,
         debug_bet_compare: {
           saved_display_snapshot: aiBetsDisplaySnapshot,
@@ -4792,12 +4865,16 @@ raceRouter.post("/results/verify", async (req, res, next) => {
 
     const predictionJson = safeJsonParse(latestPrediction?.prediction_json, {});
     const betPlanJson = safeJsonParse(latestPrediction?.bet_plan_json, {});
-    const snapshotDisplayBetsFromPrediction = Array.isArray(predictionJson?.ai_bets_display_snapshot)
-      ? predictionJson.ai_bets_display_snapshot
-      : safeArray(betPlanJson?.recommended_bets);
-    const snapshotDisplayBetsFromVerification = Array.isArray(latestVerificationSummary?.ai_bets_display_snapshot)
-      ? latestVerificationSummary.ai_bets_display_snapshot
-      : [];
+    const snapshotDisplayBetsFromPrediction = Array.isArray(predictionJson?.final_recommended_bets_snapshot)
+      ? predictionJson.final_recommended_bets_snapshot
+      : Array.isArray(predictionJson?.ai_bets_display_snapshot)
+        ? predictionJson.ai_bets_display_snapshot
+        : [];
+    const snapshotDisplayBetsFromVerification = Array.isArray(latestVerificationSummary?.final_recommended_bets_snapshot)
+      ? latestVerificationSummary.final_recommended_bets_snapshot
+      : Array.isArray(latestVerificationSummary?.ai_bets_display_snapshot)
+        ? latestVerificationSummary.ai_bets_display_snapshot
+        : [];
     const snapshotDisplayBets =
       snapshotDisplayBetsFromPrediction.length > 0
         ? snapshotDisplayBetsFromPrediction
@@ -4874,12 +4951,15 @@ raceRouter.post("/results/verify", async (req, res, next) => {
           ? Number(featureLog.recommendation_score)
           : null,
         verification_status: "NO_BET_SNAPSHOT",
-        verification_reason: "Saved AI bet snapshot is missing; verification was skipped.",
+        verification_reason: "No final recommended bet snapshot saved; verification was skipped.",
         verification_version: nextVerificationVersion,
         prediction_snapshot_id: Number.isFinite(Number(latestPrediction?.id)) ? Number(latestPrediction.id) : null,
         verified_against_snapshot_id: verifiedAgainstSnapshotId,
         snapshot_created_at: predictionJson?.snapshot_created_at || latestPrediction?.created_at || null,
         race_key: predictionJson?.race_key || raceId,
+        final_recommended_bets_snapshot: [],
+        final_recommended_bets_count: 0,
+        snapshot_source: "missing_final_recommended_bets_snapshot",
         ai_bets_display_snapshot: [],
         ai_bets_full_snapshot: predictionJson?.ai_bets_full_snapshot || null,
         verification_bet_source: verificationBetSource,
@@ -4902,7 +4982,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         ok: true,
         status: "NO_BET_SNAPSHOT",
         verification_performed: false,
-        message: "Verification skipped because saved AI bet snapshot is missing.",
+        message: "Verification skipped because no final recommended bet snapshot was saved.",
         reason_code: "NO_BET_SNAPSHOT",
         persisted: !!insertInfo?.lastInsertRowid,
         verification_version: nextVerificationVersion,
@@ -4970,6 +5050,11 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       verified_against_snapshot_id: verifiedAgainstSnapshotId,
       snapshot_created_at: predictionJson?.snapshot_created_at || latestPrediction?.created_at || null,
       race_key: predictionJson?.race_key || raceId,
+      final_recommended_bets_snapshot: snapshotDisplayBets,
+      final_recommended_bets_count: snapshotDisplayBets.length,
+      snapshot_source:
+        predictionJson?.final_recommended_bets_snapshot_source ||
+        (snapshotDisplayBetsFromVerification.length > 0 ? "verification_snapshot" : "missing_final_recommended_bets_snapshot"),
       ai_bets_display_snapshot: snapshotDisplayBets,
       ai_bets_full_snapshot: snapshotFullBets,
       verification_bet_source: verificationBetSource,
