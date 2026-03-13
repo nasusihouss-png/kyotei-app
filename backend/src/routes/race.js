@@ -4552,30 +4552,54 @@ raceRouter.get("/results-history", async (req, res, next) => {
       list.push(row);
       settlementByRace.set(row.race_id, list);
     }
-    const verificationMap = new Map(
-      verificationRows.map((row) => {
-        const summary = row.summary && typeof row.summary === "object"
-          ? row.summary
-          : safeJsonParse(row.verification_summary_json, {});
-        const snapshotId = Number.isFinite(Number(row?.verified_against_snapshot_id))
+    const latestSnapshotIdByRace = new Map();
+    for (const snapshotRow of predictionSnapshots) {
+      if (!latestSnapshotIdByRace.has(snapshotRow.race_id) && Number.isFinite(Number(snapshotRow.id))) {
+        latestSnapshotIdByRace.set(snapshotRow.race_id, Number(snapshotRow.id));
+      }
+    }
+    const verificationBySnapshotId = new Map();
+    const verificationByRaceFallback = new Map();
+    for (const row of verificationRows) {
+      const summary = row.summary && typeof row.summary === "object"
+        ? row.summary
+        : safeJsonParse(row.verification_summary_json, {});
+      const snapshotId = Number.isFinite(Number(row?.verified_against_snapshot_id))
+        ? Number(row.verified_against_snapshot_id)
+        : Number.isFinite(Number(row?.prediction_snapshot_id))
+          ? Number(row.prediction_snapshot_id)
+          : Number.isFinite(Number(summary?.verified_against_snapshot_id))
+            ? Number(summary.verified_against_snapshot_id)
+            : Number.isFinite(Number(summary?.prediction_snapshot_id))
+              ? Number(summary.prediction_snapshot_id)
+              : null;
+      const normalizedVerification = {
+        verified_at: row.verified_at || null,
+        hit_miss: row.hit_miss || null,
+        mismatch_categories: safeJsonParse(row.mismatch_categories_json, []),
+        prediction_snapshot_id: Number.isFinite(Number(row?.prediction_snapshot_id))
+          ? Number(row.prediction_snapshot_id)
+          : Number.isFinite(Number(summary?.prediction_snapshot_id))
+            ? Number(summary.prediction_snapshot_id)
+            : null,
+        verified_against_snapshot_id: Number.isFinite(Number(row?.verified_against_snapshot_id))
           ? Number(row.verified_against_snapshot_id)
-          : Number.isFinite(Number(row?.prediction_snapshot_id))
-            ? Number(row.prediction_snapshot_id)
-            : Number.isFinite(Number(summary?.verified_against_snapshot_id))
-              ? Number(summary.verified_against_snapshot_id)
-              : Number.isFinite(Number(summary?.prediction_snapshot_id))
-                ? Number(summary.prediction_snapshot_id)
-                : null;
-        return [snapshotId || row.race_id,
-        {
-          verified_at: row.verified_at || null,
-          hit_miss: row.hit_miss || null,
-          mismatch_categories: safeJsonParse(row.mismatch_categories_json, []),
-          summary
-        }
-      ];
-      })
-    );
+          : Number.isFinite(Number(summary?.verified_against_snapshot_id))
+            ? Number(summary.verified_against_snapshot_id)
+            : null,
+        verification_status: row?.verification_status || summary?.verification_status || null,
+        verification_reason: row?.verification_reason || summary?.verification_reason || null,
+        summary
+      };
+      if (Number.isFinite(snapshotId) && !verificationBySnapshotId.has(snapshotId)) {
+        verificationBySnapshotId.set(snapshotId, normalizedVerification);
+        continue;
+      }
+      const raceVerificationKey = String(row?.race_id || "");
+      if (raceVerificationKey && !verificationByRaceFallback.has(raceVerificationKey)) {
+        verificationByRaceFallback.set(raceVerificationKey, normalizedVerification);
+      }
+    }
 
     const items = predictionSnapshots.map((snapshotRow) => {
       const logRow = snapshotRow.row;
@@ -4616,10 +4640,16 @@ raceRouter.get("/results-history", async (req, res, next) => {
               eventStartDisplay?.prediction_snapshot || mutableStartDisplay?.prediction_snapshot || {}
           }
         : null);
+      const currentPredictionSnapshotId = Number.isFinite(Number(snapshotRow.id))
+        ? Number(snapshotRow.id)
+        : null;
       const verification =
-        verificationMap.get(snapshotRow.id) ||
-        verificationMap.get(raceId) ||
-        null;
+        (Number.isFinite(currentPredictionSnapshotId)
+          ? verificationBySnapshotId.get(currentPredictionSnapshotId)
+          : null) ||
+        (latestSnapshotIdByRace.get(raceId) === currentPredictionSnapshotId
+          ? verificationByRaceFallback.get(raceId) || null
+          : null);
       const verificationSummary = verification?.summary && typeof verification.summary === "object"
         ? verification.summary
         : {};
@@ -4676,11 +4706,10 @@ raceRouter.get("/results-history", async (req, res, next) => {
         snapshotRow.prediction_timestamp ||
         logRow.created_at ||
         null;
-      const predictionSnapshotId = Number.isFinite(Number(verificationSummary?.prediction_snapshot_id))
-        ? Number(verificationSummary.prediction_snapshot_id)
-        : Number.isFinite(Number(snapshotRow.id))
-          ? Number(snapshotRow.id)
-          : null;
+      const predictionSnapshotId = currentPredictionSnapshotId ??
+        (Number.isFinite(Number(verificationSummary?.prediction_snapshot_id))
+          ? Number(verificationSummary.prediction_snapshot_id)
+          : null);
       const aiBetsSnapshotSource = finalRecommendedFromVerification.length > 0
         ? "verification_final_recommended_bets_snapshot"
         : legacyDisplaySnapshotFromVerification.length > 0
@@ -4692,9 +4721,6 @@ raceRouter.get("/results-history", async (req, res, next) => {
               : "missing_final_recommended_bets_snapshot";
       const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
       const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
-      const currentPredictionSnapshotId = Number.isFinite(Number(snapshotRow.id))
-        ? Number(snapshotRow.id)
-        : null;
       const verificationAgainstSnapshotId = Number.isFinite(Number(verification?.verified_against_snapshot_id))
         ? Number(verification.verified_against_snapshot_id)
         : Number.isFinite(Number(verificationSummary?.verified_against_snapshot_id))

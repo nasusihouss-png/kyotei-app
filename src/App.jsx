@@ -475,6 +475,13 @@ function getSavedFinalRecommendedBets(row) {
     .filter(Boolean);
 }
 
+function getVerificationHistoryKey(raceId, predictionSnapshotId = null) {
+  if (Number.isFinite(Number(predictionSnapshotId))) {
+    return `snapshot:${Number(predictionSnapshotId)}`;
+  }
+  return `race:${String(raceId || "")}`;
+}
+
 function makeRaceKey({ race_id, race_date, venue_id, race_no }) {
   if (race_id) return String(race_id);
   return `${race_date || "unknown"}_${venue_id || "v"}_${race_no || "r"}`;
@@ -1634,20 +1641,21 @@ export default function App() {
       setPerfError("検証対象の race_id が見つかりません");
       return;
     }
+    const verificationKey = getVerificationHistoryKey(raceId, predictionSnapshotId);
     setPerfError("");
-    setVerifyingRaceId(raceId);
-    setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: "PENDING_RESULT" }));
-    setVerificationReasonByRace((prev) => ({ ...prev, [raceId]: "" }));
+    setVerifyingRaceId(verificationKey);
+    setVerificationRunStatusByRace((prev) => ({ ...prev, [verificationKey]: "PENDING_RESULT" }));
+    setVerificationReasonByRace((prev) => ({ ...prev, [verificationKey]: "" }));
     try {
       const result = await verifyRaceResultApi(raceId, predictionSnapshotId);
       const cats = Array.isArray(result?.verification?.mismatch_categories)
         ? result.verification.mismatch_categories
         : [];
       const status = String(result?.status || "VERIFIED").toUpperCase();
-      setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: status }));
+      setVerificationRunStatusByRace((prev) => ({ ...prev, [verificationKey]: status }));
       setVerificationReasonByRace((prev) => ({
         ...prev,
-        [raceId]: result?.warning || result?.message || ""
+        [verificationKey]: result?.warning || result?.message || ""
       }));
       if (status === "NO_BET_SNAPSHOT" || status === "VERIFY_SKIPPED" || status === "NOT_VERIFIABLE") {
         setVerificationNotice(result?.message || "検証スキップ: AI買い目スナップショットがありません");
@@ -1668,8 +1676,8 @@ export default function App() {
         : rawStatus === "NO_CONFIRMED_RESULT" || msg.includes("confirmed race result is not available")
           ? "NO_CONFIRMED_RESULT"
           : "VERIFY_FAILED";
-      setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: status }));
-      setVerificationReasonByRace((prev) => ({ ...prev, [raceId]: msg || "検証に失敗しました" }));
+      setVerificationRunStatusByRace((prev) => ({ ...prev, [verificationKey]: status }));
+      setVerificationReasonByRace((prev) => ({ ...prev, [verificationKey]: msg || "検証に失敗しました" }));
       setPerfError(msg || "検証に失敗しました");
       await loadPerformance();
     } finally {
@@ -3153,10 +3161,11 @@ export default function App() {
                 <div className="history-stack">
                   {filteredHistory.map((h) => {
                     const savedFinalRecommendedBets = getSavedFinalRecommendedBets(h);
+                    const verificationKey = getVerificationHistoryKey(h.race_id, h.prediction_snapshot_id);
                     const currentVerifyStatus =
-                      verificationRunStatusByRace[h.race_id] || h.verification_status || "PENDING_RESULT";
+                      verificationRunStatusByRace[verificationKey] || h.verification_status || "PENDING_RESULT";
                     const verifyReason =
-                      verificationReasonByRace[h.race_id] ||
+                      verificationReasonByRace[verificationKey] ||
                       h.verification_reason ||
                       h?.verification?.summary?.warning ||
                       "";
@@ -3173,9 +3182,9 @@ export default function App() {
                             type="button"
                             className="fetch-btn secondary"
                             onClick={() => onVerifyRace(h.race_id, h.prediction_snapshot_id)}
-                            disabled={verifyingRaceId === h.race_id}
+                            disabled={verifyingRaceId === verificationKey}
                           >
-                            {verifyingRaceId === h.race_id ? "検証中..." : "検証"}
+                            {verifyingRaceId === verificationKey ? "検証中..." : "検証"}
                           </button>
                         </div>
                       </div>
