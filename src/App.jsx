@@ -796,6 +796,7 @@ export default function App() {
   const [verificationReasonByRace, setVerificationReasonByRace] = useState({});
   const [resultsStatusFilter, setResultsStatusFilter] = useState("all");
   const [resultsVenueFilter, setResultsVenueFilter] = useState("all");
+  const [resultsParticipationFilter, setResultsParticipationFilter] = useState("all");
 
   const [resultForm, setResultForm] = useState({
     raceId: "",
@@ -1164,6 +1165,10 @@ export default function App() {
       if (resultsVenueFilter !== "all" && String(row?.venue_name || row?.venue_id || "") !== resultsVenueFilter) {
         return false;
       }
+      if (resultsParticipationFilter !== "all") {
+        const decision = String(row?.prediction?.participation_decision || row?.participation_decision || "").toLowerCase();
+        if (decision !== resultsParticipationFilter) return false;
+      }
       if (resultsStatusFilter === "all") return true;
       const status = String(row?.verification_status || "").toLowerCase();
       if (resultsStatusFilter === "unverified") return status === "unverified";
@@ -1175,7 +1180,7 @@ export default function App() {
       }
       return true;
     });
-  }, [history, resultsStatusFilter, resultsVenueFilter]);
+  }, [history, resultsParticipationFilter, resultsStatusFilter, resultsVenueFilter]);
   const resultVenueOptions = useMemo(() => {
     const values = Array.from(
       new Set((Array.isArray(history) ? history : []).map((row) => String(row?.venue_name || row?.venue_id || "").trim()).filter(Boolean))
@@ -2066,12 +2071,12 @@ export default function App() {
               <section className="card empty-state">レースを取得すると予想ダッシュボードを表示します。</section>
             ) : (
               <>
-                <section className="card">
+                <div className="prediction-summary-grid">
+                <section className="card summary-card">
                   <h2>レース情報</h2>
-                  <div className="metric-grid">
+                  <div className="metric-grid compact">
+                    <div className="metric-item"><span>会場 / レース</span><strong>{race.venueId ?? venueId} {venueName} {race.raceNo ?? raceNo}R</strong></div>
                     <div className="metric-item"><span>レース名</span><strong>{race.raceName || "-"}</strong></div>
-                    <div className="metric-item"><span>場</span><strong>{race.venueId ?? venueId} ({venueName})</strong></div>
-                    <div className="metric-item"><span>レース</span><strong>{race.raceNo ?? raceNo}R</strong></div>
                     <div className="metric-item"><span>日付</span><strong>{race.date || date}</strong></div>
                   </div>
                 </section>
@@ -2124,7 +2129,7 @@ export default function App() {
                   </section>
                 ) : null}
 
-                <section className={`card recommendation ${getRiskClass(raceRisk.recommendation)}`}>
+                <section className={`card recommendation summary-card ${getRiskClass(raceRisk.recommendation)}`}>
                   <h2>総合推奨</h2>
                   <div className="recommend-grid">
                     <div><span>参加可否</span><strong className={`status-pill ${participationClass}`}>{participationLabel}</strong></div>
@@ -2168,9 +2173,13 @@ export default function App() {
                   ) : null}
                 </section>
 
-                <article className="card">
+                <article className="card summary-card">
                   <h2>最終推奨買い目</h2>
-                  <div className="list-stack">
+                  <div className="summary-inline-meta">
+                    <span>{finalRecommendedBets.length}件</span>
+                    <span>{attackScenarioLabel || formationPatternLabel || data.racePattern || "-"}</span>
+                  </div>
+                  <div className="list-stack compact-list">
                     {finalRecommendedBets.map((bet, idx) => (
                       <div key={`${bet.combo}-${idx}`} className="list-stack">
                         <div className="list-row list-row-actions">
@@ -2186,6 +2195,7 @@ export default function App() {
                     ))}
                   </div>
                 </article>
+                </div>
 
                 <details className="card">
                   <summary>展示・進入の詳細</summary>
@@ -3361,7 +3371,7 @@ export default function App() {
 
             <section className="card">
               <h2>AI予想検証（レース別）</h2>
-              <div className="inline-controls" style={{ marginBottom: 10 }}>
+              <div className="results-toolbar sticky-toolbar" style={{ marginBottom: 10 }}>
                 <label>
                   <span>表示</span>
                   <select value={resultsStatusFilter} onChange={(e) => setResultsStatusFilter(e.target.value)}>
@@ -3382,6 +3392,15 @@ export default function App() {
                     ))}
                   </select>
                 </label>
+                <label>
+                  <span>参加判定</span>
+                  <select value={resultsParticipationFilter} onChange={(e) => setResultsParticipationFilter(e.target.value)}>
+                    <option value="all">all</option>
+                    <option value="recommended">participate</option>
+                    <option value="watch">watch</option>
+                    <option value="not_recommended">skip</option>
+                  </select>
+                </label>
               </div>
               {filteredHistory.length === 0 ? <p className="muted">履歴データはまだありません。</p> : (
                 <div className="history-stack">
@@ -3398,9 +3417,12 @@ export default function App() {
                       h?.verification?.summary?.warning ||
                       "";
                     return (
-                    <div key={h.history_id || `${h.race_id}-${h.prediction_snapshot_id || h.snapshot_created_at || ""}`} className="history-item">
+                    <div key={h.history_id || `${h.race_id}-${h.prediction_snapshot_id || h.snapshot_created_at || ""}`} className="history-item compact-history">
                       <div className="history-head">
-                        <strong>{h.race_date} {h.venue_name || h.venue_id} {h.race_no}R</strong>
+                        <div className="history-title-block">
+                          <strong>{h.venue_name || h.venue_id} {h.race_no}R</strong>
+                          <small>{h.race_date || "-"}</small>
+                        </div>
                         <div className="row-actions">
                           <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
                           <span className={getVerifyStatusBadgeClass(currentVerifyStatus)}>
@@ -3461,29 +3483,44 @@ export default function App() {
                           invalidated: {h.invalidation.invalid_reason || "manual soft invalidation"}
                         </p>
                       ) : null}
-                      <div className="history-grid">
-                        <div>confirmed result: {h.confirmed_result || "-"}</div>
-                        <div>verification result: {h.verification?.hit_miss || h.hit_miss || "-"}</div>
-                        <div>head_hit: {verificationSummaryData?.head_correct === true ? "YES" : verificationSummaryData?.head_correct === false ? "NO" : "-"}</div>
-                        <div>bet_hit: {verificationSummaryData?.hit_miss === "HIT" ? "YES" : verificationSummaryData?.hit_miss === "MISS" ? "NO" : "-"}</div>
-                        <div>learning: {getLearningStatusLabel(h)}</div>
-                      </div>
-                      <div className="history-grid" style={{ marginTop: 8 }}>
-                        <div>
-                          AI推奨買い目:
-                          {" "}
-                          {savedFinalRecommendedBets.length ? (
-                            savedFinalRecommendedBets.map((b, idx) => (
-                              <ComboBadge combo={b?.combo} key={`rec-${h.race_id}-${idx}`} />
-                            ))
-                          ) : betSnapshotLabel}
+                      <div className="history-summary-grid">
+                        <div className="history-summary-cell">
+                          <span className="history-label">saved bets</span>
+                          <div className="history-bet-strip">
+                            {savedFinalRecommendedBets.length ? (
+                              savedFinalRecommendedBets.map((b, idx) => (
+                                <ComboBadge combo={b?.combo} key={`rec-${h.race_id}-${idx}`} />
+                              ))
+                            ) : betSnapshotLabel}
+                          </div>
                         </div>
-                        <div>
-                          件数:
-                          {" "}
-                          {Number.isFinite(Number(h.final_recommended_bets_count))
-                            ? Number(h.final_recommended_bets_count)
-                            : savedFinalRecommendedBets.length}
+                        <div className="history-summary-cell">
+                          <span className="history-label">confirmed result</span>
+                          <strong>{h.confirmed_result || "-"}</strong>
+                        </div>
+                        <div className="history-summary-cell">
+                          <span className="history-label">verification</span>
+                          <strong>{h.verification?.hit_miss || h.hit_miss || "-"}</strong>
+                        </div>
+                        <div className="history-summary-cell">
+                          <span className="history-label">head / bet</span>
+                          <strong>
+                            {verificationSummaryData?.head_correct === true ? "YES" : verificationSummaryData?.head_correct === false ? "NO" : "-"}
+                            {" / "}
+                            {verificationSummaryData?.hit_miss === "HIT" ? "YES" : verificationSummaryData?.hit_miss === "MISS" ? "NO" : "-"}
+                          </strong>
+                        </div>
+                        <div className="history-summary-cell">
+                          <span className="history-label">learning</span>
+                          <strong>{getLearningStatusLabel(h)}</strong>
+                        </div>
+                        <div className="history-summary-cell">
+                          <span className="history-label">bet count</span>
+                          <strong>
+                            {Number.isFinite(Number(h.final_recommended_bets_count))
+                              ? Number(h.final_recommended_bets_count)
+                              : savedFinalRecommendedBets.length}
+                          </strong>
                         </div>
                       </div>
                       {Array.isArray(h?.verification?.mismatch_categories) && h.verification.mismatch_categories.length ? (
@@ -3493,7 +3530,7 @@ export default function App() {
                           ))}
                         </div>
                       ) : null}
-                      <details style={{ marginTop: 8 }}>
+                      <details className="result-detail-block" style={{ marginTop: 8 }}>
                         <summary>details</summary>
                         <div style={{ marginTop: 8 }}>
                           {savedFinalRecommendedBets.length > 0 ? (
