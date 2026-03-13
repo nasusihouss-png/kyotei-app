@@ -4448,15 +4448,14 @@ raceRouter.post("/race/result", async (req, res, next) => {
       raceId,
       settledResult: top3.join("-")
     });
+    const comparison = compareActualTop3VsPredictedBets(top3, predictedBets, {
+      payoutByCombo
+    });
     attachPredictionFeatureLogSettlement({
       raceId,
       actualResult: top3.join("-"),
-      settledBetHitCount: comparison?.hitCount ?? null,
-      settledBetCount: comparison?.totalBets ?? null
-    });
-
-    const comparison = compareActualTop3VsPredictedBets(top3, predictedBets, {
-      payoutByCombo
+      settledBetHitCount: comparison?.summary?.hitCount ?? null,
+      settledBetCount: comparison?.summary?.totalBets ?? null
     });
 
     const settlementUpdate = markSettlementHits({
@@ -4476,6 +4475,196 @@ raceRouter.post("/race/result", async (req, res, next) => {
       },
       comparison,
       settlementUpdate
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.post("/results/edit", async (req, res, next) => {
+  try {
+    ensureVerificationLogColumns();
+    const raceId = String(req.body?.race_id || req.body?.raceId || "").trim();
+    const predictionSnapshotId = Number.isFinite(Number(req.body?.prediction_snapshot_id))
+      ? Number(req.body.prediction_snapshot_id)
+      : null;
+    const confirmedResultRaw = String(req.body?.confirmed_result || "").trim();
+    const verificationReason = String(req.body?.verification_reason || req.body?.note || "").trim() || null;
+    const invalidReasonInput = String(req.body?.invalid_reason || "").trim() || null;
+
+    if (!raceId) {
+      return res.status(400).json({
+        ok: false,
+        error: "race_id_required",
+        message: "race_id is required."
+      });
+    }
+
+    const confirmedResult = normalizeCombo(confirmedResultRaw);
+    const top3 = normalizeFinishOrder(confirmedResult.split("-").map((value) => Number(value)));
+    if (!top3 || confirmedResult !== top3.join("-")) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_confirmed_result",
+        message: "confirmed_result must be in 1-2-3 format using 3 unique lane numbers between 1 and 6."
+      });
+    }
+
+    const existingResultRow = db
+      .prepare(
+        `
+        SELECT race_id, finish_1, finish_2, finish_3, payout_2t, payout_3t, decision_type
+        FROM results
+        WHERE race_id = ?
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+
+    const previousConfirmedResult = normalizeCombo([
+      existingResultRow?.finish_1,
+      existingResultRow?.finish_2,
+      existingResultRow?.finish_3
+    ].join("-")) || null;
+    const confirmedResultChanged = previousConfirmedResult !== confirmedResult;
+
+    saveRaceResult({
+      raceId,
+      finishOrder: top3,
+      payout2t: existingResultRow?.payout_2t ?? null,
+      payout3t: existingResultRow?.payout_3t ?? null,
+      decisionType: existingResultRow?.decision_type ?? null
+    });
+    saveRaceStartDisplayResult({
+      raceId,
+      settledResult: confirmedResult
+    });
+
+    const payoutByCombo =
+      !confirmedResultChanged &&
+      Number.isFinite(Number(existingResultRow?.payout_3t)) &&
+      Number(existingResultRow?.payout_3t) > 0
+        ? { [confirmedResult]: Number(existingResultRow.payout_3t) }
+        : {};
+    const settlementUpdate = markSettlementHits({
+      raceId,
+      actualTop3: top3,
+      payoutByCombo
+    });
+    attachPredictionFeatureLogSettlement({
+      raceId,
+      actualResult: confirmedResult,
+      settledBetHitCount: null,
+      settledBetCount: null
+    });
+
+    let invalidatedVerificationCount = 0;
+    let notedVerificationCount = 0;
+    if (confirmedResultChanged) {
+      const activeVerificationRows = db
+        .prepare(
+          `
+          SELECT id, verification_summary_json
+          FROM race_verification_logs
+          WHERE race_id = ?
+            AND COALESCE(is_invalid_verification, 0) = 0
+          ORDER BY id DESC
+        `
+        )
+        .all(raceId);
+      const invalidatedAt = new Date().toISOString();
+      const invalidReason =
+        invalidReasonInput || "Confirmed result edited manually; re-verification required.";
+      const invalidateTx = db.transaction((rows) => {
+        for (const row of rows) {
+          const existingSummary = safeJsonParse(row?.verification_summary_json, {});
+          const nextSummary = {
+            ...existingSummary,
+            verification_reason: verificationReason || existingSummary?.verification_reason || null,
+            status_note: verificationReason || existingSummary?.status_note || null,
+            invalid_reason: invalidReason,
+            invalidated_at: invalidatedAt,
+            is_hidden_from_results: false,
+            is_invalid_verification: true,
+            exclude_from_learning: true,
+            learning_ready: false,
+            invalidation_source: "result_edit_reverify_required",
+            reverify_required: true
+          };
+          db.prepare(
+            `
+            UPDATE race_verification_logs
+            SET
+              is_hidden_from_results = 0,
+              is_invalid_verification = 1,
+              exclude_from_learning = 1,
+              invalid_reason = ?,
+              invalidated_at = ?,
+              learning_ready = 0,
+              verification_reason = ?,
+              verification_summary_json = ?
+            WHERE id = ?
+          `
+          ).run(
+            invalidReason,
+            invalidatedAt,
+            verificationReason,
+            JSON.stringify(nextSummary),
+            Number(row.id)
+          );
+        }
+      });
+      invalidateTx(activeVerificationRows);
+      invalidatedVerificationCount = activeVerificationRows.length;
+    } else if (verificationReason) {
+      const latestVerificationRows = db
+        .prepare(
+          `
+          SELECT id, verification_summary_json
+          FROM race_verification_logs
+          WHERE race_id = ?
+            AND COALESCE(is_invalid_verification, 0) = 0
+          ORDER BY id DESC
+        `
+        )
+        .all(raceId);
+      const noteTx = db.transaction((rows) => {
+        for (const row of rows) {
+          const existingSummary = safeJsonParse(row?.verification_summary_json, {});
+          const nextSummary = {
+            ...existingSummary,
+            verification_reason: verificationReason,
+            status_note: verificationReason
+          };
+          db.prepare(
+            `
+            UPDATE race_verification_logs
+            SET
+              verification_reason = ?,
+              verification_summary_json = ?
+            WHERE id = ?
+          `
+          ).run(verificationReason, JSON.stringify(nextSummary), Number(row.id));
+        }
+      });
+      noteTx(latestVerificationRows);
+      notedVerificationCount = latestVerificationRows.length;
+    }
+
+    return res.json({
+      ok: true,
+      race_id: raceId,
+      prediction_snapshot_id: predictionSnapshotId,
+      confirmed_result: confirmedResult,
+      previous_confirmed_result: previousConfirmedResult,
+      result_changed: confirmedResultChanged,
+      reverification_required: confirmedResultChanged,
+      invalidated_verification_count: invalidatedVerificationCount,
+      noted_verification_count: notedVerificationCount,
+      settlement_update: settlementUpdate,
+      message: confirmedResultChanged
+        ? "Confirmed result updated. Existing verification records were invalidated and re-verification is required."
+        : "Confirmed result note updated."
     });
   } catch (err) {
     return next(err);

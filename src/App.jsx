@@ -204,6 +204,27 @@ async function updateVerificationNoteApi({ verificationLogId, verificationReason
   });
 }
 
+async function editResultRecordApi({
+  raceId,
+  predictionSnapshotId = null,
+  confirmedResult,
+  verificationReason = "",
+  invalidReason = ""
+}) {
+  return fetchJsonWithTimeout(`${API_BASE}/results/edit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      race_id: raceId,
+      prediction_snapshot_id: predictionSnapshotId,
+      confirmed_result: confirmedResult,
+      verification_reason: verificationReason,
+      invalid_reason: invalidReason
+    }),
+    timeoutMs: 20000
+  });
+}
+
 async function fetchAnalyticsData(date) {
   const url = new URL(`${API_BASE}/analytics`);
   if (date) url.searchParams.set("date", date);
@@ -797,6 +818,17 @@ export default function App() {
   const [resultsStatusFilter, setResultsStatusFilter] = useState("all");
   const [resultsVenueFilter, setResultsVenueFilter] = useState("all");
   const [resultsParticipationFilter, setResultsParticipationFilter] = useState("all");
+  const [editingResultKey, setEditingResultKey] = useState("");
+  const [editingResultForm, setEditingResultForm] = useState({
+    raceId: "",
+    predictionSnapshotId: null,
+    confirmedResult: "",
+    verificationReason: "",
+    invalidReason: ""
+  });
+  const [editingResultError, setEditingResultError] = useState("");
+  const [editingResultNotice, setEditingResultNotice] = useState("");
+  const [editingResultSaveKey, setEditingResultSaveKey] = useState("");
 
   const [resultForm, setResultForm] = useState({
     raceId: "",
@@ -1882,10 +1914,41 @@ export default function App() {
     }
   };
 
+  const clearVerificationUiStateForRace = (raceId) => {
+    const raceKey = String(raceId || "");
+    if (!raceKey) return;
+    const matchingKeys = new Set(
+      history
+        .filter((row) => String(row?.race_id || "") === raceKey)
+        .map((row) => getVerificationHistoryKey(row?.race_id, row?.prediction_snapshot_id))
+    );
+    matchingKeys.add(getVerificationHistoryKey(raceKey, null));
+    setVerificationRunStatusByRace((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([key]) => !matchingKeys.has(key)))
+    );
+    setVerificationReasonByRace((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([key]) => !matchingKeys.has(key)))
+    );
+  };
+
   const onEditResultRecord = (row) => {
     const actualTop3 = Array.isArray(row?.actual_top3) ? row.actual_top3 : [];
-    setShowAdminResultTool(true);
+    const currentCombo = normalizeCombo(row?.confirmed_result || actualTop3.join("-"));
+    const editKey = getVerificationHistoryKey(row?.race_id, row?.prediction_snapshot_id);
+    setEditingResultKey(editKey);
+    setEditingResultError("");
+    setEditingResultNotice("");
+    setPerfError("");
     setScreen("results");
+    setEditingResultForm({
+      raceId: row?.race_id || "",
+      predictionSnapshotId: Number.isFinite(Number(row?.prediction_snapshot_id))
+        ? Number(row.prediction_snapshot_id)
+        : null,
+      confirmedResult: currentCombo || "",
+      verificationReason: row?.verification?.verification_reason || row?.verification_reason || "",
+      invalidReason: row?.verification?.invalid_reason || ""
+    });
     setResultForm({
       raceId: row?.race_id || "",
       finish1: actualTop3[0] ?? "",
@@ -1894,7 +1957,63 @@ export default function App() {
       payoutCombo: row?.confirmed_result || "",
       payoutAmount: ""
     });
-    setVerificationNotice("管理者用結果入力フォームにレース結果をセットしました。必要なら修正して保存してください。");
+  };
+
+  const onCancelEditResultRecord = () => {
+    setEditingResultKey("");
+    setEditingResultError("");
+    setEditingResultNotice("");
+    setEditingResultSaveKey("");
+  };
+
+  const onSaveEditedResultRecord = async () => {
+    const raceId = String(editingResultForm?.raceId || "").trim();
+    const normalizedConfirmedResult = normalizeCombo(editingResultForm?.confirmedResult);
+    const finishOrder = normalizedConfirmedResult
+      .split("-")
+      .map((v) => Number(v))
+      .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6);
+
+    if (!raceId) {
+      setEditingResultError("race_id が見つかりません。");
+      return;
+    }
+    if (finishOrder.length !== 3 || new Set(finishOrder).size !== 3) {
+      setEditingResultError("確定結果は 1-2-3 の形式で、1-6 の重複しない3艇を入力してください。");
+      return;
+    }
+
+    const saveKey = getVerificationHistoryKey(raceId, editingResultForm?.predictionSnapshotId);
+    setEditingResultSaveKey(saveKey);
+    setEditingResultError("");
+    setEditingResultNotice("");
+    setPerfError("");
+    try {
+      const result = await editResultRecordApi({
+        raceId,
+        predictionSnapshotId: editingResultForm?.predictionSnapshotId,
+        confirmedResult: normalizedConfirmedResult,
+        verificationReason: editingResultForm?.verificationReason || "",
+        invalidReason: editingResultForm?.invalidReason || ""
+      });
+      clearVerificationUiStateForRace(raceId);
+      await loadPerformance();
+      setEditingResultKey("");
+      setEditingResultNotice(
+        result?.reverification_required
+          ? "保存しました。旧検証を無効化し、再検証が必要な状態に更新しました。"
+          : "保存しました。"
+      );
+      setVerificationNotice(
+        result?.reverification_required
+          ? "結果を更新しました。旧検証は無効化され、再検証が必要です。"
+          : "結果を更新しました。"
+      );
+    } catch (e) {
+      setEditingResultError(e?.message || "結果の保存に失敗しました。");
+    } finally {
+      setEditingResultSaveKey("");
+    }
   };
 
   const onSettleRace = async (group) => {
@@ -3408,6 +3527,7 @@ export default function App() {
                     const savedFinalRecommendedBets = getSavedFinalRecommendedBets(h);
                     const betSnapshotLabel = getResultsBetSnapshotLabel(h);
                     const verificationKey = getVerificationHistoryKey(h.race_id, h.prediction_snapshot_id);
+                    const isEditingResult = editingResultKey === verificationKey;
                     const verificationSummaryData = h?.verification?.summary || {};
                     const currentVerifyStatus =
                       verificationRunStatusByRace[verificationKey] || h.verification_status || "PENDING_RESULT";
@@ -3461,6 +3581,7 @@ export default function App() {
                             type="button"
                             className="fetch-btn secondary"
                             onClick={() => onEditResultRecord(h)}
+                            disabled={editingResultSaveKey === verificationKey}
                           >
                             結果編集
                           </button>
@@ -3482,6 +3603,75 @@ export default function App() {
                         <p className="muted strategy-line" style={{ marginTop: 6 }}>
                           invalidated: {h.invalidation.invalid_reason || "manual soft invalidation"}
                         </p>
+                      ) : null}
+                      {isEditingResult ? (
+                        <div className="card" style={{ marginTop: 8, padding: 12 }}>
+                          <div className="controls-grid">
+                            <label>
+                              <span>確定結果</span>
+                              <input
+                                value={editingResultForm.confirmedResult}
+                                onChange={(e) =>
+                                  setEditingResultForm((prev) => ({
+                                    ...prev,
+                                    confirmedResult: e.target.value
+                                  }))
+                                }
+                                placeholder="1-2-3"
+                              />
+                            </label>
+                            <label>
+                              <span>検証メモ</span>
+                              <input
+                                value={editingResultForm.verificationReason}
+                                onChange={(e) =>
+                                  setEditingResultForm((prev) => ({
+                                    ...prev,
+                                    verificationReason: e.target.value
+                                  }))
+                                }
+                                placeholder="任意"
+                              />
+                            </label>
+                            <label>
+                              <span>再検証理由</span>
+                              <input
+                                value={editingResultForm.invalidReason}
+                                onChange={(e) =>
+                                  setEditingResultForm((prev) => ({
+                                    ...prev,
+                                    invalidReason: e.target.value
+                                  }))
+                                }
+                                placeholder="任意"
+                              />
+                            </label>
+                          </div>
+                          {editingResultError ? (
+                            <p className="error-banner" style={{ marginTop: 8 }}>{editingResultError}</p>
+                          ) : null}
+                          {editingResultNotice ? (
+                            <p className="notice-banner" style={{ marginTop: 8 }}>{editingResultNotice}</p>
+                          ) : null}
+                          <div className="row-actions" style={{ marginTop: 8 }}>
+                            <button
+                              type="button"
+                              className="fetch-btn"
+                              onClick={onSaveEditedResultRecord}
+                              disabled={editingResultSaveKey === verificationKey}
+                            >
+                              {editingResultSaveKey === verificationKey ? "保存中..." : "保存"}
+                            </button>
+                            <button
+                              type="button"
+                              className="fetch-btn secondary"
+                              onClick={onCancelEditResultRecord}
+                              disabled={editingResultSaveKey === verificationKey}
+                            >
+                              キャンセル
+                            </button>
+                          </div>
+                        </div>
                       ) : null}
                       <div className="history-summary-grid">
                         <div className="history-summary-cell">
