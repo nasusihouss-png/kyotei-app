@@ -4713,10 +4713,10 @@ raceRouter.get("/results-history", async (req, res, next) => {
       return {
         race_id: raceId,
         history_id: predictionSnapshotId || `${raceId}-${snapshotCreatedAt || logRow.created_at || ""}`,
-        race_date: race.race_date ?? snapshotRow.race_date ?? verification?.summary?.race_date ?? null,
-        venue_id: race.venue_id ?? snapshotRow.venue_code ?? verification?.summary?.venue_code ?? null,
-        venue_name: race.venue_name ?? snapshotRow.venue_name ?? verification?.summary?.venue_name ?? null,
-        race_no: race.race_no ?? snapshotRow.race_no ?? verification?.summary?.race_no ?? null,
+        race_date: snapshotRow.race_date ?? race.race_date ?? verification?.summary?.race_date ?? null,
+        venue_id: snapshotRow.venue_code ?? race.venue_id ?? verification?.summary?.venue_code ?? null,
+        venue_name: snapshotRow.venue_name ?? race.venue_name ?? verification?.summary?.venue_name ?? null,
+        race_no: snapshotRow.race_no ?? race.race_no ?? verification?.summary?.race_no ?? null,
         recommendation: normalizeRecommendation(logRow.recommendation || snapshotRow.raceDecision?.mode),
         predicted_entry_order: predictedEntryOrder,
         actual_entry_order: actualEntryOrder,
@@ -4896,9 +4896,26 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       `
       )
       .get(raceId);
-
     const predictionJson = safeJsonParse(latestPrediction?.prediction_json, {});
     const betPlanJson = safeJsonParse(latestPrediction?.bet_plan_json, {});
+    const predictionSnapshotContext =
+      predictionJson?.snapshot_context && typeof predictionJson.snapshot_context === "object"
+        ? predictionJson.snapshot_context
+        : {};
+    const immutableRaceMeta = {
+      race_date: predictionSnapshotContext?.race_date || raceMeta?.race_date || null,
+      venue_id: Number.isFinite(Number(predictionSnapshotContext?.venue_code))
+        ? Number(predictionSnapshotContext.venue_code)
+        : Number.isFinite(Number(raceMeta?.venue_id))
+          ? Number(raceMeta.venue_id)
+          : null,
+      venue_name: predictionSnapshotContext?.venue_name || raceMeta?.venue_name || null,
+      race_no: Number.isFinite(Number(predictionSnapshotContext?.race_no))
+        ? Number(predictionSnapshotContext.race_no)
+        : Number.isFinite(Number(raceMeta?.race_no))
+          ? Number(raceMeta.race_no)
+          : null
+    };
     const snapshotDisplayBetsFromPrediction = normalizeSavedBetSnapshotItems(predictionJson?.final_recommended_bets_snapshot);
     const legacySnapshotDisplayBetsFromPrediction = normalizeSavedBetSnapshotItems(predictionJson?.ai_bets_display_snapshot);
     const snapshotDisplayBetsFromVerification = normalizeSavedBetSnapshotItems(latestRequestedVerificationSummary?.final_recommended_bets_snapshot);
@@ -4971,10 +4988,10 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     if (canonicalSnapshotBets.length === 0) {
       const summary = {
         race_id: raceId,
-        race_date: raceMeta?.race_date || null,
-        venue_code: Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
-        venue_name: raceMeta?.venue_name || null,
-        race_no: Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
+        race_date: immutableRaceMeta.race_date,
+        venue_code: immutableRaceMeta.venue_id,
+        venue_name: immutableRaceMeta.venue_name,
+        race_no: immutableRaceMeta.race_no,
         predicted_top3: safeArray(predictionJson?.top3).slice(0, 3),
         actual_top3: actualTop3,
         head_correct: null,
@@ -5007,7 +5024,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       };
       const insertInfo = insertVerificationRecord({
         raceId,
-        raceMeta,
+        raceMeta: immutableRaceMeta,
         predictedTop3Text: safeArray(predictionJson?.top3).slice(0, 3).join("-") || null,
         actualTop3Text: actualTop3.length === 3 ? actualTop3.join("-") : null,
         hitMiss: "NOT_VERIFIABLE",
@@ -5044,10 +5061,10 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     });
     const summary = {
       race_id: raceId,
-      race_date: raceMeta?.race_date || null,
-      venue_code: Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
-      venue_name: raceMeta?.venue_name || null,
-      race_no: Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
+      race_date: immutableRaceMeta.race_date,
+      venue_code: immutableRaceMeta.venue_id,
+      venue_name: immutableRaceMeta.venue_name,
+      race_no: immutableRaceMeta.race_no,
       predicted_top3: predictedTop3,
       actual_top3: actualTop3,
       head_correct: analysis.head_correct,
@@ -5111,7 +5128,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     try {
       insertInfo = insertVerificationRecord({
         raceId,
-        raceMeta,
+        raceMeta: immutableRaceMeta,
         predictedTop3Text: analysis.predicted_combo,
         actualTop3Text: analysis.actual_combo,
         hitMiss: analysis.hit_miss,

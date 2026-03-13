@@ -1,6 +1,6 @@
 import db from "./db.js";
 
-function nowIso() {
+export function nowIso() {
   return new Date().toISOString();
 }
 
@@ -124,20 +124,6 @@ export function backfillPredictionSnapshotFinalBets(row) {
         ? prediction.ai_bets_display_snapshot
         : recovered.items
   };
-
-  db.prepare(
-    `
-    UPDATE prediction_logs
-    SET
-      prediction_json = ?,
-      prediction_timestamp = COALESCE(prediction_timestamp, ?)
-    WHERE id = ?
-  `
-  ).run(
-    JSON.stringify(nextPrediction),
-    prediction?.snapshot_created_at || row?.prediction_timestamp || row?.created_at || nowIso(),
-    Number(row.id)
-  );
 
   return {
     row: {
