@@ -2,10 +2,13 @@ import "./db.js";
 import express from "express";
 import cors from "cors";
 import { raceRouter } from "./src/routes/race.js";
+import { runPredictionFeatureLogMigrations } from "./prediction-feature-log.js";
 
 const app = express();
 const port = process.env.PORT || 3001;
 const host = process.env.HOST || "0.0.0.0";
+
+runPredictionFeatureLogMigrations();
 
 app.use(cors());
 app.use(express.json());

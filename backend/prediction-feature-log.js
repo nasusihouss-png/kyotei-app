@@ -99,21 +99,30 @@ db.exec(`
   )
 `);
 
-function ensurePredictionFeatureEventColumns() {
-  const cols = db.prepare("PRAGMA table_info(prediction_feature_log_events)").all();
+function ensureTableColumns(tableName, columns) {
+  const cols = db.prepare(`PRAGMA table_info(${tableName})`).all();
   const names = new Set(cols.map((c) => String(c.name)));
-  if (!names.has("start_display_order_json")) {
-    db.exec("ALTER TABLE prediction_feature_log_events ADD COLUMN start_display_order_json TEXT");
-  }
-  if (!names.has("start_display_timing_json")) {
-    db.exec("ALTER TABLE prediction_feature_log_events ADD COLUMN start_display_timing_json TEXT");
-  }
-  if (!names.has("start_display_raw_json")) {
-    db.exec("ALTER TABLE prediction_feature_log_events ADD COLUMN start_display_raw_json TEXT");
+  for (const [columnName, definition] of Object.entries(columns || {})) {
+    if (!names.has(columnName)) {
+      db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+    }
   }
 }
 
-ensurePredictionFeatureEventColumns();
+export function runPredictionFeatureLogMigrations() {
+  ensureTableColumns("prediction_feature_logs", {
+    start_display_order_json: "TEXT",
+    start_display_timing_json: "TEXT",
+    start_display_raw_json: "TEXT"
+  });
+  ensureTableColumns("prediction_feature_log_events", {
+    start_display_order_json: "TEXT",
+    start_display_timing_json: "TEXT",
+    start_display_raw_json: "TEXT"
+  });
+}
+
+runPredictionFeatureLogMigrations();
 
 const upsertSnapshotStmt = db.prepare(`
   INSERT INTO prediction_feature_logs (
@@ -235,7 +244,10 @@ const insertSnapshotEventStmt = db.prepare(`
     boat_rate_avg,
     avg_st_avg,
     exhibition_time_avg,
+    start_display_order_json,
     start_display_st_json,
+    start_display_timing_json,
+    start_display_raw_json,
     start_display_signature,
     predicted_entry_order_json,
     actual_entry_order_json,
@@ -264,7 +276,10 @@ const insertSnapshotEventStmt = db.prepare(`
     @boat_rate_avg,
     @avg_st_avg,
     @exhibition_time_avg,
+    @start_display_order_json,
     @start_display_st_json,
+    @start_display_timing_json,
+    @start_display_raw_json,
     @start_display_signature,
     @predicted_entry_order_json,
     @actual_entry_order_json,
