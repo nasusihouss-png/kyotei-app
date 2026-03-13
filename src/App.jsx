@@ -946,6 +946,12 @@ export default function App() {
     raceDecision?.factors?.formation_pattern ||
     raceStructure?.formation_pattern ||
     "-";
+  const attackScenario = data?.attackScenario || prediction?.attackScenario || {};
+  const attackScenarioLabel =
+    attackScenario?.attack_scenario_label ||
+    data?.prediction?.attack_scenario_type ||
+    prediction?.attack_scenario_type ||
+    null;
   const defaultReasonTags = [
     ...(Array.isArray(participationDecision?.reason_tags) ? participationDecision.reason_tags : []),
     ...(Array.isArray(explainability?.race_tags) ? explainability.race_tags : [])
@@ -2144,6 +2150,7 @@ export default function App() {
                     </div>
                     <div><span>展開パターン</span><strong>{data.racePattern || "-"}</strong></div>
                     <div><span>formation</span><strong>{formationPatternLabel}</strong></div>
+                    {attackScenarioLabel ? <div><span>attack</span><strong>{attackScenarioLabel}</strong></div> : null}
                   </div>
                   {participationDecision?.summary ? (
                     <p className="muted strategy-line">{participationDecision.summary}</p>
@@ -2205,6 +2212,7 @@ export default function App() {
                       <div className="kv-row"><span>entry_change_type</span><strong>{entryChangeType || "-"}</strong></div>
                       <div className="kv-row"><span>予測進入順</span><strong><LanePills lanes={predictedEntryOrder} /></strong></div>
                       <div className="kv-row"><span>実進入順</span><strong><LanePills lanes={actualEntryOrder} /></strong></div>
+                      <div className="kv-row"><span>attack scenario</span><strong>{attackScenarioLabel || "-"}</strong></div>
                     </div>
                     <div className="table-wrap" style={{ marginTop: 10 }}>
                       <table>

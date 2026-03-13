@@ -462,6 +462,20 @@ export function buildVerifiedLearningRows() {
         scenario_labels: Array.isArray(learning?.scenario_labels) ? learning.scenario_labels : [],
         scenario_type: learning?.scenario_type || context?.scenario_type || null,
         scenario_match_score: toNum(learning?.scenario_match_score, null),
+        attack_scenario_type: learning?.attack_scenario_type || context?.attack_scenario_type || null,
+        attack_scenario_label: learning?.attack_scenario_label || context?.attack_scenario_label || null,
+        attack_scenario_score: toNum(learning?.attack_scenario_score ?? context?.attack_scenario_score, null),
+        attack_scenario_reason_tags: Array.isArray(learning?.attack_scenario_reason_tags)
+          ? learning.attack_scenario_reason_tags
+          : Array.isArray(context?.attack_scenario_reason_tags)
+            ? context.attack_scenario_reason_tags
+            : [],
+        attack_scenario_applied: toNum(learning?.attack_scenario_applied ?? context?.attack_scenario_applied, 0),
+        two_sashi_score: toNum(learning?.two_sashi_score ?? context?.two_sashi_score, null),
+        three_makuri_score: toNum(learning?.three_makuri_score ?? context?.three_makuri_score, null),
+        three_makuri_sashi_score: toNum(learning?.three_makuri_sashi_score ?? context?.three_makuri_sashi_score, null),
+        four_cado_makuri_score: toNum(learning?.four_cado_makuri_score ?? context?.four_cado_makuri_score, null),
+        four_cado_makuri_sashi_score: toNum(learning?.four_cado_makuri_sashi_score ?? context?.four_cado_makuri_sashi_score, null),
         predicted_entry_order: Array.isArray(context?.entry?.predicted_entry_order) ? context.entry.predicted_entry_order : [],
         actual_entry_order: Array.isArray(context?.entry?.actual_entry_order) ? context.entry.actual_entry_order : [],
         start_display_st: context?.entry?.start_exhibition_st || {},

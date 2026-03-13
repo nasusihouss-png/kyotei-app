@@ -1044,7 +1044,8 @@ function computeRecommendationScore({
   contenderSignals,
   escapePatternAnalysis,
   scenarioSuggestions,
-  ranking
+  ranking,
+  attackScenarioAnalysis
 }) {
   const lw = learningWeights || {};
   const confidence = toNum(raceDecision?.confidence, 0);
@@ -1073,6 +1074,10 @@ function computeRecommendationScore({
   const predictedEntryPattern = Array.isArray(entryMeta?.predicted_entry_order) ? entryMeta.predicted_entry_order.join("-") : null;
   const actualEntryPattern = Array.isArray(entryMeta?.actual_entry_order) ? entryMeta.actual_entry_order.join("-") : null;
   const overlapBucket = overlapBucketLabel(contenderSignals?.overlap_lanes);
+  const attackScenarioBoost =
+    toNum(attackScenarioAnalysis?.attack_scenario_applied, 0) === 1
+      ? clamp(-3, 6, (toNum(attackScenarioAnalysis?.attack_scenario_score, 0) - 54) * 0.11)
+      : 0;
   const segmentRecommendationAdj =
     getSegmentCorrectionValue(lw, "venue", toInt(race?.venueId, null), "recommendation_score_adjustment") +
     getSegmentCorrectionValue(lw, "predicted_entry_pattern", predictedEntryPattern, "recommendation_score_adjustment") +
@@ -1094,6 +1099,7 @@ function computeRecommendationScore({
       entryPenalty +
       contenderConcentration * 0.08 +
       overlapCount * 2.2 +
+      attackScenarioBoost +
       venueAdj +
       gradeAdj +
       sigAdj +
@@ -1311,6 +1317,317 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis, learn
     }));
 }
 
+const ATTACK_SCENARIO_DICTIONARY = {
+  two_sashi: {
+    label: "2差し警戒",
+    lane_bias: { 2: 4.8, 3: 1.1, 1: -1.8 },
+    partner_bias: { 1: 1.2, 3: 0.9, 4: 0.4 }
+  },
+  three_makuri: {
+    label: "3捲り本線",
+    lane_bias: { 3: 5.2, 4: 1.4, 1: -2.4, 2: -1.3 },
+    partner_bias: { 4: 1.1, 5: 0.8, 2: 0.4 }
+  },
+  three_makuri_sashi: {
+    label: "3捲り差し候補",
+    lane_bias: { 3: 4.4, 2: 1.5, 4: 0.9, 1: -1.5 },
+    partner_bias: { 2: 1.1, 4: 0.9, 5: 0.5 }
+  },
+  four_cado_makuri: {
+    label: "4カド捲り注意",
+    lane_bias: { 4: 5.4, 5: 1.4, 1: -2.6, 2: -1.4, 3: -0.8 },
+    partner_bias: { 5: 1.1, 3: 0.9, 6: 0.7 }
+  },
+  four_cado_makuri_sashi: {
+    label: "4カド捲り差し候補",
+    lane_bias: { 4: 4.6, 3: 1.4, 2: 1.1, 5: 0.8, 1: -1.7 },
+    partner_bias: { 3: 1.1, 5: 0.9, 2: 0.8 }
+  }
+};
+
+function laneRowFromRanking(ranking, lane) {
+  return (Array.isArray(ranking) ? ranking : []).find((row) => toInt(row?.racer?.lane, null) === lane) || null;
+}
+
+function getExpectedStRank(row) {
+  return toNum(row?.features?.expected_actual_st_rank ?? row?.features?.st_rank, 6);
+}
+
+function getAttackScenarioReasonTags(type, evidence = {}) {
+  const tags = [];
+  if (!type) return tags;
+  if (toNum(evidence?.boat1_weakness, 0) >= 58) tags.push("BOAT1_WEAKNESS");
+  if (toNum(evidence?.wall_weakness, 0) >= 55) tags.push("WALL_WEAK");
+  if (toNum(evidence?.slit_support, 0) >= 55) tags.push("SLIT_SUPPORT");
+  if (toNum(evidence?.inside_balance, 0) >= 55) tags.push("INSIDE_BALANCE");
+  if (toNum(evidence?.partial_collapse, 0) >= 55) tags.push("PARTIAL_COLLAPSE");
+  if (toNum(evidence?.cado_advantage, 0) >= 55) tags.push("CADO_ADVANTAGE");
+  if (String(type).includes("makuri")) tags.push("ATTACK_SCENARIO");
+  if (String(type).includes("sashi")) tags.push("SASHI_SHAPE");
+  return [...new Set(tags)];
+}
+
+function analyzeAttackScenarioLayer({
+  ranking,
+  raceIndexes,
+  raceFlow,
+  wallEvaluation,
+  entryMeta,
+  escapePatternAnalysis,
+  playerStartProfile
+}) {
+  const rows = Array.isArray(ranking) ? ranking : [];
+  const lane1 = laneRowFromRanking(rows, 1);
+  const lane2 = laneRowFromRanking(rows, 2);
+  const lane3 = laneRowFromRanking(rows, 3);
+  const lane4 = laneRowFromRanking(rows, 4);
+  const lane5 = laneRowFromRanking(rows, 5);
+  const byLane = playerStartProfile?.by_lane || {};
+  const p2 = byLane["2"] || {};
+  const p3 = byLane["3"] || {};
+  const p4 = byLane["4"] || {};
+  const predictedEntryOrder = Array.isArray(entryMeta?.predicted_entry_order) ? entryMeta.predicted_entry_order : [];
+  const actualEntryOrder = Array.isArray(entryMeta?.actual_entry_order) ? entryMeta.actual_entry_order : [];
+  const lane4Course = actualEntryOrder[3] ?? predictedEntryOrder[3] ?? 4;
+  const nigeProbPct = toNum(raceFlow?.nige_prob, 0) * 100;
+  const sashiProbPct = toNum(raceFlow?.sashi_prob, 0) * 100;
+  const makuriProbPct = toNum(raceFlow?.makuri_prob, 0) * 100;
+  const makurizashiProbPct = toNum(raceFlow?.makurizashi_prob, 0) * 100;
+  const boat1Weakness = clamp(
+    0,
+    100,
+    100 - nigeProbPct +
+      toNum(lane1?.features?.f_hold_caution_penalty, 0) * 6 +
+      Math.max(0, getExpectedStRank(lane1) - 3) * 7 +
+      Math.max(0, 58 - toNum(lane1?.score, 58)) * 0.5
+  );
+  const wallStrength = toNum(wallEvaluation?.wall_strength, 50);
+  const wallBreakRisk = toNum(wallEvaluation?.wall_break_risk, 50);
+  const wallWeakness = clamp(0, 100, wallBreakRisk * 0.9 + Math.max(0, 58 - wallStrength) * 0.7);
+  const lane2InsideBalance = clamp(
+    0,
+    100,
+    toNum(p2.sashi_style_score, 50) * 0.45 +
+      toNum(p2.start_attack_score, 50) * 0.22 +
+      Math.max(0, 7 - getExpectedStRank(lane2)) * 7 +
+      Math.max(0, toNum(lane2?.features?.entry_advantage_score, 0)) * 4 +
+      toNum(lane2?.features?.slit_alert_flag, 0) * 16 -
+      toNum(lane2?.features?.f_hold_caution_penalty, 0) * 4
+  );
+  const lane3Attack = clamp(
+    0,
+    100,
+    toNum(p3.makuri_style_score, 50) * 0.46 +
+      toNum(p3.start_attack_score, 50) * 0.28 +
+      Math.max(0, 7 - getExpectedStRank(lane3)) * 7 +
+      Math.max(0, toNum(lane3?.features?.display_time_delta_vs_left, 0)) * 90 +
+      toNum(lane3?.features?.slit_alert_flag, 0) * 18 -
+      toNum(lane3?.features?.f_hold_caution_penalty, 0) * 5
+  );
+  const lane4Attack = clamp(
+    0,
+    100,
+    toNum(p4.makuri_style_score, 50) * 0.44 +
+      toNum(p4.start_attack_score, 50) * 0.3 +
+      Math.max(0, 7 - getExpectedStRank(lane4)) * 7 +
+      Math.max(0, toNum(lane4?.features?.display_time_delta_vs_left, 0)) * 90 +
+      toNum(lane4?.features?.slit_alert_flag, 0) * 18 +
+      Math.max(0, toNum(lane4?.features?.kado_bonus, 0)) * 12 -
+      toNum(lane4?.features?.f_hold_caution_penalty, 0) * 5
+  );
+  const slitSupport3 = clamp(
+    0,
+    100,
+    toNum(lane3?.features?.slit_alert_flag, 0) * 45 +
+      Math.max(0, toNum(lane3?.features?.display_time_delta_vs_left, 0)) * 110 +
+      Math.max(0, toNum(lane3?.features?.avg_st_rank_delta_vs_left, 0)) * 10
+  );
+  const slitSupport4 = clamp(
+    0,
+    100,
+    toNum(lane4?.features?.slit_alert_flag, 0) * 45 +
+      Math.max(0, toNum(lane4?.features?.display_time_delta_vs_left, 0)) * 110 +
+      Math.max(0, toNum(lane4?.features?.avg_st_rank_delta_vs_left, 0)) * 10
+  );
+  const partialCollapse = clamp(
+    0,
+    100,
+    Math.max(0, wallBreakRisk - 42) * 1.2 +
+      Math.max(0, 4 - getExpectedStRank(lane2)) * 4 +
+      Math.max(0, 4 - getExpectedStRank(lane3)) * 2
+  );
+  const cadoAdvantage = clamp(
+    0,
+    100,
+    (lane4Course === 4 ? 28 : lane4Course >= 4 ? 20 : 8) +
+      Math.max(0, toNum(lane4?.features?.kado_bonus, 0)) * 14 +
+      slitSupport4 * 0.34
+  );
+  const attackVsEscapePenalty = escapePatternAnalysis?.escape_pattern_applied ? 7 : 0;
+
+  const scores = {
+    two_sashi: clamp(
+      0,
+      100,
+      lane2InsideBalance * 0.48 +
+        boat1Weakness * 0.24 +
+        wallStrength * 0.16 +
+        sashiProbPct * 0.2 -
+        attackVsEscapePenalty
+    ),
+    three_makuri: clamp(
+      0,
+      100,
+      lane3Attack * 0.42 +
+        wallWeakness * 0.22 +
+        slitSupport3 * 0.18 +
+        makuriProbPct * 0.22 +
+        Math.max(0, toNum(raceIndexes?.makuri_index, 0) - 50) * 0.35 -
+        attackVsEscapePenalty
+    ),
+    three_makuri_sashi: clamp(
+      0,
+      100,
+      lane3Attack * 0.34 +
+        partialCollapse * 0.24 +
+        slitSupport3 * 0.12 +
+        makurizashiProbPct * 0.28 +
+        Math.max(0, toNum(raceIndexes?.makurizashi_index, 0) - 50) * 0.32 -
+        attackVsEscapePenalty
+    ),
+    four_cado_makuri: clamp(
+      0,
+      100,
+      lane4Attack * 0.38 +
+        cadoAdvantage * 0.24 +
+        wallWeakness * 0.18 +
+        slitSupport4 * 0.18 +
+        makuriProbPct * 0.18 -
+        attackVsEscapePenalty
+    ),
+    four_cado_makuri_sashi: clamp(
+      0,
+      100,
+      lane4Attack * 0.3 +
+        cadoAdvantage * 0.2 +
+        partialCollapse * 0.2 +
+        slitSupport4 * 0.12 +
+        makurizashiProbPct * 0.24 -
+        attackVsEscapePenalty
+    )
+  };
+
+  const ordered = Object.entries(scores)
+    .map(([type, score]) => ({ type, score: Number(score.toFixed(2)) }))
+    .sort((a, b) => b.score - a.score);
+  const best = ordered[0] || { type: null, score: 0 };
+  const second = ordered[1] || { type: null, score: 0 };
+  const evidence = {
+    boat1_weakness: Number(boat1Weakness.toFixed(2)),
+    wall_weakness: Number(wallWeakness.toFixed(2)),
+    wall_strength: Number(wallStrength.toFixed(2)),
+    inside_balance: Number(lane2InsideBalance.toFixed(2)),
+    slit_support: Number(Math.max(slitSupport3, slitSupport4).toFixed(2)),
+    partial_collapse: Number(partialCollapse.toFixed(2)),
+    cado_advantage: Number(cadoAdvantage.toFixed(2))
+  };
+  const attackScenarioApplied =
+    best.score >= 58 &&
+    best.score >= second.score + 4 &&
+    !escapePatternAnalysis?.escape_pattern_applied;
+  const scenarioType = attackScenarioApplied ? best.type : null;
+  return {
+    attack_scenario_type: scenarioType,
+    attack_scenario_label: scenarioType ? ATTACK_SCENARIO_DICTIONARY[scenarioType]?.label || scenarioType : null,
+    attack_scenario_score: Number(best.score.toFixed(2)),
+    attack_scenario_reason_tags: getAttackScenarioReasonTags(scenarioType, evidence),
+    attack_scenario_applied: attackScenarioApplied ? 1 : 0,
+    two_sashi_score: Number(scores.two_sashi.toFixed(2)),
+    three_makuri_score: Number(scores.three_makuri.toFixed(2)),
+    three_makuri_sashi_score: Number(scores.three_makuri_sashi.toFixed(2)),
+    four_cado_makuri_score: Number(scores.four_cado_makuri.toFixed(2)),
+    four_cado_makuri_sashi_score: Number(scores.four_cado_makuri_sashi.toFixed(2)),
+    scenario_candidates: ordered,
+    evidence
+  };
+}
+
+function applyAttackScenarioBiasToRanking(ranking, attackScenarioAnalysis) {
+  const rows = Array.isArray(ranking) ? ranking : [];
+  const type = attackScenarioAnalysis?.attack_scenario_type || null;
+  const config = type ? ATTACK_SCENARIO_DICTIONARY[type] : null;
+  if (!config || !toNum(attackScenarioAnalysis?.attack_scenario_applied, 0)) {
+    return rows.map((row, idx) => ({
+      ...row,
+      rank: idx + 1,
+      features: {
+        ...(row?.features || {}),
+        attack_scenario_type: type,
+        attack_scenario_applied: 0,
+        attack_scenario_score: toNum(attackScenarioAnalysis?.attack_scenario_score, 0),
+        attack_scenario_bias_score: 0
+      }
+    }));
+  }
+  const multiplier = clamp(0.35, 1, toNum(attackScenarioAnalysis?.attack_scenario_score, 0) / 72);
+  return [...rows]
+    .map((row) => {
+      const lane = toInt(row?.racer?.lane, null);
+      const baseLaneBias = Number.isFinite(Number(config.lane_bias?.[lane])) ? Number(config.lane_bias[lane]) : 0;
+      const partnerBias = Number.isFinite(Number(config.partner_bias?.[lane])) ? Number(config.partner_bias[lane]) : 0;
+      const appliedBias = Number((baseLaneBias * multiplier + partnerBias * multiplier * 0.55).toFixed(2));
+      return {
+        ...row,
+        score: Number((toNum(row?.score, 0) + appliedBias).toFixed(4)),
+        features: {
+          ...(row?.features || {}),
+          attack_scenario_type: type,
+          attack_scenario_applied: 1,
+          attack_scenario_score: toNum(attackScenarioAnalysis?.attack_scenario_score, 0),
+          attack_scenario_bias_score: appliedBias
+        }
+      };
+    })
+    .sort((a, b) => toNum(b?.score, 0) - toNum(a?.score, 0))
+    .map((row, idx) => ({
+      ...row,
+      rank: idx + 1
+    }));
+}
+
+function getAttackScenarioTargetLanes(type) {
+  if (type === "two_sashi") return { head: [2], partner: [1, 3, 4] };
+  if (type === "three_makuri") return { head: [3], partner: [4, 5, 2] };
+  if (type === "three_makuri_sashi") return { head: [3], partner: [2, 4, 5] };
+  if (type === "four_cado_makuri") return { head: [4], partner: [5, 3, 6] };
+  if (type === "four_cado_makuri_sashi") return { head: [4], partner: [3, 5, 2] };
+  return { head: [], partner: [] };
+}
+
+function applyAttackScenarioBiasToTickets(tickets, attackScenarioAnalysis) {
+  const rows = Array.isArray(tickets) ? tickets : [];
+  if (!toNum(attackScenarioAnalysis?.attack_scenario_applied, 0)) return rows;
+  const targets = getAttackScenarioTargetLanes(attackScenarioAnalysis?.attack_scenario_type);
+  const scoreFactor = clamp(0.2, 1, toNum(attackScenarioAnalysis?.attack_scenario_score, 0) / 72);
+  return [...rows]
+    .map((row) => {
+      const combo = normalizeCombo(row?.combo);
+      const lanes = combo ? combo.split("-").map((n) => toInt(n, null)).filter(Number.isInteger) : [];
+      const headBonus = targets.head.includes(lanes[0]) ? 0.02 * scoreFactor : 0;
+      const partnerBonus = targets.partner.includes(lanes[1]) ? 0.012 * scoreFactor : 0;
+      const thirdBonus = targets.partner.includes(lanes[2]) ? 0.007 * scoreFactor : 0;
+      const prob = Number.isFinite(Number(row?.prob)) ? Number(row.prob) : null;
+      const totalBonus = Number((headBonus + partnerBonus + thirdBonus).toFixed(4));
+      return {
+        ...row,
+        prob: Number.isFinite(prob) ? Number((prob + totalBonus).toFixed(4)) : prob,
+        attack_scenario_bias_score: totalBonus,
+        attack_scenario_type: attackScenarioAnalysis?.attack_scenario_type || null
+      };
+    })
+    .sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0));
+}
+
 const CONFIDENCE_VERSION = "v1.1";
 const PARTICIPATION_VERSION = "v1.2";
 const PARTICIPATION_CONFIDENCE_THRESHOLDS = {
@@ -1358,7 +1675,8 @@ function buildParticipationDecision({
   confidenceScores,
   scenarioSuggestions,
   raceFlow,
-  escapePatternAnalysis
+  escapePatternAnalysis,
+  attackScenarioAnalysis
 }) {
   const mode = normalizeModeValue(raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN");
   const confidence = toNum(raceDecision?.confidence, 0);
@@ -1382,11 +1700,14 @@ function buildParticipationDecision({
   const escapePatternApplied = !!escapePatternAnalysis?.escape_pattern_applied;
   const flowMode = String(raceFlow?.race_flow_mode || "").toLowerCase();
   const isAttackScenario = flowMode === "sashi" || flowMode === "makuri" || flowMode === "makurizashi";
+  const attackScenarioScore = toNum(attackScenarioAnalysis?.attack_scenario_score, 0);
+  const attackScenarioApplied = toNum(attackScenarioAnalysis?.attack_scenario_applied, 0) === 1;
   const contradictionCount =
     (mode === "SKIP" ? 1 : 0) +
     (chaosRisk >= 80 ? 1 : 0) +
     (escapePatternApplied && flowMode === "chaos" ? 1 : 0) +
-    (escapePatternApplied && slitAlertCount >= 2 && flowMode === "nige" ? 1 : 0);
+    (escapePatternApplied && slitAlertCount >= 2 && flowMode === "nige" ? 1 : 0) +
+    (attackScenarioApplied && flowMode === "nige" && attackScenarioScore >= 64 ? 1 : 0);
   const formationBoost =
     formationPatternClarity >= PARTICIPATION_TUNING.positiveBoost.formationClarityMin
       ? PARTICIPATION_TUNING.positiveBoost.formationClarityBaseBoost +
@@ -1402,6 +1723,10 @@ function buildParticipationDecision({
       ? slitAlertCount * PARTICIPATION_TUNING.positiveBoost.slitAlertPerLaneBoost +
         (isAttackScenario ? PARTICIPATION_TUNING.positiveBoost.attackScenarioExtraBoost : 0)
       : 0;
+  const attackScenarioBoost =
+    attackScenarioApplied
+      ? clamp(0, 7, (attackScenarioScore - 54) * 0.18 + (isAttackScenario ? 1.6 : 0))
+      : 0;
   const fHoldPenalty = Math.min(11, fHoldCautionScore * PARTICIPATION_TUNING.cautionPenalty.fHoldWeight);
   const contradictionPenalty = contradictionCount * PARTICIPATION_TUNING.cautionPenalty.contradictionPenalty;
   const adjustedHeadFixed = Math.min(
@@ -1412,6 +1737,7 @@ function buildParticipationDecision({
         formationBoost * 0.45 +
         escapeFocusBoost +
         slitBoost * 0.35 +
+        attackScenarioBoost * 0.45 +
         segmentParticipationCorrection * 0.6 -
         fHoldPenalty * 0.65 -
         contradictionPenalty * 0.55
@@ -1425,6 +1751,7 @@ function buildParticipationDecision({
         formationBoost * 0.45 +
         escapeFocusBoost * 0.9 +
         slitBoost * 0.55 +
+        attackScenarioBoost * 0.7 +
         segmentParticipationCorrection -
         fHoldPenalty * 0.8 -
         contradictionPenalty * 0.75
@@ -1448,6 +1775,7 @@ function buildParticipationDecision({
   if (escapePatternApplied) reasonTags.push("ESCAPE_PATTERN_APPLIED");
   if (escapeFocusBoost > 0) reasonTags.push("ESCAPE_PATTERN_FOCUSED");
   if (slitBoost > 0) reasonTags.push("SLIT_ALERT_POSITIVE");
+  if (attackScenarioApplied) reasonTags.push("ATTACK_SCENARIO_POSITIVE");
   if (fHoldPenalty > 0) reasonTags.push("F_HOLD_CAUTION");
   if (contradictionCount > 0) reasonTags.push("SIGNAL_CONTRADICTION");
   if (headStability >= 62) reasonTags.push("HEAD_STABILITY_GOOD");
@@ -1504,6 +1832,8 @@ function buildParticipationDecision({
       formation_pattern_clarity_score: Number(formationPatternClarity.toFixed(2)),
       escape_pattern_focus_boost: Number(escapeFocusBoost.toFixed(2)),
       slit_alert_count: slitAlertCount,
+      attack_scenario_score: Number(attackScenarioScore.toFixed(2)),
+      attack_scenario_boost: Number(attackScenarioBoost.toFixed(2)),
       f_hold_caution_score: Number(fHoldCautionScore.toFixed(2)),
       contradiction_count: contradictionCount,
       segment_participation_correction: Number(segmentParticipationCorrection.toFixed(2)),
@@ -1521,6 +1851,7 @@ function buildParticipationDecision({
       formation_boost: Number(formationBoost.toFixed(2)),
       escape_pattern_focus_boost: Number(escapeFocusBoost.toFixed(2)),
       slit_boost: Number(slitBoost.toFixed(2)),
+      attack_scenario_boost: Number(attackScenarioBoost.toFixed(2)),
       f_hold_penalty: Number(fHoldPenalty.toFixed(2)),
       contradiction_penalty: Number(contradictionPenalty.toFixed(2)),
       contradiction_count: contradictionCount
@@ -1925,7 +2256,7 @@ raceRouter.get("/race", async (req, res, next) => {
       racePattern: patternBeforeBias.race_pattern,
       indexes: patternBeforeBias.indexes
     });
-    const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis, learningWeights, data?.race || null);
+    let ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis, learningWeights, data?.race || null);
     const manualLapImpact = {
       enabled: false,
       applied_lane_count: 0,
@@ -2035,7 +2366,7 @@ raceRouter.get("/race", async (req, res, next) => {
       entry_advantage_score: r.features.entry_advantage_score
     }));
 
-    const prediction = {
+    let prediction = {
       ranking,
       top3: ranking.slice(0, 3).map((r) => r.racer.lane)
     };
@@ -2043,11 +2374,11 @@ raceRouter.get("/race", async (req, res, next) => {
       ranking: preRanking,
       top3: preRanking.slice(0, 3).map((r) => r.racer.lane)
     };
-    const prediction_after_entry_change = {
+    let prediction_after_entry_change = {
       ranking,
       top3: prediction.top3
     };
-    const playerStartProfile = analyzePlayerStartProfiles({ ranking });
+    let playerStartProfile = analyzePlayerStartProfiles({ ranking });
     const exhibitionAI = analyzeExhibitionAI({ ranking });
     const raceIndexes = analyzeRaceIndexes({
       ranking,
@@ -2070,14 +2401,45 @@ raceRouter.get("/race", async (req, res, next) => {
       racePattern,
       ranking
     });
-    const raceFlow = analyzeRaceFlow({
+    let raceFlow = analyzeRaceFlow({
       ranking,
       raceIndexes,
       racePattern,
       raceRisk: baseRaceRisk,
       playerStartProfiles: playerStartProfile
     });
-    const wallEvaluation = evaluateLane2Wall({
+    let wallEvaluation = evaluateLane2Wall({
+      ranking,
+      raceIndexes,
+      racePattern
+    });
+    const attackScenarioAnalysis = analyzeAttackScenarioLayer({
+      ranking,
+      raceIndexes,
+      raceFlow,
+      wallEvaluation,
+      entryMeta,
+      escapePatternAnalysis,
+      playerStartProfile
+    });
+    ranking = applyAttackScenarioBiasToRanking(ranking, attackScenarioAnalysis);
+    prediction = {
+      ranking,
+      top3: ranking.slice(0, 3).map((r) => r.racer.lane)
+    };
+    prediction_after_entry_change = {
+      ranking,
+      top3: prediction.top3
+    };
+    playerStartProfile = analyzePlayerStartProfiles({ ranking });
+    raceFlow = analyzeRaceFlow({
+      ranking,
+      raceIndexes,
+      racePattern,
+      raceRisk: baseRaceRisk,
+      playerStartProfiles: playerStartProfile
+    });
+    wallEvaluation = evaluateLane2Wall({
       ranking,
       raceIndexes,
       racePattern
@@ -2227,7 +2589,10 @@ raceRouter.get("/race", async (req, res, next) => {
         formation_pattern: escapePatternAnalysis.formation_pattern,
         escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
         escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
-        f_hold_caution_score: toNum(raceStructure?.f_hold_caution_score, 0)
+        f_hold_caution_score: toNum(raceStructure?.f_hold_caution_score, 0),
+        attack_scenario_type: attackScenarioAnalysis.attack_scenario_type,
+        attack_scenario_score: attackScenarioAnalysis.attack_scenario_score,
+        attack_scenario_applied: attackScenarioAnalysis.attack_scenario_applied
       }
     };
     const recommendation_score = computeRecommendationScore({
@@ -2239,8 +2604,9 @@ raceRouter.get("/race", async (req, res, next) => {
       learningWeights,
       contenderSignals: contenderAdjusted.contenderSignals,
       escapePatternAnalysis,
-      scenarioSuggestions,
-      ranking
+      scenarioSuggestions: null,
+      ranking,
+      attackScenarioAnalysis
     });
     const ticketGenerationV2 = generateTicketsV2({
       headSelection: headSelectionRefined,
@@ -2364,9 +2730,22 @@ raceRouter.get("/race", async (req, res, next) => {
     ).map((row) => {
       const combo = normalizeCombo(row?.combo);
       const exp = combo ? ticketExplainability[combo] : null;
+      const comboLanes = combo ? combo.split("-").map((n) => toInt(n, null)).filter(Number.isInteger) : [];
+      const attackTag =
+        attackScenarioAnalysis?.attack_scenario_applied &&
+        comboLanes.includes(comboLanes[0]) &&
+        comboLanes.includes(
+          attackScenarioAnalysis.attack_scenario_type === "two_sashi"
+            ? 2
+            : attackScenarioAnalysis.attack_scenario_type === "three_makuri" || attackScenarioAnalysis.attack_scenario_type === "three_makuri_sashi"
+              ? 3
+              : 4
+        )
+          ? attackScenarioAnalysis.attack_scenario_label
+          : null;
       return {
         ...row,
-        explanation_tags: exp?.explanation_tags || [],
+        explanation_tags: [...new Set([...(exp?.explanation_tags || []), ...(attackTag ? [attackTag] : [])])],
         explanation_summary: exp?.explanation_summary || null
       };
     });
@@ -2376,12 +2755,32 @@ raceRouter.get("/race", async (req, res, next) => {
     ).map((row) => {
       const combo = normalizeCombo(row?.combo);
       const exp = combo ? ticketExplainability[combo] : null;
+      const comboLanes = combo ? combo.split("-").map((n) => toInt(n, null)).filter(Number.isInteger) : [];
+      const attackTag =
+        attackScenarioAnalysis?.attack_scenario_applied &&
+        comboLanes.includes(
+          attackScenarioAnalysis.attack_scenario_type === "two_sashi"
+            ? 2
+            : attackScenarioAnalysis.attack_scenario_type === "three_makuri" || attackScenarioAnalysis.attack_scenario_type === "three_makuri_sashi"
+              ? 3
+              : 4
+        )
+          ? attackScenarioAnalysis.attack_scenario_label
+          : null;
       return {
         ...row,
-        explanation_tags: exp?.explanation_tags || [],
+        explanation_tags: [...new Set([...(exp?.explanation_tags || []), ...(attackTag ? [attackTag] : [])])],
         explanation_summary: exp?.explanation_summary || null
       };
     });
+    bet_plan_with_stake.recommended_bets = applyAttackScenarioBiasToTickets(
+      bet_plan_with_stake.recommended_bets,
+      attackScenarioAnalysis
+    );
+    ticketOptimizationWithStake.optimized_tickets = applyAttackScenarioBiasToTickets(
+      ticketOptimizationWithStake.optimized_tickets,
+      attackScenarioAnalysis
+    );
 
     saveFeatureSnapshots(raceId, ranking);
 
@@ -2408,7 +2807,8 @@ raceRouter.get("/race", async (req, res, next) => {
       confidenceScores,
       scenarioSuggestions,
       raceFlow,
-      escapePatternAnalysis
+      escapePatternAnalysis,
+      attackScenarioAnalysis
     });
     const segmentCorrectionUsage = buildSegmentCorrectionUsageSummary({
       learningWeights,
@@ -2518,10 +2918,23 @@ raceRouter.get("/race", async (req, res, next) => {
       manual_lap_impact: manualLapImpact || null,
       scenario_labels: [
         racePattern?.pattern || racePattern?.label || null,
-        scenarioSuggestions?.main_reason || null
+        scenarioSuggestions?.main_reason || null,
+        attackScenarioAnalysis?.attack_scenario_label || null
       ].filter(Boolean),
       scenario_type: scenarioSuggestions?.scenario_type || null,
       scenario_match_score: toNullableNum(scenarioSuggestions?.scenario_confidence),
+      attack_scenario_type: attackScenarioAnalysis?.attack_scenario_type || null,
+      attack_scenario_label: attackScenarioAnalysis?.attack_scenario_label || null,
+      attack_scenario_score: toNullableNum(attackScenarioAnalysis?.attack_scenario_score),
+      attack_scenario_reason_tags: Array.isArray(attackScenarioAnalysis?.attack_scenario_reason_tags)
+        ? attackScenarioAnalysis.attack_scenario_reason_tags
+        : [],
+      attack_scenario_applied: toInt(attackScenarioAnalysis?.attack_scenario_applied, 0),
+      two_sashi_score: toNullableNum(attackScenarioAnalysis?.two_sashi_score),
+      three_makuri_score: toNullableNum(attackScenarioAnalysis?.three_makuri_score),
+      three_makuri_sashi_score: toNullableNum(attackScenarioAnalysis?.three_makuri_sashi_score),
+      four_cado_makuri_score: toNullableNum(attackScenarioAnalysis?.four_cado_makuri_score),
+      four_cado_makuri_sashi_score: toNullableNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score),
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -2596,6 +3009,16 @@ raceRouter.get("/race", async (req, res, next) => {
       scenario_labels: snapshotContext.scenario_labels,
       scenario_type: snapshotContext.scenario_type,
       scenario_match_score: snapshotContext.scenario_match_score,
+      attack_scenario_type: snapshotContext.attack_scenario_type,
+      attack_scenario_label: snapshotContext.attack_scenario_label,
+      attack_scenario_score: snapshotContext.attack_scenario_score,
+      attack_scenario_reason_tags: snapshotContext.attack_scenario_reason_tags,
+      attack_scenario_applied: snapshotContext.attack_scenario_applied,
+      two_sashi_score: snapshotContext.two_sashi_score,
+      three_makuri_score: snapshotContext.three_makuri_score,
+      three_makuri_sashi_score: snapshotContext.three_makuri_sashi_score,
+      four_cado_makuri_score: snapshotContext.four_cado_makuri_score,
+      four_cado_makuri_sashi_score: snapshotContext.four_cado_makuri_sashi_score,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -2638,6 +3061,18 @@ raceRouter.get("/race", async (req, res, next) => {
       race_key: raceId,
       model_version: modelVersion,
       formation_pattern: escapePatternAnalysis.formation_pattern,
+      attack_scenario_type: attackScenarioAnalysis?.attack_scenario_type || null,
+      attack_scenario_label: attackScenarioAnalysis?.attack_scenario_label || null,
+      attack_scenario_score: toNullableNum(attackScenarioAnalysis?.attack_scenario_score),
+      attack_scenario_reason_tags: Array.isArray(attackScenarioAnalysis?.attack_scenario_reason_tags)
+        ? attackScenarioAnalysis.attack_scenario_reason_tags
+        : [],
+      attack_scenario_applied: toInt(attackScenarioAnalysis?.attack_scenario_applied, 0),
+      two_sashi_score: toNullableNum(attackScenarioAnalysis?.two_sashi_score),
+      three_makuri_score: toNullableNum(attackScenarioAnalysis?.three_makuri_score),
+      three_makuri_sashi_score: toNullableNum(attackScenarioAnalysis?.three_makuri_sashi_score),
+      four_cado_makuri_score: toNullableNum(attackScenarioAnalysis?.four_cado_makuri_score),
+      four_cado_makuri_sashi_score: toNullableNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score),
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -2759,6 +3194,7 @@ raceRouter.get("/race", async (req, res, next) => {
             : "Not Recommended",
       participationDecision,
       confidenceScores,
+      attackScenario: attackScenarioAnalysis,
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,
