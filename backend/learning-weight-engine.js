@@ -103,6 +103,17 @@ function ensureLearningTables() {
 
 ensureLearningTables();
 
+function ensureVerificationLearningColumns() {
+  const cols = db.prepare(`PRAGMA table_info(race_verification_logs)`).all();
+  const names = new Set(cols.map((c) => String(c.name)));
+  if (!names.has("is_invalid_verification")) {
+    db.exec("ALTER TABLE race_verification_logs ADD COLUMN is_invalid_verification INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("exclude_from_learning")) {
+    db.exec("ALTER TABLE race_verification_logs ADD COLUMN exclude_from_learning INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
 function loadLearningDataset() {
   return buildVerifiedLearningRows();
 }
@@ -256,10 +267,17 @@ function loadVerificationMismatchInsights() {
 }
 
 function getVerificationQueueStats() {
+  ensureVerificationLearningColumns();
   const rows = db
     .prepare(
       `
-      SELECT id, learning_ready, verification_status, mismatch_categories_json
+      SELECT
+        id,
+        learning_ready,
+        verification_status,
+        mismatch_categories_json,
+        is_invalid_verification,
+        exclude_from_learning
       FROM race_verification_logs
       ORDER BY id ASC
     `
@@ -280,6 +298,8 @@ function getVerificationQueueStats() {
 }
 
 function isLearningReadyVerificationRow(row) {
+  if (Number(row?.is_invalid_verification) === 1) return false;
+  if (Number(row?.exclude_from_learning) === 1) return false;
   const categories = safeJsonParse(row?.mismatch_categories_json, []);
   const explicitReady = Number(row?.learning_ready) === 1;
   const verified = String(row?.verification_status || "").toUpperCase().startsWith("VERIFIED");

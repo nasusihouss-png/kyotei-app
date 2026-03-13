@@ -101,7 +101,12 @@ db.exec(`
     actual_top3 TEXT,
     hit_miss TEXT,
     mismatch_categories_json TEXT,
-    verification_summary_json TEXT
+    verification_summary_json TEXT,
+    is_hidden_from_results INTEGER NOT NULL DEFAULT 0,
+    is_invalid_verification INTEGER NOT NULL DEFAULT 0,
+    exclude_from_learning INTEGER NOT NULL DEFAULT 0,
+    invalid_reason TEXT,
+    invalidated_at TEXT
   );
 `);
 
@@ -112,6 +117,11 @@ function ensureVerificationLogColumns() {
   if (!names.has("venue_code")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN venue_code INTEGER");
   if (!names.has("venue_name")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN venue_name TEXT");
   if (!names.has("race_no")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN race_no INTEGER");
+  if (!names.has("is_hidden_from_results")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN is_hidden_from_results INTEGER NOT NULL DEFAULT 0");
+  if (!names.has("is_invalid_verification")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN is_invalid_verification INTEGER NOT NULL DEFAULT 0");
+  if (!names.has("exclude_from_learning")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN exclude_from_learning INTEGER NOT NULL DEFAULT 0");
+  if (!names.has("invalid_reason")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN invalid_reason TEXT");
+  if (!names.has("invalidated_at")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN invalidated_at TEXT");
   ensureVerificationRecordColumns();
 }
 
@@ -4779,6 +4789,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
     const limitRaw = Number(req.query?.limit);
     const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 300;
     const statusFilter = String(req.query?.status || "all").toLowerCase();
+    const includeInvalidated = parseBooleanFlag(req.query?.include_invalidated, false);
 
     const predictionSnapshots = listPredictionSnapshots({ limit }).map(mapPredictionSnapshotRow);
 
@@ -4843,7 +4854,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
       `
       )
       .all();
-    const verificationRows = listLatestVerificationRecords();
+    const verificationRows = listLatestVerificationRecords({ includeInvalidated: includeInvalidated });
 
     const resultMap = new Map(resultsRows.map((r) => [r.race_id, r]));
     const raceMap = new Map(raceRows.map((r) => [r.race_id, r]));
@@ -5059,6 +5070,10 @@ raceRouter.get("/results-history", async (req, res, next) => {
           : Number.isFinite(Number(verificationSummary?.prediction_snapshot_id))
             ? Number(verificationSummary.prediction_snapshot_id)
             : null;
+      const invalidatedVerification =
+        Number(verification?.is_invalid_verification) === 1 ||
+        Number(verification?.is_hidden_from_results) === 1 ||
+        Number(verification?.exclude_from_learning) === 1;
       const displaySnapshotCombos = (Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot : [])
         .map((row) => normalizeCombo(row?.combo ?? row))
         .filter((c) => c && c.split("-").length === 3);
@@ -5087,7 +5102,11 @@ raceRouter.get("/results-history", async (req, res, next) => {
           verificationSnapshotOutdated ||
           String(verificationSummary?.verification_status || "").toUpperCase() === "NO_BET_SNAPSHOT"
         );
-      const hitMiss = recoveredSnapshotNeedsReverify ? computedHitMiss : (persistedHitMiss || computedHitMiss);
+      const hitMiss = invalidatedVerification
+        ? "INVALIDATED"
+        : recoveredSnapshotNeedsReverify
+          ? computedHitMiss
+          : (persistedHitMiss || computedHitMiss);
       const confirmedResult =
         actualCombo ||
         (startDisplay?.settled_result ? normalizeCombo(startDisplay.settled_result) : null) ||
@@ -5097,7 +5116,9 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const legacyFallbackVerified =
         !!verification?.summary?.warning &&
         String(verification.summary.warning).includes("fallback verification used predicted top3");
-      const verificationStatus = summaryStatus || (!hasValidBetSnapshot
+      const verificationStatus = invalidatedVerification
+        ? "INVALIDATED"
+        : summaryStatus || (!hasValidBetSnapshot
         ? "NO_BET_SNAPSHOT"
         : recoveredSnapshotNeedsReverify
           ? (confirmedResult ? "UNVERIFIED" : "NO_CONFIRMED_RESULT")
@@ -5158,6 +5179,15 @@ raceRouter.get("/results-history", async (req, res, next) => {
         })),
         startDisplay,
         verification,
+        invalidation: invalidatedVerification
+          ? {
+              is_hidden_from_results: Number(verification?.is_hidden_from_results) === 1,
+              is_invalid_verification: Number(verification?.is_invalid_verification) === 1,
+              exclude_from_learning: Number(verification?.exclude_from_learning) === 1,
+              invalid_reason: verification?.invalid_reason || verificationSummary?.invalid_reason || null,
+              invalidated_at: verification?.invalidated_at || verificationSummary?.invalidated_at || null
+            }
+          : null,
         prediction_snapshot_id: predictionSnapshotId,
         snapshot_created_at: snapshotCreatedAt,
         ai_bets_snapshot_source: aiBetsSnapshotSource,
@@ -5612,6 +5642,109 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         hit_count: Number(settledAgg?.hit_count || 0),
         miss_count: Number(settledAgg?.miss_count || 0)
       }
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.post("/results/invalidate", async (req, res, next) => {
+  try {
+    ensureVerificationLogColumns();
+    const verificationLogId = Number.isFinite(Number(req.body?.verification_log_id))
+      ? Number(req.body.verification_log_id)
+      : null;
+    const predictionSnapshotId = Number.isFinite(Number(req.body?.prediction_snapshot_id))
+      ? Number(req.body.prediction_snapshot_id)
+      : null;
+    const raceId = String(req.body?.race_id || "").trim() || null;
+    const invalidReason = String(req.body?.invalid_reason || "").trim() || null;
+    const hideFromResults = parseBooleanFlag(req.body?.is_hidden_from_results, true);
+    const invalidVerification = parseBooleanFlag(req.body?.is_invalid_verification, true);
+    const excludeFromLearning = parseBooleanFlag(req.body?.exclude_from_learning, true);
+
+    let targetRow = null;
+    if (verificationLogId) {
+      targetRow = db.prepare("SELECT * FROM race_verification_logs WHERE id = ? LIMIT 1").get(verificationLogId);
+    } else if (predictionSnapshotId) {
+      targetRow = db.prepare(
+        `
+        SELECT *
+        FROM race_verification_logs
+        WHERE COALESCE(verified_against_snapshot_id, prediction_snapshot_id) = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `
+      ).get(predictionSnapshotId);
+    } else if (raceId) {
+      targetRow = db.prepare(
+        `
+        SELECT *
+        FROM race_verification_logs
+        WHERE race_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `
+      ).get(raceId);
+    }
+
+    if (!targetRow) {
+      return res.status(404).json({
+        ok: false,
+        error: "verification_not_found",
+        message: "No verification record was found to invalidate."
+      });
+    }
+
+    const invalidatedAt = new Date().toISOString();
+    const existingSummary = safeJsonParse(targetRow?.verification_summary_json, {});
+    const nextSummary = {
+      ...existingSummary,
+      invalid_reason: invalidReason,
+      invalidated_at: invalidatedAt,
+      is_hidden_from_results: hideFromResults,
+      is_invalid_verification: invalidVerification,
+      exclude_from_learning: excludeFromLearning,
+      learning_ready: false,
+      invalidation_source: "manual_soft_invalidate"
+    };
+
+    db.prepare(
+      `
+      UPDATE race_verification_logs
+      SET
+        is_hidden_from_results = ?,
+        is_invalid_verification = ?,
+        exclude_from_learning = ?,
+        invalid_reason = ?,
+        invalidated_at = ?,
+        learning_ready = 0,
+        verification_summary_json = ?
+      WHERE id = ?
+    `
+    ).run(
+      hideFromResults ? 1 : 0,
+      invalidVerification ? 1 : 0,
+      excludeFromLearning ? 1 : 0,
+      invalidReason,
+      invalidatedAt,
+      JSON.stringify(nextSummary),
+      Number(targetRow.id)
+    );
+
+    return res.json({
+      ok: true,
+      verification_log_id: Number(targetRow.id),
+      race_id: targetRow.race_id,
+      prediction_snapshot_id:
+        Number.isFinite(Number(targetRow?.prediction_snapshot_id)) ? Number(targetRow.prediction_snapshot_id) : null,
+      verified_against_snapshot_id:
+        Number.isFinite(Number(targetRow?.verified_against_snapshot_id)) ? Number(targetRow.verified_against_snapshot_id) : null,
+      is_hidden_from_results: hideFromResults,
+      is_invalid_verification: invalidVerification,
+      exclude_from_learning: excludeFromLearning,
+      invalid_reason: invalidReason,
+      invalidated_at: invalidatedAt
     });
   } catch (err) {
     return next(err);

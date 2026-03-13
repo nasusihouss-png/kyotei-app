@@ -175,6 +175,21 @@ export function ensureVerificationRecordColumns() {
   if (!names.has("learning_ready")) {
     db.exec("ALTER TABLE race_verification_logs ADD COLUMN learning_ready INTEGER");
   }
+  if (!names.has("is_hidden_from_results")) {
+    db.exec("ALTER TABLE race_verification_logs ADD COLUMN is_hidden_from_results INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("is_invalid_verification")) {
+    db.exec("ALTER TABLE race_verification_logs ADD COLUMN is_invalid_verification INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("exclude_from_learning")) {
+    db.exec("ALTER TABLE race_verification_logs ADD COLUMN exclude_from_learning INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("invalid_reason")) {
+    db.exec("ALTER TABLE race_verification_logs ADD COLUMN invalid_reason TEXT");
+  }
+  if (!names.has("invalidated_at")) {
+    db.exec("ALTER TABLE race_verification_logs ADD COLUMN invalidated_at TEXT");
+  }
 }
 
 ensurePredictionSnapshotColumns();
@@ -260,7 +275,7 @@ export function mapPredictionSnapshotRow(row) {
   };
 }
 
-export function listLatestVerificationRecords() {
+export function listLatestVerificationRecords({ includeInvalidated = false } = {}) {
   ensureVerificationRecordColumns();
   const rows = db
     .prepare(
@@ -288,6 +303,11 @@ export function listLatestVerificationRecords() {
     const key = snapshotId ? `snapshot:${snapshotId}` : `race:${String(row?.race_id || "")}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const invalidated =
+      Number(row?.is_invalid_verification) === 1 ||
+      Number(row?.is_hidden_from_results) === 1 ||
+      Number(row?.exclude_from_learning) === 1;
+    if (invalidated && !includeInvalidated) continue;
     latest.push({
       ...row,
       summary
@@ -326,6 +346,10 @@ export function buildVerifiedLearningRows() {
       ).toUpperCase();
       if (!status.startsWith("VERIFIED")) return null;
       if (!snapshot) return null;
+      if (
+        Number(verificationRow?.is_invalid_verification) === 1 ||
+        Number(verificationRow?.exclude_from_learning) === 1
+      ) return null;
 
       const mismatchCategories = Array.isArray(summary?.mismatch_categories)
         ? summary.mismatch_categories
@@ -361,11 +385,18 @@ export function buildVerifiedLearningRows() {
                 ? 0
                 : null,
         learning_ready:
-          Number.isFinite(Number(verificationRow?.learning_ready))
+          Number(verificationRow?.exclude_from_learning) === 1
+            ? 0
+            : Number.isFinite(Number(verificationRow?.learning_ready))
             ? Number(verificationRow.learning_ready)
             : Array.isArray(mismatchCategories) && mismatchCategories.length > 0
               ? 1
               : 0,
+        is_hidden_from_results: Number(verificationRow?.is_hidden_from_results) === 1 ? 1 : 0,
+        is_invalid_verification: Number(verificationRow?.is_invalid_verification) === 1 ? 1 : 0,
+        exclude_from_learning: Number(verificationRow?.exclude_from_learning) === 1 ? 1 : 0,
+        invalid_reason: verificationRow?.invalid_reason || summary?.invalid_reason || null,
+        invalidated_at: verificationRow?.invalidated_at || summary?.invalidated_at || null,
         mismatch_categories: Array.isArray(mismatchCategories) ? mismatchCategories : [],
         confirmed_result: verificationRow?.confirmed_result || summary?.confirmed_result_canonical || null,
         recommendation_mode: summary?.recommendation_mode || snapshot.raceDecision?.mode || null,

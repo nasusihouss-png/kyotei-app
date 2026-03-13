@@ -283,5 +283,10 @@ CREATE TABLE IF NOT EXISTS race_verification_logs (
   actual_top3 TEXT,
   hit_miss TEXT,
   mismatch_categories_json TEXT,
-  verification_summary_json TEXT
+  verification_summary_json TEXT,
+  is_hidden_from_results INTEGER NOT NULL DEFAULT 0,
+  is_invalid_verification INTEGER NOT NULL DEFAULT 0,
+  exclude_from_learning INTEGER NOT NULL DEFAULT 0,
+  invalid_reason TEXT,
+  invalidated_at TEXT
 );

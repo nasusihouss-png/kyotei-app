@@ -117,8 +117,11 @@ async function fetchStatsData() {
   return response.json();
 }
 
-async function fetchHistoryData() {
-  const response = await fetch(`${API_BASE}/results-history?limit=500`);
+async function fetchHistoryData({ includeInvalidated = false } = {}) {
+  const url = new URL(`${API_BASE}/results-history`);
+  url.searchParams.set("limit", "500");
+  if (includeInvalidated) url.searchParams.set("include_invalidated", "1");
+  const response = await fetch(url.toString());
   if (!response.ok) throw new Error("Failed to fetch results history");
   return response.json();
 }
@@ -154,6 +157,28 @@ async function verifyRaceResultApi(raceId, predictionSnapshotId = null) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function invalidateVerificationApi({
+  verificationLogId,
+  raceId,
+  predictionSnapshotId,
+  invalidReason = ""
+}) {
+  return fetchJsonWithTimeout(`${API_BASE}/results/invalidate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      verification_log_id: verificationLogId,
+      race_id: raceId,
+      prediction_snapshot_id: predictionSnapshotId,
+      is_hidden_from_results: true,
+      is_invalid_verification: true,
+      exclude_from_learning: true,
+      invalid_reason: invalidReason
+    }),
+    timeoutMs: 20000
+  });
 }
 
 async function fetchAnalyticsData(date) {
@@ -339,6 +364,7 @@ function getProfitClass(value) {
 
 function getVerifyStatusLabel(status) {
   const s = String(status || "").toUpperCase();
+  if (s === "INVALIDATED") return "INVALIDATED";
   if (s === "VERIFIED_HIT") return "VERIFIED_HIT";
   if (s === "VERIFIED_MISS") return "VERIFIED_MISS";
   if (s === "VERIFIED") return "VERIFIED";
@@ -353,6 +379,7 @@ function getVerifyStatusLabel(status) {
 
 function getVerifyStatusBadgeClass(status) {
   const s = String(status || "").toUpperCase();
+  if (s === "INVALIDATED") return "badge pending";
   if (s === "VERIFIED" || s === "VERIFIED_HIT") return "badge hit";
   if (s === "VERIFIED_MISS") return "badge miss";
   if (s === "VERIFY_FAILED") return "badge miss";
@@ -739,6 +766,7 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [perfError, setPerfError] = useState("");
   const [verifyingRaceId, setVerifyingRaceId] = useState("");
+  const [invalidatingRaceId, setInvalidatingRaceId] = useState("");
   const [verificationNotice, setVerificationNotice] = useState("");
   const [verificationRunStatusByRace, setVerificationRunStatusByRace] = useState({});
   const [verificationReasonByRace, setVerificationReasonByRace] = useState({});
@@ -1126,7 +1154,7 @@ export default function App() {
       const [statsData, analyticsData, historyData, learningData, startEntryData, learningLatestData] = await Promise.all([
         fetchStatsData(),
         fetchAnalyticsData(date),
-        fetchHistoryData(),
+        fetchHistoryData({ includeInvalidated: adminMode }),
         fetchSelfLearningData(),
         fetchStartEntryAnalysisData(),
         fetchLearningLatestData()
@@ -1728,6 +1756,35 @@ export default function App() {
       await loadPerformance();
     } finally {
       setVerifyingRaceId("");
+    }
+  };
+
+  const onInvalidateVerification = async (row) => {
+    const verificationLogId = Number(row?.verification?.id);
+    if (!verificationLogId) {
+      setPerfError("無効化対象の検証レコードが見つかりません");
+      return;
+    }
+    const reason = window.prompt("無効化理由を入力してください", row?.verification?.invalid_reason || "") ?? "";
+    const ok = window.confirm("この検証レコードを Results から隠し、学習対象から除外しますか？");
+    if (!ok) return;
+
+    const invalidationKey = getVerificationHistoryKey(row?.race_id, row?.prediction_snapshot_id);
+    setInvalidatingRaceId(invalidationKey);
+    setPerfError("");
+    try {
+      await invalidateVerificationApi({
+        verificationLogId,
+        raceId: row?.race_id,
+        predictionSnapshotId: row?.prediction_snapshot_id,
+        invalidReason: reason
+      });
+      setVerificationNotice("検証レコードを無効化しました。Results と学習対象から除外されます。");
+      await loadPerformance();
+    } catch (e) {
+      setPerfError(e?.message || "検証レコードの無効化に失敗しました");
+    } finally {
+      setInvalidatingRaceId("");
     }
   };
 
@@ -3220,10 +3277,25 @@ export default function App() {
                           >
                             {verifyingRaceId === verificationKey ? "検証中..." : "検証"}
                           </button>
+                          {h?.verification?.id ? (
+                            <button
+                              type="button"
+                              className="fetch-btn secondary"
+                              onClick={() => onInvalidateVerification(h)}
+                              disabled={invalidatingRaceId === verificationKey}
+                            >
+                              {invalidatingRaceId === verificationKey ? "無効化中..." : "無効化"}
+                            </button>
+                          ) : null}
                         </div>
                       </div>
                       {!String(currentVerifyStatus || "").startsWith("VERIFIED") && verifyReason ? (
                         <p className="muted strategy-line" style={{ marginTop: 6 }}>{verifyReason}</p>
+                      ) : null}
+                      {h?.invalidation ? (
+                        <p className="muted strategy-line" style={{ marginTop: 6 }}>
+                          invalidated: {h.invalidation.invalid_reason || "manual soft invalidation"}
+                        </p>
                       ) : null}
                       <div className="history-grid">
                         <div>confirmed result: {h.confirmed_result || "-"}</div>
