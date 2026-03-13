@@ -31,7 +31,12 @@ export const DEFAULT_BATCH_WEIGHTS = {
   start_signal_weight: 1.0,
   venue_score_adjustments: {},
   grade_score_adjustments: {},
-  start_signature_score_adjustments: {}
+  start_signature_score_adjustments: {},
+  segmented_corrections: {},
+  segmented_learning_metadata: {
+    learned_segment_count: 0,
+    by_type: {}
+  }
 };
 
 export const AUTO_LEARNING_MIN_NEW_READY = 2;
@@ -59,6 +64,21 @@ function ensureLearningTables() {
       active_weights_json TEXT NOT NULL,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       last_run_id INTEGER
+    )
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS learning_segment_corrections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      learning_run_id INTEGER NOT NULL,
+      learned_segment_type TEXT NOT NULL,
+      learned_segment_key TEXT NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      hit_rate REAL,
+      head_hit_rate REAL,
+      bet_hit_rate REAL,
+      confidence_error REAL,
+      correction_values_json TEXT NOT NULL,
+      learned_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
   const row = db.prepare(`SELECT id FROM learning_weight_state WHERE id = 1`).get();
@@ -426,6 +446,220 @@ function loadPredictionFeatureInsights() {
   };
 }
 
+function joinPattern(value) {
+  return Array.isArray(value) && value.length ? value.join("-") : null;
+}
+
+function confidenceBandKey(confidence) {
+  const c = toNum(confidence, null);
+  if (!Number.isFinite(c)) return null;
+  if (c >= 70) return "high";
+  if (c >= 55) return "medium";
+  return "low";
+}
+
+function scenarioMatchBucket(score) {
+  const s = toNum(score, null);
+  if (!Number.isFinite(s)) return null;
+  if (s >= 70) return "high";
+  if (s >= 55) return "medium";
+  return "low";
+}
+
+function overlapBucket(overlapLanes) {
+  const count = Array.isArray(overlapLanes) ? overlapLanes.length : 0;
+  if (count >= 2) return "strong";
+  if (count === 1) return "partial";
+  return "none";
+}
+
+function fHoldZoneKey(playerContext) {
+  const players = Array.isArray(playerContext) ? playerContext : [];
+  const inside = players.some((row) => Number(row?.f_hold_bias_applied) === 1 && Number(row?.lane) >= 1 && Number(row?.lane) <= 3);
+  const outside = players.some((row) => Number(row?.f_hold_bias_applied) === 1 && Number(row?.lane) >= 4);
+  if (inside && outside) return "mixed";
+  if (inside) return "inside";
+  if (outside) return "outside";
+  return "none";
+}
+
+function buildSegmentEntries(row) {
+  const segments = [];
+  const add = (type, key) => {
+    if (key === null || key === undefined || String(key).trim() === "") return;
+    segments.push({ type, key: String(key) });
+  };
+
+  add("venue", row?.venue_id ?? row?.venue_name);
+  add("predicted_entry_pattern", joinPattern(row?.predicted_entry_order));
+  add("actual_entry_pattern", joinPattern(row?.actual_entry_order));
+  add("entry_change_present", toNum(row?.entry_changed, 0) ? "changed" : "unchanged");
+  add("entry_type", row?.entry_change_type || null);
+  add("formation_pattern", row?.formation_pattern || null);
+  add("scenario_type", row?.scenario_type || null);
+  add("scenario_match_bucket", scenarioMatchBucket(row?.scenario_match_score));
+  add("has_f_hold", toNum(row?.f_hold_lane_count, 0) > 0 ? "yes" : "no");
+  add("f_hold_zone", fHoldZoneKey(row?.player_context));
+  add("motor_exhibition_overlap_bucket", overlapBucket(row?.overlap_lanes));
+  add("confidence_band", confidenceBandKey(row?.bet_confidence ?? row?.confidence));
+  const confidenceBand = confidenceBandKey(row?.bet_confidence ?? row?.confidence);
+  if (confidenceBand) add("confidence_behavior", `${confidenceBand}_${toNum(row?.hit_flag, 0) === 1 ? "hit" : "miss"}`);
+  return segments;
+}
+
+function buildSegmentCorrectionPack(dataset) {
+  const rows = Array.isArray(dataset) ? dataset : [];
+  const globalHitRate = rows.length
+    ? (rows.filter((row) => toNum(row?.hit_flag, 0) === 1).length / rows.length) * 100
+    : 0;
+  const globalHeadHitRate = rows.length
+    ? (rows.filter((row) => toNum(row?.head_hit, 0) === 1).length / rows.length) * 100
+    : 0;
+  const segmentStats = new Map();
+
+  for (const row of rows) {
+    const entries = buildSegmentEntries(row);
+    const confidencePct = toNum(row?.bet_confidence ?? row?.confidence, 50);
+    const expected = toNum(row?.hit_flag, 0) === 1 ? 100 : 0;
+    const confidenceError = confidencePct - expected;
+    for (const entry of entries) {
+      const mapKey = `${entry.type}::${entry.key}`;
+      const bucket = segmentStats.get(mapKey) || {
+        type: entry.type,
+        key: entry.key,
+        sample_count: 0,
+        hit_count: 0,
+        head_hit_count: 0,
+        bet_hit_count: 0,
+        confidence_error_sum: 0
+      };
+      bucket.sample_count += 1;
+      bucket.hit_count += toNum(row?.hit_flag, 0) === 1 ? 1 : 0;
+      bucket.head_hit_count += toNum(row?.head_hit, 0) === 1 ? 1 : 0;
+      bucket.bet_hit_count += toNum(row?.bet_hit, 0) === 1 ? 1 : 0;
+      bucket.confidence_error_sum += confidenceError;
+      segmentStats.set(mapKey, bucket);
+    }
+  }
+
+  const minSamplesByType = {
+    venue: 12,
+    predicted_entry_pattern: 10,
+    actual_entry_pattern: 10,
+    entry_change_present: 12,
+    entry_type: 10,
+    formation_pattern: 10,
+    scenario_type: 10,
+    scenario_match_bucket: 10,
+    has_f_hold: 10,
+    f_hold_zone: 8,
+    motor_exhibition_overlap_bucket: 10,
+    confidence_band: 12,
+    confidence_behavior: 12
+  };
+
+  const grouped = {};
+  const persistedRows = [];
+  for (const bucket of segmentStats.values()) {
+    const minSample = toNum(minSamplesByType[bucket.type], 12);
+    if (bucket.sample_count < minSample) continue;
+    const hitRate = (bucket.hit_count / Math.max(1, bucket.sample_count)) * 100;
+    const headHitRate = (bucket.head_hit_count / Math.max(1, bucket.sample_count)) * 100;
+    const betHitRate = (bucket.bet_hit_count / Math.max(1, bucket.sample_count)) * 100;
+    const confidenceError = bucket.confidence_error_sum / Math.max(1, bucket.sample_count);
+    const performanceDelta = hitRate - globalHitRate;
+    const headDelta = headHitRate - globalHeadHitRate;
+    const correctionValues = {
+      head_confidence_correction: Number(clamp(-6, 6, headDelta * 0.18 - confidenceError * 0.04).toFixed(3)),
+      bet_confidence_correction: Number(clamp(-6, 6, performanceDelta * 0.22 - confidenceError * 0.05).toFixed(3)),
+      participate_watch_skip_correction: Number(clamp(-5, 5, performanceDelta * 0.14).toFixed(3)),
+      second_place_bias_correction: Number(
+        clamp(-3, 3, (bucket.type === "formation_pattern" || bucket.type === "venue" ? performanceDelta * 0.08 : 0)).toFixed(3)
+      ),
+      caution_penalty_correction: Number(clamp(-2.5, 2.5, confidenceError * 0.02 - performanceDelta * 0.03).toFixed(3)),
+      f_hold_penalty_adjustment: Number(clamp(-2, 2, (bucket.type === "has_f_hold" || bucket.type === "f_hold_zone" ? confidenceError * 0.018 : 0)).toFixed(3)),
+      pattern_strength_adjustment: Number(
+        clamp(-3, 3, (bucket.type === "formation_pattern" || bucket.type === "scenario_type" ? performanceDelta * 0.09 + headDelta * 0.04 : 0)).toFixed(3)
+      ),
+      recommendation_score_adjustment: Number(clamp(-4, 4, performanceDelta * 0.12).toFixed(3)),
+      entry_changed_penalty_delta: Number(clamp(-2, 2, (bucket.type === "entry_change_present" || bucket.type === "entry_type" ? -performanceDelta * 0.06 : 0)).toFixed(3)),
+      motor_lap_overlap_adjustment: Number(clamp(-3, 3, (bucket.type === "motor_exhibition_overlap_bucket" ? performanceDelta * 0.08 : 0)).toFixed(3))
+    };
+
+    if (!grouped[bucket.type]) grouped[bucket.type] = {};
+    grouped[bucket.type][bucket.key] = {
+      sample_count: bucket.sample_count,
+      hit_rate: Number(hitRate.toFixed(2)),
+      head_hit_rate: Number(headHitRate.toFixed(2)),
+      bet_hit_rate: Number(betHitRate.toFixed(2)),
+      confidence_error: Number(confidenceError.toFixed(3)),
+      correction_values: correctionValues
+    };
+    persistedRows.push({
+      learned_segment_type: bucket.type,
+      learned_segment_key: bucket.key,
+      sample_count: bucket.sample_count,
+      hit_rate: Number(hitRate.toFixed(2)),
+      head_hit_rate: Number(headHitRate.toFixed(2)),
+      bet_hit_rate: Number(betHitRate.toFixed(2)),
+      confidence_error: Number(confidenceError.toFixed(3)),
+      correction_values_json: correctionValues
+    });
+  }
+
+  const byType = Object.fromEntries(
+    Object.entries(grouped).map(([type, entries]) => [type, Object.keys(entries).length])
+  );
+
+  return {
+    grouped,
+    persistedRows,
+    metadata: {
+      learned_segment_count: persistedRows.length,
+      by_type: byType
+    }
+  };
+}
+
+function persistSegmentCorrections(runId, segmentRows) {
+  const rows = Array.isArray(segmentRows) ? segmentRows : [];
+  if (!rows.length || !toNum(runId, 0)) return 0;
+  const stmt = db.prepare(
+    `
+    INSERT INTO learning_segment_corrections (
+      learning_run_id,
+      learned_segment_type,
+      learned_segment_key,
+      sample_count,
+      hit_rate,
+      head_hit_rate,
+      bet_hit_rate,
+      confidence_error,
+      correction_values_json,
+      learned_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `
+  );
+  const tx = db.transaction((items) => {
+    for (const row of items) {
+      stmt.run(
+        toNum(runId, 0),
+        String(row.learned_segment_type || ""),
+        String(row.learned_segment_key || ""),
+        toNum(row.sample_count, 0),
+        toNum(row.hit_rate, null),
+        toNum(row.head_hit_rate, null),
+        toNum(row.bet_hit_rate, null),
+        toNum(row.confidence_error, null),
+        JSON.stringify(row.correction_values_json || {}),
+        nowIso()
+      );
+    }
+  });
+  tx(rows);
+  return rows.length;
+}
+
 export function getActiveLearningWeights() {
   const row = db.prepare(`SELECT active_weights_json FROM learning_weight_state WHERE id = 1`).get();
   return {
@@ -481,6 +715,7 @@ function updateActiveState(appliedWeights, runId) {
 
 export function runLearningBatch({ apply = false, dryRun = true } = {}) {
   const base = getActiveLearningWeights();
+  const dataset = loadLearningDataset();
   const venuePack = buildBucketAdjustments({
     column: "venue_id",
     minSample: 25,
@@ -501,6 +736,7 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
   });
   const verificationPack = loadVerificationMismatchInsights();
   const featurePack = loadPredictionFeatureInsights();
+  const segmentPack = buildSegmentCorrectionPack(dataset);
 
   const sampleSize = toNum(venuePack?.global?.races, 0);
   const suggested = {
@@ -513,7 +749,9 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
     start_signal_weight: buildStartSignalWeight(toNum(base.start_signal_weight, 1)),
     venue_score_adjustments: venuePack.adjustments,
     grade_score_adjustments: gradePack.adjustments,
-    start_signature_score_adjustments: signaturePack.adjustments
+    start_signature_score_adjustments: signaturePack.adjustments,
+    segmented_corrections: segmentPack.grouped,
+    segmented_learning_metadata: segmentPack.metadata
   };
   const verificationAdjustments = [];
   const vr = verificationPack?.rates || {};
@@ -619,7 +857,8 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
         ...verificationPack,
         adjustments_applied: verificationAdjustments
       },
-      feature_insights: featurePack
+      feature_insights: featurePack,
+      segment_learning: segmentPack.metadata
     };
   }
 
@@ -631,6 +870,7 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
     appliedWeights: suggested,
     summary
   });
+  persistSegmentCorrections(runId, segmentPack.persistedRows);
   updateActiveState(suggested, runId);
   return {
     mode: "applied",
@@ -644,7 +884,8 @@ export function runLearningBatch({ apply = false, dryRun = true } = {}) {
       ...verificationPack,
       adjustments_applied: verificationAdjustments
     },
-    feature_insights: featurePack
+    feature_insights: featurePack,
+    segment_learning: segmentPack.metadata
   };
 }
 
@@ -724,6 +965,10 @@ export function getLatestLearningRun() {
   const latest = db.prepare(`SELECT * FROM learning_weight_runs ORDER BY id DESC LIMIT 1`).get();
   const state = db.prepare(`SELECT * FROM learning_weight_state WHERE id = 1`).get();
   const runtime = db.prepare(`SELECT * FROM learning_runtime_state WHERE id = 1`).get();
+  const activeWeights = {
+    ...DEFAULT_BATCH_WEIGHTS,
+    ...safeJsonParse(state?.active_weights_json, {})
+  };
   const queue = getVerificationQueueStats();
   const lastProcessedId = toNum(runtime?.last_processed_verification_log_id, 0);
   const pending = Math.max(0, toNum(queue?.maxId, 0) - lastProcessedId);
@@ -742,12 +987,13 @@ export function getLatestLearningRun() {
           reverted_from_run_id: latest.reverted_from_run_id
         }
       : null,
-    active_weights: {
-      ...DEFAULT_BATCH_WEIGHTS,
-      ...safeJsonParse(state?.active_weights_json, {})
-    },
+    active_weights: activeWeights,
     active_updated_at: state?.updated_at || null,
     active_last_run_id: state?.last_run_id || null,
+    segment_learning: activeWeights?.segmented_learning_metadata || {
+      learned_segment_count: 0,
+      by_type: {}
+    },
     continuous_learning: {
       last_processed_verification_log_id: lastProcessedId,
       last_learning_run_id: runtime?.last_learning_run_id || null,

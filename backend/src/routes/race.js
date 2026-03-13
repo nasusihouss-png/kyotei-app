@@ -345,6 +345,97 @@ function buildFeatureContributionComponents(row) {
   };
 }
 
+function confidenceBandLabel(value) {
+  const n = toNum(value, null);
+  if (!Number.isFinite(n)) return null;
+  if (n >= 70) return "high";
+  if (n >= 55) return "medium";
+  return "low";
+}
+
+function scenarioMatchBucketLabel(value) {
+  const n = toNum(value, null);
+  if (!Number.isFinite(n)) return null;
+  if (n >= 70) return "high";
+  if (n >= 55) return "medium";
+  return "low";
+}
+
+function overlapBucketLabel(overlapLanes) {
+  const count = Array.isArray(overlapLanes) ? overlapLanes.length : 0;
+  if (count >= 2) return "strong";
+  if (count === 1) return "partial";
+  return "none";
+}
+
+function fHoldZoneLabel(ranking) {
+  const rows = Array.isArray(ranking) ? ranking : [];
+  const inside = rows.some((row) => {
+    const lane = toInt(row?.racer?.lane, null);
+    return lane >= 1 && lane <= 3 && toNum(row?.features?.f_hold_bias_applied, 0) === 1;
+  });
+  const outside = rows.some((row) => {
+    const lane = toInt(row?.racer?.lane, null);
+    return lane >= 4 && toNum(row?.features?.f_hold_bias_applied, 0) === 1;
+  });
+  if (inside && outside) return "mixed";
+  if (inside) return "inside";
+  if (outside) return "outside";
+  return "none";
+}
+
+function getSegmentCorrectionValue(learningWeights, type, key, field) {
+  if (!type || !key || !field) return 0;
+  const segment = learningWeights?.segmented_corrections?.[String(type)]?.[String(key)];
+  const values = segment?.correction_values || {};
+  return toNum(values?.[field], 0);
+}
+
+function rowsHaveFHold(ranking) {
+  return (Array.isArray(ranking) ? ranking : []).some((row) => toNum(row?.features?.f_hold_bias_applied, 0) === 1);
+}
+
+function buildSegmentCorrectionUsageSummary({
+  learningWeights,
+  race,
+  entryMeta,
+  escapePatternAnalysis,
+  scenarioSuggestions,
+  contenderSignals,
+  ranking,
+  confidenceScores
+}) {
+  const segments = [
+    ["venue", toInt(race?.venueId, null)],
+    ["predicted_entry_pattern", Array.isArray(entryMeta?.predicted_entry_order) ? entryMeta.predicted_entry_order.join("-") : null],
+    ["actual_entry_pattern", Array.isArray(entryMeta?.actual_entry_order) ? entryMeta.actual_entry_order.join("-") : null],
+    ["entry_change_present", entryMeta?.entry_changed ? "changed" : "unchanged"],
+    ["entry_type", entryMeta?.entry_change_type || null],
+    ["formation_pattern", escapePatternAnalysis?.formation_pattern || null],
+    ["scenario_type", scenarioSuggestions?.scenario_type || null],
+    ["scenario_match_bucket", scenarioMatchBucketLabel(scenarioSuggestions?.scenario_confidence)],
+    ["has_f_hold", rowsHaveFHold(ranking) ? "yes" : "no"],
+    ["f_hold_zone", fHoldZoneLabel(ranking)],
+    ["motor_exhibition_overlap_bucket", overlapBucketLabel(contenderSignals?.overlap_lanes)],
+    ["confidence_band", confidenceBandLabel(confidenceScores?.recommended_bet_confidence_pct ?? confidenceScores?.bet_confidence)]
+  ];
+  const used = segments
+    .map(([type, key]) => {
+      const segment = learningWeights?.segmented_corrections?.[String(type)]?.[String(key)];
+      if (!segment) return null;
+      return {
+        type,
+        key: String(key),
+        sample_count: toNum(segment?.sample_count, 0)
+      };
+    })
+    .filter(Boolean);
+  return {
+    segment_count: used.length,
+    segments: used
+  };
+}
+
 function buildFinalRecommendedBetsSnapshot({
   recommendedBets,
   optimizedTickets
@@ -935,7 +1026,10 @@ function computeRecommendationScore({
   entryMeta,
   race,
   learningWeights,
-  contenderSignals
+  contenderSignals,
+  escapePatternAnalysis,
+  scenarioSuggestions,
+  ranking
 }) {
   const lw = learningWeights || {};
   const confidence = toNum(raceDecision?.confidence, 0);
@@ -961,6 +1055,19 @@ function computeRecommendationScore({
   const sigAdj = toNum(lw?.start_signature_score_adjustments?.[String(startSignals?.signature || "")], 0);
   const contenderConcentration = toNum(contenderSignals?.contender_concentration, 0);
   const overlapCount = toNum((contenderSignals?.overlap_lanes || []).length, 0);
+  const predictedEntryPattern = Array.isArray(entryMeta?.predicted_entry_order) ? entryMeta.predicted_entry_order.join("-") : null;
+  const actualEntryPattern = Array.isArray(entryMeta?.actual_entry_order) ? entryMeta.actual_entry_order.join("-") : null;
+  const overlapBucket = overlapBucketLabel(contenderSignals?.overlap_lanes);
+  const segmentRecommendationAdj =
+    getSegmentCorrectionValue(lw, "venue", toInt(race?.venueId, null), "recommendation_score_adjustment") +
+    getSegmentCorrectionValue(lw, "predicted_entry_pattern", predictedEntryPattern, "recommendation_score_adjustment") +
+    getSegmentCorrectionValue(lw, "actual_entry_pattern", actualEntryPattern, "recommendation_score_adjustment") +
+    getSegmentCorrectionValue(lw, "entry_change_present", entryMeta?.entry_changed ? "changed" : "unchanged", "entry_changed_penalty_delta") +
+    getSegmentCorrectionValue(lw, "entry_type", entryMeta?.entry_change_type || null, "entry_changed_penalty_delta") +
+    getSegmentCorrectionValue(lw, "formation_pattern", escapePatternAnalysis?.formation_pattern || null, "pattern_strength_adjustment") +
+    getSegmentCorrectionValue(lw, "scenario_type", scenarioSuggestions?.scenario_type || null, "recommendation_score_adjustment") +
+    getSegmentCorrectionValue(lw, "motor_exhibition_overlap_bucket", overlapBucket, "motor_lap_overlap_adjustment") +
+    getSegmentCorrectionValue(lw, "has_f_hold", rowsHaveFHold(ranking) ? "yes" : "no", "caution_penalty_correction");
   const score = clamp(
     0,
     100,
@@ -974,7 +1081,8 @@ function computeRecommendationScore({
       overlapCount * 2.2 +
       venueAdj +
       gradeAdj +
-      sigAdj
+      sigAdj +
+      segmentRecommendationAdj
   );
   return Number(score.toFixed(2));
 }
@@ -1129,7 +1237,7 @@ function analyzeEscapeFormationLayer({ ranking, racePattern, indexes }) {
   };
 }
 
-function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis) {
+function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis, learningWeights = {}, race = null) {
   const rows = Array.isArray(ranking) ? ranking : [];
   if (!escapePatternAnalysis?.escape_pattern_applied) {
     return rows.map((row, idx) => ({
@@ -1147,6 +1255,18 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis) {
   }
 
   const biasByLane = escapePatternAnalysis.escape_second_place_bias_json || {};
+  const learnedPatternAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "formation_pattern",
+    escapePatternAnalysis?.formation_pattern || null,
+    "second_place_bias_correction"
+  );
+  const learnedVenueAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "second_place_bias_correction"
+  );
   return [...rows]
     .map((row) => {
       const lane = toInt(row?.racer?.lane, null);
@@ -1154,7 +1274,7 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis) {
         ? getEscapeSecondPlaceBiasScore(biasByLane, lane)
         : 0;
       const slitBoost = Math.max(0, toNum(row?.features?.slit_alert_flag, 0)) * 0.8;
-      const nextBiasScore = Number((baseBiasScore + slitBoost).toFixed(2));
+      const nextBiasScore = Number((baseBiasScore + slitBoost + learnedPatternAdj + learnedVenueAdj).toFixed(2));
       const nextScore = Number((toNum(row?.score, 0) + nextBiasScore).toFixed(4));
       return {
         ...row,
@@ -1386,7 +1506,8 @@ function buildConfidenceScores({
   preRaceAnalysis,
   contenderSignals,
   scenarioSuggestions,
-  escapePatternAnalysis
+  escapePatternAnalysis,
+  race
 }) {
   const clampPct = (v) => Number(clamp(0, 100, toNum(v, 0)).toFixed(2));
   const headBase = clampPct(toNum(headConfidence?.head_confidence, 0.5) * 100);
@@ -1429,6 +1550,29 @@ function buildConfidenceScores({
   const mainHeadFHoldPenalty = toNum(topRows[0]?.features?.f_hold_caution_penalty, 0);
   const fHoldCautionScore = clampPct(mainHeadFHoldPenalty * 7 + topFHoldPenalty * 4);
   const formationPatternClarity = clampPct(toNum(escapePatternAnalysis?.formation_pattern_clarity_score, 0));
+  const overlapBucket = overlapBucketLabel(contenderSignals?.overlap_lanes);
+  const predictedEntryPattern = Array.isArray(entryMeta?.predicted_entry_order) ? entryMeta.predicted_entry_order.join("-") : null;
+  const actualEntryPattern = Array.isArray(entryMeta?.actual_entry_order) ? entryMeta.actual_entry_order.join("-") : null;
+  const segmentHeadCorrection =
+    getSegmentCorrectionValue(learningWeights, "venue", toInt(race?.venueId, null), "head_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "formation_pattern", escapePatternAnalysis?.formation_pattern || null, "head_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "scenario_type", scenarioSuggestions?.scenario_type || null, "head_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "predicted_entry_pattern", predictedEntryPattern, "head_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "actual_entry_pattern", actualEntryPattern, "head_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "motor_exhibition_overlap_bucket", overlapBucket, "head_confidence_correction");
+  const confidenceBand = confidenceBandLabel(raceConf);
+  const segmentBetCorrection =
+    getSegmentCorrectionValue(learningWeights, "venue", toInt(race?.venueId, null), "bet_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "formation_pattern", escapePatternAnalysis?.formation_pattern || null, "bet_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "scenario_type", scenarioSuggestions?.scenario_type || null, "bet_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "scenario_match_bucket", scenarioMatchBucketLabel(scenarioSuggestions?.scenario_confidence), "bet_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "confidence_band", confidenceBand, "bet_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "motor_exhibition_overlap_bucket", overlapBucket, "bet_confidence_correction");
+  const segmentCautionAdj =
+    getSegmentCorrectionValue(learningWeights, "entry_change_present", entryMeta?.entry_changed ? "changed" : "unchanged", "caution_penalty_correction") +
+    getSegmentCorrectionValue(learningWeights, "entry_type", entryMeta?.entry_change_type || null, "caution_penalty_correction") +
+    getSegmentCorrectionValue(learningWeights, "has_f_hold", rowsHaveFHold(ranking) ? "yes" : "no", "f_hold_penalty_adjustment") +
+    getSegmentCorrectionValue(learningWeights, "f_hold_zone", fHoldZoneLabel(ranking), "f_hold_penalty_adjustment");
 
   const headFixed = clampPct(
     headBase * 0.38 +
@@ -1440,9 +1584,10 @@ function buildConfidenceScores({
       exhibitionSignal * 0.06 +
       formScore * 0.04 -
       entryPenalty -
-      fHoldCautionScore * 0.18 -
+      Math.max(0, fHoldCautionScore + segmentCautionAdj) * 0.18 -
       learnedCaution -
-      missingDataPenalty
+      missingDataPenalty +
+      segmentHeadCorrection
   );
   const betConfidence = clampPct(
     ticketConf * 0.34 +
@@ -1452,9 +1597,10 @@ function buildConfidenceScores({
       scenarioConfidence * 0.08 +
       contenderOverlap * 0.08 +
       top3Concentration * 0.06 -
-      fHoldCautionScore * 0.12 +
+      Math.max(0, fHoldCautionScore + segmentCautionAdj) * 0.12 +
       learnedCaution * 0.6 -
-      Math.max(0, missingDataPenalty - 4)
+      Math.max(0, missingDataPenalty - 4) +
+      segmentBetCorrection
   );
   const raceConfidence = clampPct((raceConf * 0.6 + headFixed * 0.2 + betConfidence * 0.2));
 
@@ -1481,6 +1627,9 @@ function buildConfidenceScores({
     bet_confidence: betConfidence,
     f_hold_caution_score: Number(fHoldCautionScore.toFixed(2)),
     formation_pattern_clarity_score: Number(formationPatternClarity.toFixed(2)),
+    segment_head_confidence_correction: Number(segmentHeadCorrection.toFixed(2)),
+    segment_bet_confidence_correction: Number(segmentBetCorrection.toFixed(2)),
+    segment_caution_adjustment: Number(segmentCautionAdj.toFixed(2)),
     confidence_reason_tags: [...new Set(confidenceReasonTags)],
     confidence_version: CONFIDENCE_VERSION
   };
@@ -1701,7 +1850,7 @@ raceRouter.get("/race", async (req, res, next) => {
       racePattern: patternBeforeBias.race_pattern,
       indexes: patternBeforeBias.indexes
     });
-    const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis);
+    const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis, learningWeights, data?.race || null);
     const manualLapImpact = {
       enabled: false,
       applied_lane_count: 0,
@@ -2013,7 +2162,10 @@ raceRouter.get("/race", async (req, res, next) => {
       entryMeta,
       race: data.race,
       learningWeights,
-      contenderSignals: contenderAdjusted.contenderSignals
+      contenderSignals: contenderAdjusted.contenderSignals,
+      escapePatternAnalysis,
+      scenarioSuggestions,
+      ranking
     });
     const ticketGenerationV2 = generateTicketsV2({
       headSelection: headSelectionRefined,
@@ -2170,7 +2322,8 @@ raceRouter.get("/race", async (req, res, next) => {
       preRaceAnalysis,
       contenderSignals: contenderAdjusted.contenderSignals,
       scenarioSuggestions,
-      escapePatternAnalysis
+      escapePatternAnalysis,
+      race: data?.race || null
     });
     const participationDecision = buildParticipationDecision({
       raceDecision,
@@ -2181,6 +2334,16 @@ raceRouter.get("/race", async (req, res, next) => {
       scenarioSuggestions,
       raceFlow,
       escapePatternAnalysis
+    });
+    const segmentCorrectionUsage = buildSegmentCorrectionUsageSummary({
+      learningWeights,
+      race: data?.race || null,
+      entryMeta,
+      escapePatternAnalysis,
+      scenarioSuggestions,
+      contenderSignals: contenderAdjusted.contenderSignals,
+      ranking,
+      confidenceScores
     });
     const snapshotCreatedAt = new Date().toISOString();
     const modelVersion = "prediction_snapshot_v2";
@@ -2294,7 +2457,8 @@ raceRouter.get("/race", async (req, res, next) => {
         head_fixed_confidence: confidenceScores.head_confidence,
         recommended_bet_confidence: confidenceScores.bet_confidence,
         participation_score_components: participationDecision.participation_score_components
-      }
+      },
+      segment_corrections_used: segmentCorrectionUsage
     };
     const learningContext = {
       venue_id: snapshotContext.venue_code,
@@ -2343,6 +2507,7 @@ raceRouter.get("/race", async (req, res, next) => {
       participation_score_components: participationDecision.participation_score_components,
       participation_version: participationDecision.participation_version,
       contender_signals: contenderAdjusted.contenderSignals,
+      segment_corrections_used: segmentCorrectionUsage,
       feature_contribution_summary: {
         player_score_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).player_score_component, 0).toFixed(3)),
         motor_score_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).motor_score_component, 0).toFixed(3)),
@@ -2722,7 +2887,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             racePattern: patternBeforeBias.race_pattern,
             indexes: patternBeforeBias.indexes
           });
-          const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis);
+          const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis, learningWeights, data?.race || null);
           const manualLapImpact = {
             enabled: false,
             applied_lane_count: 0,
@@ -2999,7 +3164,10 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             entryMeta,
             race: data.race,
             learningWeights,
-            contenderSignals: contenderAdjusted.contenderSignals
+            contenderSignals: contenderAdjusted.contenderSignals,
+            escapePatternAnalysis,
+            scenarioSuggestions,
+            ranking
           });
           const recItem = {
             raceId: raceId || `${String(date).replace(/-/g, "")}_${venueId}_${raceNo}`,
@@ -3079,7 +3247,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             preRaceAnalysis,
             contenderSignals: contenderAdjusted.contenderSignals,
             scenarioSuggestions,
-            escapePatternAnalysis
+            escapePatternAnalysis,
+            race: data?.race || null
           });
           const participationDecisionFinal = buildParticipationDecision({
             raceDecision,
@@ -3320,7 +3489,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
             racePattern: patternBeforeBias.race_pattern,
             indexes: patternBeforeBias.indexes
           });
-          const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis);
+          const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis, learningWeights, data?.race || null);
           const manualLapImpact = {
             enabled: false,
             applied_lane_count: 0,
@@ -3576,7 +3745,10 @@ raceRouter.get("/rankings", async (req, res, next) => {
             entryMeta,
             race: data.race,
             learningWeights,
-            contenderSignals: contenderAdjusted.contenderSignals
+            contenderSignals: contenderAdjusted.contenderSignals,
+            escapePatternAnalysis,
+            scenarioSuggestions,
+            ranking
           });
 
           const ranking_score = mode === "hit_rate"
@@ -5368,7 +5540,8 @@ raceRouter.get("/results-history", async (req, res, next) => {
           contribution_data_exists: !!(
             prediction?.learning_context?.feature_contribution_summary &&
             Object.keys(prediction.learning_context.feature_contribution_summary).length
-          )
+          ),
+          segment_corrections_used_count: toNum(prediction?.learning_context?.segment_corrections_used?.segment_count, 0)
         },
         recommended_bets: aiBetsDisplaySnapshot,
         logged_at: snapshotRow.prediction_timestamp || logRow.created_at

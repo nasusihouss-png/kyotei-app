@@ -2877,6 +2877,7 @@ export default function App() {
                   {learningLatest?.auto_trigger?.reason ? (
                     <small>auto: {getLearningAutoReasonLabel(learningLatest.auto_trigger.reason)}</small>
                   ) : null}
+                  <small>segments: {learningLatest?.segment_learning?.learned_segment_count ?? 0}</small>
                 </article>
                 <article className="card stat-card">
                   <span>前回学習で使用した検証件数</span>
@@ -3567,6 +3568,7 @@ export default function App() {
                             <div>exists: {h?.feature_snapshot_debug?.feature_snapshot_exists ? "YES" : "NO"}</div>
                             <div>count: {h?.feature_snapshot_debug?.feature_snapshot_count ?? 0}</div>
                             <div>latest id: {h?.feature_snapshot_debug?.latest_feature_snapshot_id ?? "-"}</div>
+                            <div>segment corrections used: {h?.feature_snapshot_debug?.segment_corrections_used_count ?? 0}</div>
                             <div>
                               families:
                               {" "}
