@@ -36,6 +36,10 @@ export const DEFAULT_BATCH_WEIGHTS = {
   segmented_learning_metadata: {
     learned_segment_count: 0,
     by_type: {}
+  },
+  confidence_calibration: {
+    high_min: 80,
+    medium_min: 60
   }
 };
 
@@ -72,15 +76,29 @@ function ensureLearningTables() {
       learning_run_id INTEGER NOT NULL,
       learned_segment_type TEXT NOT NULL,
       learned_segment_key TEXT NOT NULL,
+      confidence_bucket TEXT,
       sample_count INTEGER NOT NULL DEFAULT 0,
       hit_rate REAL,
       head_hit_rate REAL,
       bet_hit_rate REAL,
       confidence_error REAL,
       correction_values_json TEXT NOT NULL,
-      learned_at TEXT DEFAULT CURRENT_TIMESTAMP
+      calibration_adjustment_json TEXT,
+      learned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      calibrated_at TEXT
     )
   `);
+  const segmentCols = db.prepare(`PRAGMA table_info(learning_segment_corrections)`).all();
+  const segmentNames = new Set(segmentCols.map((c) => String(c.name)));
+  if (!segmentNames.has("confidence_bucket")) {
+    db.exec("ALTER TABLE learning_segment_corrections ADD COLUMN confidence_bucket TEXT");
+  }
+  if (!segmentNames.has("calibration_adjustment_json")) {
+    db.exec("ALTER TABLE learning_segment_corrections ADD COLUMN calibration_adjustment_json TEXT");
+  }
+  if (!segmentNames.has("calibrated_at")) {
+    db.exec("ALTER TABLE learning_segment_corrections ADD COLUMN calibrated_at TEXT");
+  }
   const row = db.prepare(`SELECT id FROM learning_weight_state WHERE id = 1`).get();
   if (!row) {
     db.prepare(`
@@ -453,8 +471,11 @@ function joinPattern(value) {
 function confidenceBandKey(confidence) {
   const c = toNum(confidence, null);
   if (!Number.isFinite(c)) return null;
-  if (c >= 70) return "high";
-  if (c >= 55) return "medium";
+  const cfg = DEFAULT_BATCH_WEIGHTS.confidence_calibration || {};
+  const highMin = toNum(cfg.high_min, 80);
+  const mediumMin = toNum(cfg.medium_min, 60);
+  if (c >= highMin) return "high";
+  if (c >= mediumMin) return "medium";
   return "low";
 }
 
@@ -501,9 +522,13 @@ function buildSegmentEntries(row) {
   add("has_f_hold", toNum(row?.f_hold_lane_count, 0) > 0 ? "yes" : "no");
   add("f_hold_zone", fHoldZoneKey(row?.player_context));
   add("motor_exhibition_overlap_bucket", overlapBucket(row?.overlap_lanes));
-  add("confidence_band", confidenceBandKey(row?.bet_confidence ?? row?.confidence));
-  const confidenceBand = confidenceBandKey(row?.bet_confidence ?? row?.confidence);
-  if (confidenceBand) add("confidence_behavior", `${confidenceBand}_${toNum(row?.hit_flag, 0) === 1 ? "hit" : "miss"}`);
+  add("participation_decision_state", row?.participation_decision || null);
+  const headBand = confidenceBandKey(row?.head_confidence);
+  const betBand = confidenceBandKey(row?.bet_confidence ?? row?.confidence);
+  add("head_confidence_band", headBand);
+  add("bet_confidence_band", betBand);
+  if (headBand) add("head_confidence_behavior", `${headBand}_${toNum(row?.head_hit, 0) === 1 ? "hit" : "miss"}`);
+  if (betBand) add("bet_confidence_behavior", `${betBand}_${toNum(row?.bet_hit, 0) === 1 ? "hit" : "miss"}`);
   return segments;
 }
 
@@ -519,9 +544,12 @@ function buildSegmentCorrectionPack(dataset) {
 
   for (const row of rows) {
     const entries = buildSegmentEntries(row);
-    const confidencePct = toNum(row?.bet_confidence ?? row?.confidence, 50);
-    const expected = toNum(row?.hit_flag, 0) === 1 ? 100 : 0;
-    const confidenceError = confidencePct - expected;
+    const betConfidencePct = toNum(row?.bet_confidence ?? row?.confidence, 50);
+    const headConfidencePct = toNum(row?.head_confidence, betConfidencePct);
+    const expectedBet = toNum(row?.bet_hit ?? row?.hit_flag, 0) === 1 ? 100 : 0;
+    const expectedHead = toNum(row?.head_hit, 0) === 1 ? 100 : 0;
+    const confidenceError = betConfidencePct - expectedBet;
+    const headConfidenceError = headConfidencePct - expectedHead;
     for (const entry of entries) {
       const mapKey = `${entry.type}::${entry.key}`;
       const bucket = segmentStats.get(mapKey) || {
@@ -531,13 +559,15 @@ function buildSegmentCorrectionPack(dataset) {
         hit_count: 0,
         head_hit_count: 0,
         bet_hit_count: 0,
-        confidence_error_sum: 0
+        confidence_error_sum: 0,
+        head_confidence_error_sum: 0
       };
       bucket.sample_count += 1;
       bucket.hit_count += toNum(row?.hit_flag, 0) === 1 ? 1 : 0;
       bucket.head_hit_count += toNum(row?.head_hit, 0) === 1 ? 1 : 0;
       bucket.bet_hit_count += toNum(row?.bet_hit, 0) === 1 ? 1 : 0;
       bucket.confidence_error_sum += confidenceError;
+      bucket.head_confidence_error_sum += headConfidenceError;
       segmentStats.set(mapKey, bucket);
     }
   }
@@ -554,8 +584,11 @@ function buildSegmentCorrectionPack(dataset) {
     has_f_hold: 10,
     f_hold_zone: 8,
     motor_exhibition_overlap_bucket: 10,
-    confidence_band: 12,
-    confidence_behavior: 12
+    participation_decision_state: 10,
+    head_confidence_band: 12,
+    bet_confidence_band: 12,
+    head_confidence_behavior: 12,
+    bet_confidence_behavior: 12
   };
 
   const grouped = {};
@@ -567,12 +600,16 @@ function buildSegmentCorrectionPack(dataset) {
     const headHitRate = (bucket.head_hit_count / Math.max(1, bucket.sample_count)) * 100;
     const betHitRate = (bucket.bet_hit_count / Math.max(1, bucket.sample_count)) * 100;
     const confidenceError = bucket.confidence_error_sum / Math.max(1, bucket.sample_count);
+    const headConfidenceError = bucket.head_confidence_error_sum / Math.max(1, bucket.sample_count);
     const performanceDelta = hitRate - globalHitRate;
     const headDelta = headHitRate - globalHeadHitRate;
+    const isHighMiss = (bucket.type === "head_confidence_behavior" || bucket.type === "bet_confidence_behavior") && String(bucket.key).includes("high_miss");
+    const isLowHit = (bucket.type === "head_confidence_behavior" || bucket.type === "bet_confidence_behavior") && String(bucket.key).includes("low_hit");
+    const calibrationTilt = isHighMiss ? -1.35 : isLowHit ? 0.85 : 0;
     const correctionValues = {
-      head_confidence_correction: Number(clamp(-6, 6, headDelta * 0.18 - confidenceError * 0.04).toFixed(3)),
-      bet_confidence_correction: Number(clamp(-6, 6, performanceDelta * 0.22 - confidenceError * 0.05).toFixed(3)),
-      participate_watch_skip_correction: Number(clamp(-5, 5, performanceDelta * 0.14).toFixed(3)),
+      head_confidence_correction: Number(clamp(-6, 6, headDelta * 0.18 - headConfidenceError * 0.04 + calibrationTilt).toFixed(3)),
+      bet_confidence_correction: Number(clamp(-6, 6, performanceDelta * 0.22 - confidenceError * 0.05 + calibrationTilt).toFixed(3)),
+      participate_watch_skip_correction: Number(clamp(-5, 5, performanceDelta * 0.14 + calibrationTilt * 0.8).toFixed(3)),
       second_place_bias_correction: Number(
         clamp(-3, 3, (bucket.type === "formation_pattern" || bucket.type === "venue" ? performanceDelta * 0.08 : 0)).toFixed(3)
       ),
@@ -593,17 +630,29 @@ function buildSegmentCorrectionPack(dataset) {
       head_hit_rate: Number(headHitRate.toFixed(2)),
       bet_hit_rate: Number(betHitRate.toFixed(2)),
       confidence_error: Number(confidenceError.toFixed(3)),
+      head_confidence_error: Number(headConfidenceError.toFixed(3)),
       correction_values: correctionValues
     };
     persistedRows.push({
       learned_segment_type: bucket.type,
       learned_segment_key: bucket.key,
+      confidence_bucket:
+        bucket.type === "head_confidence_behavior" || bucket.type === "head_confidence_band"
+          ? String(bucket.key).split("_")[0]
+          : bucket.type === "bet_confidence_behavior" || bucket.type === "bet_confidence_band"
+            ? String(bucket.key).split("_")[0]
+            : null,
       sample_count: bucket.sample_count,
       hit_rate: Number(hitRate.toFixed(2)),
       head_hit_rate: Number(headHitRate.toFixed(2)),
       bet_hit_rate: Number(betHitRate.toFixed(2)),
       confidence_error: Number(confidenceError.toFixed(3)),
-      correction_values_json: correctionValues
+      correction_values_json: correctionValues,
+      calibration_adjustment_json: {
+        head_confidence_raw_delta: correctionValues.head_confidence_correction,
+        bet_confidence_raw_delta: correctionValues.bet_confidence_correction,
+        participate_watch_skip_delta: correctionValues.participate_watch_skip_correction
+      }
     });
   }
 
@@ -630,29 +679,36 @@ function persistSegmentCorrections(runId, segmentRows) {
       learning_run_id,
       learned_segment_type,
       learned_segment_key,
+      confidence_bucket,
       sample_count,
       hit_rate,
       head_hit_rate,
       bet_hit_rate,
       confidence_error,
       correction_values_json,
-      learned_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      calibration_adjustment_json,
+      learned_at,
+      calibrated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   );
   const tx = db.transaction((items) => {
     for (const row of items) {
+      const timestamp = nowIso();
       stmt.run(
         toNum(runId, 0),
         String(row.learned_segment_type || ""),
         String(row.learned_segment_key || ""),
+        row.confidence_bucket ? String(row.confidence_bucket) : null,
         toNum(row.sample_count, 0),
         toNum(row.hit_rate, null),
         toNum(row.head_hit_rate, null),
         toNum(row.bet_hit_rate, null),
         toNum(row.confidence_error, null),
         JSON.stringify(row.correction_values_json || {}),
-        nowIso()
+        JSON.stringify(row.calibration_adjustment_json || {}),
+        timestamp,
+        timestamp
       );
     }
   });

@@ -2183,6 +2183,14 @@ export default function App() {
                 <details className="card">
                   <summary>展示・進入の詳細</summary>
                   <div style={{ marginTop: 10 }}>
+                    <div className="kv-list" style={{ marginBottom: 10 }}>
+                      <div className="kv-row"><span>頭信頼度 raw</span><strong>{formatMaybeNumber(confidenceScores?.head_confidence_raw, 1)}%</strong></div>
+                      <div className="kv-row"><span>頭信頼度 calibrated</span><strong>{formatMaybeNumber(confidenceScores?.head_confidence_calibrated, 1)}%</strong></div>
+                      <div className="kv-row"><span>買い目信頼度 raw</span><strong>{formatMaybeNumber(confidenceScores?.bet_confidence_raw, 1)}%</strong></div>
+                      <div className="kv-row"><span>買い目信頼度 calibrated</span><strong>{formatMaybeNumber(confidenceScores?.bet_confidence_calibrated, 1)}%</strong></div>
+                      <div className="kv-row"><span>calibration</span><strong>{confidenceScores?.confidence_calibration_applied ? "applied" : "raw only"}</strong></div>
+                      <div className="kv-row"><span>source</span><strong>{confidenceScores?.confidence_calibration_source || "-"}</strong></div>
+                    </div>
                     <h3>Start Exhibition</h3>
                     <StartExhibitionDisplay startDisplay={startDisplay} />
                     <p className="muted strategy-line">
@@ -3569,6 +3577,14 @@ export default function App() {
                             <div>count: {h?.feature_snapshot_debug?.feature_snapshot_count ?? 0}</div>
                             <div>latest id: {h?.feature_snapshot_debug?.latest_feature_snapshot_id ?? "-"}</div>
                             <div>segment corrections used: {h?.feature_snapshot_debug?.segment_corrections_used_count ?? 0}</div>
+                            <div>confidence calibration: {h?.feature_snapshot_debug?.confidence_calibration_applied ? "YES" : "NO"}</div>
+                            <div>calibration source: {h?.feature_snapshot_debug?.confidence_calibration_source || "-"}</div>
+                            <div>head raw/cal: {Number.isFinite(Number(h?.feature_snapshot_debug?.head_confidence_raw)) || Number.isFinite(Number(h?.feature_snapshot_debug?.head_confidence_calibrated))
+                              ? `${formatMaybeNumber(h?.feature_snapshot_debug?.head_confidence_raw, 1)} / ${formatMaybeNumber(h?.feature_snapshot_debug?.head_confidence_calibrated, 1)}`
+                              : "-"}</div>
+                            <div>bet raw/cal: {Number.isFinite(Number(h?.feature_snapshot_debug?.bet_confidence_raw)) || Number.isFinite(Number(h?.feature_snapshot_debug?.bet_confidence_calibrated))
+                              ? `${formatMaybeNumber(h?.feature_snapshot_debug?.bet_confidence_raw, 1)} / ${formatMaybeNumber(h?.feature_snapshot_debug?.bet_confidence_calibrated, 1)}`
+                              : "-"}</div>
                             <div>
                               families:
                               {" "}

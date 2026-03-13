@@ -366,6 +366,34 @@ export function buildVerifiedLearningRows() {
         learning?.participation_score_components && typeof learning.participation_score_components === "object"
           ? learning.participation_score_components
           : {};
+      const headConfidenceCalibrated = toNum(
+        summary?.head_confidence,
+        learning?.head_confidence_calibrated ?? learning?.head_confidence ?? null
+      );
+      const betConfidenceCalibrated = toNum(
+        summary?.bet_confidence,
+        learning?.bet_confidence_calibrated ?? learning?.bet_confidence ?? learning?.confidence ?? null
+      );
+      const headConfidenceRaw = toNum(learning?.head_confidence_raw, headConfidenceCalibrated);
+      const betConfidenceRaw = toNum(learning?.bet_confidence_raw, betConfidenceCalibrated);
+      const headHitValue =
+        Number.isFinite(Number(verificationRow?.head_hit))
+          ? Number(verificationRow.head_hit)
+          : summary?.head_correct === true
+            ? 1
+            : summary?.head_correct === false
+              ? 0
+              : null;
+      const betHitValue =
+        Number.isFinite(Number(verificationRow?.bet_hit))
+          ? Number(verificationRow.bet_hit)
+          : hitMiss === "HIT"
+            ? 1
+            : hitMiss === "MISS"
+              ? 0
+              : null;
+      const headExpected = headHitValue === 1 ? 100 : headHitValue === 0 ? 0 : null;
+      const betExpected = betHitValue === 1 ? 100 : betHitValue === 0 ? 0 : null;
 
       return {
         race_id: snapshot.race_id,
@@ -378,21 +406,9 @@ export function buildVerifiedLearningRows() {
         hit_flag:
           Number.isFinite(Number(verificationRow?.bet_hit)) ? Number(verificationRow.bet_hit) : hitMiss === "HIT" ? 1 : 0,
         head_hit:
-          Number.isFinite(Number(verificationRow?.head_hit))
-            ? Number(verificationRow.head_hit)
-            : summary?.head_correct === true
-              ? 1
-              : summary?.head_correct === false
-                ? 0
-                : null,
+          headHitValue,
         bet_hit:
-          Number.isFinite(Number(verificationRow?.bet_hit))
-            ? Number(verificationRow.bet_hit)
-            : hitMiss === "HIT"
-              ? 1
-              : hitMiss === "MISS"
-                ? 0
-                : null,
+          betHitValue,
         structure_hit: summary?.second_third_correct === true ? 1 : summary?.second_third_correct === false ? 0 : null,
         learning_ready:
           Number(verificationRow?.exclude_from_learning) === 1
@@ -413,8 +429,23 @@ export function buildVerifiedLearningRows() {
         recommendation_mode: summary?.recommendation_mode || snapshot.raceDecision?.mode || null,
         recommendation_score: toNum(summary?.recommendation_score, learning?.recommendation_score ?? null),
         confidence: toNum(summary?.bet_confidence, learning?.bet_confidence ?? learning?.confidence ?? null),
-        head_confidence: toNum(summary?.head_confidence, learning?.head_confidence ?? null),
-        bet_confidence: toNum(summary?.bet_confidence, learning?.bet_confidence ?? null),
+        head_confidence: headConfidenceCalibrated,
+        bet_confidence: betConfidenceCalibrated,
+        head_confidence_raw: headConfidenceRaw,
+        head_confidence_calibrated: headConfidenceCalibrated,
+        bet_confidence_raw: betConfidenceRaw,
+        bet_confidence_calibrated: betConfidenceCalibrated,
+        head_confidence_bucket: learning?.head_confidence_bucket || null,
+        bet_confidence_bucket: learning?.bet_confidence_bucket || null,
+        confidence_bucket: learning?.confidence_bucket || learning?.bet_confidence_bucket || null,
+        head_confidence_error: Number.isFinite(headExpected) ? Number((headConfidenceCalibrated - headExpected).toFixed(3)) : null,
+        bet_confidence_error: Number.isFinite(betExpected) ? Number((betConfidenceCalibrated - betExpected).toFixed(3)) : null,
+        confidence_error: Number.isFinite(betExpected) ? Number((betConfidenceCalibrated - betExpected).toFixed(3)) : null,
+        confidence_calibration_applied: toNum(learning?.confidence_calibration_applied, 0),
+        confidence_calibration_source: learning?.confidence_calibration_source || null,
+        confidence_calibration_segments: Array.isArray(learning?.confidence_calibration_segments)
+          ? learning.confidence_calibration_segments
+          : [],
         entry_changed: learning?.entry_changed ? 1 : 0,
         entry_change_type: learning?.entry_change_type || null,
         venue_id: toInt(context?.venue_code, null),

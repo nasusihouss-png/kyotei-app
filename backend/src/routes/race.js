@@ -159,9 +159,9 @@ function clamp(min, max, value) {
   return Math.max(min, Math.min(max, value));
 }
 
-function toNum(value) {
+function toNum(value, fallback = 0) {
   const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function toNullableNum(value) {
@@ -345,12 +345,24 @@ function buildFeatureContributionComponents(row) {
   };
 }
 
-function confidenceBandLabel(value) {
+function confidenceBandLabel(value, thresholds = {}) {
   const n = toNum(value, null);
   if (!Number.isFinite(n)) return null;
-  if (n >= 70) return "high";
-  if (n >= 55) return "medium";
+  const highMin = toNum(thresholds?.highMin ?? thresholds?.high_min, 80);
+  const mediumMin = toNum(thresholds?.mediumMin ?? thresholds?.medium_min, 60);
+  if (n >= highMin) return "high";
+  if (n >= mediumMin) return "medium";
   return "low";
+}
+
+function normalizeParticipationState(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "recommended" || text === "participate" || text === "full_bet" || text === "full bet") return "recommended";
+  if (text === "watch" || text === "small_bet" || text === "small bet" || text === "micro_bet" || text === "micro bet") {
+    return "watch";
+  }
+  if (text === "not_recommended" || text === "skip") return "not_recommended";
+  return null;
 }
 
 function scenarioMatchBucketLabel(value) {
@@ -405,6 +417,7 @@ function buildSegmentCorrectionUsageSummary({
   ranking,
   confidenceScores
 }) {
+  const calibrationThresholds = learningWeights?.confidence_calibration || {};
   const segments = [
     ["venue", toInt(race?.venueId, null)],
     ["predicted_entry_pattern", Array.isArray(entryMeta?.predicted_entry_order) ? entryMeta.predicted_entry_order.join("-") : null],
@@ -417,7 +430,9 @@ function buildSegmentCorrectionUsageSummary({
     ["has_f_hold", rowsHaveFHold(ranking) ? "yes" : "no"],
     ["f_hold_zone", fHoldZoneLabel(ranking)],
     ["motor_exhibition_overlap_bucket", overlapBucketLabel(contenderSignals?.overlap_lanes)],
-    ["confidence_band", confidenceBandLabel(confidenceScores?.recommended_bet_confidence_pct ?? confidenceScores?.bet_confidence)]
+    ["participation_decision_state", normalizeParticipationState(confidenceScores?.participation_state_seed)],
+    ["head_confidence_band", confidenceBandLabel(confidenceScores?.head_confidence_calibrated ?? confidenceScores?.head_fixed_confidence_pct, calibrationThresholds)],
+    ["bet_confidence_band", confidenceBandLabel(confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct, calibrationThresholds)]
   ];
   const used = segments
     .map(([type, key]) => {
@@ -1363,6 +1378,7 @@ function buildParticipationDecision({
   const slitAlertLanes = Array.isArray(raceFlow?.slit_alert_lanes) ? raceFlow.slit_alert_lanes : [];
   const slitAlertCount = slitAlertLanes.length;
   const fHoldCautionScore = toNum(confidenceScores?.f_hold_caution_score, 0);
+  const segmentParticipationCorrection = toNum(confidenceScores?.segment_participation_correction, 0);
   const escapePatternApplied = !!escapePatternAnalysis?.escape_pattern_applied;
   const flowMode = String(raceFlow?.race_flow_mode || "").toLowerCase();
   const isAttackScenario = flowMode === "sashi" || flowMode === "makuri" || flowMode === "makurizashi";
@@ -1390,11 +1406,29 @@ function buildParticipationDecision({
   const contradictionPenalty = contradictionCount * PARTICIPATION_TUNING.cautionPenalty.contradictionPenalty;
   const adjustedHeadFixed = Math.min(
     100,
-    Math.max(0, headFixed + formationBoost * 0.45 + escapeFocusBoost + slitBoost * 0.35 - fHoldPenalty * 0.65 - contradictionPenalty * 0.55)
+    Math.max(
+      0,
+      headFixed +
+        formationBoost * 0.45 +
+        escapeFocusBoost +
+        slitBoost * 0.35 +
+        segmentParticipationCorrection * 0.6 -
+        fHoldPenalty * 0.65 -
+        contradictionPenalty * 0.55
+    )
   );
   const adjustedBetConf = Math.min(
     100,
-    Math.max(0, betConf + formationBoost * 0.45 + escapeFocusBoost * 0.9 + slitBoost * 0.55 - fHoldPenalty * 0.8 - contradictionPenalty * 0.75)
+    Math.max(
+      0,
+      betConf +
+        formationBoost * 0.45 +
+        escapeFocusBoost * 0.9 +
+        slitBoost * 0.55 +
+        segmentParticipationCorrection -
+        fHoldPenalty * 0.8 -
+        contradictionPenalty * 0.75
+    )
   );
   const hasStrongCaution =
     cautionFlags.includes("ENTRY_CHANGE_PENALTY") ||
@@ -1472,8 +1506,10 @@ function buildParticipationDecision({
       slit_alert_count: slitAlertCount,
       f_hold_caution_score: Number(fHoldCautionScore.toFixed(2)),
       contradiction_count: contradictionCount,
+      segment_participation_correction: Number(segmentParticipationCorrection.toFixed(2)),
       formation_boost: Number(formationBoost.toFixed(2)),
       slit_boost: Number(slitBoost.toFixed(2)),
+      segment_participation_correction: Number(segmentParticipationCorrection.toFixed(2)),
       f_hold_penalty: Number(fHoldPenalty.toFixed(2)),
       contradiction_penalty: Number(contradictionPenalty.toFixed(2)),
       confidence_version: CONFIDENCE_VERSION,
@@ -1553,28 +1589,40 @@ function buildConfidenceScores({
   const overlapBucket = overlapBucketLabel(contenderSignals?.overlap_lanes);
   const predictedEntryPattern = Array.isArray(entryMeta?.predicted_entry_order) ? entryMeta.predicted_entry_order.join("-") : null;
   const actualEntryPattern = Array.isArray(entryMeta?.actual_entry_order) ? entryMeta.actual_entry_order.join("-") : null;
+  const participationStateSeed = normalizeParticipationState(raceDecision?.mode);
+  const calibrationThresholds = learningWeights?.confidence_calibration || {};
   const segmentHeadCorrection =
     getSegmentCorrectionValue(learningWeights, "venue", toInt(race?.venueId, null), "head_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "formation_pattern", escapePatternAnalysis?.formation_pattern || null, "head_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "scenario_type", scenarioSuggestions?.scenario_type || null, "head_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "predicted_entry_pattern", predictedEntryPattern, "head_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "actual_entry_pattern", actualEntryPattern, "head_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "head_confidence_band", confidenceBandLabel(headBase, calibrationThresholds), "head_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "participation_decision_state", participationStateSeed, "head_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "motor_exhibition_overlap_bucket", overlapBucket, "head_confidence_correction");
-  const confidenceBand = confidenceBandLabel(raceConf);
   const segmentBetCorrection =
     getSegmentCorrectionValue(learningWeights, "venue", toInt(race?.venueId, null), "bet_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "formation_pattern", escapePatternAnalysis?.formation_pattern || null, "bet_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "scenario_type", scenarioSuggestions?.scenario_type || null, "bet_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "scenario_match_bucket", scenarioMatchBucketLabel(scenarioSuggestions?.scenario_confidence), "bet_confidence_correction") +
-    getSegmentCorrectionValue(learningWeights, "confidence_band", confidenceBand, "bet_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "bet_confidence_band", confidenceBandLabel(ticketConf, calibrationThresholds), "bet_confidence_correction") +
+    getSegmentCorrectionValue(learningWeights, "participation_decision_state", participationStateSeed, "bet_confidence_correction") +
     getSegmentCorrectionValue(learningWeights, "motor_exhibition_overlap_bucket", overlapBucket, "bet_confidence_correction");
   const segmentCautionAdj =
     getSegmentCorrectionValue(learningWeights, "entry_change_present", entryMeta?.entry_changed ? "changed" : "unchanged", "caution_penalty_correction") +
     getSegmentCorrectionValue(learningWeights, "entry_type", entryMeta?.entry_change_type || null, "caution_penalty_correction") +
     getSegmentCorrectionValue(learningWeights, "has_f_hold", rowsHaveFHold(ranking) ? "yes" : "no", "f_hold_penalty_adjustment") +
-    getSegmentCorrectionValue(learningWeights, "f_hold_zone", fHoldZoneLabel(ranking), "f_hold_penalty_adjustment");
+    getSegmentCorrectionValue(learningWeights, "f_hold_zone", fHoldZoneLabel(ranking), "f_hold_penalty_adjustment") +
+    getSegmentCorrectionValue(learningWeights, "participation_decision_state", participationStateSeed, "caution_penalty_correction");
+  const segmentParticipationCorrection =
+    getSegmentCorrectionValue(learningWeights, "venue", toInt(race?.venueId, null), "participate_watch_skip_correction") +
+    getSegmentCorrectionValue(learningWeights, "formation_pattern", escapePatternAnalysis?.formation_pattern || null, "participate_watch_skip_correction") +
+    getSegmentCorrectionValue(learningWeights, "scenario_type", scenarioSuggestions?.scenario_type || null, "participate_watch_skip_correction") +
+    getSegmentCorrectionValue(learningWeights, "entry_change_present", entryMeta?.entry_changed ? "changed" : "unchanged", "participate_watch_skip_correction") +
+    getSegmentCorrectionValue(learningWeights, "has_f_hold", rowsHaveFHold(ranking) ? "yes" : "no", "participate_watch_skip_correction") +
+    getSegmentCorrectionValue(learningWeights, "participation_decision_state", participationStateSeed, "participate_watch_skip_correction");
 
-  const headFixed = clampPct(
+  const headFixedRaw = clampPct(
     headBase * 0.38 +
       headStability * 0.16 +
       startStability * 0.1 +
@@ -1586,23 +1634,32 @@ function buildConfidenceScores({
       entryPenalty -
       Math.max(0, fHoldCautionScore + segmentCautionAdj) * 0.18 -
       learnedCaution -
-      missingDataPenalty +
-      segmentHeadCorrection
+      missingDataPenalty
   );
-  const betConfidence = clampPct(
+  const headFixed = clampPct(headFixedRaw + segmentHeadCorrection);
+  const betConfidenceRaw = clampPct(
     ticketConf * 0.34 +
       raceConf * 0.16 +
       (100 - chaosRisk) * 0.14 +
-      headFixed * 0.14 +
+      headFixedRaw * 0.14 +
       scenarioConfidence * 0.08 +
       contenderOverlap * 0.08 +
       top3Concentration * 0.06 -
       Math.max(0, fHoldCautionScore + segmentCautionAdj) * 0.12 +
       learnedCaution * 0.6 -
-      Math.max(0, missingDataPenalty - 4) +
-      segmentBetCorrection
+      Math.max(0, missingDataPenalty - 4)
   );
+  const betConfidence = clampPct(betConfidenceRaw + segmentBetCorrection);
   const raceConfidence = clampPct((raceConf * 0.6 + headFixed * 0.2 + betConfidence * 0.2));
+  const headBandRaw = confidenceBandLabel(headFixedRaw, calibrationThresholds);
+  const betBandRaw = confidenceBandLabel(betConfidenceRaw, calibrationThresholds);
+  const headBandCalibrated = confidenceBandLabel(headFixed, calibrationThresholds);
+  const betBandCalibrated = confidenceBandLabel(betConfidence, calibrationThresholds);
+  const calibrationSegmentsUsed = [
+    segmentHeadCorrection !== 0 ? "head" : null,
+    segmentBetCorrection !== 0 ? "bet" : null,
+    segmentCautionAdj !== 0 ? "caution" : null
+  ].filter(Boolean);
 
   const toBand = (pct) => (pct >= 75 ? "high" : pct >= 55 ? "medium" : "caution");
   const confidenceReasonTags = [];
@@ -1625,10 +1682,28 @@ function buildConfidenceScores({
     race_band: toBand(raceConfidence),
     head_confidence: headFixed,
     bet_confidence: betConfidence,
+    head_confidence_raw: headFixedRaw,
+    head_confidence_calibrated: headFixed,
+    bet_confidence_raw: betConfidenceRaw,
+    bet_confidence_calibrated: betConfidence,
+    head_confidence_bucket: headBandCalibrated,
+    bet_confidence_bucket: betBandCalibrated,
+    head_confidence_bucket_raw: headBandRaw,
+    bet_confidence_bucket_raw: betBandRaw,
+    confidence_bucket: betBandCalibrated,
+    confidence_calibration_applied: calibrationSegmentsUsed.length > 0 ? 1 : 0,
+    confidence_calibration_segments: calibrationSegmentsUsed,
+    confidence_calibration_source: calibrationSegmentsUsed.length > 0 ? "segmented_learning" : "raw_default",
+    confidence_calibration_thresholds: {
+      high_min: toNum(calibrationThresholds?.high_min, 80),
+      medium_min: toNum(calibrationThresholds?.medium_min, 60)
+    },
+    participation_state_seed: participationStateSeed,
     f_hold_caution_score: Number(fHoldCautionScore.toFixed(2)),
     formation_pattern_clarity_score: Number(formationPatternClarity.toFixed(2)),
     segment_head_confidence_correction: Number(segmentHeadCorrection.toFixed(2)),
     segment_bet_confidence_correction: Number(segmentBetCorrection.toFixed(2)),
+    segment_participation_correction: Number(segmentParticipationCorrection.toFixed(2)),
     segment_caution_adjustment: Number(segmentCautionAdj.toFixed(2)),
     confidence_reason_tags: [...new Set(confidenceReasonTags)],
     confidence_version: CONFIDENCE_VERSION
@@ -2454,9 +2529,22 @@ raceRouter.get("/race", async (req, res, next) => {
       f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0,
       contender_signals: contenderAdjusted.contenderSignals,
       feature_contribution_families: {
-        head_fixed_confidence: confidenceScores.head_confidence,
-        recommended_bet_confidence: confidenceScores.bet_confidence,
+        head_fixed_confidence_raw: confidenceScores.head_confidence_raw,
+        head_fixed_confidence: confidenceScores.head_confidence_calibrated,
+        recommended_bet_confidence_raw: confidenceScores.bet_confidence_raw,
+        recommended_bet_confidence: confidenceScores.bet_confidence_calibrated,
         participation_score_components: participationDecision.participation_score_components
+      },
+      confidence_calibration: {
+        head_confidence_raw: confidenceScores.head_confidence_raw,
+        head_confidence_calibrated: confidenceScores.head_confidence_calibrated,
+        bet_confidence_raw: confidenceScores.bet_confidence_raw,
+        bet_confidence_calibrated: confidenceScores.bet_confidence_calibrated,
+        head_confidence_bucket: confidenceScores.head_confidence_bucket,
+        bet_confidence_bucket: confidenceScores.bet_confidence_bucket,
+        calibration_applied: confidenceScores.confidence_calibration_applied ? 1 : 0,
+        calibration_source: confidenceScores.confidence_calibration_source,
+        calibration_segments: confidenceScores.confidence_calibration_segments || []
       },
       segment_corrections_used: segmentCorrectionUsage
     };
@@ -2492,8 +2580,19 @@ raceRouter.get("/race", async (req, res, next) => {
       entry_change_type: entryMeta.entry_change_type || "none",
       recommendation_score,
       confidence: raceDecision?.confidence ?? null,
-      head_confidence: confidenceScores.head_confidence,
-      bet_confidence: confidenceScores.bet_confidence,
+      head_confidence: confidenceScores.head_confidence_calibrated,
+      bet_confidence: confidenceScores.bet_confidence_calibrated,
+      head_confidence_raw: confidenceScores.head_confidence_raw,
+      head_confidence_calibrated: confidenceScores.head_confidence_calibrated,
+      bet_confidence_raw: confidenceScores.bet_confidence_raw,
+      bet_confidence_calibrated: confidenceScores.bet_confidence_calibrated,
+      head_confidence_bucket: confidenceScores.head_confidence_bucket,
+      bet_confidence_bucket: confidenceScores.bet_confidence_bucket,
+      confidence_bucket: confidenceScores.confidence_bucket,
+      confidence_calibration_applied: confidenceScores.confidence_calibration_applied ? 1 : 0,
+      confidence_calibration_source: confidenceScores.confidence_calibration_source,
+      confidence_calibration_segments: confidenceScores.confidence_calibration_segments || [],
+      confidence_calibration_thresholds: confidenceScores.confidence_calibration_thresholds || {},
       scenario_labels: snapshotContext.scenario_labels,
       scenario_type: snapshotContext.scenario_type,
       scenario_match_score: snapshotContext.scenario_match_score,
@@ -2526,8 +2625,12 @@ raceRouter.get("/race", async (req, res, next) => {
       entry_changed: entryMeta.entry_changed,
       entry_change_type: entryMeta.entry_change_type,
       confidence_scores: confidenceScores,
-      head_confidence: confidenceScores.head_confidence,
-      bet_confidence: confidenceScores.bet_confidence,
+      head_confidence: confidenceScores.head_confidence_calibrated,
+      bet_confidence: confidenceScores.bet_confidence_calibrated,
+      head_confidence_raw: confidenceScores.head_confidence_raw,
+      head_confidence_calibrated: confidenceScores.head_confidence_calibrated,
+      bet_confidence_raw: confidenceScores.bet_confidence_raw,
+      bet_confidence_calibrated: confidenceScores.bet_confidence_calibrated,
       participation_decision: participationDecision.decision,
       confidence_reason_tags: confidenceScores.confidence_reason_tags,
       confidence_version: confidenceScores.confidence_version,
@@ -5541,7 +5644,13 @@ raceRouter.get("/results-history", async (req, res, next) => {
             prediction?.learning_context?.feature_contribution_summary &&
             Object.keys(prediction.learning_context.feature_contribution_summary).length
           ),
-          segment_corrections_used_count: toNum(prediction?.learning_context?.segment_corrections_used?.segment_count, 0)
+          segment_corrections_used_count: toNum(prediction?.learning_context?.segment_corrections_used?.segment_count, 0),
+          confidence_calibration_applied: toNum(prediction?.learning_context?.confidence_calibration_applied, 0) === 1,
+          confidence_calibration_source: prediction?.learning_context?.confidence_calibration_source || null,
+          head_confidence_raw: toNum(prediction?.learning_context?.head_confidence_raw, null),
+          head_confidence_calibrated: toNum(prediction?.learning_context?.head_confidence_calibrated, null),
+          bet_confidence_raw: toNum(prediction?.learning_context?.bet_confidence_raw, null),
+          bet_confidence_calibrated: toNum(prediction?.learning_context?.bet_confidence_calibrated, null)
         },
         recommended_bets: aiBetsDisplaySnapshot,
         logged_at: snapshotRow.prediction_timestamp || logRow.created_at
