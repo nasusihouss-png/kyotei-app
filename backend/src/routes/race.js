@@ -1133,34 +1133,41 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis) {
 }
 
 const CONFIDENCE_VERSION = "v1.1";
+const PARTICIPATION_VERSION = "v1.2";
 const PARTICIPATION_CONFIDENCE_THRESHOLDS = {
   participate: {
-    headFixedMin: 70,
-    betMin: 62
+    headFixedMin: 67,
+    betMin: 59
   },
   watch: {
-    headMin: 56,
-    betMin: 50
+    headMin: 53,
+    betMin: 48
   }
 };
 
 const PARTICIPATION_TUNING = {
   skip: {
-    chaosRiskHardMin: 92,
-    lowHeadHardMax: 54,
-    lowBetHardMax: 48,
-    skipModeConfidenceHardMax: 50
+    chaosRiskHardMin: 93,
+    contradictionHardMin: 3,
+    lowHeadHardMax: 51,
+    lowBetHardMax: 46,
+    skipModeConfidenceHardMax: 48
   },
   caution: {
-    headStrongCautionMin: 60,
-    betStrongCautionMin: 54
+    headStrongCautionMin: 58,
+    betStrongCautionMin: 52
   },
   positiveBoost: {
-    formationClarityMin: 62,
-    formationClarityBaseBoost: 4,
-    formationConfidenceBoostScale: 0.12,
-    slitAlertPerLaneBoost: 3,
-    attackScenarioExtraBoost: 2
+    formationClarityMin: 58,
+    formationClarityBaseBoost: 5,
+    formationConfidenceBoostScale: 0.15,
+    escapePatternFocusBoost: 3,
+    slitAlertPerLaneBoost: 3.5,
+    attackScenarioExtraBoost: 2.5
+  },
+  cautionPenalty: {
+    fHoldWeight: 0.15,
+    contradictionPenalty: 4.5
   }
 };
 
@@ -1195,20 +1202,36 @@ function buildParticipationDecision({
   const escapePatternApplied = !!escapePatternAnalysis?.escape_pattern_applied;
   const flowMode = String(raceFlow?.race_flow_mode || "").toLowerCase();
   const isAttackScenario = flowMode === "sashi" || flowMode === "makuri" || flowMode === "makurizashi";
+  const contradictionCount =
+    (mode === "SKIP" ? 1 : 0) +
+    (chaosRisk >= 80 ? 1 : 0) +
+    (escapePatternApplied && flowMode === "chaos" ? 1 : 0) +
+    (escapePatternApplied && slitAlertCount >= 2 && flowMode === "nige" ? 1 : 0);
   const formationBoost =
     formationPatternClarity >= PARTICIPATION_TUNING.positiveBoost.formationClarityMin
       ? PARTICIPATION_TUNING.positiveBoost.formationClarityBaseBoost +
         Math.max(0, formationPatternClarity - PARTICIPATION_TUNING.positiveBoost.formationClarityMin) *
           PARTICIPATION_TUNING.positiveBoost.formationConfidenceBoostScale
       : 0;
+  const escapeFocusBoost =
+    escapePatternApplied && formationPatternClarity >= 60 && chaosRisk < 74
+      ? PARTICIPATION_TUNING.positiveBoost.escapePatternFocusBoost
+      : 0;
   const slitBoost =
     slitAlertCount > 0
       ? slitAlertCount * PARTICIPATION_TUNING.positiveBoost.slitAlertPerLaneBoost +
         (isAttackScenario ? PARTICIPATION_TUNING.positiveBoost.attackScenarioExtraBoost : 0)
       : 0;
-  const fHoldPenalty = Math.min(12, fHoldCautionScore * 0.18);
-  const adjustedHeadFixed = Math.min(100, Math.max(0, headFixed + formationBoost * 0.45 + slitBoost * 0.35 - fHoldPenalty * 0.7));
-  const adjustedBetConf = Math.min(100, Math.max(0, betConf + formationBoost * 0.4 + slitBoost * 0.55 - fHoldPenalty * 0.85));
+  const fHoldPenalty = Math.min(11, fHoldCautionScore * PARTICIPATION_TUNING.cautionPenalty.fHoldWeight);
+  const contradictionPenalty = contradictionCount * PARTICIPATION_TUNING.cautionPenalty.contradictionPenalty;
+  const adjustedHeadFixed = Math.min(
+    100,
+    Math.max(0, headFixed + formationBoost * 0.45 + escapeFocusBoost + slitBoost * 0.35 - fHoldPenalty * 0.65 - contradictionPenalty * 0.55)
+  );
+  const adjustedBetConf = Math.min(
+    100,
+    Math.max(0, betConf + formationBoost * 0.45 + escapeFocusBoost * 0.9 + slitBoost * 0.55 - fHoldPenalty * 0.8 - contradictionPenalty * 0.75)
+  );
   const hasStrongCaution =
     cautionFlags.includes("ENTRY_CHANGE_PENALTY") ||
     cautionFlags.includes("ST_CHAOS") ||
@@ -1225,8 +1248,10 @@ function buildParticipationDecision({
   if (cautionFlags.includes("START_SIGNAL_UNSTABLE")) reasonTags.push("START_SIGNAL_UNSTABLE");
   if (formationBoost > 0) reasonTags.push("FORMATION_PATTERN_CLEAR");
   if (escapePatternApplied) reasonTags.push("ESCAPE_PATTERN_APPLIED");
+  if (escapeFocusBoost > 0) reasonTags.push("ESCAPE_PATTERN_FOCUSED");
   if (slitBoost > 0) reasonTags.push("SLIT_ALERT_POSITIVE");
   if (fHoldPenalty > 0) reasonTags.push("F_HOLD_CAUTION");
+  if (contradictionCount > 0) reasonTags.push("SIGNAL_CONTRADICTION");
   if (headStability >= 62) reasonTags.push("HEAD_STABILITY_GOOD");
   if (adjustedHeadFixed >= 72) reasonTags.push("HEAD_CONFIDENCE_GOOD");
   if (adjustedBetConf >= 64) reasonTags.push("BET_CONFIDENCE_GOOD");
@@ -1249,9 +1274,16 @@ function buildParticipationDecision({
     adjustedHeadFixed <= PARTICIPATION_TUNING.skip.lowHeadHardMax ||
     adjustedBetConf <= PARTICIPATION_TUNING.skip.lowBetHardMax ||
     (mode === "SKIP" && hasStrongCaution && confidence < PARTICIPATION_TUNING.skip.skipModeConfidenceHardMax) ||
-    chaosRisk >= PARTICIPATION_TUNING.skip.chaosRiskHardMin
+    chaosRisk >= PARTICIPATION_TUNING.skip.chaosRiskHardMin ||
+    contradictionCount >= PARTICIPATION_TUNING.skip.contradictionHardMin
   ) {
     decision = "not_recommended";
+  } else if (
+    mode !== "SKIP" &&
+    adjustedHeadFixed >= PARTICIPATION_CONFIDENCE_THRESHOLDS.watch.headMin &&
+    adjustedBetConf >= PARTICIPATION_CONFIDENCE_THRESHOLDS.watch.betMin
+  ) {
+    decision = "watch";
   }
 
   const summary =
@@ -1272,11 +1304,29 @@ function buildParticipationDecision({
       adjusted_head_fixed_confidence_pct: Number(adjustedHeadFixed.toFixed(2)),
       adjusted_recommended_bet_confidence_pct: Number(adjustedBetConf.toFixed(2)),
       formation_pattern_clarity_score: Number(formationPatternClarity.toFixed(2)),
+      escape_pattern_focus_boost: Number(escapeFocusBoost.toFixed(2)),
       slit_alert_count: slitAlertCount,
       f_hold_caution_score: Number(fHoldCautionScore.toFixed(2)),
-      confidence_version: CONFIDENCE_VERSION
+      contradiction_count: contradictionCount,
+      formation_boost: Number(formationBoost.toFixed(2)),
+      slit_boost: Number(slitBoost.toFixed(2)),
+      f_hold_penalty: Number(fHoldPenalty.toFixed(2)),
+      contradiction_penalty: Number(contradictionPenalty.toFixed(2)),
+      confidence_version: CONFIDENCE_VERSION,
+      participation_version: PARTICIPATION_VERSION
     },
-    confidence_version: CONFIDENCE_VERSION
+    participation_score_components: {
+      base_head_fixed_confidence_pct: Number(headFixed.toFixed(2)),
+      base_recommended_bet_confidence_pct: Number(betConf.toFixed(2)),
+      formation_boost: Number(formationBoost.toFixed(2)),
+      escape_pattern_focus_boost: Number(escapeFocusBoost.toFixed(2)),
+      slit_boost: Number(slitBoost.toFixed(2)),
+      f_hold_penalty: Number(fHoldPenalty.toFixed(2)),
+      contradiction_penalty: Number(contradictionPenalty.toFixed(2)),
+      contradiction_count: contradictionCount
+    },
+    confidence_version: CONFIDENCE_VERSION,
+    participation_version: PARTICIPATION_VERSION
   };
 }
 
@@ -2227,7 +2277,10 @@ raceRouter.get("/race", async (req, res, next) => {
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
       escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
       f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0,
-      participation_decision_reason: participationDecision.summary
+      participation_decision: participationDecision.decision,
+      participation_decision_reason: participationDecision.summary,
+      participation_score_components: participationDecision.participation_score_components,
+      participation_version: participationDecision.participation_version
     };
     const predictionWithEntry = {
       ...prediction,
@@ -2250,6 +2303,8 @@ raceRouter.get("/race", async (req, res, next) => {
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
       f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0,
       participation_decision_reason: participationDecision.summary,
+      participation_score_components: participationDecision.participation_score_components,
+      participation_version: participationDecision.participation_version,
       final_recommended_bets_snapshot: finalRecommendedSnapshot.items,
       final_recommended_bets_count: finalRecommendedSnapshot.items.length,
       final_recommended_bets_snapshot_source: finalRecommendedSnapshot.snapshot_source,
