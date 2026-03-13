@@ -4642,13 +4642,17 @@ raceRouter.get("/results-history", async (req, res, next) => {
         .map((row) => normalizeCombo(row?.combo ?? row))
         .filter((c) => c && c.split("-").length === 3);
       const hasValidBetSnapshot = displaySnapshotCombos.length > 0;
+      const verificationUsedSavedBetSnapshot =
+        Array.isArray(verificationSummary?.final_recommended_bets_snapshot) && verificationSummary.final_recommended_bets_snapshot.length > 0 ||
+        Array.isArray(verificationSummary?.ai_bets_display_snapshot) && verificationSummary.ai_bets_display_snapshot.length > 0;
       const computedHitMiss = !hasValidBetSnapshot
         ? "NOT_VERIFIABLE"
         : actualCombo
           ? (displaySnapshotCombos.includes(actualCombo) ? "HIT" : "MISS")
           : "PENDING";
       const persistedHitMiss = String(verification?.hit_miss || "").toUpperCase();
-      const hitMiss = persistedHitMiss || computedHitMiss;
+      const recoveredSnapshotNeedsReverify = hasValidBetSnapshot && !!verification && !verificationUsedSavedBetSnapshot;
+      const hitMiss = recoveredSnapshotNeedsReverify ? computedHitMiss : (persistedHitMiss || computedHitMiss);
       const confirmedResult =
         actualCombo ||
         (startDisplay?.settled_result ? normalizeCombo(startDisplay.settled_result) : null) ||
@@ -4660,13 +4664,17 @@ raceRouter.get("/results-history", async (req, res, next) => {
         String(verification.summary.warning).includes("fallback verification used predicted top3");
       const verificationStatus = summaryStatus || (!hasValidBetSnapshot
         ? "NO_BET_SNAPSHOT"
+        : recoveredSnapshotNeedsReverify
+          ? (confirmedResult ? "UNVERIFIED" : "NO_CONFIRMED_RESULT")
         : verification?.verified_at && !legacyFallbackVerified
           ? (hitMiss === "HIT" ? "VERIFIED_HIT" : hitMiss === "MISS" ? "VERIFIED_MISS" : "VERIFIED")
           : confirmedResult
             ? "UNVERIFIED"
             : "NO_CONFIRMED_RESULT");
       const verificationReason = !hasValidBetSnapshot
-        ? "Saved AI bet snapshot is missing; verification was skipped."
+        ? "No final recommended bet snapshot saved."
+        : recoveredSnapshotNeedsReverify
+          ? "Recovered final recommended bet snapshot from historical prediction storage. Re-run verification to persist updated HIT/MISS."
         : legacyFallbackVerified
           ? "Legacy verification used top3 fallback; re-verify after snapshot is available."
           : null;

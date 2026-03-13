@@ -27,6 +27,130 @@ export function normalizeCombo(value) {
   return digits.slice(0, 3).join("-");
 }
 
+function normalizeBetSnapshotItems(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((row) => {
+      const combo = normalizeCombo(row?.combo ?? row);
+      if (!combo) return null;
+      return {
+        ...(row && typeof row === "object" ? row : {}),
+        combo,
+        prob: Number.isFinite(Number(row?.prob)) ? Number(row.prob) : null,
+        odds: Number.isFinite(Number(row?.odds)) ? Number(row.odds) : null,
+        ev: Number.isFinite(Number(row?.ev)) ? Number(row.ev) : null,
+        recommended_bet: Number.isFinite(Number(row?.recommended_bet))
+          ? Number(row.recommended_bet)
+          : Number.isFinite(Number(row?.bet))
+            ? Number(row.bet)
+            : null
+      };
+    })
+    .filter(Boolean);
+}
+
+export function recoverFinalRecommendedBetsSnapshot({ prediction, betPlan } = {}) {
+  const predictionObj = prediction && typeof prediction === "object" ? prediction : {};
+  const betPlanObj = betPlan && typeof betPlan === "object" ? betPlan : {};
+  const candidates = [
+    {
+      source: predictionObj?.final_recommended_bets_snapshot_source || "prediction_final_recommended_bets_snapshot",
+      items: normalizeBetSnapshotItems(predictionObj?.final_recommended_bets_snapshot)
+    },
+    {
+      source: "prediction_ai_bets_display_snapshot",
+      items: normalizeBetSnapshotItems(predictionObj?.ai_bets_display_snapshot)
+    },
+    {
+      source: "prediction_ai_bets_full_snapshot.recommended_bets",
+      items: normalizeBetSnapshotItems(predictionObj?.ai_bets_full_snapshot?.recommended_bets)
+    },
+    {
+      source: "bet_plan_json.recommended_bets",
+      items: normalizeBetSnapshotItems(betPlanObj?.recommended_bets)
+    }
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate.items.length > 0) return candidate;
+  }
+
+  return {
+    source: "missing_final_recommended_bets_snapshot",
+    items: []
+  };
+}
+
+export function backfillPredictionSnapshotFinalBets(row) {
+  if (!row) return null;
+  const prediction = safeJsonParse(row?.prediction_json, {});
+  const betPlan = safeJsonParse(row?.bet_plan_json, {});
+  const existing = normalizeBetSnapshotItems(prediction?.final_recommended_bets_snapshot);
+  if (existing.length > 0) {
+    return {
+      row,
+      prediction,
+      betPlan,
+      recovered: {
+        source: prediction?.final_recommended_bets_snapshot_source || "prediction_final_recommended_bets_snapshot",
+        items: existing,
+        backfilled: false
+      }
+    };
+  }
+
+  const recovered = recoverFinalRecommendedBetsSnapshot({ prediction, betPlan });
+  if (recovered.items.length === 0) {
+    return {
+      row,
+      prediction,
+      betPlan,
+      recovered: {
+        ...recovered,
+        backfilled: false
+      }
+    };
+  }
+
+  const nextPrediction = {
+    ...prediction,
+    final_recommended_bets_snapshot: recovered.items,
+    final_recommended_bets_count: recovered.items.length,
+    final_recommended_bets_snapshot_source: `backfilled:${recovered.source}`,
+    ai_bets_display_snapshot:
+      Array.isArray(prediction?.ai_bets_display_snapshot) && prediction.ai_bets_display_snapshot.length > 0
+        ? prediction.ai_bets_display_snapshot
+        : recovered.items
+  };
+
+  db.prepare(
+    `
+    UPDATE prediction_logs
+    SET
+      prediction_json = ?,
+      prediction_timestamp = COALESCE(prediction_timestamp, ?)
+    WHERE id = ?
+  `
+  ).run(
+    JSON.stringify(nextPrediction),
+    prediction?.snapshot_created_at || row?.prediction_timestamp || row?.created_at || nowIso(),
+    Number(row.id)
+  );
+
+  return {
+    row: {
+      ...row,
+      prediction_json: JSON.stringify(nextPrediction)
+    },
+    prediction: nextPrediction,
+    betPlan,
+    recovered: {
+      source: `backfilled:${recovered.source}`,
+      items: recovered.items,
+      backfilled: true
+    }
+  };
+}
+
 export function ensurePredictionSnapshotColumns() {
   const cols = db.prepare("PRAGMA table_info(prediction_logs)").all();
   const names = new Set(cols.map((c) => String(c.name)));
@@ -68,7 +192,7 @@ ensurePredictionSnapshotColumns();
 
 export function getPredictionSnapshot({ raceId, snapshotId = null } = {}) {
   if (Number.isFinite(Number(snapshotId))) {
-    return db
+    const row = db
       .prepare(
         `
         SELECT *
@@ -78,9 +202,10 @@ export function getPredictionSnapshot({ raceId, snapshotId = null } = {}) {
       `
       )
       .get(Number(snapshotId));
+    return backfillPredictionSnapshotFinalBets(row)?.row || row;
   }
   if (!raceId) return null;
-  return db
+  const row = db
     .prepare(
       `
       SELECT *
@@ -91,6 +216,7 @@ export function getPredictionSnapshot({ raceId, snapshotId = null } = {}) {
     `
     )
     .get(String(raceId));
+  return backfillPredictionSnapshotFinalBets(row)?.row || row;
 }
 
 export function listPredictionSnapshots({ limit = 300 } = {}) {
@@ -103,7 +229,8 @@ export function listPredictionSnapshots({ limit = 300 } = {}) {
       LIMIT ?
     `
     )
-    .all(Number(limit));
+    .all(Number(limit))
+    .map((row) => backfillPredictionSnapshotFinalBets(row)?.row || row);
 }
 
 export function mapPredictionSnapshotRow(row) {
