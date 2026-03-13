@@ -936,71 +936,49 @@ function computeRecommendationScore({
 }
 
 const ESCAPE_FORMATION_PATTERN_TABLE = {
-  P01_INSIDE_23: {
-    label: "inside_23",
-    primary_lane: 2,
-    secondary_lane: 3,
-    second_place_bias: { 2: 1.18, 3: 1.1, 4: 0.98, 5: 0.93, 6: 0.9 }
+  inside_lead: {
+    label: "inside_lead",
+    second_place_bias: { "1-2": 3, "1-3": 0, "1-4": 0, "1-5": -4, "1-6": 0 }
   },
-  P02_INSIDE_24: {
-    label: "inside_24",
-    primary_lane: 2,
-    secondary_lane: 4,
-    second_place_bias: { 2: 1.16, 4: 1.08, 3: 1.01, 5: 0.94, 6: 0.9 }
+  one_two_lead: {
+    label: "one_two_lead",
+    second_place_bias: { "1-2": 9, "1-3": 9, "1-4": 3, "1-5": -4, "1-6": 0 }
   },
-  P03_INSIDE_2_OUTER: {
-    label: "inside_2_outer",
-    primary_lane: 2,
-    secondary_lane: 5,
-    second_place_bias: { 2: 1.14, 3: 1.02, 4: 0.99, 5: 1.04, 6: 0.97 }
+  slow_line_lead: {
+    label: "slow_line_lead",
+    second_place_bias: { "1-2": 6, "1-3": 0, "1-4": -4, "1-5": -4, "1-6": -4 }
   },
-  P04_CENTER_32: {
-    label: "center_32",
-    primary_lane: 3,
-    secondary_lane: 2,
-    second_place_bias: { 3: 1.16, 2: 1.08, 4: 1.02, 5: 0.95, 6: 0.92 }
+  one_delayed: {
+    label: "one_delayed",
+    second_place_bias: { "1-2": 3, "1-3": -4, "1-4": 0, "1-5": 0, "1-6": 0 }
   },
-  P05_CENTER_34: {
-    label: "center_34",
-    primary_lane: 3,
-    secondary_lane: 4,
-    second_place_bias: { 3: 1.15, 4: 1.08, 2: 1.01, 5: 0.96, 6: 0.93 }
+  three_attacks_first: {
+    label: "three_attacks_first",
+    second_place_bias: { "1-2": 0, "1-3": 3, "1-4": -4, "1-5": -4, "1-6": 3 }
   },
-  P06_CENTER_3_OUTER: {
-    label: "center_3_outer",
-    primary_lane: 3,
-    secondary_lane: 5,
-    second_place_bias: { 3: 1.13, 4: 1.01, 2: 1, 5: 1.03, 6: 0.97 }
+  middle_bulge: {
+    label: "middle_bulge",
+    second_place_bias: { "1-2": 0, "1-3": 6, "1-4": -4, "1-5": -4, "1-6": 0 }
   },
-  P07_OUTER_42: {
-    label: "outer_42",
-    primary_lane: 4,
-    secondary_lane: 2,
-    second_place_bias: { 4: 1.14, 2: 1.06, 3: 1.03, 5: 0.97, 6: 0.94 }
+  no_wall: {
+    label: "no_wall",
+    second_place_bias: { "1-2": -3, "1-3": 3, "1-4": 0, "1-5": 0, "1-6": 0 }
   },
-  P08_OUTER_43: {
-    label: "outer_43",
-    primary_lane: 4,
-    secondary_lane: 3,
-    second_place_bias: { 4: 1.13, 3: 1.08, 2: 1.01, 5: 0.98, 6: 0.95 }
+  two_three_delayed: {
+    label: "two_three_delayed",
+    second_place_bias: { "1-2": -3, "1-3": -7, "1-4": 6, "1-5": 6, "1-6": -3 }
   },
-  P09_OUTER_4_OUTER: {
-    label: "outer_4_outer",
-    primary_lane: 4,
-    secondary_lane: 5,
-    second_place_bias: { 4: 1.11, 3: 1.02, 2: 0.99, 5: 1.03, 6: 0.98 }
+  dash_lead: {
+    label: "dash_lead",
+    second_place_bias: { "1-2": 9, "1-3": 0, "1-4": 9, "1-5": 9, "1-6": 9 }
   },
-  P10_DEEP_OUTER_52: {
-    label: "deep_outer_52",
-    primary_lane: 5,
-    secondary_lane: 2,
-    second_place_bias: { 5: 1.08, 4: 1.03, 3: 1, 2: 1.04, 6: 0.99 }
+  middle_dent: {
+    label: "middle_dent",
+    second_place_bias: { "1-2": 9, "1-3": 9, "1-4": 9, "1-5": 6, "1-6": 3 }
   },
-  P11_DEEP_OUTER_WIDE: {
-    label: "deep_outer_wide",
-    primary_lane: 5,
-    secondary_lane: 4,
-    second_place_bias: { 5: 1.06, 4: 1.04, 3: 1.01, 2: 0.99, 6: 1.01 }
+  outside_lead: {
+    label: "outside_lead",
+    second_place_bias: { "1-2": 0, "1-3": -4, "1-4": 9, "1-5": 6, "1-6": 9 }
   }
 };
 
@@ -1028,18 +1006,48 @@ function buildEscapeSecondPlaceCandidateScores(ranking) {
     .sort((a, b) => b.score - a.score);
 }
 
-function classifyEscapeFormationPattern(primaryLane, secondaryLane) {
-  if (primaryLane === 2 && secondaryLane === 3) return "P01_INSIDE_23";
-  if (primaryLane === 2 && secondaryLane === 4) return "P02_INSIDE_24";
-  if (primaryLane === 2) return "P03_INSIDE_2_OUTER";
-  if (primaryLane === 3 && secondaryLane === 2) return "P04_CENTER_32";
-  if (primaryLane === 3 && secondaryLane === 4) return "P05_CENTER_34";
-  if (primaryLane === 3) return "P06_CENTER_3_OUTER";
-  if (primaryLane === 4 && secondaryLane === 2) return "P07_OUTER_42";
-  if (primaryLane === 4 && secondaryLane === 3) return "P08_OUTER_43";
-  if (primaryLane === 4) return "P09_OUTER_4_OUTER";
-  if (primaryLane === 5 && secondaryLane === 2) return "P10_DEEP_OUTER_52";
-  return "P11_DEEP_OUTER_WIDE";
+function classifyEscapeFormationPattern({ primaryLane, secondaryLane, ranking }) {
+  const lane2 = (Array.isArray(ranking) ? ranking : []).find((row) => toInt(row?.racer?.lane, null) === 2) || null;
+  const lane3 = (Array.isArray(ranking) ? ranking : []).find((row) => toInt(row?.racer?.lane, null) === 3) || null;
+  const lane4 = (Array.isArray(ranking) ? ranking : []).find((row) => toInt(row?.racer?.lane, null) === 4) || null;
+  const lane5 = (Array.isArray(ranking) ? ranking : []).find((row) => toInt(row?.racer?.lane, null) === 5) || null;
+  const lane6 = (Array.isArray(ranking) ? ranking : []).find((row) => toInt(row?.racer?.lane, null) === 6) || null;
+
+  const slit2 = toNum(lane2?.features?.slit_alert_flag, 0);
+  const slit3 = toNum(lane3?.features?.slit_alert_flag, 0);
+  const slit4 = toNum(lane4?.features?.slit_alert_flag, 0);
+  const expectedStRank2 = toNum(lane2?.features?.expected_actual_st_rank ?? lane2?.features?.st_rank, 6);
+  const expectedStRank3 = toNum(lane3?.features?.expected_actual_st_rank ?? lane3?.features?.st_rank, 6);
+  const expectedStRank4 = toNum(lane4?.features?.expected_actual_st_rank ?? lane4?.features?.st_rank, 6);
+  const expectedStRank5 = toNum(lane5?.features?.expected_actual_st_rank ?? lane5?.features?.st_rank, 6);
+  const expectedStRank6 = toNum(lane6?.features?.expected_actual_st_rank ?? lane6?.features?.st_rank, 6);
+  const exDelta3 = toNum(lane3?.features?.display_time_delta_vs_left, 0);
+  const exDelta4 = toNum(lane4?.features?.display_time_delta_vs_left, 0);
+  const exDelta5 = toNum(lane5?.features?.display_time_delta_vs_left, 0);
+  const lane2Delayed = expectedStRank2 >= 4 || toNum(lane2?.features?.f_hold_bias_applied, 0) === 1;
+  const lane3Delayed = expectedStRank3 >= 4 || toNum(lane3?.features?.f_hold_bias_applied, 0) === 1;
+  const middleDentSignal = expectedStRank2 >= 4 && expectedStRank3 >= 4;
+  const outsideLeadSignal = primaryLane >= 4 && secondaryLane >= 5;
+  const dashLeadSignal = primaryLane >= 4 || slit4 === 1 || exDelta4 >= 0.1 || exDelta5 >= 0.1;
+  const noWallSignal = primaryLane === 3 && slit2 === 0 && expectedStRank2 >= 3;
+  const threeAttackSignal = primaryLane === 3 && (slit3 === 1 || exDelta3 >= 0.1);
+
+  if (outsideLeadSignal || (primaryLane >= 5 && expectedStRank5 <= expectedStRank3 && expectedStRank6 <= 4)) return "outside_lead";
+  if (middleDentSignal) return "middle_dent";
+  if (lane2Delayed && lane3Delayed && (primaryLane >= 4 || secondaryLane >= 4)) return "two_three_delayed";
+  if (dashLeadSignal && (primaryLane >= 4 || secondaryLane >= 4)) return "dash_lead";
+  if (threeAttackSignal && secondaryLane === 6) return "three_attacks_first";
+  if (threeAttackSignal) return "middle_bulge";
+  if (noWallSignal) return "no_wall";
+  if (lane2Delayed && primaryLane === 2) return "slow_line_lead";
+  if (toNum((Array.isArray(ranking) ? ranking : [])[0]?.features?.f_hold_bias_applied, 0) === 1) return "one_delayed";
+  if (primaryLane === 2 && secondaryLane === 3) return "one_two_lead";
+  return "inside_lead";
+}
+
+function getEscapeSecondPlaceBiasScore(biasByCombo, lane) {
+  const comboKey = `1-${lane}`;
+  return Number.isFinite(Number(biasByCombo?.[comboKey])) ? Number(biasByCombo[comboKey]) : 0;
 }
 
 function analyzeEscapeFormationLayer({ ranking, racePattern, indexes }) {
@@ -1056,8 +1064,8 @@ function analyzeEscapeFormationLayer({ ranking, racePattern, indexes }) {
   const candidates = buildEscapeSecondPlaceCandidateScores(ranking);
   const primaryLane = candidates[0]?.lane ?? 2;
   const secondaryLane = candidates[1]?.lane ?? 3;
-  const patternKey = classifyEscapeFormationPattern(primaryLane, secondaryLane);
-  const pattern = ESCAPE_FORMATION_PATTERN_TABLE[patternKey] || ESCAPE_FORMATION_PATTERN_TABLE.P01_INSIDE_23;
+  const patternKey = classifyEscapeFormationPattern({ primaryLane, secondaryLane, ranking });
+  const pattern = ESCAPE_FORMATION_PATTERN_TABLE[patternKey] || ESCAPE_FORMATION_PATTERN_TABLE.inside_lead;
   const topGap = toNum(candidates[0]?.score, 0) - toNum(candidates[1]?.score, 0);
   const confidence = clamp(
     0.25,
@@ -1088,7 +1096,7 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis) {
         formation_pattern: escapePatternAnalysis?.formation_pattern || null,
         escape_pattern_applied: 0,
         escape_pattern_confidence: toNum(escapePatternAnalysis?.escape_pattern_confidence, 0),
-        escape_second_place_bias: 1,
+        escape_second_place_bias: 0,
         escape_second_place_bias_score: 0
       }
     }));
@@ -1098,12 +1106,12 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis) {
   return [...rows]
     .map((row) => {
       const lane = toInt(row?.racer?.lane, null);
-      const bias = Number.isFinite(Number(biasByLane?.[lane])) ? Number(biasByLane[lane]) : 1;
-      const biasScore =
-        lane !== 1
-          ? Number((((bias - 1) * 18) + Math.max(0, toNum(row?.features?.slit_alert_flag, 0)) * 0.8).toFixed(2))
-          : 0;
-      const nextScore = Number((toNum(row?.score, 0) + biasScore).toFixed(4));
+      const baseBiasScore = lane !== 1
+        ? getEscapeSecondPlaceBiasScore(biasByLane, lane)
+        : 0;
+      const slitBoost = Math.max(0, toNum(row?.features?.slit_alert_flag, 0)) * 0.8;
+      const nextBiasScore = Number((baseBiasScore + slitBoost).toFixed(2));
+      const nextScore = Number((toNum(row?.score, 0) + nextBiasScore).toFixed(4));
       return {
         ...row,
         score: nextScore,
@@ -1112,8 +1120,8 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis) {
           formation_pattern: escapePatternAnalysis.formation_pattern,
           escape_pattern_applied: 1,
           escape_pattern_confidence: toNum(escapePatternAnalysis.escape_pattern_confidence, 0),
-          escape_second_place_bias: bias,
-          escape_second_place_bias_score: biasScore
+          escape_second_place_bias: baseBiasScore,
+          escape_second_place_bias_score: nextBiasScore
         }
       };
     })
