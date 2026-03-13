@@ -357,6 +357,15 @@ export function buildVerifiedLearningRows() {
       const hitMiss = String(verificationRow?.hit_miss || summary?.hit_miss || "").toUpperCase();
       const context = snapshot.snapshotContext || {};
       const learning = snapshot.learningContext || {};
+      const players = Array.isArray(context?.players) ? context.players : [];
+      const featureContributionSummary =
+        learning?.feature_contribution_summary && typeof learning.feature_contribution_summary === "object"
+          ? learning.feature_contribution_summary
+          : {};
+      const participationScoreComponents =
+        learning?.participation_score_components && typeof learning.participation_score_components === "object"
+          ? learning.participation_score_components
+          : {};
 
       return {
         race_id: snapshot.race_id,
@@ -384,6 +393,7 @@ export function buildVerifiedLearningRows() {
               : hitMiss === "MISS"
                 ? 0
                 : null,
+        structure_hit: summary?.second_third_correct === true ? 1 : summary?.second_third_correct === false ? 0 : null,
         learning_ready:
           Number(verificationRow?.exclude_from_learning) === 1
             ? 0
@@ -399,6 +409,7 @@ export function buildVerifiedLearningRows() {
         invalidated_at: verificationRow?.invalidated_at || summary?.invalidated_at || null,
         mismatch_categories: Array.isArray(mismatchCategories) ? mismatchCategories : [],
         confirmed_result: verificationRow?.confirmed_result || summary?.confirmed_result_canonical || null,
+        verification_reason: verificationRow?.verification_reason || summary?.verification_reason || null,
         recommendation_mode: summary?.recommendation_mode || snapshot.raceDecision?.mode || null,
         recommendation_score: toNum(summary?.recommendation_score, learning?.recommendation_score ?? null),
         confidence: toNum(summary?.bet_confidence, learning?.bet_confidence ?? learning?.confidence ?? null),
@@ -418,7 +429,30 @@ export function buildVerifiedLearningRows() {
         exhibition_time_avg: toNum(learning?.exhibition_time_avg, null),
         start_display_signature: learning?.start_display_signature || null,
         scenario_labels: Array.isArray(learning?.scenario_labels) ? learning.scenario_labels : [],
-        player_context: Array.isArray(context?.players) ? context.players : [],
+        scenario_type: learning?.scenario_type || context?.scenario_type || null,
+        scenario_match_score: toNum(learning?.scenario_match_score, null),
+        predicted_entry_order: Array.isArray(context?.entry?.predicted_entry_order) ? context.entry.predicted_entry_order : [],
+        actual_entry_order: Array.isArray(context?.entry?.actual_entry_order) ? context.entry.actual_entry_order : [],
+        start_display_st: context?.entry?.start_exhibition_st || {},
+        queue_formation_st: context?.entry?.start_display_timing || {},
+        formation_pattern: learning?.formation_pattern || context?.formation_pattern || null,
+        escape_pattern_applied: toNum(learning?.escape_pattern_applied ?? context?.escape_pattern_applied, 0),
+        escape_second_place_bias_json: learning?.escape_second_place_bias_json || context?.escape_second_place_bias_json || {},
+        participation_decision: learning?.participation_decision || null,
+        participation_decision_reason: learning?.participation_decision_reason || null,
+        participation_score_components: participationScoreComponents,
+        feature_contribution_summary: featureContributionSummary,
+        contender_signals: learning?.contender_signals || context?.contender_signals || {},
+        top2_exhibition_boats: Array.isArray(learning?.contender_signals?.exhibition_top2) ? learning.contender_signals.exhibition_top2 : [],
+        top2_motor_boats: Array.isArray(learning?.contender_signals?.motor_top2) ? learning.contender_signals.motor_top2 : [],
+        overlap_lanes: Array.isArray(learning?.contender_signals?.overlap_lanes) ? learning.contender_signals.overlap_lanes : [],
+        player_context: players,
+        player_feature_count: players.length,
+        left_neighbor_alert_count: players.filter((row) => Number(row?.slit_alert_flag) === 1).length,
+        f_hold_lane_count: players.filter((row) => Number(row?.f_hold_bias_applied) === 1).length,
+        final_recommended_bets_snapshot: Array.isArray(snapshot.prediction?.final_recommended_bets_snapshot)
+          ? snapshot.prediction.final_recommended_bets_snapshot
+          : [],
         snapshot
       };
     })

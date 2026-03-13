@@ -301,6 +301,50 @@ function normalizeSavedBetSnapshotItems(items) {
     .filter(Boolean);
 }
 
+function buildFeatureContributionComponents(row) {
+  const f = row?.features || {};
+  const exhibitionRank = toNum(f.exhibition_rank, 6);
+  const stRank = toNum(f.st_rank, 6);
+  const expectedActualStRank = toNum(f.expected_actual_st_rank, 6);
+  return {
+    player_score_component: Number((
+      toNum(f.class_score, 0) * 4 +
+      toNum(f.nationwide_win_rate, 0) * 1.8 +
+      toNum(f.local_win_rate, 0) * 2.2 +
+      toNum(f.local_minus_nation, 0) * 1.2
+    ).toFixed(3)),
+    motor_score_component: Number((
+      toNum(f.motor2_rate, 0) * 0.32 +
+      toNum(f.boat2_rate, 0) * 0.18 +
+      toNum(f.motor_total_score, 0) +
+      toNum(f.motor_trend_score, 0)
+    ).toFixed(3)),
+    exhibition_score_component: Number((
+      (exhibitionRank === 1 ? 8 : exhibitionRank === 2 ? 4 : 0) +
+      toNum(f.tilt_bonus, 0) +
+      toNum(f.course_fit_score, 0)
+    ).toFixed(3)),
+    start_st_score_component: Number((
+      toNum(f.st_inv, 0) * 24 +
+      toNum(f.expected_actual_st_inv, 0) * 16 +
+      (stRank === 1 ? 7 : stRank === 2 ? 3 : 0) +
+      (expectedActualStRank === 1 ? 4 : expectedActualStRank === 2 ? 2 : 0)
+    ).toFixed(3)),
+    formation_pattern_bias_component: Number(toNum(f.escape_second_place_bias_score, 0).toFixed(3)),
+    left_neighbor_bias_component: Number((
+      Math.max(0, toNum(f.display_time_delta_vs_left, 0)) * 10 +
+      Math.max(0, toNum(f.avg_st_rank_delta_vs_left, 0)) * 1.5 +
+      toNum(f.slit_alert_flag, 0) * 6
+    ).toFixed(3)),
+    f_hold_bias_component: Number((-toNum(f.f_hold_caution_penalty, 0)).toFixed(3)),
+    scenario_bias_component: Number((
+      toNum(f.entry_advantage_score, 0) +
+      toNum(f.contender_bonus, 0) +
+      toNum(f.venue_lane_adjustment, 0)
+    ).toFixed(3))
+  };
+}
+
 function buildFinalRecommendedBetsSnapshot({
   recommendedBets,
   optimizedTickets
@@ -2162,39 +2206,46 @@ raceRouter.get("/race", async (req, res, next) => {
     const rankingFeatureByLane = new Map(
       ranking.map((row) => [toInt(row?.racer?.lane, null), row?.features || {}]).filter((row) => Number.isInteger(row[0]))
     );
-    const snapshotPlayers = safeArray(data?.racers).map((racer) => ({
-      ...(rankingFeatureByLane.get(toInt(racer?.lane, null))
-        ? {
-            f_hold_count: toInt(rankingFeatureByLane.get(toInt(racer?.lane, null))?.f_hold_count, 0),
-            f_hold_bias_applied: toInt(rankingFeatureByLane.get(toInt(racer?.lane, null))?.f_hold_bias_applied, 0),
-            left_neighbor_exists: toInt(rankingFeatureByLane.get(toInt(racer?.lane, null))?.left_neighbor_exists, 0),
-            expected_actual_st_adjustment: toNullableNum(rankingFeatureByLane.get(toInt(racer?.lane, null))?.expected_actual_st_adjustment),
-            expected_actual_st: toNullableNum(rankingFeatureByLane.get(toInt(racer?.lane, null))?.expected_actual_st),
-            display_time_delta_vs_left: toNullableNum(rankingFeatureByLane.get(toInt(racer?.lane, null))?.display_time_delta_vs_left),
-            avg_st_rank_delta_vs_left: toNullableNum(rankingFeatureByLane.get(toInt(racer?.lane, null))?.avg_st_rank_delta_vs_left),
-            slit_alert_flag: toInt(rankingFeatureByLane.get(toInt(racer?.lane, null))?.slit_alert_flag, 0)
-          }
-        : {}),
-      lane: toInt(racer?.lane, null),
-      registration_no: toInt(racer?.registrationNo, null),
-      name: racer?.name || null,
-      class: racer?.class || null,
-      branch: racer?.branch || null,
-      age: toInt(racer?.age, null),
-      weight: toNullableNum(racer?.weight),
-      avg_st: toNullableNum(racer?.avgSt),
-      nationwide_win_rate: toNullableNum(racer?.nationwideWinRate),
-      local_win_rate: toNullableNum(racer?.localWinRate),
-      motor_no: toInt(racer?.motorNo, null),
-      motor_2rate: toNullableNum(racer?.motor2Rate),
-      boat_no: toInt(racer?.boatNo, null),
-      boat_2rate: toNullableNum(racer?.boat2Rate),
-      exhibition_time: toNullableNum(racer?.exhibitionTime),
-      exhibition_st: toNullableNum(racer?.exhibitionSt),
-      exhibition_st_raw: racer?.exhibitionStRaw || null,
-      entry_course: toInt(racer?.entryCourse, null),
-      tilt: toNullableNum(racer?.tilt)
-    }));
+    const snapshotPlayers = safeArray(data?.racers).map((racer) => {
+      const lane = toInt(racer?.lane, null);
+      const laneFeatures = rankingFeatureByLane.get(lane) || {};
+      const contributionComponents = buildFeatureContributionComponents({ features: laneFeatures });
+      return {
+        ...(laneFeatures
+          ? {
+              f_hold_count: toInt(laneFeatures?.f_hold_count, 0),
+              f_hold_bias_applied: toInt(laneFeatures?.f_hold_bias_applied, 0),
+              left_neighbor_exists: toInt(laneFeatures?.left_neighbor_exists, 0),
+              expected_actual_st_adjustment: toNullableNum(laneFeatures?.expected_actual_st_adjustment),
+              expected_actual_st: toNullableNum(laneFeatures?.expected_actual_st),
+              display_time_delta_vs_left: toNullableNum(laneFeatures?.display_time_delta_vs_left),
+              avg_st_rank_delta_vs_left: toNullableNum(laneFeatures?.avg_st_rank_delta_vs_left),
+              slit_alert_flag: toInt(laneFeatures?.slit_alert_flag, 0),
+              feature_snapshot: laneFeatures,
+              contribution_components: contributionComponents
+            }
+          : {}),
+        lane,
+        registration_no: toInt(racer?.registrationNo, null),
+        name: racer?.name || null,
+        class: racer?.class || null,
+        branch: racer?.branch || null,
+        age: toInt(racer?.age, null),
+        weight: toNullableNum(racer?.weight),
+        avg_st: toNullableNum(racer?.avgSt),
+        nationwide_win_rate: toNullableNum(racer?.nationwideWinRate),
+        local_win_rate: toNullableNum(racer?.localWinRate),
+        motor_no: toInt(racer?.motorNo, null),
+        motor_2rate: toNullableNum(racer?.motor2Rate),
+        boat_no: toInt(racer?.boatNo, null),
+        boat_2rate: toNullableNum(racer?.boat2Rate),
+        exhibition_time: toNullableNum(racer?.exhibitionTime),
+        exhibition_st: toNullableNum(racer?.exhibitionSt),
+        exhibition_st_raw: racer?.exhibitionStRaw || null,
+        entry_course: toInt(racer?.entryCourse, null),
+        tilt: toNullableNum(racer?.tilt)
+      };
+    });
     const snapshotContext = {
       race_key: raceId,
       race_date: data?.race?.date || null,
@@ -2231,11 +2282,19 @@ raceRouter.get("/race", async (req, res, next) => {
         racePattern?.pattern || racePattern?.label || null,
         scenarioSuggestions?.main_reason || null
       ].filter(Boolean),
+      scenario_type: scenarioSuggestions?.scenario_type || null,
+      scenario_match_score: toNullableNum(scenarioSuggestions?.scenario_confidence),
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
       escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
-      f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0
+      f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0,
+      contender_signals: contenderAdjusted.contenderSignals,
+      feature_contribution_families: {
+        head_fixed_confidence: confidenceScores.head_confidence,
+        recommended_bet_confidence: confidenceScores.bet_confidence,
+        participation_score_components: participationDecision.participation_score_components
+      }
     };
     const learningContext = {
       venue_id: snapshotContext.venue_code,
@@ -2272,6 +2331,8 @@ raceRouter.get("/race", async (req, res, next) => {
       head_confidence: confidenceScores.head_confidence,
       bet_confidence: confidenceScores.bet_confidence,
       scenario_labels: snapshotContext.scenario_labels,
+      scenario_type: snapshotContext.scenario_type,
+      scenario_match_score: snapshotContext.scenario_match_score,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -2280,7 +2341,18 @@ raceRouter.get("/race", async (req, res, next) => {
       participation_decision: participationDecision.decision,
       participation_decision_reason: participationDecision.summary,
       participation_score_components: participationDecision.participation_score_components,
-      participation_version: participationDecision.participation_version
+      participation_version: participationDecision.participation_version,
+      contender_signals: contenderAdjusted.contenderSignals,
+      feature_contribution_summary: {
+        player_score_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).player_score_component, 0).toFixed(3)),
+        motor_score_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).motor_score_component, 0).toFixed(3)),
+        exhibition_score_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).exhibition_score_component, 0).toFixed(3)),
+        start_st_score_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).start_st_score_component, 0).toFixed(3)),
+        formation_pattern_bias_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).formation_pattern_bias_component, 0).toFixed(3)),
+        left_neighbor_bias_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).left_neighbor_bias_component, 0).toFixed(3)),
+        f_hold_bias_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).f_hold_bias_component, 0).toFixed(3)),
+        scenario_bias_component: Number(ranking.slice(0, 3).reduce((acc, row) => acc + buildFeatureContributionComponents(row).scenario_bias_component, 0).toFixed(3))
+      }
     };
     const predictionWithEntry = {
       ...prediction,
@@ -4914,6 +4986,15 @@ raceRouter.get("/results-history", async (req, res, next) => {
       `
       )
       .all();
+    const featureSnapshotRows = db
+      .prepare(
+        `
+        SELECT race_id, COUNT(*) AS feature_snapshot_count, MAX(id) AS latest_feature_snapshot_id
+        FROM feature_snapshots
+        GROUP BY race_id
+      `
+      )
+      .all();
     const verificationRows = listLatestVerificationRecords({ includeInvalidated: includeInvalidated });
 
     const resultMap = new Map(resultsRows.map((r) => [r.race_id, r]));
@@ -4951,6 +5032,15 @@ raceRouter.get("/results-history", async (req, res, next) => {
           prediction_snapshot: safeJsonParse(row.prediction_snapshot_json, {}),
           predicted_entry_order: safeJsonParse(row.predicted_entry_order_json, []),
           actual_entry_order: safeJsonParse(row.actual_entry_order_json, [])
+        }
+      ])
+    );
+    const featureSnapshotMetaMap = new Map(
+      featureSnapshotRows.map((row) => [
+        String(row.race_id),
+        {
+          feature_snapshot_count: toNum(row.feature_snapshot_count),
+          latest_feature_snapshot_id: toNum(row.latest_feature_snapshot_id, null)
         }
       ])
     );
@@ -5019,6 +5109,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const settlements = settlementByRace.get(raceId) || [];
       const mutableStartDisplay = startDisplayMap.get(raceId) || null;
       const eventStartDisplay = featureEventMap.get(raceId) || null;
+      const featureSnapshotMeta = featureSnapshotMetaMap.get(raceId) || null;
       const snapshotStartDisplay =
         prediction?.snapshot_context?.start_display && typeof prediction.snapshot_context.start_display === "object"
           ? prediction.snapshot_context.start_display
@@ -5264,6 +5355,20 @@ raceRouter.get("/results-history", async (req, res, next) => {
           verification_input_bet_list: displaySnapshotCombos,
           latest_log_bets: latestLogDisplayBets,
           final_hit_miss_result: hitMiss
+        },
+        feature_snapshot_debug: {
+          feature_snapshot_exists: !!featureSnapshotMeta?.feature_snapshot_count,
+          feature_snapshot_count: toNum(featureSnapshotMeta?.feature_snapshot_count, 0),
+          latest_feature_snapshot_id: toNum(featureSnapshotMeta?.latest_feature_snapshot_id, null),
+          saved_feature_families: Object.keys(
+            prediction?.learning_context?.feature_contribution_summary && typeof prediction.learning_context.feature_contribution_summary === "object"
+              ? prediction.learning_context.feature_contribution_summary
+              : {}
+          ),
+          contribution_data_exists: !!(
+            prediction?.learning_context?.feature_contribution_summary &&
+            Object.keys(prediction.learning_context.feature_contribution_summary).length
+          )
         },
         recommended_bets: aiBetsDisplaySnapshot,
         logged_at: snapshotRow.prediction_timestamp || logRow.created_at

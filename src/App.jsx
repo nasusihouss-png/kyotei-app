@@ -3560,6 +3560,24 @@ export default function App() {
                           </div>
                         </details>
                       ) : null}
+                      {h?.feature_snapshot_debug ? (
+                        <details style={{ marginTop: 8 }}>
+                          <summary>feature snapshot</summary>
+                          <div className="history-grid" style={{ marginTop: 8 }}>
+                            <div>exists: {h?.feature_snapshot_debug?.feature_snapshot_exists ? "YES" : "NO"}</div>
+                            <div>count: {h?.feature_snapshot_debug?.feature_snapshot_count ?? 0}</div>
+                            <div>latest id: {h?.feature_snapshot_debug?.latest_feature_snapshot_id ?? "-"}</div>
+                            <div>
+                              families:
+                              {" "}
+                              {Array.isArray(h?.feature_snapshot_debug?.saved_feature_families) && h.feature_snapshot_debug.saved_feature_families.length
+                                ? h.feature_snapshot_debug.saved_feature_families.join(", ")
+                                : "-"}
+                            </div>
+                            <div>contributions saved: {h?.feature_snapshot_debug?.contribution_data_exists ? "YES" : "NO"}</div>
+                          </div>
+                        </details>
+                      ) : null}
                       {h.verification ? (
                         <div className="history-grid" style={{ marginTop: 8 }}>
                           <div>検証日時: {h.verification.verified_at ? new Date(h.verification.verified_at).toLocaleString() : "-"}</div>
