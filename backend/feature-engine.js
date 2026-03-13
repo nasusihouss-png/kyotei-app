@@ -99,15 +99,23 @@ export function buildFeatures(racer) {
     exhibition_rank: null,
     st_rank: null,
     avg_st_rank: null,
+    expected_actual_st_rank: null,
     course_change,
     tilt_bonus,
     exhibition_gap_from_best: 0,
     motor_gap_from_best: 0,
     local_gap_from_best: 0,
     nation_gap_from_best: 0,
+    left_neighbor_exists: 0,
     display_time_delta_vs_left: null,
     avg_st_rank_delta_vs_left: null,
-    slit_alert_flag: 0
+    slit_alert_flag: 0,
+    f_hold_count: Math.max(0, toNumber(racer?.fHoldCount, 0)),
+    f_hold_bias_applied: 0,
+    expected_actual_st_adjustment: 0,
+    expected_actual_st: null,
+    expected_actual_st_inv: 0,
+    f_hold_caution_penalty: 0
   };
 }
 
@@ -146,6 +154,29 @@ export function buildRaceFeatures(racers, raceContext = {}) {
   const avgStRanks = buildAscendingRanks(
     base.map((x) => ({ lane: x.features.lane, value: x.features.avg_st }))
   );
+  const expectedActualStByLane = base.map((item) => {
+    const lane = item.features.lane;
+    const fHoldCount = Math.max(0, toNumber(item.racer?.fHoldCount ?? item.features?.f_hold_count, 0));
+    const insideBias = lane >= 1 && lane <= 3 ? 0.01 : lane === 4 ? 0.005 : 0;
+    const baseOffset = fHoldCount > 0 ? 0.02 + Math.min(0.02, (fHoldCount - 1) * 0.01) : 0;
+    const adjustment = Number((baseOffset + insideBias).toFixed(3));
+    const exhibitionSt = Number.isFinite(item.features.exhibition_st) ? item.features.exhibition_st : null;
+    const avgSt = Number.isFinite(item.features.avg_st) ? item.features.avg_st : null;
+    const expectedActualSt =
+      Number.isFinite(exhibitionSt) ? Number((exhibitionSt + adjustment).toFixed(3))
+        : Number.isFinite(avgSt) ? Number((avgSt + adjustment).toFixed(3))
+          : null;
+    return {
+      lane,
+      fHoldCount,
+      adjustment,
+      expectedActualSt
+    };
+  });
+  const expectedActualStRanks = buildAscendingRanks(
+    expectedActualStByLane.map((row) => ({ lane: row.lane, value: row.expectedActualSt }))
+  );
+  const expectedActualStByLaneMap = new Map(expectedActualStByLane.map((row) => [row.lane, row]));
   const byLane = new Map(base.map((item) => [item.features.lane, item]));
 
   return base.map((item) => {
@@ -156,6 +187,7 @@ export function buildRaceFeatures(racers, raceContext = {}) {
     const selfExhibitionTime = Number.isFinite(f.exhibition_time) ? f.exhibition_time : null;
     const leftExhibitionTime = Number.isFinite(leftFeatures?.exhibition_time) ? leftFeatures.exhibition_time : null;
     const selfAvgStRank = avgStRanks.get(f.lane) ?? null;
+    const expectedActualStMeta = expectedActualStByLaneMap.get(f.lane) || {};
     const leftAvgStRank = Number.isFinite(leftLane) ? (avgStRanks.get(leftLane) ?? null) : null;
     const displayTimeDeltaVsLeft =
       Number.isFinite(selfExhibitionTime) && Number.isFinite(leftExhibitionTime)
@@ -179,6 +211,7 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         exhibition_rank: exhibitionRanks.get(f.lane) ?? null,
         st_rank: stRanks.get(f.lane) ?? null,
         avg_st_rank: selfAvgStRank,
+        expected_actual_st_rank: expectedActualStRanks.get(f.lane) ?? null,
         exhibition_gap_from_best:
           Number.isFinite(bestExhibition) && Number.isFinite(f.exhibition_time)
             ? f.exhibition_time - bestExhibition
@@ -186,9 +219,22 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         motor_gap_from_best: bestMotor - f.motor2_rate,
         local_gap_from_best: bestLocal - f.local_win_rate,
         nation_gap_from_best: bestNation - f.nationwide_win_rate,
+        left_neighbor_exists: leftItem ? 1 : 0,
         display_time_delta_vs_left: displayTimeDeltaVsLeft,
         avg_st_rank_delta_vs_left: avgStRankDeltaVsLeft,
-        slit_alert_flag: slitAlertFlag
+        slit_alert_flag: slitAlertFlag,
+        f_hold_count: expectedActualStMeta.fHoldCount ?? 0,
+        f_hold_bias_applied: (expectedActualStMeta.fHoldCount ?? 0) > 0 ? 1 : 0,
+        expected_actual_st_adjustment: expectedActualStMeta.adjustment ?? 0,
+        expected_actual_st: expectedActualStMeta.expectedActualSt ?? null,
+        expected_actual_st_inv:
+          Number.isFinite(expectedActualStMeta.expectedActualSt) && expectedActualStMeta.expectedActualSt > 0
+            ? Number((1 / expectedActualStMeta.expectedActualSt).toFixed(6))
+            : 0,
+        f_hold_caution_penalty:
+          (expectedActualStMeta.fHoldCount ?? 0) > 0
+            ? Number((2 + (expectedActualStMeta.adjustment ?? 0) * 120).toFixed(2))
+            : 0
       }
     };
   });

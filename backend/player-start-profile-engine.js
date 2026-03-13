@@ -30,14 +30,19 @@ export function analyzePlayerStartProfiles({ ranking }) {
     const slitAlertFlag = toNum(f.slit_alert_flag, 0);
     const displayTimeDeltaVsLeft = toNum(f.display_time_delta_vs_left, 0);
     const avgStRankDeltaVsLeft = toNum(f.avg_st_rank_delta_vs_left, 0);
+    const fHoldBiasApplied = toNum(f.f_hold_bias_applied, 0);
+    const expectedActualStAdjustment = toNum(f.expected_actual_st_adjustment, 0);
     const slitAttackBoost = slitAlertFlag
       ? Math.min(12, 6 + displayTimeDeltaVsLeft * 20 + avgStRankDeltaVsLeft * 1.5)
+      : 0;
+    const fHoldCautionPenalty = fHoldBiasApplied
+      ? Math.min(12, 4 + expectedActualStAdjustment * 120)
       : 0;
 
     const start_attack_score = clamp(
       0,
       100,
-      stRankQ * 34 + exRankQ * 22 + stInv * 14 + entryAdv * 1.3 + Math.max(0, motorTrend) * 3 + slitAttackBoost
+      stRankQ * 34 + exRankQ * 22 + stInv * 14 + entryAdv * 1.3 + Math.max(0, motorTrend) * 3 + slitAttackBoost - fHoldCautionPenalty
     );
     const start_stability_score = clamp(
       0,
@@ -46,7 +51,8 @@ export function analyzePlayerStartProfiles({ ranking }) {
         exRankQ * 24 +
         stRankQ * 24 +
         classScore * 6 +
-        Math.max(-2, localDiff) * 2
+        Math.max(-2, localDiff) * 2 -
+        fHoldCautionPenalty * 0.6
     );
 
     const nige_style_score = clamp(
@@ -84,6 +90,9 @@ export function analyzePlayerStartProfiles({ ranking }) {
       makuri_style_score: Number(makuri_style_score.toFixed(2)),
       slit_alert_flag: slitAlertFlag ? 1 : 0,
       slit_attack_boost: Number(slitAttackBoost.toFixed(2)),
+      f_hold_bias_applied: fHoldBiasApplied ? 1 : 0,
+      expected_actual_st_adjustment: Number(expectedActualStAdjustment.toFixed(3)),
+      f_hold_caution_penalty: Number(fHoldCautionPenalty.toFixed(2)),
       player_start_profile: styleRows[0]?.key || "sashi"
     };
   });

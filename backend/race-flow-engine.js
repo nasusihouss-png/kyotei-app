@@ -45,6 +45,14 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   const slit2 = toNum(l2.features?.slit_alert_flag, 0);
   const slit3 = toNum(l3.features?.slit_alert_flag, 0);
   const slit4 = toNum(l4.features?.slit_alert_flag, 0);
+  const fHold1 = toNum(l1.features?.f_hold_bias_applied, 0);
+  const fHold2 = toNum(l2.features?.f_hold_bias_applied, 0);
+  const fHold3 = toNum(l3.features?.f_hold_bias_applied, 0);
+  const fHold4 = toNum(l4.features?.f_hold_bias_applied, 0);
+  const fHoldAdj1 = toNum(l1.features?.expected_actual_st_adjustment, 0);
+  const fHoldAdj2 = toNum(l2.features?.expected_actual_st_adjustment, 0);
+  const fHoldAdj3 = toNum(l3.features?.expected_actual_st_adjustment, 0);
+  const fHoldAdj4 = toNum(l4.features?.expected_actual_st_adjustment, 0);
   const slitDelta2 = toNum(l2.features?.display_time_delta_vs_left, 0);
   const slitDelta3 = toNum(l3.features?.display_time_delta_vs_left, 0);
   const slitDelta4 = toNum(l4.features?.display_time_delta_vs_left, 0);
@@ -72,6 +80,7 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     (chaosIdx - 50) * 0.03 +
     toNum(p1.nige_style_score, 50) * 0.006 +
     toNum(p1.start_stability_score, 50) * 0.005;
+  nigeLogit -= fHold1 ? Math.min(0.18, 0.06 + fHoldAdj1 * 2.4) : 0;
 
   let sashiLogit =
     sashiIdx * 0.06 +
@@ -81,6 +90,7 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     toNum(p2.sashi_style_score, 50) * 0.006 +
     toNum(p2.start_attack_score, 50) * 0.004 +
     slitBoost2;
+  sashiLogit -= fHold2 ? Math.min(0.16, 0.05 + fHoldAdj2 * 2.1) : 0;
 
   let makuriLogit =
     makuriIdx * 0.06 +
@@ -89,6 +99,10 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     (e4 + st4) * 0.07 +
     (toNum(p3.makuri_style_score, 50) + toNum(p4.makuri_style_score, 50)) * 0.003 +
     Math.max(...slitBoost34);
+  makuriLogit -= Math.max(
+    fHold3 ? Math.min(0.15, 0.04 + fHoldAdj3 * 2) : 0,
+    fHold4 ? Math.min(0.15, 0.04 + fHoldAdj4 * 2) : 0
+  );
 
   let makurizashiLogit =
     makurizashiIdx * 0.06 +
@@ -96,6 +110,9 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     ((e3 + st3 + e4 + st4) * 0.5) * 0.12 +
     (toNum(p3.start_attack_score, 50) + toNum(p4.start_attack_score, 50)) * 0.0025 +
     (slitBoost34[0] * 0.7 + slitBoost34[1] * 0.7);
+  makurizashiLogit -=
+    (fHold3 ? Math.min(0.12, 0.04 + fHoldAdj3 * 1.8) : 0) +
+    (fHold4 ? Math.min(0.12, 0.04 + fHoldAdj4 * 1.8) : 0);
 
   let chaosLogit = chaosIdx * 0.06 + risk * 0.025;
 
@@ -127,6 +144,7 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     makurizashi_prob: Number(toNum(makurizashi, 0).toFixed(4)),
     chaos_prob: Number(toNum(chaos, 0).toFixed(4)),
     flow_confidence: Number(flow_confidence.toFixed(4)),
-    slit_alert_lanes: [slit2 ? 2 : null, slit3 ? 3 : null, slit4 ? 4 : null].filter(Boolean)
+    slit_alert_lanes: [slit2 ? 2 : null, slit3 ? 3 : null, slit4 ? 4 : null].filter(Boolean),
+    f_hold_caution_lanes: [fHold1 ? 1 : null, fHold2 ? 2 : null, fHold3 ? 3 : null, fHold4 ? 4 : null].filter(Boolean)
   };
 }

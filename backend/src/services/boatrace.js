@@ -129,6 +129,27 @@ function extractAvgStForRow($, $cells) {
   };
 }
 
+function extractFHoldCountFromRow($, $cells) {
+  const $stCellPrimary = $cells.filter("td.is-lineH2").eq(0);
+  const stLinesPrimary = extractLinesFromCell($, $stCellPrimary);
+  const normalized = normalizeDigits(stLinesPrimary.join(" ")).replace(/\s+/g, " ").trim().toUpperCase();
+  if (!normalized) return 0;
+
+  const patterns = [
+    /(?:^|\s)F\.?(\d{1,2})(?:\s|$)/,
+    /F\s*[:/ ]\s*(\d{1,2})/,
+    /F(\d{1,2})L\d{1,2}/
+  ];
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match) {
+      const count = Number(match[1]);
+      if (Number.isFinite(count) && count >= 0) return count;
+    }
+  }
+  return 0;
+}
+
 function normalizeDate(dateInput) {
   const compact = String(dateInput).replace(/-/g, "");
   if (!/^\d{8}$/.test(compact)) {
@@ -278,6 +299,7 @@ function parseRacersFromRacelist(html) {
     const motorLines = extractLinesFromCell($, $stats.eq(3));
     const boatLines = extractLinesFromCell($, $stats.eq(4));
     const avgStResult = extractAvgStForRow($, $cells);
+    const fHoldCount = extractFHoldCountFromRow($, $cells);
 
     const parsed = {
       lane,
@@ -287,6 +309,7 @@ function parseRacersFromRacelist(html) {
       branch,
       age,
       weight,
+      fHoldCount,
       avgSt: avgStResult.value,
       nationwideWinRate: toNumber(nationwideLines[0]),
       localWinRate: toNumber(localLines[0]),

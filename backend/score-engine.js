@@ -15,7 +15,8 @@ export function calcRacerScore(f) {
   score += f.local_win_rate * 2.2;
   score += f.motor2_rate * 0.32;
   score += f.boat2_rate * 0.18;
-  score += f.st_inv * 40;
+  score += f.st_inv * 24;
+  score += (f.expected_actual_st_inv || 0) * 16;
   score += f.local_minus_nation * 1.2;
 
   // Exhibition bonuses
@@ -25,6 +26,8 @@ export function calcRacerScore(f) {
   // Exhibition ST bonus
   if (f.st_rank === 1) score += 7;
   else if (f.st_rank === 2) score += 3;
+  if (f.expected_actual_st_rank === 1) score += 4;
+  else if (f.expected_actual_st_rank === 2) score += 2;
 
   // Tilt bonus (+0.5)
   score += f.tilt_bonus || 0;
@@ -51,6 +54,7 @@ export function calcRacerScore(f) {
 
   // Venue adjustment (lane bias by venue profile)
   score += f.venue_lane_adjustment || 0;
+  score -= f.f_hold_caution_penalty || 0;
 
   return score;
 }

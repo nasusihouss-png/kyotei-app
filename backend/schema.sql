@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS entries (
   boat2_rate REAL,
   exhibition_time REAL,
   tilt REAL,
+  f_hold_count INTEGER,
   entry_course INTEGER,
   exhibition_st REAL,
   FOREIGN KEY (race_id) REFERENCES races(race_id)

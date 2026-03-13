@@ -5,7 +5,16 @@ function buildRaceId(race) {
   return `${yyyymmdd}_${race.venueId}_${race.raceNo}`;
 }
 
+function ensureEntryColumns() {
+  const cols = db.prepare("PRAGMA table_info(entries)").all();
+  const names = new Set(cols.map((c) => String(c.name)));
+  if (!names.has("f_hold_count")) {
+    db.exec("ALTER TABLE entries ADD COLUMN f_hold_count INTEGER");
+  }
+}
+
 export function saveRace(data) {
+  ensureEntryColumns();
   const { race, racers } = data;
   const raceId = buildRaceId(race);
 
@@ -63,6 +72,7 @@ export function saveRace(data) {
       boat2_rate,
       exhibition_time,
       tilt,
+      f_hold_count,
       entry_course,
       exhibition_st
     ) VALUES (
@@ -81,6 +91,7 @@ export function saveRace(data) {
       @boat2_rate,
       @exhibition_time,
       @tilt,
+      @f_hold_count,
       @entry_course,
       @exhibition_st
     )
@@ -119,6 +130,7 @@ export function saveRace(data) {
         boat2_rate: racer.boat2Rate ?? null,
         exhibition_time: racer.exhibitionTime ?? null,
         tilt: racer.tilt ?? null,
+        f_hold_count: racer.fHoldCount ?? 0,
         entry_course: racer.entryCourse ?? null,
         exhibition_st: racer.exhibitionSt ?? null
       });

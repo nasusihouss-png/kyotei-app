@@ -576,7 +576,16 @@ function buildStartDisplaySignatureFromRacers(racers) {
     .join("-");
 }
 
+function ensureEntrySnapshotColumns() {
+  const cols = db.prepare("PRAGMA table_info(entries)").all();
+  const names = new Set(cols.map((c) => String(c.name)));
+  if (!names.has("f_hold_count")) {
+    db.exec("ALTER TABLE entries ADD COLUMN f_hold_count INTEGER");
+  }
+}
+
 function loadRaceSnapshotFromDb({ date, venueId, raceNo }) {
+  ensureEntrySnapshotColumns();
   const nullableNum = (value) => {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
@@ -614,6 +623,7 @@ function loadRaceSnapshotFromDb({ date, venueId, raceNo }) {
         boat2_rate,
         exhibition_time,
         exhibition_st,
+        f_hold_count,
         entry_course,
         tilt
       FROM entries
@@ -657,6 +667,7 @@ function loadRaceSnapshotFromDb({ date, venueId, raceNo }) {
       boat2Rate: nullableNum(r.boat2_rate),
       exhibitionTime: nullableNum(r.exhibition_time),
       exhibitionSt: nullableNum(r.exhibition_st),
+      fHoldCount: toInt(r.f_hold_count, 0),
       entryCourse: toInt(r.entry_course, null),
       tilt: nullableNum(r.tilt)
     }))
@@ -914,6 +925,195 @@ function computeRecommendationScore({
   return Number(score.toFixed(2));
 }
 
+const ESCAPE_FORMATION_PATTERN_TABLE = {
+  P01_INSIDE_23: {
+    label: "inside_23",
+    primary_lane: 2,
+    secondary_lane: 3,
+    second_place_bias: { 2: 1.18, 3: 1.1, 4: 0.98, 5: 0.93, 6: 0.9 }
+  },
+  P02_INSIDE_24: {
+    label: "inside_24",
+    primary_lane: 2,
+    secondary_lane: 4,
+    second_place_bias: { 2: 1.16, 4: 1.08, 3: 1.01, 5: 0.94, 6: 0.9 }
+  },
+  P03_INSIDE_2_OUTER: {
+    label: "inside_2_outer",
+    primary_lane: 2,
+    secondary_lane: 5,
+    second_place_bias: { 2: 1.14, 3: 1.02, 4: 0.99, 5: 1.04, 6: 0.97 }
+  },
+  P04_CENTER_32: {
+    label: "center_32",
+    primary_lane: 3,
+    secondary_lane: 2,
+    second_place_bias: { 3: 1.16, 2: 1.08, 4: 1.02, 5: 0.95, 6: 0.92 }
+  },
+  P05_CENTER_34: {
+    label: "center_34",
+    primary_lane: 3,
+    secondary_lane: 4,
+    second_place_bias: { 3: 1.15, 4: 1.08, 2: 1.01, 5: 0.96, 6: 0.93 }
+  },
+  P06_CENTER_3_OUTER: {
+    label: "center_3_outer",
+    primary_lane: 3,
+    secondary_lane: 5,
+    second_place_bias: { 3: 1.13, 4: 1.01, 2: 1, 5: 1.03, 6: 0.97 }
+  },
+  P07_OUTER_42: {
+    label: "outer_42",
+    primary_lane: 4,
+    secondary_lane: 2,
+    second_place_bias: { 4: 1.14, 2: 1.06, 3: 1.03, 5: 0.97, 6: 0.94 }
+  },
+  P08_OUTER_43: {
+    label: "outer_43",
+    primary_lane: 4,
+    secondary_lane: 3,
+    second_place_bias: { 4: 1.13, 3: 1.08, 2: 1.01, 5: 0.98, 6: 0.95 }
+  },
+  P09_OUTER_4_OUTER: {
+    label: "outer_4_outer",
+    primary_lane: 4,
+    secondary_lane: 5,
+    second_place_bias: { 4: 1.11, 3: 1.02, 2: 0.99, 5: 1.03, 6: 0.98 }
+  },
+  P10_DEEP_OUTER_52: {
+    label: "deep_outer_52",
+    primary_lane: 5,
+    secondary_lane: 2,
+    second_place_bias: { 5: 1.08, 4: 1.03, 3: 1, 2: 1.04, 6: 0.99 }
+  },
+  P11_DEEP_OUTER_WIDE: {
+    label: "deep_outer_wide",
+    primary_lane: 5,
+    secondary_lane: 4,
+    second_place_bias: { 5: 1.06, 4: 1.04, 3: 1.01, 2: 0.99, 6: 1.01 }
+  }
+};
+
+function buildEscapeSecondPlaceCandidateScores(ranking) {
+  return (Array.isArray(ranking) ? ranking : [])
+    .map((row) => {
+      const lane = toInt(row?.racer?.lane, null);
+      if (!Number.isInteger(lane) || lane <= 1) return null;
+      const f = row?.features || {};
+      const laneBias = lane === 2 ? 7 : lane === 3 ? 6 : lane === 4 ? 5 : lane === 5 ? 3 : 2;
+      const score =
+        toNum(row?.score, 0) * 0.1 +
+        (7 - toNum(f.exhibition_rank, 6)) * 4 +
+        (7 - toNum(f.expected_actual_st_rank ?? f.st_rank, 6)) * 4.5 +
+        toNum(f.entry_advantage_score, 0) * 0.8 +
+        toNum(f.slit_alert_flag, 0) * 7 -
+        toNum(f.f_hold_caution_penalty, 0) * 0.6 +
+        laneBias;
+      return {
+        lane,
+        score: Number(score.toFixed(2))
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score);
+}
+
+function classifyEscapeFormationPattern(primaryLane, secondaryLane) {
+  if (primaryLane === 2 && secondaryLane === 3) return "P01_INSIDE_23";
+  if (primaryLane === 2 && secondaryLane === 4) return "P02_INSIDE_24";
+  if (primaryLane === 2) return "P03_INSIDE_2_OUTER";
+  if (primaryLane === 3 && secondaryLane === 2) return "P04_CENTER_32";
+  if (primaryLane === 3 && secondaryLane === 4) return "P05_CENTER_34";
+  if (primaryLane === 3) return "P06_CENTER_3_OUTER";
+  if (primaryLane === 4 && secondaryLane === 2) return "P07_OUTER_42";
+  if (primaryLane === 4 && secondaryLane === 3) return "P08_OUTER_43";
+  if (primaryLane === 4) return "P09_OUTER_4_OUTER";
+  if (primaryLane === 5 && secondaryLane === 2) return "P10_DEEP_OUTER_52";
+  return "P11_DEEP_OUTER_WIDE";
+}
+
+function analyzeEscapeFormationLayer({ ranking, racePattern, indexes }) {
+  const escapeIndex = toNum(indexes?.escape_index, 0);
+  const sashiIndex = toNum(indexes?.sashi_index, 0);
+  const makuriIndex = toNum(indexes?.makuri_index, 0);
+  const makurizashiIndex = toNum(indexes?.makurizashi_index, 0);
+  const chaosIndex = toNum(indexes?.chaos_index, 0);
+  const dominantEscape =
+    String(racePattern || "") === "escape" &&
+    escapeIndex >= 60 &&
+    escapeIndex >= Math.max(sashiIndex, makuriIndex, makurizashiIndex) + 4 &&
+    chaosIndex < 72;
+  const candidates = buildEscapeSecondPlaceCandidateScores(ranking);
+  const primaryLane = candidates[0]?.lane ?? 2;
+  const secondaryLane = candidates[1]?.lane ?? 3;
+  const patternKey = classifyEscapeFormationPattern(primaryLane, secondaryLane);
+  const pattern = ESCAPE_FORMATION_PATTERN_TABLE[patternKey] || ESCAPE_FORMATION_PATTERN_TABLE.P01_INSIDE_23;
+  const topGap = toNum(candidates[0]?.score, 0) - toNum(candidates[1]?.score, 0);
+  const confidence = clamp(
+    0.25,
+    0.95,
+    0.48 + Math.max(0, escapeIndex - 60) * 0.006 + topGap * 0.01 - Math.max(0, chaosIndex - 55) * 0.004
+  );
+
+  return {
+    dominant_escape: dominantEscape,
+    formation_pattern: patternKey,
+    formation_pattern_label: pattern.label,
+    escape_pattern_applied: dominantEscape,
+    escape_pattern_confidence: Number(confidence.toFixed(4)),
+    formation_pattern_clarity_score: Number((confidence * 100).toFixed(2)),
+    escape_second_place_bias_json: pattern.second_place_bias,
+    second_place_candidate_scores: candidates
+  };
+}
+
+function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis) {
+  const rows = Array.isArray(ranking) ? ranking : [];
+  if (!escapePatternAnalysis?.escape_pattern_applied) {
+    return rows.map((row, idx) => ({
+      ...row,
+      rank: idx + 1,
+      features: {
+        ...(row?.features || {}),
+        formation_pattern: escapePatternAnalysis?.formation_pattern || null,
+        escape_pattern_applied: 0,
+        escape_pattern_confidence: toNum(escapePatternAnalysis?.escape_pattern_confidence, 0),
+        escape_second_place_bias: 1,
+        escape_second_place_bias_score: 0
+      }
+    }));
+  }
+
+  const biasByLane = escapePatternAnalysis.escape_second_place_bias_json || {};
+  return [...rows]
+    .map((row) => {
+      const lane = toInt(row?.racer?.lane, null);
+      const bias = Number.isFinite(Number(biasByLane?.[lane])) ? Number(biasByLane[lane]) : 1;
+      const biasScore =
+        lane !== 1
+          ? Number((((bias - 1) * 18) + Math.max(0, toNum(row?.features?.slit_alert_flag, 0)) * 0.8).toFixed(2))
+          : 0;
+      const nextScore = Number((toNum(row?.score, 0) + biasScore).toFixed(4));
+      return {
+        ...row,
+        score: nextScore,
+        features: {
+          ...(row?.features || {}),
+          formation_pattern: escapePatternAnalysis.formation_pattern,
+          escape_pattern_applied: 1,
+          escape_pattern_confidence: toNum(escapePatternAnalysis.escape_pattern_confidence, 0),
+          escape_second_place_bias: bias,
+          escape_second_place_bias_score: biasScore
+        }
+      };
+    })
+    .sort((a, b) => toNum(b?.score, 0) - toNum(a?.score, 0))
+    .map((row, idx) => ({
+      ...row,
+      rank: idx + 1
+    }));
+}
+
 const CONFIDENCE_VERSION = "v1.1";
 const PARTICIPATION_CONFIDENCE_THRESHOLDS = {
   participate: {
@@ -953,7 +1153,8 @@ function buildParticipationDecision({
   entryMeta,
   confidenceScores,
   scenarioSuggestions,
-  raceFlow
+  raceFlow,
+  escapePatternAnalysis
 }) {
   const mode = normalizeModeValue(raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN");
   const confidence = toNum(raceDecision?.confidence, 0);
@@ -972,6 +1173,8 @@ function buildParticipationDecision({
   );
   const slitAlertLanes = Array.isArray(raceFlow?.slit_alert_lanes) ? raceFlow.slit_alert_lanes : [];
   const slitAlertCount = slitAlertLanes.length;
+  const fHoldCautionScore = toNum(confidenceScores?.f_hold_caution_score, 0);
+  const escapePatternApplied = !!escapePatternAnalysis?.escape_pattern_applied;
   const flowMode = String(raceFlow?.race_flow_mode || "").toLowerCase();
   const isAttackScenario = flowMode === "sashi" || flowMode === "makuri" || flowMode === "makurizashi";
   const formationBoost =
@@ -985,8 +1188,9 @@ function buildParticipationDecision({
       ? slitAlertCount * PARTICIPATION_TUNING.positiveBoost.slitAlertPerLaneBoost +
         (isAttackScenario ? PARTICIPATION_TUNING.positiveBoost.attackScenarioExtraBoost : 0)
       : 0;
-  const adjustedHeadFixed = Math.min(100, headFixed + formationBoost * 0.45 + slitBoost * 0.35);
-  const adjustedBetConf = Math.min(100, betConf + formationBoost * 0.4 + slitBoost * 0.55);
+  const fHoldPenalty = Math.min(12, fHoldCautionScore * 0.18);
+  const adjustedHeadFixed = Math.min(100, Math.max(0, headFixed + formationBoost * 0.45 + slitBoost * 0.35 - fHoldPenalty * 0.7));
+  const adjustedBetConf = Math.min(100, Math.max(0, betConf + formationBoost * 0.4 + slitBoost * 0.55 - fHoldPenalty * 0.85));
   const hasStrongCaution =
     cautionFlags.includes("ENTRY_CHANGE_PENALTY") ||
     cautionFlags.includes("ST_CHAOS") ||
@@ -1002,7 +1206,9 @@ function buildParticipationDecision({
   if (cautionFlags.includes("LEARNED_CAUTION_PENALTY")) reasonTags.push("LEARNED_CAUTION_PENALTY");
   if (cautionFlags.includes("START_SIGNAL_UNSTABLE")) reasonTags.push("START_SIGNAL_UNSTABLE");
   if (formationBoost > 0) reasonTags.push("FORMATION_PATTERN_CLEAR");
+  if (escapePatternApplied) reasonTags.push("ESCAPE_PATTERN_APPLIED");
   if (slitBoost > 0) reasonTags.push("SLIT_ALERT_POSITIVE");
+  if (fHoldPenalty > 0) reasonTags.push("F_HOLD_CAUTION");
   if (headStability >= 62) reasonTags.push("HEAD_STABILITY_GOOD");
   if (adjustedHeadFixed >= 72) reasonTags.push("HEAD_CONFIDENCE_GOOD");
   if (adjustedBetConf >= 64) reasonTags.push("BET_CONFIDENCE_GOOD");
@@ -1049,6 +1255,7 @@ function buildParticipationDecision({
       adjusted_recommended_bet_confidence_pct: Number(adjustedBetConf.toFixed(2)),
       formation_pattern_clarity_score: Number(formationPatternClarity.toFixed(2)),
       slit_alert_count: slitAlertCount,
+      f_hold_caution_score: Number(fHoldCautionScore.toFixed(2)),
       confidence_version: CONFIDENCE_VERSION
     },
     confidence_version: CONFIDENCE_VERSION
@@ -1066,7 +1273,8 @@ function buildConfidenceScores({
   ranking,
   preRaceAnalysis,
   contenderSignals,
-  scenarioSuggestions
+  scenarioSuggestions,
+  escapePatternAnalysis
 }) {
   const clampPct = (v) => Number(clamp(0, 100, toNum(v, 0)).toFixed(2));
   const headBase = clampPct(toNum(headConfidence?.head_confidence, 0.5) * 100);
@@ -1105,6 +1313,10 @@ function buildConfidenceScores({
     const missEx = exhibitionSignal <= 0 ? 1 : 0;
     return Math.min(12, (missPlayer + missMotor + missEx) * 4);
   })();
+  const topFHoldPenalty = topRows.reduce((acc, row) => acc + toNum(row?.features?.f_hold_caution_penalty, 0), 0) / Math.max(1, topRows.length);
+  const mainHeadFHoldPenalty = toNum(topRows[0]?.features?.f_hold_caution_penalty, 0);
+  const fHoldCautionScore = clampPct(mainHeadFHoldPenalty * 7 + topFHoldPenalty * 4);
+  const formationPatternClarity = clampPct(toNum(escapePatternAnalysis?.formation_pattern_clarity_score, 0));
 
   const headFixed = clampPct(
     headBase * 0.38 +
@@ -1116,6 +1328,7 @@ function buildConfidenceScores({
       exhibitionSignal * 0.06 +
       formScore * 0.04 -
       entryPenalty -
+      fHoldCautionScore * 0.18 -
       learnedCaution -
       missingDataPenalty
   );
@@ -1127,6 +1340,7 @@ function buildConfidenceScores({
       scenarioConfidence * 0.08 +
       contenderOverlap * 0.08 +
       top3Concentration * 0.06 -
+      fHoldCautionScore * 0.12 +
       learnedCaution * 0.6 -
       Math.max(0, missingDataPenalty - 4)
   );
@@ -1142,6 +1356,8 @@ function buildConfidenceScores({
   if (contenderOverlap < 40) confidenceReasonTags.push("WEAK_MOTOR_EXHIBITION_OVERLAP");
   if (learnedCaution >= 3.5) confidenceReasonTags.push("LEARNED_CAUTION_PENALTY");
   if (startStability < 44) confidenceReasonTags.push("START_SIGNAL_UNSTABLE");
+  if (fHoldCautionScore >= 8) confidenceReasonTags.push("F_HOLD_CAUTION");
+  if (formationPatternClarity >= 62) confidenceReasonTags.push("FORMATION_PATTERN_CLEAR");
   return {
     head_fixed_confidence_pct: headFixed,
     recommended_bet_confidence_pct: betConfidence,
@@ -1151,6 +1367,8 @@ function buildConfidenceScores({
     race_band: toBand(raceConfidence),
     head_confidence: headFixed,
     bet_confidence: betConfidence,
+    f_hold_caution_score: Number(fHoldCautionScore.toFixed(2)),
+    formation_pattern_clarity_score: Number(formationPatternClarity.toFixed(2)),
     confidence_reason_tags: [...new Set(confidenceReasonTags)],
     confidence_version: CONFIDENCE_VERSION
   };
@@ -1364,7 +1582,14 @@ raceRouter.get("/race", async (req, res, next) => {
 
     const rankingBase = rankRace(entryAdjusted.racersWithFeatures);
     const contenderAdjusted = applyContenderSynergy(rankingBase);
-    const ranking = contenderAdjusted.ranking;
+    const rankingBeforePatternBias = contenderAdjusted.ranking;
+    const patternBeforeBias = analyzeRacePattern(rankingBeforePatternBias);
+    const escapePatternAnalysis = analyzeEscapeFormationLayer({
+      ranking: rankingBeforePatternBias,
+      racePattern: patternBeforeBias.race_pattern,
+      indexes: patternBeforeBias.indexes
+    });
+    const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis);
     const manualLapImpact = {
       enabled: false,
       applied_lane_count: 0,
@@ -1563,7 +1788,8 @@ raceRouter.get("/race", async (req, res, next) => {
       raceIndexes,
       raceOutcomeProbabilities,
       probabilities,
-      wallEvaluation
+      wallEvaluation,
+      ranking
     });
     const roleCandidates = analyzeRoleCandidates({
       ranking,
@@ -1584,7 +1810,19 @@ raceRouter.get("/race", async (req, res, next) => {
       exhibitionAI
     });
     const raceStructure = applyVenueBiasToStructure({
-      raceStructure: baseRaceStructure,
+      raceStructure: {
+        ...baseRaceStructure,
+        formation_pattern_clarity_score: escapePatternAnalysis.formation_pattern_clarity_score,
+        formation_pattern: escapePatternAnalysis.formation_pattern,
+        escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+        escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
+        f_hold_caution_score: Number(
+          (
+            ranking.slice(0, 3).reduce((acc, row) => acc + toNum(row?.features?.f_hold_caution_penalty, 0), 0) /
+            Math.max(1, ranking.slice(0, 3).length)
+          ).toFixed(2)
+        )
+      },
       venueBias
     });
     const refinedRaceRisk = refineRaceRiskWithStructure({
@@ -1644,7 +1882,18 @@ raceRouter.get("/race", async (req, res, next) => {
     const signatureTrendContext = loadStartSignatureTrendContext();
     const startSignals = analyzeStartSignals(data.racers, entryMeta, signatureTrendContext);
     const entryAdjustedDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
-    const raceDecision = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
+    const raceDecisionBase = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
+    const raceDecision = {
+      ...raceDecisionBase,
+      factors: {
+        ...(raceDecisionBase?.factors || {}),
+        formation_pattern_clarity_score: escapePatternAnalysis.formation_pattern_clarity_score,
+        formation_pattern: escapePatternAnalysis.formation_pattern,
+        escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+        escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
+        f_hold_caution_score: toNum(raceStructure?.f_hold_caution_score, 0)
+      }
+    };
     const recommendation_score = computeRecommendationScore({
       raceDecision,
       raceStructure,
@@ -1808,7 +2057,8 @@ raceRouter.get("/race", async (req, res, next) => {
       ranking,
       preRaceAnalysis,
       contenderSignals: contenderAdjusted.contenderSignals,
-      scenarioSuggestions
+      scenarioSuggestions,
+      escapePatternAnalysis
     });
     const participationDecision = buildParticipationDecision({
       raceDecision,
@@ -1817,7 +2067,8 @@ raceRouter.get("/race", async (req, res, next) => {
       entryMeta,
       confidenceScores,
       scenarioSuggestions,
-      raceFlow
+      raceFlow,
+      escapePatternAnalysis
     });
     const snapshotCreatedAt = new Date().toISOString();
     const modelVersion = "prediction_snapshot_v2";
@@ -1840,7 +2091,22 @@ raceRouter.get("/race", async (req, res, next) => {
         entry_change_type: entryMeta.entry_change_type
       }
     });
+    const rankingFeatureByLane = new Map(
+      ranking.map((row) => [toInt(row?.racer?.lane, null), row?.features || {}]).filter((row) => Number.isInteger(row[0]))
+    );
     const snapshotPlayers = safeArray(data?.racers).map((racer) => ({
+      ...(rankingFeatureByLane.get(toInt(racer?.lane, null))
+        ? {
+            f_hold_count: toInt(rankingFeatureByLane.get(toInt(racer?.lane, null))?.f_hold_count, 0),
+            f_hold_bias_applied: toInt(rankingFeatureByLane.get(toInt(racer?.lane, null))?.f_hold_bias_applied, 0),
+            left_neighbor_exists: toInt(rankingFeatureByLane.get(toInt(racer?.lane, null))?.left_neighbor_exists, 0),
+            expected_actual_st_adjustment: toNullableNum(rankingFeatureByLane.get(toInt(racer?.lane, null))?.expected_actual_st_adjustment),
+            expected_actual_st: toNullableNum(rankingFeatureByLane.get(toInt(racer?.lane, null))?.expected_actual_st),
+            display_time_delta_vs_left: toNullableNum(rankingFeatureByLane.get(toInt(racer?.lane, null))?.display_time_delta_vs_left),
+            avg_st_rank_delta_vs_left: toNullableNum(rankingFeatureByLane.get(toInt(racer?.lane, null))?.avg_st_rank_delta_vs_left),
+            slit_alert_flag: toInt(rankingFeatureByLane.get(toInt(racer?.lane, null))?.slit_alert_flag, 0)
+          }
+        : {}),
       lane: toInt(racer?.lane, null),
       registration_no: toInt(racer?.registrationNo, null),
       name: racer?.name || null,
@@ -1896,7 +2162,12 @@ raceRouter.get("/race", async (req, res, next) => {
       scenario_labels: [
         racePattern?.pattern || racePattern?.label || null,
         scenarioSuggestions?.main_reason || null
-      ].filter(Boolean)
+      ].filter(Boolean),
+      formation_pattern: escapePatternAnalysis.formation_pattern,
+      escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+      escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
+      escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
+      f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0
     };
     const learningContext = {
       venue_id: snapshotContext.venue_code,
@@ -1932,7 +2203,13 @@ raceRouter.get("/race", async (req, res, next) => {
       confidence: raceDecision?.confidence ?? null,
       head_confidence: confidenceScores.head_confidence,
       bet_confidence: confidenceScores.bet_confidence,
-      scenario_labels: snapshotContext.scenario_labels
+      scenario_labels: snapshotContext.scenario_labels,
+      formation_pattern: escapePatternAnalysis.formation_pattern,
+      escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+      escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
+      escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
+      f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0,
+      participation_decision_reason: participationDecision.summary
     };
     const predictionWithEntry = {
       ...prediction,
@@ -1949,6 +2226,12 @@ raceRouter.get("/race", async (req, res, next) => {
       snapshot_created_at: snapshotCreatedAt,
       race_key: raceId,
       model_version: modelVersion,
+      formation_pattern: escapePatternAnalysis.formation_pattern,
+      escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+      escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
+      escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
+      f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0,
+      participation_decision_reason: participationDecision.summary,
       final_recommended_bets_snapshot: finalRecommendedSnapshot.items,
       final_recommended_bets_count: finalRecommendedSnapshot.items.length,
       final_recommended_bets_snapshot_source: finalRecommendedSnapshot.snapshot_source,
@@ -2287,7 +2570,14 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           });
           const manualLapEvaluation = raceId ? getManualLapEvaluation(raceId) : null;
           const contenderAdjusted = applyContenderSynergy(rankingBase);
-          const ranking = contenderAdjusted.ranking;
+          const rankingBeforePatternBias = contenderAdjusted.ranking;
+          const patternBeforeBias = analyzeRacePattern(rankingBeforePatternBias);
+          const escapePatternAnalysis = analyzeEscapeFormationLayer({
+            ranking: rankingBeforePatternBias,
+            racePattern: patternBeforeBias.race_pattern,
+            indexes: patternBeforeBias.indexes
+          });
+          const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis);
           const manualLapImpact = {
             enabled: false,
             applied_lane_count: 0,
@@ -2417,7 +2707,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             raceIndexes,
             raceOutcomeProbabilities,
             probabilities,
-            wallEvaluation
+            wallEvaluation,
+            ranking
           });
           const partnerPrecision = evaluatePartnerPrecision({
             ranking,
@@ -2444,7 +2735,13 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             exhibitionAI
           });
           const raceStructure = applyVenueBiasToStructure({
-            raceStructure: baseRaceStructure,
+            raceStructure: {
+              ...baseRaceStructure,
+              formation_pattern_clarity_score: escapePatternAnalysis.formation_pattern_clarity_score,
+              formation_pattern: escapePatternAnalysis.formation_pattern,
+              escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+              escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence
+            },
             venueBias
           });
           const refinedRaceRisk = refineRaceRiskWithStructure({
@@ -2497,7 +2794,17 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           });
           const startSignals = analyzeStartSignals(data.racers, entryMeta, signatureTrendContext);
           const entryAdjustedDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
-          const raceDecision = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
+          const raceDecisionBase = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
+          const raceDecision = {
+            ...raceDecisionBase,
+            factors: {
+              ...(raceDecisionBase?.factors || {}),
+              formation_pattern_clarity_score: escapePatternAnalysis.formation_pattern_clarity_score,
+              formation_pattern: escapePatternAnalysis.formation_pattern,
+              escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+              escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence
+            }
+          };
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
             partnerSelection,
@@ -2626,7 +2933,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             ranking,
             preRaceAnalysis,
             contenderSignals: contenderAdjusted.contenderSignals,
-            scenarioSuggestions
+            scenarioSuggestions,
+            escapePatternAnalysis
           });
           const participationDecisionFinal = buildParticipationDecision({
             raceDecision,
@@ -2635,7 +2943,8 @@ raceRouter.get("/recommendations", async (req, res, next) => {
             entryMeta,
             confidenceScores,
             scenarioSuggestions,
-            raceFlow
+            raceFlow,
+            escapePatternAnalysis
           });
           const raceExplainability = buildRaceExplainability({
             raceDecision,
@@ -2655,6 +2964,10 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           recItem.participationDecision = participationDecisionFinal;
           recItem.participation_reason_tags = participationDecisionFinal.reason_tags || [];
           recItem.confidenceScores = confidenceScores;
+          recItem.formation_pattern = escapePatternAnalysis.formation_pattern;
+          recItem.escape_pattern_applied = escapePatternAnalysis.escape_pattern_applied;
+          recItem.escape_pattern_confidence = escapePatternAnalysis.escape_pattern_confidence;
+          recItem.escape_second_place_bias_json = escapePatternAnalysis.escape_second_place_bias_json;
           recItem.main_picks = scenarioSuggestions.main_picks;
           recItem.backup_picks = scenarioSuggestions.backup_picks;
           recItem.longshot_picks = scenarioSuggestions.longshot_picks;
@@ -2855,7 +3168,14 @@ raceRouter.get("/rankings", async (req, res, next) => {
           });
           const manualLapEvaluation = raceId ? getManualLapEvaluation(raceId) : null;
           const contenderAdjusted = applyContenderSynergy(rankingBase);
-          const ranking = contenderAdjusted.ranking;
+          const rankingBeforePatternBias = contenderAdjusted.ranking;
+          const patternBeforeBias = analyzeRacePattern(rankingBeforePatternBias);
+          const escapePatternAnalysis = analyzeEscapeFormationLayer({
+            ranking: rankingBeforePatternBias,
+            racePattern: patternBeforeBias.race_pattern,
+            indexes: patternBeforeBias.indexes
+          });
+          const ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis);
           const manualLapImpact = {
             enabled: false,
             applied_lane_count: 0,
@@ -2949,7 +3269,8 @@ raceRouter.get("/rankings", async (req, res, next) => {
             raceIndexes,
             raceOutcomeProbabilities,
             probabilities: [],
-            wallEvaluation
+            wallEvaluation,
+            ranking
           });
           const partnerPrecision = evaluatePartnerPrecision({
             ranking,
@@ -2976,7 +3297,13 @@ raceRouter.get("/rankings", async (req, res, next) => {
             exhibitionAI
           });
           const raceStructure = applyVenueBiasToStructure({
-            raceStructure: baseRaceStructure,
+            raceStructure: {
+              ...baseRaceStructure,
+              formation_pattern_clarity_score: escapePatternAnalysis.formation_pattern_clarity_score,
+              formation_pattern: escapePatternAnalysis.formation_pattern,
+              escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+              escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence
+            },
             venueBias
           });
           const refinedRaceRisk = refineRaceRiskWithStructure({
@@ -3055,7 +3382,17 @@ raceRouter.get("/rankings", async (req, res, next) => {
           });
           const startSignals = analyzeStartSignals(data.racers, entryMeta, signatureTrendContext);
           const entryAdjustedDecision = applyEntryChangeToDecision(rawRaceDecision, entryMeta);
-          const raceDecision = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
+          const raceDecisionBase = applyStartSignalToDecision(entryAdjustedDecision, startSignals, entryMeta);
+          const raceDecision = {
+            ...raceDecisionBase,
+            factors: {
+              ...(raceDecisionBase?.factors || {}),
+              formation_pattern_clarity_score: escapePatternAnalysis.formation_pattern_clarity_score,
+              formation_pattern: escapePatternAnalysis.formation_pattern,
+              escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
+              escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence
+            }
+          };
           const ticketGenerationV2 = generateTicketsV2({
             headSelection: headSelectionRefined,
             partnerSelection,

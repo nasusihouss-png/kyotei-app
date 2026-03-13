@@ -20,7 +20,8 @@ export function evaluateHeadConfidence({
   raceIndexes,
   raceOutcomeProbabilities,
   probabilities,
-  wallEvaluation
+  wallEvaluation,
+  ranking
 }) {
   const winMap = headSelection?.win_prob_by_lane || {};
   const rows = Object.entries(winMap)
@@ -64,6 +65,10 @@ export function evaluateHeadConfidence({
 
   const wallStrength = toNum(wallEvaluation?.wall_strength, 50);
   const wallBreakRisk = toNum(wallEvaluation?.wall_break_risk, 50);
+  const rankingRows = Array.isArray(ranking) ? ranking : [];
+  const mainHeadRow = rankingRows.find((row) => Number(row?.racer?.lane) === mainHead) || null;
+  const mainHeadFHold = toNum(mainHeadRow?.features?.f_hold_bias_applied, 0);
+  const mainHeadFHoldAdjustment = toNum(mainHeadRow?.features?.expected_actual_st_adjustment, 0);
 
   const dominanceScore = clamp(0, 1, top * 1.75 + dominanceGap * 3.0 + headVsSecondaryGap * 1.3 - third * 0.4);
 
@@ -91,6 +96,7 @@ export function evaluateHeadConfidence({
     outcomeShape * 0.14 -
     riskPenalty * 0.1 -
     wallPenalty * 0.08;
+  confidence -= mainHeadFHold ? Math.min(0.08, 0.02 + mainHeadFHoldAdjustment * 1.5) : 0;
 
   confidence = clamp(0, 1, confidence);
   const head_confidence = Number(confidence.toFixed(4));
