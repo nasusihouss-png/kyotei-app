@@ -1,4 +1,5 @@
 import db from "./db.js";
+import { buildVerifiedLearningRows } from "./prediction-snapshot-store.js";
 
 function toNum(value, fallback = 0) {
   const n = Number(value);
@@ -91,20 +92,14 @@ function ensureLearningTables() {
 
 ensureLearningTables();
 
-function loadGlobalHitRate() {
-  const row = db
-    .prepare(
-      `
-      SELECT
-        COALESCE(SUM(CASE WHEN hit_flag = 1 THEN 1 ELSE 0 END), 0) AS hits,
-        COALESCE(COUNT(*), 0) AS races
-      FROM prediction_feature_logs
-      WHERE hit_flag IN (0, 1)
-    `
-    )
-    .get();
-  const races = toNum(row?.races, 0);
-  const hits = toNum(row?.hits, 0);
+function loadLearningDataset() {
+  return buildVerifiedLearningRows();
+}
+
+function buildGlobalFromDataset(rows) {
+  const dataset = Array.isArray(rows) ? rows : [];
+  const races = dataset.length;
+  const hits = dataset.filter((row) => toNum(row?.hit_flag, 0) === 1).length;
   const hitRate = races > 0 ? (hits / races) * 100 : 0;
   return {
     races,
@@ -113,23 +108,24 @@ function loadGlobalHitRate() {
   };
 }
 
+function loadGlobalHitRate() {
+  return buildGlobalFromDataset(loadLearningDataset());
+}
+
 function buildBucketAdjustments({ column, minSample, scale, cap }) {
-  const global = loadGlobalHitRate();
-  const rows = db
-    .prepare(
-      `
-      SELECT
-        ${column} AS key,
-        COALESCE(SUM(CASE WHEN hit_flag = 1 THEN 1 ELSE 0 END), 0) AS hits,
-        COALESCE(COUNT(*), 0) AS races
-      FROM prediction_feature_logs
-      WHERE hit_flag IN (0, 1)
-        AND ${column} IS NOT NULL
-        AND TRIM(CAST(${column} AS TEXT)) <> ''
-      GROUP BY ${column}
-    `
-    )
-    .all();
+  const dataset = loadLearningDataset();
+  const global = buildGlobalFromDataset(dataset);
+  const bucketMap = new Map();
+  for (const row of dataset) {
+    const keyValue = row?.[column];
+    if (keyValue === null || keyValue === undefined || String(keyValue).trim() === "") continue;
+    const key = String(keyValue);
+    const bucket = bucketMap.get(key) || { key, hits: 0, races: 0 };
+    bucket.races += 1;
+    if (toNum(row?.hit_flag, 0) === 1) bucket.hits += 1;
+    bucketMap.set(key, bucket);
+  }
+  const rows = Array.from(bucketMap.values());
 
   const out = {};
   for (const row of rows) {
@@ -149,20 +145,15 @@ function buildBucketAdjustments({ column, minSample, scale, cap }) {
 }
 
 function buildEntryChangedPenalty(basePenalty) {
-  const rows = db
-    .prepare(
-      `
-      SELECT
-        entry_changed,
-        COALESCE(SUM(CASE WHEN hit_flag = 1 THEN 1 ELSE 0 END), 0) AS hits,
-        COALESCE(COUNT(*), 0) AS races
-      FROM prediction_feature_logs
-      WHERE hit_flag IN (0, 1)
-      GROUP BY entry_changed
-    `
-    )
-    .all();
-  const map = new Map(rows.map((r) => [toNum(r.entry_changed, 0), r]));
+  const rows = loadLearningDataset().reduce((acc, row) => {
+    const key = toNum(row?.entry_changed, 0);
+    const bucket = acc.get(key) || { entry_changed: key, hits: 0, races: 0 };
+    bucket.races += 1;
+    if (toNum(row?.hit_flag, 0) === 1) bucket.hits += 1;
+    acc.set(key, bucket);
+    return acc;
+  }, new Map());
+  const map = rows;
   const changed = map.get(1);
   const normal = map.get(0);
   if (!changed || !normal) return basePenalty;
@@ -185,20 +176,16 @@ function buildRecommendationThreshold(baseThreshold) {
 }
 
 function buildRankingWeight(base) {
-  const row = db
-    .prepare(
-      `
-      SELECT
-        recommendation_mode,
-        COALESCE(SUM(CASE WHEN hit_flag = 1 THEN 1 ELSE 0 END), 0) AS hits,
-        COALESCE(COUNT(*), 0) AS races
-      FROM prediction_feature_logs
-      WHERE hit_flag IN (0, 1)
-      GROUP BY recommendation_mode
-    `
-    )
-    .all()
-    .find((r) => String(r.recommendation_mode || "").toUpperCase() === "FULL_BET");
+  const row = loadLearningDataset()
+    .reduce((acc, item) => {
+      const mode = String(item?.recommendation_mode || "").toUpperCase();
+      const bucket = acc.get(mode) || { recommendation_mode: mode, hits: 0, races: 0 };
+      bucket.races += 1;
+      if (toNum(item?.hit_flag, 0) === 1) bucket.hits += 1;
+      acc.set(mode, bucket);
+      return acc;
+    }, new Map())
+    .get("FULL_BET");
   if (!row || toNum(row.races, 0) < 25) return base;
   const rate = (toNum(row.hits, 0) / Math.max(1, toNum(row.races, 1))) * 100;
   const delta = clamp(-0.08, 0.08, (rate - 33) / 200);
@@ -206,19 +193,15 @@ function buildRankingWeight(base) {
 }
 
 function buildStartSignalWeight(base) {
-  const row = db
-    .prepare(
-      `
-      SELECT
-        COALESCE(SUM(CASE WHEN hit_flag = 1 THEN 1 ELSE 0 END), 0) AS hits,
-        COALESCE(COUNT(*), 0) AS races
-      FROM prediction_feature_logs
-      WHERE hit_flag IN (0, 1)
-        AND start_display_signature IS NOT NULL
-        AND TRIM(start_display_signature) <> ''
-    `
-    )
-    .get();
+  const row = loadLearningDataset().reduce(
+    (acc, item) => {
+      if (!item?.start_display_signature) return acc;
+      acc.races += 1;
+      if (toNum(item?.hit_flag, 0) === 1) acc.hits += 1;
+      return acc;
+    },
+    { hits: 0, races: 0 }
+  );
   const races = toNum(row?.races, 0);
   if (races < 40) return base;
   const rate = (toNum(row?.hits, 0) / Math.max(1, races)) * 100;
@@ -227,20 +210,11 @@ function buildStartSignalWeight(base) {
 }
 
 function loadVerificationMismatchInsights() {
-  const rows = db
-    .prepare(
-      `
-      SELECT v.race_id, v.hit_miss, v.mismatch_categories_json
-      FROM race_verification_logs v
-      INNER JOIN (
-        SELECT race_id, MAX(id) AS max_id
-        FROM race_verification_logs
-        GROUP BY race_id
-      ) latest
-        ON latest.max_id = v.id
-    `
-    )
-    .all();
+  const rows = loadLearningDataset().map((row) => ({
+    race_id: row.race_id,
+    hit_miss: row.hit_miss,
+    mismatch_categories_json: JSON.stringify(row.mismatch_categories || [])
+  }));
 
   const total = Array.isArray(rows) ? rows.length : 0;
   const bucket = {
@@ -274,7 +248,7 @@ function getVerificationQueueStats() {
   const rows = db
     .prepare(
       `
-      SELECT id, mismatch_categories_json
+      SELECT id, learning_ready, verification_status, mismatch_categories_json
       FROM race_verification_logs
       ORDER BY id ASC
     `
@@ -285,7 +259,9 @@ function getVerificationQueueStats() {
   let learningReadyTotal = 0;
   for (const row of rows) {
     const categories = safeJsonParse(row?.mismatch_categories_json, []);
-    if (Array.isArray(categories) && categories.length > 0) learningReadyTotal += 1;
+    const explicitReady = Number(row?.learning_ready) === 1;
+    const verified = String(row?.verification_status || "").toUpperCase().startsWith("VERIFIED");
+    if (verified && (explicitReady || (Array.isArray(categories) && categories.length > 0))) learningReadyTotal += 1;
   }
   return {
     rows,
@@ -296,22 +272,15 @@ function getVerificationQueueStats() {
 }
 
 function loadPredictionFeatureInsights() {
-  const rows = db
-    .prepare(
-      `
-      SELECT
-        hit_flag,
-        motor_rate_avg,
-        exhibition_time_avg,
-        avg_st_avg,
-        ranking_score,
-        confidence,
-        entry_changed
-      FROM prediction_feature_logs
-      WHERE hit_flag IN (0, 1)
-    `
-    )
-    .all();
+  const rows = loadLearningDataset().map((row) => ({
+    hit_flag: row.hit_flag,
+    motor_rate_avg: row.motor_rate_avg,
+    exhibition_time_avg: row.exhibition_time_avg,
+    avg_st_avg: row.avg_st_avg,
+    ranking_score: row.recommendation_score,
+    confidence: row.bet_confidence ?? row.confidence,
+    entry_changed: row.entry_changed
+  }));
   const bucket = {
     hit: { count: 0, motor: 0, exTime: 0, avgSt: 0, rank: 0, conf: 0, entryChanged: 0 },
     miss: { count: 0, motor: 0, exTime: 0, avgSt: 0, rank: 0, conf: 0, entryChanged: 0 }

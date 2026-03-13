@@ -104,12 +104,6 @@ async function fetchRaceData(date, venueId, raceNo) {
   return response.json();
 }
 
-async function fetchRecommendationsData(date) {
-  const url = new URL(`${API_BASE}/recommendations`);
-  url.searchParams.set("date", date);
-  return fetchJsonWithTimeout(url.toString(), { timeoutMs: 30000 });
-}
-
 async function fetchRankingsData(date, mode = "hit_rate") {
   const url = new URL(`${API_BASE}/rankings`);
   url.searchParams.set("date", date);
@@ -129,7 +123,7 @@ async function fetchHistoryData() {
   return response.json();
 }
 
-async function verifyRaceResultApi(raceId) {
+async function verifyRaceResultApi(raceId, predictionSnapshotId = null) {
   const timeoutMs = 20000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -137,7 +131,10 @@ async function verifyRaceResultApi(raceId) {
     const response = await fetch(`${API_BASE}/results/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ race_id: raceId }),
+      body: JSON.stringify({
+        race_id: raceId,
+        prediction_snapshot_id: predictionSnapshotId
+      }),
       signal: controller.signal
     });
     const body = await response.json().catch(() => ({}));
@@ -683,9 +680,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
-  const [recommendationsLoading, setRecommendationsLoading] = useState(false);
-  const [recommendationsError, setRecommendationsError] = useState("");
-  const [recommendationsData, setRecommendationsData] = useState([]);
   const [rankingsLoading, setRankingsLoading] = useState(false);
   const [rankingsError, setRankingsError] = useState("");
   const [rankingsData, setRankingsData] = useState([]);
@@ -1105,11 +1099,6 @@ export default function App() {
   }, [screen]);
 
   useEffect(() => {
-    if (screen === "recommend") {
-      loadRecommendations();
-    }
-  }, [screen, date]);
-  useEffect(() => {
     if (screen === "rankings") {
       loadRankings();
     }
@@ -1157,25 +1146,6 @@ export default function App() {
       setPerfError(e.message || "学習実行に失敗しました");
     } finally {
       setLearningRunLoading(false);
-    }
-  };
-
-  const loadRecommendations = async () => {
-    setRecommendationsLoading(true);
-    setRecommendationsError("");
-    try {
-      const result = await fetchRecommendationsData(date);
-      const rows = Array.isArray(result?.recommendations)
-        ? result.recommendations
-        : Array.isArray(result?.items)
-          ? result.items
-          : [];
-      setRecommendationsData(rows);
-    } catch (e) {
-      setRecommendationsError(e.message || "Failed to fetch recommendations");
-      // keep last successful list for partial/stale display
-    } finally {
-      setRecommendationsLoading(false);
     }
   };
 
@@ -1634,7 +1604,7 @@ export default function App() {
     }
   };
 
-  const onVerifyRace = async (raceId) => {
+  const onVerifyRace = async (raceId, predictionSnapshotId = null) => {
     if (!raceId) {
       setPerfError("検証対象の race_id が見つかりません");
       return;
@@ -1644,7 +1614,7 @@ export default function App() {
     setVerificationRunStatusByRace((prev) => ({ ...prev, [raceId]: "PENDING_RESULT" }));
     setVerificationReasonByRace((prev) => ({ ...prev, [raceId]: "" }));
     try {
-      const result = await verifyRaceResultApi(raceId);
+      const result = await verifyRaceResultApi(raceId, predictionSnapshotId);
       const cats = Array.isArray(result?.verification?.mismatch_categories)
         ? result.verification.mismatch_categories
         : [];
@@ -1834,7 +1804,6 @@ export default function App() {
           </div>
           <div className="screen-tabs">
             <button className={screen === "predict" ? "tab on" : "tab"} onClick={() => setScreen("predict")}>予想</button>
-            <button className={screen === "recommend" ? "tab on" : "tab"} onClick={() => setScreen("recommend")}>おすすめ</button>
             <button className={screen === "results" ? "tab on" : "tab"} onClick={() => setScreen("results")}>結果</button>
           </div>
         </section>
@@ -2564,179 +2533,6 @@ export default function App() {
           </>
         )}
 
-        {screen === "recommend" && (
-          <>
-            {recommendationsError && <div className="error-banner">{recommendationsError}</div>}
-            <section className="card">
-              <div className="section-head recommend-head">
-                <h2>おすすめレース一覧</h2>
-                <div className="row-actions">
-                  <span className="muted">{date} の本線候補</span>
-                  <button className="fetch-btn secondary" onClick={loadRecommendations} disabled={recommendationsLoading}>
-                    {recommendationsLoading ? "更新中..." : "再取得"}
-                  </button>
-                </div>
-              </div>
-              {recommendationsLoading ? (
-                <p className="muted">おすすめを読み込み中...</p>
-              ) : recommendationsData.length === 0 ? (
-                <p className="muted">条件に合うおすすめレースはありません。</p>
-              ) : (
-                <div className="recommendation-list">
-                  {recommendationsData.map((row) => (
-                    <article className="recommend-card" key={`${row.raceId}-${row.raceNo}`}>
-                      <div className="recommend-card-head">
-                        <strong>{row.venueId} {row.venueName || "-"} {row.raceNo}R</strong>
-                        <div className="row-actions">
-                          {row.provisional ? <span className="status-pill status-unsettled">{row.provisional_label || "暫定"}</span> : null}
-                          {row.entry_changed ? <span className="status-pill risk-small">Entry changed</span> : null}
-                          <span className={`status-pill ${getRiskClass(row.mode)}`}>{row.mode || "-"}</span>
-                          {row?.participationDecision?.decision ? (
-                            <span
-                              className={`status-pill ${
-                                row.participationDecision.decision === "recommended"
-                                  ? "risk-full"
-                                  : row.participationDecision.decision === "watch"
-                                    ? "risk-small"
-                                    : "risk-skip"
-                              }`}
-                            >
-                              {row.participationDecision.decision === "recommended"
-                                ? "Recommended"
-                                : row.participationDecision.decision === "watch"
-                                  ? "Watch"
-                                  : "Not Recommended"}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="kv-list">
-                        <div className="kv-row">
-                          <span>confidence</span>
-                          <strong>{formatMaybeNumber(row.confidence, 2)}</strong>
-                        </div>
-                        <div className="kv-row">
-                          <span>頭固定信頼度</span>
-                          <strong>{formatMaybeNumber(row?.confidenceScores?.head_fixed_confidence_pct, 1)}%</strong>
-                        </div>
-                        <div className="kv-row">
-                          <span>買い目信頼度</span>
-                          <strong>{formatMaybeNumber(row?.confidenceScores?.recommended_bet_confidence_pct, 1)}%</strong>
-                        </div>
-                        <div className="kv-row">
-                          <span>頭固定信頼度(従来)</span>
-                          <strong>{formatMaybeNumber((Number(row.head_confidence || 0)) * 100, 1)}%</strong>
-                        </div>
-                        <div className="kv-row">
-                          <span>頭固定判定</span>
-                          <strong>{row.head_fixed_ok ? "固定向き" : "準固定"}</strong>
-                        </div>
-                        <div className="kv-row">
-                          <span>頭本命</span>
-                          <strong><LanePills lanes={[Number(row.main_head)]} /></strong>
-                        </div>
-                      </div>
-                      {row.entry_changed ? (
-                        <div className="kv-list">
-                          <div className="kv-row">
-                            <span>予測進入順</span>
-                            <strong><LanePills lanes={row.predicted_entry_order || []} /></strong>
-                          </div>
-                          <div className="kv-row">
-                            <span>実進入順</span>
-                            <strong><LanePills lanes={row.actual_entry_order || []} /></strong>
-                          </div>
-                        </div>
-                      ) : null}
-                      <div className="ticket-mini-list">
-                        {(Array.isArray(row.tickets) ? row.tickets : []).slice(0, 3).map((ticket, idx) => (
-                          <div className="list-stack" key={`${row.raceId}-${ticket.combo}-${idx}`}>
-                            <div className="list-row list-row-actions">
-                              <strong><ComboBadge combo={ticket.combo} /></strong>
-                              <span className={`ticket-type ${getTicketTypeClass(ticket.suggestion_bucket || ticket.ticket_type)}`}>
-                                {getTicketTypeLabel(ticket.suggestion_bucket || ticket.ticket_type)}
-                              </span>
-                              <span>p {Number.isFinite(Number(ticket.prob)) ? formatMaybeNumber(ticket.prob, 3) : "-"}</span>
-                              <span>odds {Number.isFinite(Number(ticket.odds)) ? formatMaybeNumber(ticket.odds, 1) : "-"}</span>
-                              <span>JPY {Number.isFinite(Number(ticket.bet)) ? Number(ticket.bet).toLocaleString() : "-"}</span>
-                              <button
-                                className="fetch-btn secondary"
-                                onClick={() =>
-                                  onUsePredictedTicket({
-                                    combo: ticket.combo,
-                                    prob: ticket.prob,
-                                    odds: ticket.odds,
-                                    ev: ticket.ev,
-                                    bet: ticket.bet ?? 100,
-                                    ticket_type: ticket.ticket_type
-                                  })
-                                }
-                                disabled={disableBetActions}
-                                title={disableBetActions ? "Not Recommended race" : ""}
-                              >
-                                記録に追加
-                              </button>
-                              <button
-                                className="fetch-btn secondary"
-                                onClick={() =>
-                                  onCopyAiToManual(
-                                    {
-                                      combo: ticket.combo,
-                                      prob: ticket.prob,
-                                      odds: ticket.odds,
-                                      ev: ticket.ev,
-                                      bet: ticket.bet ?? 100
-                                    },
-                                    "recommendation_list"
-                                  )
-                                }
-                                title="手動フォームへコピー"
-                              >
-                                手動へコピー
-                              </button>
-                            </div>
-                            {(Array.isArray(ticket.explanation_tags) && ticket.explanation_tags.length > 0) ? (
-                              <div className="chips-wrap">
-                                {ticket.explanation_tags.slice(0, 4).map((tag) => (
-                                  <span className="chip" key={`rec-ticket-exp-${row.raceId}-${ticket.combo}-${tag}`}>{tag}</span>
-                                ))}
-                              </div>
-                            ) : null}
-                            {ticket.explanation_summary ? <p className="muted strategy-line">{ticket.explanation_summary}</p> : null}
-                          </div>
-                        ))}
-                      </div>
-                      <p className="muted strategy-line">{row.summary || "-"}</p>
-                      {(Array.isArray(row?.explainability?.race_tags) && row.explainability.race_tags.length > 0) ? (
-                        <div className="chips-wrap">
-                          {row.explainability.race_tags.slice(0, 6).map((tag) => (
-                            <span className="chip" key={`rec-exp-${row.raceId}-${tag}`}>{tag}</span>
-                          ))}
-                        </div>
-                      ) : null}
-                      {(Array.isArray(row?.participation_reason_tags) && row.participation_reason_tags.length > 0) ? (
-                        <div className="chips-wrap">
-                          {row.participation_reason_tags.slice(0, 6).map((tag) => (
-                            <span className="chip" key={`rec-part-${row.raceId}-${tag}`}>{tag}</span>
-                          ))}
-                        </div>
-                      ) : null}
-                      {row?.explainability?.race_summary ? (
-                        <p className="muted strategy-line">{row.explainability.race_summary}</p>
-                      ) : null}
-                      <div className="row-actions">
-                        <button className="fetch-btn" onClick={() => onOpenRecommendation(row)}>
-                          詳細予想へ
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-          </>
-        )}
-
         {screen === "rankings" && (
           <>
             {rankingsError && <div className="error-banner">{rankingsError}</div>}
@@ -3331,7 +3127,7 @@ export default function App() {
               {filteredHistory.length === 0 ? <p className="muted">履歴データはまだありません。</p> : (
                 <div className="history-stack">
                   {filteredHistory.map((h) => (
-                    <div key={h.race_id} className="history-item">
+                    <div key={h.history_id || `${h.race_id}-${h.prediction_snapshot_id || h.snapshot_created_at || ""}`} className="history-item">
                       {(() => {
                         const currentVerifyStatus =
                           verificationRunStatusByRace[h.race_id] || h.verification_status || "PENDING_RESULT";
@@ -3352,14 +3148,14 @@ export default function App() {
                                 <button
                                   type="button"
                                   className="fetch-btn secondary"
-                                  onClick={() => onVerifyRace(h.race_id)}
+                                  onClick={() => onVerifyRace(h.race_id, h.prediction_snapshot_id)}
                                   disabled={verifyingRaceId === h.race_id}
                                 >
                                   {verifyingRaceId === h.race_id ? "検証中..." : "検証"}
                                 </button>
                               </div>
                             </div>
-                            {currentVerifyStatus !== "VERIFIED" && verifyReason ? (
+                            {!String(currentVerifyStatus || "").startsWith("VERIFIED") && verifyReason ? (
                               <p className="muted strategy-line" style={{ marginTop: 6 }}>{verifyReason}</p>
                             ) : null}
                           </>

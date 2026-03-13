@@ -77,6 +77,14 @@ import {
   runContinuousLearningIfNeeded,
   runLearningBatch
 } from "../../learning-weight-engine.js";
+import {
+  buildVerifiedLearningRows,
+  ensureVerificationRecordColumns,
+  getPredictionSnapshot,
+  listLatestVerificationRecords,
+  listPredictionSnapshots,
+  mapPredictionSnapshotRow
+} from "../../prediction-snapshot-store.js";
 
 export const raceRouter = Router();
 
@@ -104,6 +112,7 @@ function ensureVerificationLogColumns() {
   if (!names.has("venue_code")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN venue_code INTEGER");
   if (!names.has("venue_name")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN venue_name TEXT");
   if (!names.has("race_no")) db.exec("ALTER TABLE race_verification_logs ADD COLUMN race_no INTEGER");
+  ensureVerificationRecordColumns();
 }
 
 ensureVerificationLogColumns();
@@ -143,6 +152,11 @@ function clamp(min, max, value) {
 function toNum(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function toNullableNum(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 function pct(numerator, denominator) {
@@ -249,6 +263,60 @@ function denormalizeModeValue(mode) {
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function insertVerificationRecord({
+  raceId,
+  raceMeta,
+  predictedTop3Text,
+  actualTop3Text,
+  hitMiss,
+  mismatchCategories,
+  summary
+}) {
+  return db.prepare(
+    `
+    INSERT INTO race_verification_logs (
+      race_id,
+      race_date,
+      venue_code,
+      venue_name,
+      race_no,
+      prediction_snapshot_id,
+      verified_against_snapshot_id,
+      verification_status,
+      verification_reason,
+      confirmed_result,
+      head_hit,
+      bet_hit,
+      learning_ready,
+      predicted_top3,
+      actual_top3,
+      hit_miss,
+      mismatch_categories_json,
+      verification_summary_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `
+  ).run(
+    raceId,
+    raceMeta?.race_date || null,
+    Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
+    raceMeta?.venue_name || null,
+    Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
+    Number.isFinite(Number(summary?.prediction_snapshot_id)) ? Number(summary.prediction_snapshot_id) : null,
+    Number.isFinite(Number(summary?.verified_against_snapshot_id)) ? Number(summary.verified_against_snapshot_id) : null,
+    summary?.verification_status || null,
+    summary?.verification_reason || null,
+    summary?.confirmed_result_canonical || null,
+    summary?.head_correct === true ? 1 : summary?.head_correct === false ? 0 : null,
+    summary?.hit_miss === "HIT" ? 1 : summary?.hit_miss === "MISS" ? 0 : null,
+    summary?.learning_ready ? 1 : 0,
+    predictedTop3Text || null,
+    actualTop3Text || null,
+    hitMiss || null,
+    JSON.stringify(Array.isArray(mismatchCategories) ? mismatchCategories : []),
+    JSON.stringify(summary || {})
+  );
 }
 
 function buildMismatchAnalysis({
@@ -1644,6 +1712,117 @@ raceRouter.get("/race", async (req, res, next) => {
       entryMeta,
       confidenceScores
     });
+    const snapshotCreatedAt = new Date().toISOString();
+    const modelVersion = "prediction_snapshot_v2";
+    const startDisplay = saveRaceStartDisplaySnapshot({
+      raceId,
+      racers: data.racers,
+      sourceMeta: data.source || {},
+      predictionSnapshot: {
+        raceDecision,
+        top3: prediction?.top3 || [],
+        recommendation: raceRisk?.recommendation || null,
+        mode: raceDecision?.mode || null,
+        predicted_entry_order: entryMeta.predicted_entry_order,
+        actual_entry_order: entryMeta.actual_entry_order,
+        entry_changed: entryMeta.entry_changed,
+        entry_change_type: entryMeta.entry_change_type
+      }
+    });
+    const snapshotPlayers = safeArray(data?.racers).map((racer) => ({
+      lane: toInt(racer?.lane, null),
+      registration_no: toInt(racer?.registrationNo, null),
+      name: racer?.name || null,
+      class: racer?.class || null,
+      branch: racer?.branch || null,
+      age: toInt(racer?.age, null),
+      weight: toNullableNum(racer?.weight),
+      avg_st: toNullableNum(racer?.avgSt),
+      nationwide_win_rate: toNullableNum(racer?.nationwideWinRate),
+      local_win_rate: toNullableNum(racer?.localWinRate),
+      motor_no: toInt(racer?.motorNo, null),
+      motor_2rate: toNullableNum(racer?.motor2Rate),
+      boat_no: toInt(racer?.boatNo, null),
+      boat_2rate: toNullableNum(racer?.boat2Rate),
+      exhibition_time: toNullableNum(racer?.exhibitionTime),
+      exhibition_st: toNullableNum(racer?.exhibitionSt),
+      exhibition_st_raw: racer?.exhibitionStRaw || null,
+      entry_course: toInt(racer?.entryCourse, null),
+      tilt: toNullableNum(racer?.tilt)
+    }));
+    const snapshotContext = {
+      race_key: raceId,
+      race_date: data?.race?.date || null,
+      venue_code: Number.isFinite(Number(data?.race?.venueId)) ? Number(data.race.venueId) : null,
+      venue_name: data?.race?.venueName || null,
+      race_no: Number.isFinite(Number(data?.race?.raceNo)) ? Number(data.race.raceNo) : null,
+      race_grade: data?.race?.grade || data?.race?.raceGrade || null,
+      race_name: data?.race?.raceName || null,
+      weather: data?.race?.weather || null,
+      wind_speed: toNullableNum(data?.race?.windSpeed),
+      wind_direction: data?.race?.windDirection || null,
+      wave_height: toNullableNum(data?.race?.waveHeight),
+      players: snapshotPlayers,
+      player_summary: snapshotPlayers,
+      entry: {
+        predicted_entry_order: entryMeta.predicted_entry_order,
+        actual_entry_order: entryMeta.actual_entry_order,
+        start_exhibition_st: startDisplay?.start_display_st || {},
+        start_display_order: startDisplay?.start_display_order || [],
+        start_display_timing: startDisplay?.start_display_timing || {},
+        entry_changed: !!entryMeta.entry_changed,
+        entry_change_type: entryMeta.entry_change_type || "none",
+        entry_change_summary: {
+          changed: !!entryMeta.entry_changed,
+          type: entryMeta.entry_change_type || "none",
+          predicted: entryMeta.predicted_entry_order || [],
+          actual: entryMeta.actual_entry_order || []
+        }
+      },
+      start_display: startDisplay || null,
+      manual_lap_evaluation: manualLapEvaluation || null,
+      manual_lap_impact: manualLapImpact || null,
+      scenario_labels: [
+        racePattern?.pattern || racePattern?.label || null,
+        scenarioSuggestions?.main_reason || null
+      ].filter(Boolean)
+    };
+    const learningContext = {
+      venue_id: snapshotContext.venue_code,
+      venue_name: snapshotContext.venue_name,
+      race_grade: snapshotContext.race_grade,
+      weather: snapshotContext.weather,
+      wind_speed: snapshotContext.wind_speed,
+      wave_height: snapshotContext.wave_height,
+      motor_rate_avg: toNullableNum(
+        snapshotPlayers.length
+          ? snapshotPlayers.reduce((sum, row) => sum + Number(row.motor_2rate || 0), 0) / snapshotPlayers.length
+          : null
+      ),
+      boat_rate_avg: toNullableNum(
+        snapshotPlayers.length
+          ? snapshotPlayers.reduce((sum, row) => sum + Number(row.boat_2rate || 0), 0) / snapshotPlayers.length
+          : null
+      ),
+      avg_st_avg: toNullableNum(
+        snapshotPlayers.length
+          ? snapshotPlayers.reduce((sum, row) => sum + Number(row.avg_st || 0), 0) / snapshotPlayers.length
+          : null
+      ),
+      exhibition_time_avg: toNullableNum(
+        snapshotPlayers.length
+          ? snapshotPlayers.reduce((sum, row) => sum + Number(row.exhibition_time || 0), 0) / snapshotPlayers.length
+          : null
+      ),
+      start_display_signature: startDisplay?.start_display_signature || null,
+      entry_changed: !!entryMeta.entry_changed,
+      entry_change_type: entryMeta.entry_change_type || "none",
+      recommendation_score,
+      confidence: raceDecision?.confidence ?? null,
+      head_confidence: confidenceScores.head_confidence,
+      bet_confidence: confidenceScores.bet_confidence,
+      scenario_labels: snapshotContext.scenario_labels
+    };
     const predictionWithEntry = {
       ...prediction,
       predicted_entry_order: entryMeta.predicted_entry_order,
@@ -1656,8 +1835,11 @@ raceRouter.get("/race", async (req, res, next) => {
       participation_decision: participationDecision.decision,
       confidence_reason_tags: confidenceScores.confidence_reason_tags,
       confidence_version: confidenceScores.confidence_version,
-      snapshot_created_at: new Date().toISOString(),
+      snapshot_created_at: snapshotCreatedAt,
       race_key: raceId,
+      model_version: modelVersion,
+      snapshot_context: snapshotContext,
+      learning_context: learningContext,
       ai_bets_full_snapshot: {
         recommended_bets: Array.isArray(bet_plan_with_stake?.recommended_bets)
           ? bet_plan_with_stake.recommended_bets
@@ -1697,22 +1879,6 @@ raceRouter.get("/race", async (req, res, next) => {
       probabilities,
       ev_analysis: evData.ev_analysis,
       bet_plan: bet_plan_with_stake
-    });
-
-    const startDisplay = saveRaceStartDisplaySnapshot({
-      raceId,
-      racers: data.racers,
-      sourceMeta: data.source || {},
-      predictionSnapshot: {
-        raceDecision,
-        top3: predictionWithEntry.top3,
-        recommendation: raceRisk?.recommendation || null,
-        mode: raceDecision?.mode || null,
-        predicted_entry_order: entryMeta.predicted_entry_order,
-        actual_entry_order: entryMeta.actual_entry_order,
-        entry_changed: entryMeta.entry_changed,
-        entry_change_type: entryMeta.entry_change_type
-      }
     });
     const includeStartDebug = parseBooleanFlag(req.query?.debugStart, false);
     const startExhibitionDebug = includeStartDebug
@@ -3914,36 +4080,29 @@ raceRouter.get("/self-learning", async (req, res, next) => {
     const saveSnapshot = String(req.query?.save || "1") !== "0";
     const snapshotDate = String(req.query?.date || new Date().toISOString().slice(0, 10));
 
-    const latestPredictionRows = db
-      .prepare(
-        `
-        SELECT pl.race_id, pl.recommendation, pl.prediction_json, pl.race_decision_json, pl.bet_plan_json
-        FROM prediction_logs pl
-        INNER JOIN (
-          SELECT race_id, MAX(id) AS max_id
-          FROM prediction_logs
-          GROUP BY race_id
-        ) latest
-          ON latest.max_id = pl.id
-      `
-      )
-      .all()
-      .map((row) => ({
-        race_id: row.race_id,
-        recommendation: row.recommendation,
-        prediction: safeJsonParse(row.prediction_json, {}),
-        raceDecision: safeJsonParse(row.race_decision_json, {}),
-        betPlan: safeJsonParse(row.bet_plan_json, {})
-      }));
+    const verifiedLearningRows = buildVerifiedLearningRows();
+    const latestPredictionRows = verifiedLearningRows.map((row) => ({
+      race_id: row.race_id,
+      recommendation: row.recommendation_mode,
+      prediction: row.snapshot?.prediction || {},
+      raceDecision: row.snapshot?.raceDecision || {},
+      betPlan: row.snapshot?.betPlan || {}
+    }));
 
-    const resultRows = db
-      .prepare(
-        `
-        SELECT race_id, finish_1, finish_2, finish_3, payout_3t
-        FROM results
-      `
-      )
-      .all();
+    const resultRows = verifiedLearningRows
+      .map((row) => {
+        const combo = String(row?.confirmed_result || "");
+        const parts = combo.split("-").map((v) => Number(v)).filter((v) => Number.isInteger(v));
+        if (parts.length !== 3) return null;
+        return {
+          race_id: row.race_id,
+          finish_1: parts[0],
+          finish_2: parts[1],
+          finish_3: parts[2],
+          payout_3t: null
+        };
+      })
+      .filter(Boolean);
 
     const placedRows = db
       .prepare(
@@ -4170,22 +4329,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
     const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 300;
     const statusFilter = String(req.query?.status || "all").toLowerCase();
 
-    const latestPredictionRows = db
-      .prepare(
-        `
-        SELECT pl.id, pl.race_id, pl.recommendation, pl.prediction_json, pl.bet_plan_json, pl.created_at
-        FROM prediction_logs pl
-        INNER JOIN (
-          SELECT race_id, MAX(id) AS max_id
-          FROM prediction_logs
-          GROUP BY race_id
-        ) latest
-          ON latest.max_id = pl.id
-        ORDER BY COALESCE(pl.created_at, '') DESC, pl.id DESC
-        LIMIT ?
-      `
-      )
-      .all(limit);
+    const predictionSnapshots = listPredictionSnapshots({ limit }).map(mapPredictionSnapshotRow);
 
     const resultsRows = db
       .prepare(
@@ -4248,20 +4392,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
       `
       )
       .all();
-    const verificationRows = db
-      .prepare(
-        `
-        SELECT v.race_id, v.verified_at, v.hit_miss, v.mismatch_categories_json, v.verification_summary_json
-        FROM race_verification_logs v
-        INNER JOIN (
-          SELECT race_id, MAX(id) AS max_id
-          FROM race_verification_logs
-          GROUP BY race_id
-        ) latest
-          ON latest.max_id = v.id
-      `
-      )
-      .all();
+    const verificationRows = listLatestVerificationRecords();
 
     const resultMap = new Map(resultsRows.map((r) => [r.race_id, r]));
     const raceMap = new Map(raceRows.map((r) => [r.race_id, r]));
@@ -4308,28 +4439,46 @@ raceRouter.get("/results-history", async (req, res, next) => {
       settlementByRace.set(row.race_id, list);
     }
     const verificationMap = new Map(
-      verificationRows.map((row) => [
-        row.race_id,
+      verificationRows.map((row) => {
+        const summary = row.summary && typeof row.summary === "object"
+          ? row.summary
+          : safeJsonParse(row.verification_summary_json, {});
+        const snapshotId = Number.isFinite(Number(row?.verified_against_snapshot_id))
+          ? Number(row.verified_against_snapshot_id)
+          : Number.isFinite(Number(row?.prediction_snapshot_id))
+            ? Number(row.prediction_snapshot_id)
+            : Number.isFinite(Number(summary?.verified_against_snapshot_id))
+              ? Number(summary.verified_against_snapshot_id)
+              : Number.isFinite(Number(summary?.prediction_snapshot_id))
+                ? Number(summary.prediction_snapshot_id)
+                : null;
+        return [snapshotId || row.race_id,
         {
           verified_at: row.verified_at || null,
           hit_miss: row.hit_miss || null,
           mismatch_categories: safeJsonParse(row.mismatch_categories_json, []),
-          summary: safeJsonParse(row.verification_summary_json, {})
+          summary
         }
-      ])
+      ];
+      })
     );
 
-    const items = latestPredictionRows.map((logRow) => {
-      const raceId = logRow.race_id;
-      const prediction = safeJsonParse(logRow.prediction_json, {});
-      const betPlan = safeJsonParse(logRow.bet_plan_json, {});
+    const items = predictionSnapshots.map((snapshotRow) => {
+      const logRow = snapshotRow.row;
+      const raceId = snapshotRow.race_id;
+      const prediction = snapshotRow.prediction;
+      const betPlan = snapshotRow.betPlan;
       const race = raceMap.get(raceId) || {};
       const result = resultMap.get(raceId) || null;
       const settlements = settlementByRace.get(raceId) || [];
       const mutableStartDisplay = startDisplayMap.get(raceId) || null;
       const eventStartDisplay = featureEventMap.get(raceId) || null;
+      const snapshotStartDisplay =
+        prediction?.snapshot_context?.start_display && typeof prediction.snapshot_context.start_display === "object"
+          ? prediction.snapshot_context.start_display
+          : null;
       const hasStartDisplaySource = !!mutableStartDisplay || !!eventStartDisplay;
-      const startDisplay = hasStartDisplaySource
+      const startDisplay = snapshotStartDisplay || (hasStartDisplaySource
         ? {
             ...(mutableStartDisplay || {}),
             ...(eventStartDisplay || {}),
@@ -4352,8 +4501,11 @@ raceRouter.get("/results-history", async (req, res, next) => {
             prediction_snapshot:
               eventStartDisplay?.prediction_snapshot || mutableStartDisplay?.prediction_snapshot || {}
           }
-        : null;
-      const verification = verificationMap.get(raceId) || null;
+        : null);
+      const verification =
+        verificationMap.get(snapshotRow.id) ||
+        verificationMap.get(raceId) ||
+        null;
       const verificationSummary = verification?.summary && typeof verification.summary === "object"
         ? verification.summary
         : {};
@@ -4400,12 +4552,13 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const snapshotCreatedAt =
         verificationSummary?.snapshot_created_at ||
         prediction?.snapshot_created_at ||
+        snapshotRow.prediction_timestamp ||
         logRow.created_at ||
         null;
       const predictionSnapshotId = Number.isFinite(Number(verificationSummary?.prediction_snapshot_id))
         ? Number(verificationSummary.prediction_snapshot_id)
-        : Number.isFinite(Number(logRow.id))
-          ? Number(logRow.id)
+        : Number.isFinite(Number(snapshotRow.id))
+          ? Number(snapshotRow.id)
           : null;
       const aiBetsSnapshotSource = verificationSummary?.ai_bets_display_snapshot
         ? "verification_snapshot"
@@ -4461,11 +4614,12 @@ raceRouter.get("/results-history", async (req, res, next) => {
 
       return {
         race_id: raceId,
-        race_date: race.race_date ?? verification?.summary?.race_date ?? null,
-        venue_id: race.venue_id ?? verification?.summary?.venue_code ?? null,
-        venue_name: race.venue_name ?? verification?.summary?.venue_name ?? null,
-        race_no: race.race_no ?? verification?.summary?.race_no ?? null,
-        recommendation: normalizeRecommendation(logRow.recommendation),
+        history_id: predictionSnapshotId || `${raceId}-${snapshotCreatedAt || logRow.created_at || ""}`,
+        race_date: race.race_date ?? snapshotRow.race_date ?? verification?.summary?.race_date ?? null,
+        venue_id: race.venue_id ?? snapshotRow.venue_code ?? verification?.summary?.venue_code ?? null,
+        venue_name: race.venue_name ?? snapshotRow.venue_name ?? verification?.summary?.venue_name ?? null,
+        race_no: race.race_no ?? snapshotRow.race_no ?? verification?.summary?.race_no ?? null,
+        recommendation: normalizeRecommendation(logRow.recommendation || snapshotRow.raceDecision?.mode),
         predicted_entry_order: predictedEntryOrder,
         actual_entry_order: actualEntryOrder,
         entry_changed: entryChanged,
@@ -4500,7 +4654,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           latest_log_bets: latestLogDisplayBets
         },
         recommended_bets: aiBetsDisplaySnapshot,
-        logged_at: logRow.created_at
+        logged_at: snapshotRow.prediction_timestamp || logRow.created_at
       };
     });
 
@@ -4523,6 +4677,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
 raceRouter.post("/results/verify", async (req, res, next) => {
   try {
     const raceId = String(req.body?.race_id || req.body?.raceId || "").trim();
+    const requestedSnapshotId = Number(req.body?.prediction_snapshot_id ?? req.body?.snapshot_id);
     if (!raceId) {
       return res.status(400).json({
         error: "bad_request",
@@ -4555,28 +4710,34 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       throw settleErr;
     }
 
-    const latestPrediction = db
-      .prepare(
-        `
-        SELECT id, prediction_json, bet_plan_json, recommendation, created_at
-        FROM prediction_logs
-        WHERE race_id = ?
-        ORDER BY id DESC
-        LIMIT 1
-      `
-      )
-      .get(raceId);
-    const latestVerificationRow = db
-      .prepare(
-        `
-        SELECT id, verification_summary_json
-        FROM race_verification_logs
-        WHERE race_id = ?
-        ORDER BY id DESC
-        LIMIT 1
-      `
-      )
-      .get(raceId);
+    const latestPrediction = getPredictionSnapshot({
+      raceId,
+      snapshotId: Number.isFinite(requestedSnapshotId) ? requestedSnapshotId : null
+    });
+    const latestVerificationRow = Number.isFinite(requestedSnapshotId)
+      ? db
+          .prepare(
+            `
+            SELECT *
+            FROM race_verification_logs
+            WHERE verified_against_snapshot_id = ?
+               OR prediction_snapshot_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+          `
+          )
+          .get(Number(requestedSnapshotId), Number(requestedSnapshotId))
+      : db
+          .prepare(
+            `
+            SELECT *
+            FROM race_verification_logs
+            WHERE race_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+          `
+          )
+          .get(raceId);
     const latestVerificationSummary = safeJsonParse(latestVerificationRow?.verification_summary_json, {});
     if (!latestPrediction) {
       return res.status(409).json({
@@ -4728,33 +4889,15 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         learning_ready: false,
         warning: null
       };
-      const insertInfo = db.prepare(
-        `
-        INSERT INTO race_verification_logs (
-          race_id,
-          race_date,
-          venue_code,
-          venue_name,
-          race_no,
-          predicted_top3,
-          actual_top3,
-          hit_miss,
-          mismatch_categories_json,
-          verification_summary_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-      ).run(
+      const insertInfo = insertVerificationRecord({
         raceId,
-        raceMeta?.race_date || null,
-        Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
-        raceMeta?.venue_name || null,
-        Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
-        safeArray(predictionJson?.top3).slice(0, 3).join("-") || null,
-        actualTop3.length === 3 ? actualTop3.join("-") : null,
-        "NOT_VERIFIABLE",
-        JSON.stringify(["NO_BET_SNAPSHOT"]),
-        JSON.stringify(summary)
-      );
+        raceMeta,
+        predictedTop3Text: safeArray(predictionJson?.top3).slice(0, 3).join("-") || null,
+        actualTop3Text: actualTop3.length === 3 ? actualTop3.join("-") : null,
+        hitMiss: "NOT_VERIFIABLE",
+        mismatchCategories: ["NO_BET_SNAPSHOT"],
+        summary
+      });
       return res.json({
         ok: true,
         status: "NO_BET_SNAPSHOT",
@@ -4820,7 +4963,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         predictionJson?.confidence_version ||
         predictionConfidenceScores?.confidence_version ||
         null,
-      verification_status: "VERIFIED",
+      verification_status: analysis.hit_miss === "HIT" ? "VERIFIED_HIT" : analysis.hit_miss === "MISS" ? "VERIFIED_MISS" : "VERIFIED",
       verification_reason: verifyWarning || null,
       verification_version: nextVerificationVersion,
       prediction_snapshot_id: Number.isFinite(Number(latestPrediction?.id)) ? Number(latestPrediction.id) : null,
@@ -4839,33 +4982,15 @@ raceRouter.post("/results/verify", async (req, res, next) => {
 
     let insertInfo = null;
     try {
-      insertInfo = db.prepare(
-      `
-      INSERT INTO race_verification_logs (
-        race_id,
-        race_date,
-        venue_code,
-        venue_name,
-        race_no,
-        predicted_top3,
-        actual_top3,
-        hit_miss,
-        mismatch_categories_json,
-        verification_summary_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `
-      ).run(
-      raceId,
-      raceMeta?.race_date || null,
-      Number.isFinite(Number(raceMeta?.venue_id)) ? Number(raceMeta.venue_id) : null,
-      raceMeta?.venue_name || null,
-      Number.isFinite(Number(raceMeta?.race_no)) ? Number(raceMeta.race_no) : null,
-      analysis.predicted_combo,
-      analysis.actual_combo,
-      analysis.hit_miss,
-      JSON.stringify(analysis.categories),
-      JSON.stringify(summary)
-      );
+      insertInfo = insertVerificationRecord({
+        raceId,
+        raceMeta,
+        predictedTop3Text: analysis.predicted_combo,
+        actualTop3Text: analysis.actual_combo,
+        hitMiss: analysis.hit_miss,
+        mismatchCategories: analysis.categories,
+        summary
+      });
     } catch (persistErr) {
       return res.status(500).json({
         ok: false,
@@ -4907,7 +5032,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
 
     return res.json({
       ok: true,
-      status: "VERIFIED",
+      status: summary.verification_status,
       verification_performed: true,
       message: "Verification completed.",
       verification: summary,

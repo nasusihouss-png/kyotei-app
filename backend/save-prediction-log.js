@@ -1,4 +1,5 @@
 import db from "./db.js";
+import { ensurePredictionSnapshotColumns } from "./prediction-snapshot-store.js";
 
 function ensurePredictionLogColumns() {
   const cols = db.prepare("PRAGMA table_info(prediction_logs)").all();
@@ -20,15 +21,19 @@ function ensurePredictionLogColumns() {
   }
 }
 
+ensurePredictionSnapshotColumns();
 ensurePredictionLogColumns();
 
 const insertPredictionLog = db.prepare(`
   INSERT INTO prediction_logs (
     race_id,
+    race_key,
     race_date,
     venue_code,
     venue_name,
     race_no,
+    prediction_timestamp,
+    model_version,
     race_pattern,
     buy_type,
     risk_score,
@@ -41,10 +46,13 @@ const insertPredictionLog = db.prepare(`
     bet_plan_json
   ) VALUES (
     @race_id,
+    @race_key,
     @race_date,
     @venue_code,
     @venue_name,
     @race_no,
+    @prediction_timestamp,
+    @model_version,
     @race_pattern,
     @buy_type,
     @risk_score,
@@ -72,10 +80,13 @@ export function savePredictionLog({
 }) {
   insertPredictionLog.run({
     race_id: raceId,
+    race_key: prediction?.race_key ?? String(raceId || ""),
     race_date: race?.date ?? null,
     venue_code: Number.isFinite(Number(race?.venueId)) ? Number(race.venueId) : null,
     venue_name: race?.venueName ?? null,
     race_no: Number.isFinite(Number(race?.raceNo)) ? Number(race.raceNo) : null,
+    prediction_timestamp: prediction?.snapshot_created_at ?? new Date().toISOString(),
+    model_version: prediction?.model_version ?? null,
     race_pattern: racePattern ?? null,
     buy_type: buyType ?? null,
     risk_score: raceRisk?.risk_score ?? null,
