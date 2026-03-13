@@ -31,18 +31,21 @@ function normalizeBetSnapshotItems(items) {
   return (Array.isArray(items) ? items : [])
     .map((row) => {
       const combo = normalizeCombo(row?.combo ?? row);
-      if (!combo) return null;
+      if (!combo || combo.split("-").length !== 3) return null;
       return {
         ...(row && typeof row === "object" ? row : {}),
         combo,
         prob: Number.isFinite(Number(row?.prob)) ? Number(row.prob) : null,
         odds: Number.isFinite(Number(row?.odds)) ? Number(row.odds) : null,
         ev: Number.isFinite(Number(row?.ev)) ? Number(row.ev) : null,
+        ticket_type: row?.ticket_type || "backup",
         recommended_bet: Number.isFinite(Number(row?.recommended_bet))
           ? Number(row.recommended_bet)
           : Number.isFinite(Number(row?.bet))
             ? Number(row.bet)
-            : null
+            : null,
+        explanation_tags: Array.isArray(row?.explanation_tags) ? [...row.explanation_tags] : [],
+        trap_flags: Array.isArray(row?.trap_flags) ? [...row.trap_flags] : []
       };
     })
     .filter(Boolean);

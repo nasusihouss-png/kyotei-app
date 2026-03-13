@@ -452,6 +452,29 @@ function normalizeCombo(value) {
   return digits.slice(0, 3).join("-");
 }
 
+function getSavedFinalRecommendedBets(row) {
+  const snapshot = Array.isArray(row?.final_recommended_bets_snapshot)
+    ? row.final_recommended_bets_snapshot
+    : Array.isArray(row?.ai_bets_display_snapshot)
+      ? row.ai_bets_display_snapshot
+      : [];
+  return snapshot
+    .map((bet) => {
+      const combo = normalizeCombo(bet?.combo ?? bet);
+      if (!combo || combo.split("-").length !== 3) return null;
+      return {
+        ...(bet && typeof bet === "object" ? bet : {}),
+        combo,
+        recommended_bet: Number.isFinite(Number(bet?.recommended_bet))
+          ? Number(bet.recommended_bet)
+          : Number.isFinite(Number(bet?.bet))
+            ? Number(bet.bet)
+            : 0
+      };
+    })
+    .filter(Boolean);
+}
+
 function makeRaceKey({ race_id, race_date, venue_id, race_no }) {
   if (race_id) return String(race_id);
   return `${race_date || "unknown"}_${venue_id || "v"}_${race_no || "r"}`;
@@ -3126,41 +3149,37 @@ export default function App() {
               </div>
               {filteredHistory.length === 0 ? <p className="muted">履歴データはまだありません。</p> : (
                 <div className="history-stack">
-                  {filteredHistory.map((h) => (
+                  {filteredHistory.map((h) => {
+                    const savedFinalRecommendedBets = getSavedFinalRecommendedBets(h);
+                    const currentVerifyStatus =
+                      verificationRunStatusByRace[h.race_id] || h.verification_status || "PENDING_RESULT";
+                    const verifyReason =
+                      verificationReasonByRace[h.race_id] ||
+                      h.verification_reason ||
+                      h?.verification?.summary?.warning ||
+                      "";
+                    return (
                     <div key={h.history_id || `${h.race_id}-${h.prediction_snapshot_id || h.snapshot_created_at || ""}`} className="history-item">
-                      {(() => {
-                        const currentVerifyStatus =
-                          verificationRunStatusByRace[h.race_id] || h.verification_status || "PENDING_RESULT";
-                        const verifyReason =
-                          verificationReasonByRace[h.race_id] ||
-                          h.verification_reason ||
-                          h?.verification?.summary?.warning ||
-                          "";
-                        return (
-                          <>
-                            <div className="history-head">
-                              <strong>{h.race_date} {h.venue_name || h.venue_id} {h.race_no}R</strong>
-                              <div className="row-actions">
-                                <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
-                                <span className={getVerifyStatusBadgeClass(currentVerifyStatus)}>
-                                  {getVerifyStatusLabel(currentVerifyStatus)}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="fetch-btn secondary"
-                                  onClick={() => onVerifyRace(h.race_id, h.prediction_snapshot_id)}
-                                  disabled={verifyingRaceId === h.race_id}
-                                >
-                                  {verifyingRaceId === h.race_id ? "検証中..." : "検証"}
-                                </button>
-                              </div>
-                            </div>
-                            {!String(currentVerifyStatus || "").startsWith("VERIFIED") && verifyReason ? (
-                              <p className="muted strategy-line" style={{ marginTop: 6 }}>{verifyReason}</p>
-                            ) : null}
-                          </>
-                        );
-                      })()}
+                      <div className="history-head">
+                        <strong>{h.race_date} {h.venue_name || h.venue_id} {h.race_no}R</strong>
+                        <div className="row-actions">
+                          <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
+                          <span className={getVerifyStatusBadgeClass(currentVerifyStatus)}>
+                            {getVerifyStatusLabel(currentVerifyStatus)}
+                          </span>
+                          <button
+                            type="button"
+                            className="fetch-btn secondary"
+                            onClick={() => onVerifyRace(h.race_id, h.prediction_snapshot_id)}
+                            disabled={verifyingRaceId === h.race_id}
+                          >
+                            {verifyingRaceId === h.race_id ? "検証中..." : "検証"}
+                          </button>
+                        </div>
+                      </div>
+                      {!String(currentVerifyStatus || "").startsWith("VERIFIED") && verifyReason ? (
+                        <p className="muted strategy-line" style={{ marginTop: 6 }}>{verifyReason}</p>
+                      ) : null}
                       <div className="history-start-display">
                         <h3>Start Exhibition</h3>
                         <StartExhibitionDisplay startDisplay={h.startDisplay || null} compact />
@@ -3224,8 +3243,8 @@ export default function App() {
                         <div>
                           AI推奨買い目:
                           {" "}
-                          {Array.isArray(h.ai_bets_display_snapshot) && h.ai_bets_display_snapshot.length ? (
-                            h.ai_bets_display_snapshot.map((b, idx) => (
+                          {savedFinalRecommendedBets.length ? (
+                            savedFinalRecommendedBets.map((b, idx) => (
                               <ComboBadge combo={b?.combo} key={`rec-${h.race_id}-${idx}`} />
                             ))
                           ) : "No final recommended bet snapshot saved"}
@@ -3235,9 +3254,7 @@ export default function App() {
                           {" "}
                           {Number.isFinite(Number(h.final_recommended_bets_count))
                             ? Number(h.final_recommended_bets_count)
-                            : Array.isArray(h.ai_bets_display_snapshot)
-                              ? h.ai_bets_display_snapshot.length
-                              : 0}
+                            : savedFinalRecommendedBets.length}
                         </div>
                         <div>snapshot_id: {h.prediction_snapshot_id ?? "-"}</div>
                         <div>snapshot_source: {h.ai_bets_snapshot_source || "-"}</div>
@@ -3263,7 +3280,7 @@ export default function App() {
                           </div>
                         </div>
                       ) : null}
-                      {Array.isArray(h.ai_bets_display_snapshot) && h.ai_bets_display_snapshot.length > 0 ? (
+                      {savedFinalRecommendedBets.length > 0 ? (
                         <div className="table-wrap" style={{ marginTop: 8 }}>
                           <table>
                             <thead>
@@ -3276,7 +3293,7 @@ export default function App() {
                               </tr>
                             </thead>
                             <tbody>
-                              {h.ai_bets_display_snapshot.map((bet, idx) => (
+                              {savedFinalRecommendedBets.map((bet, idx) => (
                                 <tr key={`final-bet-${h.history_id || h.race_id}-${idx}`}>
                                   <td><ComboBadge combo={bet?.combo} /></td>
                                   <td>{formatMaybeNumber(bet?.prob, 3)}</td>
@@ -3317,7 +3334,8 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
