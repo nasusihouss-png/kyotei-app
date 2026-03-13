@@ -4550,12 +4550,9 @@ raceRouter.get("/start-entry-analysis", async (req, res, next) => {
 
 raceRouter.get("/learning/latest", async (_req, res, next) => {
   try {
-    const auto = parseBooleanFlag(_req.query?.auto, true);
+    const auto = parseBooleanFlag(_req.query?.auto, false);
     const autoResult = auto
-      ? runContinuousLearningIfNeeded({
-          minNewLearningReady: 3,
-          minLearningReadyTotal: 10
-        })
+      ? runContinuousLearningIfNeeded()
       : null;
     return res.json({
       ...getLatestLearningRun(),
@@ -5650,10 +5647,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       });
     }
 
-    const continuousLearning = runContinuousLearningIfNeeded({
-      minNewLearningReady: 3,
-      minLearningReadyTotal: 10
-    });
+    const continuousLearning = runContinuousLearningIfNeeded();
 
     console.info("[VERIFY]", {
       race_id: raceId,
@@ -5808,6 +5802,117 @@ raceRouter.post("/results/invalidate", async (req, res, next) => {
       exclude_from_learning: excludeFromLearning,
       invalid_reason: invalidReason,
       invalidated_at: invalidatedAt
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.post("/results/restore", async (req, res, next) => {
+  try {
+    ensureVerificationLogColumns();
+    const verificationLogId = Number.isFinite(Number(req.body?.verification_log_id))
+      ? Number(req.body.verification_log_id)
+      : null;
+    if (!verificationLogId) {
+      return res.status(400).json({
+        ok: false,
+        error: "verification_log_id_required",
+        message: "verification_log_id is required to restore a record."
+      });
+    }
+    const targetRow = db.prepare("SELECT * FROM race_verification_logs WHERE id = ? LIMIT 1").get(verificationLogId);
+    if (!targetRow) {
+      return res.status(404).json({
+        ok: false,
+        error: "verification_not_found",
+        message: "No verification record was found to restore."
+      });
+    }
+    const existingSummary = safeJsonParse(targetRow?.verification_summary_json, {});
+    const nextSummary = {
+      ...existingSummary,
+      is_hidden_from_results: false,
+      is_invalid_verification: false,
+      exclude_from_learning: false,
+      invalid_reason: null,
+      invalidated_at: null,
+      learning_ready: String(targetRow?.verification_status || existingSummary?.verification_status || "").toUpperCase().startsWith("VERIFIED")
+        ? ((Array.isArray(existingSummary?.mismatch_categories) && existingSummary.mismatch_categories.length > 0) ? true : Number(targetRow?.learning_ready) === 1)
+        : false,
+      invalidation_source: "manual_restore"
+    };
+
+    db.prepare(
+      `
+      UPDATE race_verification_logs
+      SET
+        is_hidden_from_results = 0,
+        is_invalid_verification = 0,
+        exclude_from_learning = 0,
+        invalid_reason = NULL,
+        invalidated_at = NULL,
+        learning_ready = ?,
+        verification_summary_json = ?
+      WHERE id = ?
+    `
+    ).run(
+      nextSummary.learning_ready ? 1 : 0,
+      JSON.stringify(nextSummary),
+      verificationLogId
+    );
+
+    return res.json({
+      ok: true,
+      verification_log_id: verificationLogId,
+      restored: true
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+raceRouter.post("/results/verification-note", async (req, res, next) => {
+  try {
+    ensureVerificationLogColumns();
+    const verificationLogId = Number.isFinite(Number(req.body?.verification_log_id))
+      ? Number(req.body.verification_log_id)
+      : null;
+    const note = String(req.body?.verification_reason || req.body?.note || "").trim() || null;
+    if (!verificationLogId) {
+      return res.status(400).json({
+        ok: false,
+        error: "verification_log_id_required",
+        message: "verification_log_id is required to update a verification note."
+      });
+    }
+    const targetRow = db.prepare("SELECT * FROM race_verification_logs WHERE id = ? LIMIT 1").get(verificationLogId);
+    if (!targetRow) {
+      return res.status(404).json({
+        ok: false,
+        error: "verification_not_found",
+        message: "No verification record was found to update."
+      });
+    }
+    const existingSummary = safeJsonParse(targetRow?.verification_summary_json, {});
+    const nextSummary = {
+      ...existingSummary,
+      verification_reason: note,
+      status_note: note
+    };
+    db.prepare(
+      `
+      UPDATE race_verification_logs
+      SET
+        verification_reason = ?,
+        verification_summary_json = ?
+      WHERE id = ?
+    `
+    ).run(note, JSON.stringify(nextSummary), verificationLogId);
+    return res.json({
+      ok: true,
+      verification_log_id: verificationLogId,
+      verification_reason: note
     });
   } catch (err) {
     return next(err);

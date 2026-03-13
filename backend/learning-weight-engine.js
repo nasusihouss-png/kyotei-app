@@ -36,6 +36,8 @@ export const DEFAULT_BATCH_WEIGHTS = {
 
 export const AUTO_LEARNING_MIN_NEW_READY = 2;
 export const AUTO_LEARNING_MIN_READY_TOTAL = 8;
+let continuousLearningInFlight = false;
+let queuedContinuousLearningRequest = false;
 
 function ensureLearningTables() {
   db.exec(`
@@ -98,6 +100,15 @@ function ensureLearningTables() {
   }
   if (!runtimeColNames.has("last_used_learning_ready_count")) {
     db.exec("ALTER TABLE learning_runtime_state ADD COLUMN last_used_learning_ready_count INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!runtimeColNames.has("last_learning_trigger_mode")) {
+    db.exec("ALTER TABLE learning_runtime_state ADD COLUMN last_learning_trigger_mode TEXT");
+  }
+  if (!runtimeColNames.has("learning_job_running")) {
+    db.exec("ALTER TABLE learning_runtime_state ADD COLUMN learning_job_running INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!runtimeColNames.has("queued_auto_learning")) {
+    db.exec("ALTER TABLE learning_runtime_state ADD COLUMN queued_auto_learning INTEGER NOT NULL DEFAULT 0");
   }
 }
 
@@ -318,7 +329,10 @@ function updateLearningRuntimeState({
   runId,
   runAt,
   usedVerificationCount,
-  remainingLearningReady
+  remainingLearningReady,
+  triggerMode = null,
+  learningJobRunning = 0,
+  queuedAutoLearning = 0
 }) {
   db.prepare(
     `
@@ -330,6 +344,9 @@ function updateLearningRuntimeState({
       last_verified_records_used = ?,
       last_used_learning_ready_count = ?,
       last_remaining_learning_ready = ?,
+      last_learning_trigger_mode = ?,
+      learning_job_running = ?,
+      queued_auto_learning = ?,
       updated_at = ?
     WHERE id = 1
   `
@@ -340,6 +357,28 @@ function updateLearningRuntimeState({
     toNum(usedVerificationCount, 0),
     toNum(usedVerificationCount, 0),
     toNum(remainingLearningReady, 0),
+    triggerMode || null,
+    toNum(learningJobRunning, 0),
+    toNum(queuedAutoLearning, 0),
+    nowIso()
+  );
+}
+
+function markLearningJobState({ running, queued, triggerMode = null } = {}) {
+  db.prepare(
+    `
+    UPDATE learning_runtime_state
+    SET
+      learning_job_running = ?,
+      queued_auto_learning = ?,
+      last_learning_trigger_mode = COALESCE(?, last_learning_trigger_mode),
+      updated_at = ?
+    WHERE id = 1
+  `
+  ).run(
+    running ? 1 : 0,
+    queued ? 1 : 0,
+    triggerMode || null,
     nowIso()
   );
 }
@@ -623,7 +662,10 @@ export function applyLearningBatchManually({ apply = true, dryRun = false } = {}
       runId: batch?.run_id,
       runAt,
       usedVerificationCount,
-      remainingLearningReady: 0
+      remainingLearningReady: 0,
+      triggerMode: "manual",
+      learningJobRunning: 0,
+      queuedAutoLearning: 0
     });
   }
 
@@ -712,6 +754,9 @@ export function getLatestLearningRun() {
       last_learning_run_at: runtime?.last_learning_run_at || null,
       last_verified_records_used: toNum(runtime?.last_verified_records_used, 0),
       last_remaining_learning_ready: toNum(runtime?.last_remaining_learning_ready, learningReadyPending),
+      last_learning_trigger_mode: runtime?.last_learning_trigger_mode || null,
+      learning_job_running: toNum(runtime?.learning_job_running, 0),
+      queued_auto_learning: toNum(runtime?.queued_auto_learning, 0),
       verification_total: toNum(queue?.total, 0),
       verification_pending: pending,
       learning_ready_total: toNum(queue?.learningReadyTotal, 0),
@@ -728,6 +773,16 @@ export function runContinuousLearningIfNeeded({
   minNewLearningReady = AUTO_LEARNING_MIN_NEW_READY,
   minLearningReadyTotal = AUTO_LEARNING_MIN_READY_TOTAL
 } = {}) {
+  if (continuousLearningInFlight) {
+    queuedContinuousLearningRequest = true;
+    markLearningJobState({ running: true, queued: true, triggerMode: "auto" });
+    return {
+      triggered: false,
+      queued: true,
+      reason: "already_running"
+    };
+  }
+
   const runtime = db.prepare(`SELECT * FROM learning_runtime_state WHERE id = 1`).get();
   const queue = getVerificationQueueStats();
   const total = toNum(queue?.total, 0);
@@ -740,6 +795,7 @@ export function runContinuousLearningIfNeeded({
   if (learningReadyTotal < minLearningReadyTotal) {
     return {
       triggered: false,
+      queued: false,
       reason: "insufficient_learning_ready_total",
       total_verified: total,
       new_verified: newVerified,
@@ -751,6 +807,7 @@ export function runContinuousLearningIfNeeded({
   if (newLearningReady < minNewLearningReady) {
     return {
       triggered: false,
+      queued: false,
       reason: "not_enough_new_learning_ready",
       total_verified: total,
       new_verified: newVerified,
@@ -759,34 +816,53 @@ export function runContinuousLearningIfNeeded({
     };
   }
 
-  const batch = runLearningBatch({
-    apply: true,
-    dryRun: false
-  });
-  const runAt = nowIso();
-  updateLearningRuntimeState({
-    lastProcessedVerificationLogId: maxId,
-    runId: batch?.run_id,
-    runAt,
-    usedVerificationCount: newLearningReady,
-    remainingLearningReady: 0
-  });
+  continuousLearningInFlight = true;
+  queuedContinuousLearningRequest = false;
+  markLearningJobState({ running: true, queued: false, triggerMode: "auto" });
+  try {
+    const batch = runLearningBatch({
+      apply: true,
+      dryRun: false
+    });
+    const runAt = nowIso();
+    updateLearningRuntimeState({
+      lastProcessedVerificationLogId: maxId,
+      runId: batch?.run_id,
+      runAt,
+      usedVerificationCount: newLearningReady,
+      remainingLearningReady: 0,
+      triggerMode: "auto",
+      learningJobRunning: 0,
+      queuedAutoLearning: queuedContinuousLearningRequest ? 1 : 0
+    });
 
-  return {
-    triggered: true,
-    reason: "applied",
-    total_verified: total,
-    new_verified: newVerified,
-    learning_ready_total: learningReadyTotal,
-    new_learning_ready: newLearningReady,
-    run_id: toNum(batch?.run_id, null),
-    summary: batch?.summary || null,
-    run_at: runAt,
-    used_verification_count: newLearningReady,
-    remaining_unlearned_count: 0,
-    threshold: {
-      min_learning_ready_total: minLearningReadyTotal,
-      min_new_learning_ready: minNewLearningReady
+    const result = {
+      triggered: true,
+      queued: false,
+      reason: "applied",
+      total_verified: total,
+      new_verified: newVerified,
+      learning_ready_total: learningReadyTotal,
+      new_learning_ready: newLearningReady,
+      run_id: toNum(batch?.run_id, null),
+      summary: batch?.summary || null,
+      run_at: runAt,
+      used_verification_count: newLearningReady,
+      remaining_unlearned_count: 0,
+      threshold: {
+        min_learning_ready_total: minLearningReadyTotal,
+        min_new_learning_ready: minNewLearningReady
+      }
+    };
+
+    return result;
+  } finally {
+    continuousLearningInFlight = false;
+    const shouldRerun = queuedContinuousLearningRequest;
+    queuedContinuousLearningRequest = false;
+    markLearningJobState({ running: false, queued: false, triggerMode: "auto" });
+    if (shouldRerun) {
+      runContinuousLearningIfNeeded({ minNewLearningReady, minLearningReadyTotal });
     }
-  };
+  }
 }

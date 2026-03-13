@@ -181,6 +181,29 @@ async function invalidateVerificationApi({
   });
 }
 
+async function restoreVerificationApi({ verificationLogId }) {
+  return fetchJsonWithTimeout(`${API_BASE}/results/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      verification_log_id: verificationLogId
+    }),
+    timeoutMs: 20000
+  });
+}
+
+async function updateVerificationNoteApi({ verificationLogId, verificationReason = "" }) {
+  return fetchJsonWithTimeout(`${API_BASE}/results/verification-note`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      verification_log_id: verificationLogId,
+      verification_reason: verificationReason
+    }),
+    timeoutMs: 20000
+  });
+}
+
 async function fetchAnalyticsData(date) {
   const url = new URL(`${API_BASE}/analytics`);
   if (date) url.searchParams.set("date", date);
@@ -196,7 +219,7 @@ async function fetchSelfLearningData() {
 }
 
 async function fetchLearningLatestData() {
-  const response = await fetch(`${API_BASE}/learning/latest`);
+  const response = await fetch(`${API_BASE}/learning/latest?auto=0`);
   if (!response.ok) throw new Error("Failed to fetch learning latest");
   return response.json();
 }
@@ -767,10 +790,12 @@ export default function App() {
   const [perfError, setPerfError] = useState("");
   const [verifyingRaceId, setVerifyingRaceId] = useState("");
   const [invalidatingRaceId, setInvalidatingRaceId] = useState("");
+  const [restoringRaceId, setRestoringRaceId] = useState("");
   const [verificationNotice, setVerificationNotice] = useState("");
   const [verificationRunStatusByRace, setVerificationRunStatusByRace] = useState({});
   const [verificationReasonByRace, setVerificationReasonByRace] = useState({});
   const [resultsStatusFilter, setResultsStatusFilter] = useState("all");
+  const [resultsVenueFilter, setResultsVenueFilter] = useState("all");
 
   const [resultForm, setResultForm] = useState({
     raceId: "",
@@ -1094,8 +1119,14 @@ export default function App() {
     const total = items.length;
     let verified = 0;
     let learningReady = 0;
+    let hidden = 0;
     let latestVerifiedAt = null;
     for (const row of items) {
+      const invalidated = String(row?.verification_status || "").toUpperCase() === "INVALIDATED" || !!row?.invalidation;
+      if (invalidated) {
+        hidden += 1;
+        continue;
+      }
       const isVerified =
         String(row?.verification_status || "").toUpperCase().startsWith("VERIFIED") ||
         !!row?.verification?.verified_at;
@@ -1117,23 +1148,34 @@ export default function App() {
       unverified,
       verificationRate: total > 0 ? Number(((verified / total) * 100).toFixed(2)) : 0,
       learningReady,
+      hidden,
       latestVerifiedAt: latestVerifiedAt ? latestVerifiedAt.toISOString() : null
     };
   }, [history]);
   const filteredHistory = useMemo(() => {
     const items = Array.isArray(history) ? history : [];
-    if (resultsStatusFilter === "all") return items;
     return items.filter((row) => {
+      if (resultsVenueFilter !== "all" && String(row?.venue_name || row?.venue_id || "") !== resultsVenueFilter) {
+        return false;
+      }
+      if (resultsStatusFilter === "all") return true;
       const status = String(row?.verification_status || "").toLowerCase();
       if (resultsStatusFilter === "unverified") return status === "unverified";
       if (resultsStatusFilter === "verified") return status.startsWith("verified");
       if (resultsStatusFilter === "failed") return status === "verify_failed";
+      if (resultsStatusFilter === "hidden") return status === "invalidated";
       if (resultsStatusFilter === "missing") {
         return status === "no_bet_snapshot" || status === "no_confirmed_result" || status === "not_verifiable";
       }
       return true;
     });
-  }, [history, resultsStatusFilter]);
+  }, [history, resultsStatusFilter, resultsVenueFilter]);
+  const resultVenueOptions = useMemo(() => {
+    const values = Array.from(
+      new Set((Array.isArray(history) ? history : []).map((row) => String(row?.venue_name || row?.venue_id || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
+    return values;
+  }, [history]);
   const builderCombo = useMemo(() => {
     const lanes = [builderSlots.first, builderSlots.second, builderSlots.third];
     if (lanes.some((v) => !Number.isInteger(v))) return "";
@@ -1786,6 +1828,62 @@ export default function App() {
     } finally {
       setInvalidatingRaceId("");
     }
+  };
+
+  const onRestoreVerification = async (row) => {
+    const verificationLogId = Number(row?.verification?.id);
+    if (!verificationLogId) {
+      setPerfError("復元対象の検証レコードが見つかりません");
+      return;
+    }
+    const ok = window.confirm("この検証レコードを復元して Results と学習対象へ戻しますか？");
+    if (!ok) return;
+    const restoreKey = getVerificationHistoryKey(row?.race_id, row?.prediction_snapshot_id);
+    setRestoringRaceId(restoreKey);
+    setPerfError("");
+    try {
+      await restoreVerificationApi({ verificationLogId });
+      setVerificationNotice("検証レコードを復元しました。");
+      await loadPerformance();
+    } catch (e) {
+      setPerfError(e?.message || "検証レコードの復元に失敗しました");
+    } finally {
+      setRestoringRaceId("");
+    }
+  };
+
+  const onEditVerificationNote = async (row) => {
+    const verificationLogId = Number(row?.verification?.id);
+    if (!verificationLogId) {
+      setPerfError("更新対象の検証レコードが見つかりません");
+      return;
+    }
+    const nextNote = window.prompt("検証メモ / 理由を入力してください", row?.verification?.verification_reason || row?.verification_reason || "") ?? "";
+    try {
+      await updateVerificationNoteApi({
+        verificationLogId,
+        verificationReason: nextNote
+      });
+      setVerificationNotice("検証メモを更新しました。");
+      await loadPerformance();
+    } catch (e) {
+      setPerfError(e?.message || "検証メモの更新に失敗しました");
+    }
+  };
+
+  const onEditResultRecord = (row) => {
+    const actualTop3 = Array.isArray(row?.actual_top3) ? row.actual_top3 : [];
+    setShowAdminResultTool(true);
+    setScreen("results");
+    setResultForm({
+      raceId: row?.race_id || "",
+      finish1: actualTop3[0] ?? "",
+      finish2: actualTop3[1] ?? "",
+      finish3: actualTop3[2] ?? "",
+      payoutCombo: row?.confirmed_result || "",
+      payoutAmount: ""
+    });
+    setVerificationNotice("管理者用結果入力フォームにレース結果をセットしました。必要なら修正して保存してください。");
   };
 
   const onSettleRace = async (group) => {
@@ -2738,6 +2836,12 @@ export default function App() {
                   <span>未検証</span>
                   <strong>{verificationSummary.unverified}</strong>
                 </article>
+                {adminMode ? (
+                  <article className="card stat-card">
+                    <span>無効化</span>
+                    <strong>{verificationSummary.hidden}</strong>
+                  </article>
+                ) : null}
                 <article className="card stat-card">
                   <span>検証率</span>
                   <strong>{formatMaybeNumber(verificationSummary.verificationRate, 2)}%</strong>
@@ -2764,6 +2868,12 @@ export default function App() {
                       : "-"}
                   </strong>
                   <small>run_id: {learningLatest?.continuous_learning?.last_learning_run_id ?? "-"}</small>
+                  <small>mode: {learningLatest?.continuous_learning?.last_learning_trigger_mode || "unknown"}</small>
+                  {learningLatest?.continuous_learning?.learning_job_running ? (
+                    <small>job: running</small>
+                  ) : learningLatest?.continuous_learning?.queued_auto_learning ? (
+                    <small>job: queued</small>
+                  ) : null}
                   {learningLatest?.auto_trigger?.reason ? (
                     <small>auto: {getLearningAutoReasonLabel(learningLatest.auto_trigger.reason)}</small>
                   ) : null}
@@ -2801,10 +2911,10 @@ export default function App() {
               </div>
             </section>
 
-            {adminMode && showAdminResultTool && (
+            {showAdminResultTool && (
               <section className="card">
                 <div className="result-form-grid">
-                  <h2>管理者用 手動結果入力（予備）</h2>
+                  <h2>{adminMode ? "管理者用 手動結果入力（予備）" : "結果編集"}</h2>
                   <div className="controls-grid">
                     <label><span>レースID</span><input value={resultForm.raceId} onChange={(e) => setResultForm((p) => ({ ...p, raceId: e.target.value }))} placeholder="YYYYMMDD_venue_race" /></label>
                     <label><span>1着</span><input type="number" min="1" max="6" value={resultForm.finish1} onChange={(e) => setResultForm((p) => ({ ...p, finish1: e.target.value }))} /></label>
@@ -3243,6 +3353,16 @@ export default function App() {
                     <option value="verified">verified</option>
                     <option value="failed">failed</option>
                     <option value="missing">missing data</option>
+                    {adminMode ? <option value="hidden">hidden / invalidated</option> : null}
+                  </select>
+                </label>
+                <label>
+                  <span>会場</span>
+                  <select value={resultsVenueFilter} onChange={(e) => setResultsVenueFilter(e.target.value)}>
+                    <option value="all">all</option>
+                    {resultVenueOptions.map((venue) => (
+                      <option key={`venue-filter-${venue}`} value={venue}>{venue}</option>
+                    ))}
                   </select>
                 </label>
               </div>
@@ -3278,13 +3398,40 @@ export default function App() {
                             {verifyingRaceId === verificationKey ? "検証中..." : "検証"}
                           </button>
                           {h?.verification?.id ? (
+                            h?.invalidation ? (
+                              <button
+                                type="button"
+                                className="fetch-btn secondary"
+                                onClick={() => onRestoreVerification(h)}
+                                disabled={restoringRaceId === verificationKey}
+                              >
+                                {restoringRaceId === verificationKey ? "復元中..." : "復元"}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="fetch-btn secondary"
+                                onClick={() => onInvalidateVerification(h)}
+                                disabled={invalidatingRaceId === verificationKey}
+                              >
+                                {invalidatingRaceId === verificationKey ? "無効化中..." : "無効化"}
+                              </button>
+                            )
+                          ) : null}
+                          <button
+                            type="button"
+                            className="fetch-btn secondary"
+                            onClick={() => onEditResultRecord(h)}
+                          >
+                            結果編集
+                          </button>
+                          {h?.verification?.id ? (
                             <button
                               type="button"
                               className="fetch-btn secondary"
-                              onClick={() => onInvalidateVerification(h)}
-                              disabled={invalidatingRaceId === verificationKey}
+                              onClick={() => onEditVerificationNote(h)}
                             >
-                              {invalidatingRaceId === verificationKey ? "無効化中..." : "無効化"}
+                              メモ
                             </button>
                           ) : null}
                         </div>
@@ -3322,32 +3469,6 @@ export default function App() {
                             : savedFinalRecommendedBets.length}
                         </div>
                       </div>
-                      {savedFinalRecommendedBets.length > 0 ? (
-                        <div className="table-wrap" style={{ marginTop: 8 }}>
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>AI推奨買い目</th>
-                                <th>確率</th>
-                                <th>オッズ</th>
-                                <th>EV</th>
-                                <th>金額</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {savedFinalRecommendedBets.map((bet, idx) => (
-                                <tr key={`final-bet-${h.history_id || h.race_id}-${idx}`}>
-                                  <td><ComboBadge combo={bet?.combo} /></td>
-                                  <td>{formatMaybeNumber(bet?.prob, 3)}</td>
-                                  <td>{formatMaybeNumber(bet?.odds, 1)}</td>
-                                  <td>{formatMaybeNumber(bet?.ev, 2)}</td>
-                                  <td>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : null}
                       {Array.isArray(h?.verification?.mismatch_categories) && h.verification.mismatch_categories.length ? (
                         <div className="chips-wrap">
                           {h.verification.mismatch_categories.map((tag) => (
@@ -3358,6 +3479,32 @@ export default function App() {
                       <details style={{ marginTop: 8 }}>
                         <summary>details</summary>
                         <div style={{ marginTop: 8 }}>
+                          {savedFinalRecommendedBets.length > 0 ? (
+                            <div className="table-wrap" style={{ marginTop: 8 }}>
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th>AI推奨買い目</th>
+                                    <th>確率</th>
+                                    <th>オッズ</th>
+                                    <th>EV</th>
+                                    <th>金額</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {savedFinalRecommendedBets.map((bet, idx) => (
+                                    <tr key={`final-bet-${h.history_id || h.race_id}-${idx}`}>
+                                      <td><ComboBadge combo={bet?.combo} /></td>
+                                      <td>{formatMaybeNumber(bet?.prob, 3)}</td>
+                                      <td>{formatMaybeNumber(bet?.odds, 1)}</td>
+                                      <td>{formatMaybeNumber(bet?.ev, 2)}</td>
+                                      <td>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : null}
                           <div className="history-start-display">
                             <h3>Start Exhibition</h3>
                             <StartExhibitionDisplay startDisplay={h.startDisplay || null} compact />
