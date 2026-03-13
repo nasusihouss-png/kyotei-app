@@ -475,6 +475,14 @@ function getSavedFinalRecommendedBets(row) {
     .filter(Boolean);
 }
 
+function getLearningStatusLabel(row) {
+  const verification = row?.verification || {};
+  const categories = Array.isArray(verification?.mismatch_categories) ? verification.mismatch_categories : [];
+  const status = String(row?.verification_status || "").toUpperCase();
+  if (!status.startsWith("VERIFIED")) return "PENDING";
+  return categories.length > 0 ? "LEARNING_READY" : "VERIFIED_ONLY";
+}
+
 function getVerificationHistoryKey(raceId, predictionSnapshotId = null) {
   if (Number.isFinite(Number(predictionSnapshotId))) {
     return `snapshot:${Number(predictionSnapshotId)}`;
@@ -874,6 +882,16 @@ export default function App() {
       : participationDecision?.decision === "watch"
         ? "risk-small"
         : "risk-skip";
+  const formationPatternLabel =
+    data?.prediction?.formation_pattern ||
+    data?.formation_pattern ||
+    raceDecision?.factors?.formation_pattern ||
+    raceStructure?.formation_pattern ||
+    "-";
+  const defaultReasonTags = [
+    ...(Array.isArray(participationDecision?.reason_tags) ? participationDecision.reason_tags : []),
+    ...(Array.isArray(explainability?.race_tags) ? explainability.race_tags : [])
+  ].filter(Boolean).slice(0, 6);
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
 
   const racersByLane = useMemo(() => {
@@ -987,6 +1005,29 @@ export default function App() {
         .slice()
         .sort((a, b) => Number(a?.lane || 0) - Number(b?.lane || 0)),
     [playerStartProfile]
+  );
+  const laneInsightRows = useMemo(
+    () =>
+      (Array.isArray(ranking) ? ranking : [])
+        .map((row) => {
+          const lane = parseLane(row?.racer?.lane);
+          const features = row?.features || {};
+          return {
+            lane,
+            display_time_delta_vs_left: features?.display_time_delta_vs_left,
+            avg_st_rank_delta_vs_left: features?.avg_st_rank_delta_vs_left,
+            left_neighbor_exists: features?.left_neighbor_exists,
+            slit_alert_flag: features?.slit_alert_flag,
+            f_hold_bias_applied: features?.f_hold_bias_applied,
+            expected_actual_st_adjustment: features?.expected_actual_st_adjustment
+          };
+        })
+        .filter((row) => Number.isFinite(row.lane)),
+    [ranking]
+  );
+  const fHoldNoteRows = useMemo(
+    () => laneInsightRows.filter((row) => Number(row?.f_hold_bias_applied) === 1),
+    [laneInsightRows]
   );
 
   const currentRaceKey = useMemo(
@@ -1862,56 +1903,11 @@ export default function App() {
                 <section className="card">
                   <h2>レース情報</h2>
                   <div className="metric-grid">
-                    <div className="metric-item"><span>日付</span><strong>{race.date || date}</strong></div>
+                    <div className="metric-item"><span>レース名</span><strong>{race.raceName || "-"}</strong></div>
                     <div className="metric-item"><span>場</span><strong>{race.venueId ?? venueId} ({venueName})</strong></div>
                     <div className="metric-item"><span>レース</span><strong>{race.raceNo ?? raceNo}R</strong></div>
-                    <div className="metric-item"><span>天候</span><strong>{race.weather || "-"}</strong></div>
-                    <div className="metric-item"><span>風速</span><strong>{race.windSpeed ?? "-"}</strong></div>
-                    <div className="metric-item"><span>波高</span><strong>{race.waveHeight ?? "-"}</strong></div>
+                    <div className="metric-item"><span>日付</span><strong>{race.date || date}</strong></div>
                   </div>
-                </section>
-
-                <section className="card">
-                  <h2>Start Exhibition</h2>
-                  <StartExhibitionDisplay startDisplay={startDisplay} />
-                  <p className="muted strategy-line">
-                    {sourceMeta?.cache?.fallback === "db_snapshot"
-                      ? "公式取得失敗のため保存済みスナップショットを使用"
-                      : sourceMeta?.cache?.hit
-                        ? "バックエンドキャッシュを使用"
-                        : "公式事前情報から自動取得"}
-                  </p>
-                </section>
-
-                <section className="card">
-                  <h2>自動取得 展示関連データ</h2>
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>艇番</th>
-                          <th>選手名</th>
-                          <th>展示タイム</th>
-                          <th>展示ST</th>
-                          <th>進入</th>
-                          <th>チルト</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {racers.map((racer, idx) => (
-                          <tr key={`auto-lap-${racer.lane}-${idx}`}>
-                            <td>{racer.lane ?? "-"}</td>
-                            <td>{racer.name || "-"}</td>
-                            <td>{formatMaybeNumber(racer.exhibitionTime, 2)}</td>
-                            <td>{formatMaybeNumber(racer.exhibitionST ?? racer.exhibitionSt, 2)}</td>
-                            <td>{racer.entryCourse ?? "-"}</td>
-                            <td>{formatMaybeNumber(racer.tilt, 1)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <p className="muted strategy-line">手動周回展示評価と併用して最終判断に反映されます。</p>
                 </section>
 
                 {adminMode ? (
@@ -1965,12 +1961,7 @@ export default function App() {
                 <section className={`card recommendation ${getRiskClass(raceRisk.recommendation)}`}>
                   <h2>総合推奨</h2>
                   <div className="recommend-grid">
-                    <div><span>展開パターン</span><strong>{data.racePattern || "-"}</strong></div>
-                    <div><span>買いタイプ</span><strong>{data.buyType || "-"}</strong></div>
-                    <div><span>推奨</span><strong className={`status-pill ${getRiskClass(raceRisk.recommendation)}`}>{raceRisk.recommendation || "-"}</strong></div>
                     <div><span>参加可否</span><strong className={`status-pill ${participationClass}`}>{participationLabel}</strong></div>
-                    <div><span>リスクスコア</span><strong>{raceRisk.risk_score ?? "-"}</strong></div>
-                    <div><span>参加モード</span><strong>{raceRisk.participation_mode || "-"}</strong></div>
                     <div>
                       <span>頭固定信頼度</span>
                       <strong>
@@ -1991,6 +1982,8 @@ export default function App() {
                         </span>
                       </strong>
                     </div>
+                    <div><span>展開パターン</span><strong>{data.racePattern || "-"}</strong></div>
+                    <div><span>formation</span><strong>{formationPatternLabel}</strong></div>
                   </div>
                   {participationDecision?.summary ? (
                     <p className="muted strategy-line">{participationDecision.summary}</p>
@@ -1998,14 +1991,9 @@ export default function App() {
                   {!isRecommendedRace ? (
                     <p className="muted strategy-line">このレースは見送り判定です。ベット追加は無効化されています。</p>
                   ) : null}
-                  {(Array.isArray(participationDecision?.reason_tags) && participationDecision.reason_tags.length > 0) ? (
+                  {defaultReasonTags.length > 0 ? (
                     <div className="chips-wrap">
-                      {participationDecision.reason_tags.map((tag) => <span className="chip" key={`pd-tag-${tag}`}>{tag}</span>)}
-                    </div>
-                  ) : null}
-                  {(Array.isArray(explainability?.race_tags) && explainability.race_tags.length > 0) ? (
-                    <div className="chips-wrap">
-                      {explainability.race_tags.map((tag) => <span className="chip" key={`exp-tag-${tag}`}>{tag}</span>)}
+                      {defaultReasonTags.map((tag) => <span className="chip" key={`pd-tag-${tag}`}>{tag}</span>)}
                     </div>
                   ) : null}
                   {explainability?.race_summary ? (
@@ -2013,6 +2001,129 @@ export default function App() {
                   ) : null}
                 </section>
 
+                <article className="card">
+                  <h2>最終推奨買い目</h2>
+                  <div className="list-stack">
+                    {finalRecommendedBets.map((bet, idx) => (
+                      <div key={`${bet.combo}-${idx}`} className="list-stack">
+                        <div className="list-row list-row-actions">
+                          <strong><ComboBadge combo={bet.combo} /></strong>
+                          <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
+                          <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                          <span>JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
+                            記録に追加
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+
+                <details className="card">
+                  <summary>展示・進入の詳細</summary>
+                  <div style={{ marginTop: 10 }}>
+                    <h3>Start Exhibition</h3>
+                    <StartExhibitionDisplay startDisplay={startDisplay} />
+                    <p className="muted strategy-line">
+                      {sourceMeta?.cache?.fallback === "db_snapshot"
+                        ? "公式取得失敗のため保存済みスナップショットを使用"
+                        : sourceMeta?.cache?.hit
+                          ? "バックエンドキャッシュを使用"
+                          : "公式事前情報から自動取得"}
+                    </p>
+                    <div className="kv-list" style={{ marginTop: 10 }}>
+                      <div className="kv-row"><span>entry_changed</span><strong>{entryChanged ? "あり" : "なし"}</strong></div>
+                      <div className="kv-row"><span>entry_change_type</span><strong>{entryChangeType || "-"}</strong></div>
+                      <div className="kv-row"><span>予測進入順</span><strong><LanePills lanes={predictedEntryOrder} /></strong></div>
+                      <div className="kv-row"><span>実進入順</span><strong><LanePills lanes={actualEntryOrder} /></strong></div>
+                    </div>
+                    <div className="table-wrap" style={{ marginTop: 10 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>艇番</th>
+                            <th>選手名</th>
+                            <th>展示タイム</th>
+                            <th>展示ST</th>
+                            <th>進入</th>
+                            <th>チルト</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {racers.map((racer, idx) => (
+                            <tr key={`auto-lap-${racer.lane}-${idx}`}>
+                              <td>{racer.lane ?? "-"}</td>
+                              <td>{racer.name || "-"}</td>
+                              <td>{formatMaybeNumber(racer.exhibitionTime, 2)}</td>
+                              <td>{formatMaybeNumber(racer.exhibitionST ?? racer.exhibitionSt, 2)}</td>
+                              <td>{racer.entryCourse ?? "-"}</td>
+                              <td>{formatMaybeNumber(racer.tilt, 1)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </details>
+
+                <details className="card">
+                  <summary>選手・左隣比較・F持ちの詳細</summary>
+                  <div style={{ marginTop: 10 }}>
+                    <div className="table-wrap">
+                      <table>
+                        <thead><tr><th>艇番</th><th>左隣あり</th><th>展示差</th><th>平均ST順位差</th><th>slit_alert</th><th>F caution</th><th>actual ST補正</th></tr></thead>
+                        <tbody>
+                          {laneInsightRows.map((row) => (
+                            <tr key={`insight-${row.lane}`}>
+                              <td>{row.lane}</td>
+                              <td>{row.left_neighbor_exists ? "あり" : "-"}</td>
+                              <td>{formatMaybeNumber(row.display_time_delta_vs_left, 3)}</td>
+                              <td>{formatMaybeNumber(row.avg_st_rank_delta_vs_left, 1)}</td>
+                              <td>{row.slit_alert_flag ? "ON" : "-"}</td>
+                              <td>{row.f_hold_bias_applied ? "ON" : "-"}</td>
+                              <td>{formatMaybeNumber(row.expected_actual_st_adjustment, 3)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {fHoldNoteRows.length > 0 ? (
+                      <p className="muted strategy-line">
+                        F-hold caution:
+                        {" "}
+                        {fHoldNoteRows.map((row) => `${row.lane}号艇(+${formatMaybeNumber(row.expected_actual_st_adjustment, 3)})`).join(", ")}
+                      </p>
+                    ) : null}
+                    <section className="card ranking-card" style={{ marginTop: 10 }}>
+                      <h3>AI総合評価ランキング</h3>
+                      <p className="top3">予想される上位着順: {top3.length ? top3.join("-") : "-"}</p>
+                      <div className="list-stack">
+                        {normalizedRanking.map((racer, idx) => (
+                          <div key={`${racer.lane}-${idx}`} className="list-row ranking-row">
+                            <span>#{racer.rank ?? idx + 1}</span>
+                            <span className={`combo-dot ${BOAT_META[racer.lane]?.className || ""}`}>{racer.lane ?? "-"}</span>
+                            <span>{racer.name ?? "-"}</span>
+                            <span>{racer.class ?? "-"}</span>
+                            <strong>{formatMaybeNumber(racer.score, 2)}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                    <div className="table-wrap" style={{ marginTop: 10 }}>
+                      <table>
+                        <thead><tr><th>艇番</th><th>選手名</th><th>級別</th><th>全国勝率</th><th>当地勝率</th><th>モーター2連率</th><th>展示タイム</th><th>展示ST</th><th>進入</th></tr></thead>
+                        <tbody>
+                          {racers.map((racer, idx) => <tr key={`${racer.lane}-${idx}`}><td>{racer.lane ?? "-"}</td><td>{racer.name || "-"}</td><td>{racer.class || "-"}</td><td>{formatMaybeNumber(racer.nationwideWinRate, 2)}</td><td>{formatMaybeNumber(racer.localWinRate, 2)}</td><td>{formatMaybeNumber(racer.motor2Rate, 2)}</td><td>{formatMaybeNumber(racer.exhibitionTime, 2)}</td><td>{formatMaybeNumber(racer.exhibitionST, 2)}</td><td>{racer.entryCourse ?? "-"}</td></tr>)}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </details>
+
+                <details className="card">
+                  <summary>シナリオ・分析の詳細</summary>
+                  <div style={{ marginTop: 10 }}>
                 <section className="analysis-grid">
                   <article className="card analysis-card">
                     <h2>決着確率</h2>
@@ -2312,64 +2423,6 @@ export default function App() {
 
                   {showInternalBetBreakdown && (
                   <article className="card">
-                    <h2>EV上位買い目</h2>
-                    <div className="list-stack">
-                      {evBets.map((bet, idx) => (
-                        <div key={`${bet.combo}-${idx}`} className="list-row list-row-actions">
-                          <strong><ComboBadge combo={bet.combo} /></strong>
-                          <span>p {formatMaybeNumber(bet.prob, 3)}</span>
-                          <span>odds {formatMaybeNumber(bet.odds, 1)}</span>
-                          <span>ev {formatMaybeNumber(bet.ev, 2)}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
-                            記録に追加
-                          </button>
-                          <button className="fetch-btn secondary" onClick={() => onCopyAiToManual(bet, "ev_bet")} title="手動フォームへコピー">
-                            手動へコピー
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </article>
-                  )}
-
-                  <article className="card">
-                    <h2>最終推奨買い目（実行用）</h2>
-                    <div className="list-stack">
-                      {finalRecommendedBets.map((bet, idx) => (
-                        <div key={`${bet.combo}-${idx}`} className="list-stack">
-                          <div className="list-row list-row-actions">
-                            <strong><ComboBadge combo={bet.combo} /></strong>
-                            <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
-                            <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                            <span>odds {Number.isFinite(bet.odds) ? formatMaybeNumber(bet.odds, 1) : "-"}</span>
-                            <span>ev {formatMaybeNumber(bet.ev, 2)}</span>
-                            <span className={`ticket-value ${getValueTierClass(bet.bet_value_tier)}`}>
-                              {getValueTierLabel(bet.bet_value_tier)}
-                            </span>
-                            <span className={`ticket-trap ${getAvoidLevelClass(bet.avoid_level)}`}>
-                              {getAvoidLevelLabel(bet.avoid_level)}
-                            </span>
-                            <span className="bet-amount-strong">金額 JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
-                            <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
-                              記録に追加
-                            </button>
-                            <button className="fetch-btn secondary" onClick={() => onCopyAiToManual(bet, "recommended_bet")} title="手動フォームへコピー">
-                              手動へコピー
-                            </button>
-                          </div>
-                          {(Array.isArray(bet.explanation_tags) && bet.explanation_tags.length > 0) ? (
-                            <div className="chips-wrap">
-                              {bet.explanation_tags.slice(0, 4).map((tag) => <span className="chip" key={`bet-exp-${bet.combo}-${tag}`}>{tag}</span>)}
-                            </div>
-                          ) : null}
-                          {bet.explanation_summary ? <p className="muted strategy-line">{bet.explanation_summary}</p> : null}
-                        </div>
-                      ))}
-                    </div>
-                  </article>
-
-                  {showInternalBetBreakdown && (
-                  <article className="card">
                     <h2>オッズ取得</h2>
                     <div className="kv-list">
                       <div className="kv-row"><span>取得時刻</span><strong>{oddsData?.fetched_at ? new Date(oddsData.fetched_at).toLocaleString() : "-"}</strong></div>
@@ -2432,22 +2485,6 @@ export default function App() {
                     </div>
                   </article>
                   )}
-
-                  <article className="card ranking-card">
-                    <h2>AI総合評価ランキング</h2>
-                    <p className="top3">予想される上位着順: {top3.length ? top3.join("-") : "-"}</p>
-                    <div className="list-stack">
-                      {normalizedRanking.map((racer, idx) => (
-                        <div key={`${racer.lane}-${idx}`} className="list-row ranking-row">
-                          <span>#{racer.rank ?? idx + 1}</span>
-                          <span className={`combo-dot ${BOAT_META[racer.lane]?.className || ""}`}>{racer.lane ?? "-"}</span>
-                          <span>{racer.name ?? "-"}</span>
-                          <span>{racer.class ?? "-"}</span>
-                          <strong>{formatMaybeNumber(racer.score, 2)}</strong>
-                        </div>
-                      ))}
-                    </div>
-                  </article>
 
                   {showInternalBetBreakdown && simulatedCombos.length > 0 && (
                     <article className="card">
@@ -2549,18 +2586,8 @@ export default function App() {
                   </article>
                   )}
                 </section>
-
-                <section className="card">
-                  <h2>選手比較表</h2>
-                  <div className="table-wrap">
-                    <table>
-                      <thead><tr><th>艇番</th><th>選手名</th><th>級別</th><th>全国勝率</th><th>当地勝率</th><th>モーター2連率</th><th>展示タイム</th><th>展示ST</th><th>進入</th></tr></thead>
-                      <tbody>
-                        {racers.map((racer, idx) => <tr key={`${racer.lane}-${idx}`}><td>{racer.lane ?? "-"}</td><td>{racer.name || "-"}</td><td>{racer.class || "-"}</td><td>{formatMaybeNumber(racer.nationwideWinRate, 2)}</td><td>{formatMaybeNumber(racer.localWinRate, 2)}</td><td>{formatMaybeNumber(racer.motor2Rate, 2)}</td><td>{formatMaybeNumber(racer.exhibitionTime, 2)}</td><td>{formatMaybeNumber(racer.exhibitionST, 2)}</td><td>{racer.entryCourse ?? "-"}</td></tr>)}
-                      </tbody>
-                    </table>
                   </div>
-                </section>
+                </details>
               </>
             )}
           </>
@@ -3162,6 +3189,7 @@ export default function App() {
                   {filteredHistory.map((h) => {
                     const savedFinalRecommendedBets = getSavedFinalRecommendedBets(h);
                     const verificationKey = getVerificationHistoryKey(h.race_id, h.prediction_snapshot_id);
+                    const verificationSummaryData = h?.verification?.summary || {};
                     const currentVerifyStatus =
                       verificationRunStatusByRace[verificationKey] || h.verification_status || "PENDING_RESULT";
                     const verifyReason =
@@ -3191,64 +3219,12 @@ export default function App() {
                       {!String(currentVerifyStatus || "").startsWith("VERIFIED") && verifyReason ? (
                         <p className="muted strategy-line" style={{ marginTop: 6 }}>{verifyReason}</p>
                       ) : null}
-                      <div className="history-start-display">
-                        <h3>Start Exhibition</h3>
-                        <StartExhibitionDisplay startDisplay={h.startDisplay || null} compact />
-                        <div className="history-grid" style={{ marginTop: 6 }}>
-                          <div>
-                            展示順:
-                            {" "}
-                            {Array.isArray(h?.startDisplay?.start_display_order) && h.startDisplay.start_display_order.length
-                              ? h.startDisplay.start_display_order.join("-")
-                              : "-"}
-                          </div>
-                          <div>
-                            ST保存:
-                            {" "}
-                            {h?.startDisplay?.start_display_st && Object.keys(h.startDisplay.start_display_st).length
-                              ? "あり"
-                              : "なし"}
-                          </div>
-                          <div>
-                            取得時刻:
-                            {" "}
-                            {h?.startDisplay?.source_fetched_at
-                              ? new Date(h.startDisplay.source_fetched_at).toLocaleString()
-                              : "-"}
-                          </div>
-                        </div>
-                        {h?.startDisplay?.prediction_snapshot ? (
-                          <p className="muted strategy-line">
-                            予測スナップショット:
-                            {" "}
-                            {Array.isArray(h.startDisplay.prediction_snapshot?.top3) && h.startDisplay.prediction_snapshot.top3.length
-                              ? h.startDisplay.prediction_snapshot.top3.join("-")
-                              : "-"}
-                          </p>
-                        ) : null}
-                      </div>
                       <div className="history-grid">
-                        <div>進入変化: {h.entry_changed ? "あり" : "なし"}</div>
-                        <div>進入タイプ: {h.entry_change_type || "-"}</div>
-                        <div>予測進入順: {Array.isArray(h.predicted_entry_order) && h.predicted_entry_order.length ? h.predicted_entry_order.join("-") : "-"}</div>
-                        <div>実進入順: {Array.isArray(h.actual_entry_order) && h.actual_entry_order.length ? h.actual_entry_order.join("-") : "-"}</div>
-                        <div>予想上位: {Array.isArray(h.predicted_top3) && h.predicted_top3.length ? h.predicted_top3.join("-") : "-"}</div>
-                        <div>確定結果: {Array.isArray(h.actual_top3) && h.actual_top3.length ? h.actual_top3.join("-") : "-"}</div>
-                        <div>
-                          頭予想:
-                          {" "}
-                          {Array.isArray(h.predicted_top3) &&
-                          h.predicted_top3.length > 0 &&
-                          Array.isArray(h.actual_top3) &&
-                          h.actual_top3.length > 0 &&
-                          Number(h.predicted_top3[0]) === Number(h.actual_top3[0])
-                            ? "的中"
-                            : "不一致"}
-                        </div>
                         <div>confirmed result: {h.confirmed_result || "-"}</div>
-                        <div>購入額: JPY {(h.totals?.bet_amount ?? 0).toLocaleString()}</div>
-                        <div>払戻: JPY {(h.totals?.payout ?? 0).toLocaleString()}</div>
-                        <div>損益: JPY {(h.totals?.profit_loss ?? 0).toLocaleString()}</div>
+                        <div>verification result: {h.verification?.hit_miss || h.hit_miss || "-"}</div>
+                        <div>head_hit: {verificationSummaryData?.head_correct === true ? "YES" : verificationSummaryData?.head_correct === false ? "NO" : "-"}</div>
+                        <div>bet_hit: {verificationSummaryData?.hit_miss === "HIT" ? "YES" : verificationSummaryData?.hit_miss === "MISS" ? "NO" : "-"}</div>
+                        <div>learning: {getLearningStatusLabel(h)}</div>
                       </div>
                       <div className="history-grid" style={{ marginTop: 8 }}>
                         <div>
@@ -3261,36 +3237,13 @@ export default function App() {
                           ) : "No final recommended bet snapshot saved"}
                         </div>
                         <div>
-                          スナップショット件数:
+                          件数:
                           {" "}
                           {Number.isFinite(Number(h.final_recommended_bets_count))
                             ? Number(h.final_recommended_bets_count)
                             : savedFinalRecommendedBets.length}
                         </div>
-                        <div>snapshot_id: {h.prediction_snapshot_id ?? "-"}</div>
-                        <div>snapshot_source: {h.ai_bets_snapshot_source || "-"}</div>
-                        <div>
-                          snapshot_at:
-                          {" "}
-                          {h.snapshot_created_at ? new Date(h.snapshot_created_at).toLocaleString() : "-"}
-                        </div>
-                        <div>
-                          最新ログ件数:
-                          {" "}
-                          {Array.isArray(h.ai_bets_latest_log) ? h.ai_bets_latest_log.length : 0}
-                        </div>
                       </div>
-                      {Array.isArray(h.ai_bets_latest_log) && h.ai_bets_latest_log.length > 0 ? (
-                        <div className="history-grid" style={{ marginTop: 6 }}>
-                          <div>
-                            比較(最新ログ):
-                            {" "}
-                            {h.ai_bets_latest_log.map((b, idx) => (
-                              <ComboBadge combo={b?.combo} key={`rec-latest-${h.race_id}-${idx}`} />
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
                       {savedFinalRecommendedBets.length > 0 ? (
                         <div className="table-wrap" style={{ marginTop: 8 }}>
                           <table>
@@ -3317,6 +3270,31 @@ export default function App() {
                           </table>
                         </div>
                       ) : null}
+                      {Array.isArray(h?.verification?.mismatch_categories) && h.verification.mismatch_categories.length ? (
+                        <div className="chips-wrap">
+                          {h.verification.mismatch_categories.map((tag) => (
+                            <span className="chip" key={`mismatch-${h.race_id}-${tag}`}>{tag}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                      <details style={{ marginTop: 8 }}>
+                        <summary>details</summary>
+                        <div style={{ marginTop: 8 }}>
+                          <div className="history-start-display">
+                            <h3>Start Exhibition</h3>
+                            <StartExhibitionDisplay startDisplay={h.startDisplay || null} compact />
+                            <div className="history-grid" style={{ marginTop: 6 }}>
+                              <div>進入変化: {h.entry_changed ? "あり" : "なし"}</div>
+                              <div>進入タイプ: {h.entry_change_type || "-"}</div>
+                              <div>予測進入順: {Array.isArray(h.predicted_entry_order) && h.predicted_entry_order.length ? h.predicted_entry_order.join("-") : "-"}</div>
+                              <div>実進入順: {Array.isArray(h.actual_entry_order) && h.actual_entry_order.length ? h.actual_entry_order.join("-") : "-"}</div>
+                              <div>予想上位: {Array.isArray(h.predicted_top3) && h.predicted_top3.length ? h.predicted_top3.join("-") : "-"}</div>
+                              <div>確定結果: {Array.isArray(h.actual_top3) && h.actual_top3.length ? h.actual_top3.join("-") : "-"}</div>
+                              <div>snapshot_id: {h.prediction_snapshot_id ?? "-"}</div>
+                              <div>snapshot_source: {h.ai_bets_snapshot_source || "-"}</div>
+                              <div>snapshot_at: {h.snapshot_created_at ? new Date(h.snapshot_created_at).toLocaleString() : "-"}</div>
+                            </div>
+                          </div>
                       {h?.debug_bet_compare ? (
                         <details style={{ marginTop: 8 }}>
                           <summary>debug bet compare</summary>
@@ -3367,13 +3345,6 @@ export default function App() {
                           <div>検証理由: {h?.verification?.summary?.verification_reason || "-"}</div>
                         </div>
                       ) : null}
-                      {Array.isArray(h?.verification?.mismatch_categories) && h.verification.mismatch_categories.length ? (
-                        <div className="chips-wrap">
-                          {h.verification.mismatch_categories.map((tag) => (
-                            <span className="chip" key={`mismatch-${h.race_id}-${tag}`}>{tag}</span>
-                          ))}
-                        </div>
-                      ) : null}
                       {Array.isArray(h.bets) && h.bets.length > 0 && (
                         <div className="table-wrap">
                           <table>
@@ -3384,6 +3355,8 @@ export default function App() {
                           </table>
                         </div>
                       )}
+                        </div>
+                      </details>
                     </div>
                     );
                   })}
