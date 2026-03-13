@@ -4692,7 +4692,9 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const legacyDisplaySnapshotFromVerification = normalizeSavedBetSnapshotItems(verificationSummary?.ai_bets_display_snapshot);
       const aiBetsDisplaySnapshot = finalRecommendedFromVerification.length > 0
         ? finalRecommendedFromVerification
-        : savedFinalRecommendedBetsSnapshot;
+        : savedFinalRecommendedBetsSnapshot.length > 0
+          ? savedFinalRecommendedBetsSnapshot
+          : legacyDisplaySnapshotFromVerification;
       const verificationDisplaySnapshot = finalRecommendedFromVerification.length > 0
         ? finalRecommendedFromVerification
         : legacyDisplaySnapshotFromVerification;
@@ -4835,10 +4837,13 @@ raceRouter.get("/results-history", async (req, res, next) => {
         final_recommended_bets_count: Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot.length : 0,
         ai_bets_latest_log: latestLogDisplayBets,
         debug_bet_compare: {
+          confirmed_result: confirmedResult,
           saved_display_snapshot: aiBetsDisplaySnapshot,
           displayed_in_results: aiBetsDisplaySnapshot,
           verification_display_snapshot: verificationDisplaySnapshot,
-          latest_log_bets: latestLogDisplayBets
+          verification_input_bet_list: verification?.summary?.verified_against_bets || displaySnapshotCombos,
+          latest_log_bets: latestLogDisplayBets,
+          final_hit_miss_result: hitMiss
         },
         recommended_bets: aiBetsDisplaySnapshot,
         logged_at: snapshotRow.prediction_timestamp || logRow.created_at

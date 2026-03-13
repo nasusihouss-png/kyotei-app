@@ -3317,6 +3317,46 @@ export default function App() {
                           </table>
                         </div>
                       ) : null}
+                      {h?.debug_bet_compare ? (
+                        <details style={{ marginTop: 8 }}>
+                          <summary>debug bet compare</summary>
+                          <div className="history-grid" style={{ marginTop: 8 }}>
+                            <div>confirmed result: {h?.debug_bet_compare?.confirmed_result || h.confirmed_result || "-"}</div>
+                            <div>
+                              final hit/miss:
+                              {" "}
+                              {h?.debug_bet_compare?.final_hit_miss_result || h.hit_miss || "-"}
+                            </div>
+                            <div>
+                              displayed bets:
+                              {" "}
+                              {Array.isArray(h?.debug_bet_compare?.displayed_in_results) && h.debug_bet_compare.displayed_in_results.length
+                                ? h.debug_bet_compare.displayed_in_results.map((b, idx) => (
+                                  <ComboBadge combo={b?.combo ?? b} key={`debug-display-${h.history_id || h.race_id}-${idx}`} />
+                                ))
+                                : "-"}
+                            </div>
+                            <div>
+                              saved snapshot:
+                              {" "}
+                              {Array.isArray(h?.debug_bet_compare?.saved_display_snapshot) && h.debug_bet_compare.saved_display_snapshot.length
+                                ? h.debug_bet_compare.saved_display_snapshot.map((b, idx) => (
+                                  <ComboBadge combo={b?.combo ?? b} key={`debug-saved-${h.history_id || h.race_id}-${idx}`} />
+                                ))
+                                : "-"}
+                            </div>
+                            <div>
+                              verification input:
+                              {" "}
+                              {Array.isArray(h?.debug_bet_compare?.verification_input_bet_list) && h.debug_bet_compare.verification_input_bet_list.length
+                                ? h.debug_bet_compare.verification_input_bet_list.map((b, idx) => (
+                                  <ComboBadge combo={b?.combo ?? b} key={`debug-verify-${h.history_id || h.race_id}-${idx}`} />
+                                ))
+                                : "-"}
+                            </div>
+                          </div>
+                        </details>
+                      ) : null}
                       {h.verification ? (
                         <div className="history-grid" style={{ marginTop: 8 }}>
                           <div>検証日時: {h.verification.verified_at ? new Date(h.verification.verified_at).toLocaleString() : "-"}</div>
