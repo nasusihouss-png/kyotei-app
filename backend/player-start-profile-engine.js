@@ -27,11 +27,17 @@ export function analyzePlayerStartProfiles({ ranking }) {
     const entryAdv = toNum(f.entry_advantage_score, 0);
     const motorTrend = toNum(f.motor_trend_score, 0);
     const localDiff = toNum(f.local_minus_nation, 0);
+    const slitAlertFlag = toNum(f.slit_alert_flag, 0);
+    const displayTimeDeltaVsLeft = toNum(f.display_time_delta_vs_left, 0);
+    const avgStRankDeltaVsLeft = toNum(f.avg_st_rank_delta_vs_left, 0);
+    const slitAttackBoost = slitAlertFlag
+      ? Math.min(12, 6 + displayTimeDeltaVsLeft * 20 + avgStRankDeltaVsLeft * 1.5)
+      : 0;
 
     const start_attack_score = clamp(
       0,
       100,
-      stRankQ * 34 + exRankQ * 22 + stInv * 14 + entryAdv * 1.3 + Math.max(0, motorTrend) * 3
+      stRankQ * 34 + exRankQ * 22 + stInv * 14 + entryAdv * 1.3 + Math.max(0, motorTrend) * 3 + slitAttackBoost
     );
     const start_stability_score = clamp(
       0,
@@ -51,7 +57,7 @@ export function analyzePlayerStartProfiles({ ranking }) {
     const sashi_style_score = clamp(
       0,
       100,
-      (lane === 2 ? 20 : lane === 1 ? 8 : 6) + start_attack_score * 0.52 + entryAdv * 1.7 + classScore * 3
+      (lane === 2 ? 20 : lane === 1 ? 8 : 6) + start_attack_score * 0.52 + entryAdv * 1.7 + classScore * 3 + slitAttackBoost * 0.45
     );
     const makuri_style_score = clamp(
       0,
@@ -59,7 +65,8 @@ export function analyzePlayerStartProfiles({ ranking }) {
       (lane === 3 || lane === 4 ? 22 : lane >= 5 ? 12 : 6) +
         start_attack_score * 0.5 +
         Math.max(0, motorTrend) * 4 +
-        Math.max(0, entryAdv) * 1.4
+        Math.max(0, entryAdv) * 1.4 +
+        slitAttackBoost * 0.75
     );
 
     const styleRows = [
@@ -75,6 +82,8 @@ export function analyzePlayerStartProfiles({ ranking }) {
       nige_style_score: Number(nige_style_score.toFixed(2)),
       sashi_style_score: Number(sashi_style_score.toFixed(2)),
       makuri_style_score: Number(makuri_style_score.toFixed(2)),
+      slit_alert_flag: slitAlertFlag ? 1 : 0,
+      slit_attack_boost: Number(slitAttackBoost.toFixed(2)),
       player_start_profile: styleRows[0]?.key || "sashi"
     };
   });

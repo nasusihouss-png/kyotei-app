@@ -42,6 +42,17 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   const st2 = 7 - toNum(l2.features?.st_rank, 6);
   const st3 = 7 - toNum(l3.features?.st_rank, 6);
   const st4 = 7 - toNum(l4.features?.st_rank, 6);
+  const slit2 = toNum(l2.features?.slit_alert_flag, 0);
+  const slit3 = toNum(l3.features?.slit_alert_flag, 0);
+  const slit4 = toNum(l4.features?.slit_alert_flag, 0);
+  const slitDelta2 = toNum(l2.features?.display_time_delta_vs_left, 0);
+  const slitDelta3 = toNum(l3.features?.display_time_delta_vs_left, 0);
+  const slitDelta4 = toNum(l4.features?.display_time_delta_vs_left, 0);
+  const slitBoost2 = slit2 ? Math.min(0.22, 0.08 + slitDelta2 * 0.5) : 0;
+  const slitBoost34 = [
+    slit3 ? Math.min(0.24, 0.09 + slitDelta3 * 0.5) : 0,
+    slit4 ? Math.min(0.24, 0.09 + slitDelta4 * 0.5) : 0
+  ];
 
   const nigeIdx = toNum(raceIndexes?.nige_index, 50);
   const sashiIdx = toNum(raceIndexes?.sashi_index, 50);
@@ -68,20 +79,23 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     (e2 + st2) * 0.15 +
     Math.max(0, (st2 + e2) - (st1 + e1)) * 0.08 +
     toNum(p2.sashi_style_score, 50) * 0.006 +
-    toNum(p2.start_attack_score, 50) * 0.004;
+    toNum(p2.start_attack_score, 50) * 0.004 +
+    slitBoost2;
 
   let makuriLogit =
     makuriIdx * 0.06 +
     (Math.max(s3, s4) - Math.max(s1, s2)) * 0.03 +
     (e3 + st3) * 0.13 +
     (e4 + st4) * 0.07 +
-    (toNum(p3.makuri_style_score, 50) + toNum(p4.makuri_style_score, 50)) * 0.003;
+    (toNum(p3.makuri_style_score, 50) + toNum(p4.makuri_style_score, 50)) * 0.003 +
+    Math.max(...slitBoost34);
 
   let makurizashiLogit =
     makurizashiIdx * 0.06 +
     ((s3 + s4) * 0.5 - s1) * 0.028 +
     ((e3 + st3 + e4 + st4) * 0.5) * 0.12 +
-    (toNum(p3.start_attack_score, 50) + toNum(p4.start_attack_score, 50)) * 0.0025;
+    (toNum(p3.start_attack_score, 50) + toNum(p4.start_attack_score, 50)) * 0.0025 +
+    (slitBoost34[0] * 0.7 + slitBoost34[1] * 0.7);
 
   let chaosLogit = chaosIdx * 0.06 + risk * 0.025;
 
@@ -112,6 +126,7 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     makuri_prob: Number(toNum(makuri, 0).toFixed(4)),
     makurizashi_prob: Number(toNum(makurizashi, 0).toFixed(4)),
     chaos_prob: Number(toNum(chaos, 0).toFixed(4)),
-    flow_confidence: Number(flow_confidence.toFixed(4))
+    flow_confidence: Number(flow_confidence.toFixed(4)),
+    slit_alert_lanes: [slit2 ? 2 : null, slit3 ? 3 : null, slit4 ? 4 : null].filter(Boolean)
   };
 }

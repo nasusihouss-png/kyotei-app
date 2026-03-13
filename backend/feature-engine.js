@@ -98,12 +98,16 @@ export function buildFeatures(racer) {
     venue_chaos_adjustment: 0,
     exhibition_rank: null,
     st_rank: null,
+    avg_st_rank: null,
     course_change,
     tilt_bonus,
     exhibition_gap_from_best: 0,
     motor_gap_from_best: 0,
     local_gap_from_best: 0,
-    nation_gap_from_best: 0
+    nation_gap_from_best: 0,
+    display_time_delta_vs_left: null,
+    avg_st_rank_delta_vs_left: null,
+    slit_alert_flag: 0
   };
 }
 
@@ -139,22 +143,52 @@ export function buildRaceFeatures(racers, raceContext = {}) {
   const stRanks = buildAscendingRanks(
     base.map((x) => ({ lane: x.features.lane, value: x.features.exhibition_st }))
   );
+  const avgStRanks = buildAscendingRanks(
+    base.map((x) => ({ lane: x.features.lane, value: x.features.avg_st }))
+  );
+  const byLane = new Map(base.map((item) => [item.features.lane, item]));
 
   return base.map((item) => {
     const f = item.features;
+    const leftLane = Number.isFinite(f.lane) ? f.lane - 1 : null;
+    const leftItem = Number.isFinite(leftLane) && leftLane >= 1 ? byLane.get(leftLane) : null;
+    const leftFeatures = leftItem?.features || {};
+    const selfExhibitionTime = Number.isFinite(f.exhibition_time) ? f.exhibition_time : null;
+    const leftExhibitionTime = Number.isFinite(leftFeatures?.exhibition_time) ? leftFeatures.exhibition_time : null;
+    const selfAvgStRank = avgStRanks.get(f.lane) ?? null;
+    const leftAvgStRank = Number.isFinite(leftLane) ? (avgStRanks.get(leftLane) ?? null) : null;
+    const displayTimeDeltaVsLeft =
+      Number.isFinite(selfExhibitionTime) && Number.isFinite(leftExhibitionTime)
+        ? Number((leftExhibitionTime - selfExhibitionTime).toFixed(3))
+        : null;
+    const avgStRankDeltaVsLeft =
+      Number.isFinite(selfAvgStRank) && Number.isFinite(leftAvgStRank)
+        ? leftAvgStRank - selfAvgStRank
+        : null;
+    const slitAlertFlag =
+      Number.isFinite(displayTimeDeltaVsLeft) &&
+      displayTimeDeltaVsLeft >= 0.1 &&
+      Number.isFinite(avgStRankDeltaVsLeft) &&
+      avgStRankDeltaVsLeft > 0
+        ? 1
+        : 0;
     return {
       ...item,
       features: {
         ...f,
         exhibition_rank: exhibitionRanks.get(f.lane) ?? null,
         st_rank: stRanks.get(f.lane) ?? null,
+        avg_st_rank: selfAvgStRank,
         exhibition_gap_from_best:
           Number.isFinite(bestExhibition) && Number.isFinite(f.exhibition_time)
             ? f.exhibition_time - bestExhibition
             : 0,
         motor_gap_from_best: bestMotor - f.motor2_rate,
         local_gap_from_best: bestLocal - f.local_win_rate,
-        nation_gap_from_best: bestNation - f.nationwide_win_rate
+        nation_gap_from_best: bestNation - f.nationwide_win_rate,
+        display_time_delta_vs_left: displayTimeDeltaVsLeft,
+        avg_st_rank_delta_vs_left: avgStRankDeltaVsLeft,
+        slit_alert_flag: slitAlertFlag
       }
     };
   });
