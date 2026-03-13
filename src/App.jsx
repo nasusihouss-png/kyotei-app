@@ -475,6 +475,11 @@ function getSavedFinalRecommendedBets(row) {
     .filter(Boolean);
 }
 
+function getResultsBetSnapshotLabel(row) {
+  const saved = getSavedFinalRecommendedBets(row);
+  return saved.length > 0 ? null : "NO_BET_SNAPSHOT";
+}
+
 function getLearningStatusLabel(row) {
   const verification = row?.verification || {};
   const categories = Array.isArray(verification?.mismatch_categories) ? verification.mismatch_categories : [];
@@ -3188,6 +3193,7 @@ export default function App() {
                 <div className="history-stack">
                   {filteredHistory.map((h) => {
                     const savedFinalRecommendedBets = getSavedFinalRecommendedBets(h);
+                    const betSnapshotLabel = getResultsBetSnapshotLabel(h);
                     const verificationKey = getVerificationHistoryKey(h.race_id, h.prediction_snapshot_id);
                     const verificationSummaryData = h?.verification?.summary || {};
                     const currentVerifyStatus =
@@ -3234,7 +3240,7 @@ export default function App() {
                             savedFinalRecommendedBets.map((b, idx) => (
                               <ComboBadge combo={b?.combo} key={`rec-${h.race_id}-${idx}`} />
                             ))
-                          ) : "No final recommended bet snapshot saved"}
+                          ) : betSnapshotLabel}
                         </div>
                         <div>
                           件数:

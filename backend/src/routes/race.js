@@ -5027,11 +5027,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
             };
       const finalRecommendedFromVerification = normalizeSavedBetSnapshotItems(verificationSummary?.final_recommended_bets_snapshot);
       const legacyDisplaySnapshotFromVerification = normalizeSavedBetSnapshotItems(verificationSummary?.ai_bets_display_snapshot);
-      const aiBetsDisplaySnapshot = finalRecommendedFromVerification.length > 0
-        ? finalRecommendedFromVerification
-        : savedFinalRecommendedBetsSnapshot.length > 0
-          ? savedFinalRecommendedBetsSnapshot
-          : legacyDisplaySnapshotFromVerification;
+      const aiBetsDisplaySnapshot = savedFinalRecommendedBetsSnapshot;
       const verificationDisplaySnapshot = finalRecommendedFromVerification.length > 0
         ? finalRecommendedFromVerification
         : legacyDisplaySnapshotFromVerification;
@@ -5049,15 +5045,11 @@ raceRouter.get("/results-history", async (req, res, next) => {
         (Number.isFinite(Number(verificationSummary?.prediction_snapshot_id))
           ? Number(verificationSummary.prediction_snapshot_id)
           : null);
-      const aiBetsSnapshotSource = finalRecommendedFromVerification.length > 0
-        ? "verification_final_recommended_bets_snapshot"
-        : legacyDisplaySnapshotFromVerification.length > 0
-          ? "verification_snapshot"
-          : finalRecommendedFromPrediction.length > 0
-            ? (prediction?.final_recommended_bets_snapshot_source || "prediction_final_recommended_bets_snapshot")
-            : legacyDisplaySnapshotFromPrediction.length > 0
-              ? "prediction_snapshot"
-              : "missing_final_recommended_bets_snapshot";
+      const aiBetsSnapshotSource = finalRecommendedFromPrediction.length > 0
+        ? (prediction?.final_recommended_bets_snapshot_source || "prediction_final_recommended_bets_snapshot")
+        : legacyDisplaySnapshotFromPrediction.length > 0
+          ? "prediction_snapshot_legacy_display"
+          : "missing_final_recommended_bets_snapshot";
       const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
       const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
       const verificationAgainstSnapshotId = Number.isFinite(Number(verification?.verified_against_snapshot_id))
@@ -5071,9 +5063,10 @@ raceRouter.get("/results-history", async (req, res, next) => {
         .map((row) => normalizeCombo(row?.combo ?? row))
         .filter((c) => c && c.split("-").length === 3);
       const hasValidBetSnapshot = displaySnapshotCombos.length > 0;
+      const verificationBetSource = String(verificationSummary?.verification_bet_source || "").toLowerCase();
       const verificationUsedSavedBetSnapshot =
-        finalRecommendedFromVerification.length > 0 ||
-        legacyDisplaySnapshotFromVerification.length > 0;
+        verificationBetSource === "prediction_snapshot" ||
+        verificationBetSource === "prediction_snapshot_legacy_display";
       const verificationSnapshotOutdated =
         hasValidBetSnapshot &&
         !!verification &&
@@ -5175,10 +5168,10 @@ raceRouter.get("/results-history", async (req, res, next) => {
         ai_bets_latest_log: latestLogDisplayBets,
         debug_bet_compare: {
           confirmed_result: confirmedResult,
-          saved_display_snapshot: aiBetsDisplaySnapshot,
+          saved_display_snapshot: savedFinalRecommendedBetsSnapshot,
           displayed_in_results: aiBetsDisplaySnapshot,
           verification_display_snapshot: verificationDisplaySnapshot,
-          verification_input_bet_list: verification?.summary?.verified_against_bets || displaySnapshotCombos,
+          verification_input_bet_list: displaySnapshotCombos,
           latest_log_bets: latestLogDisplayBets,
           final_hit_miss_result: hitMiss
         },
@@ -5346,16 +5339,12 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     };
     const snapshotDisplayBetsFromPrediction = normalizeSavedBetSnapshotItems(predictionJson?.final_recommended_bets_snapshot);
     const legacySnapshotDisplayBetsFromPrediction = normalizeSavedBetSnapshotItems(predictionJson?.ai_bets_display_snapshot);
-    const snapshotDisplayBetsFromVerification = normalizeSavedBetSnapshotItems(latestRequestedVerificationSummary?.final_recommended_bets_snapshot);
-    const legacySnapshotDisplayBetsFromVerification = normalizeSavedBetSnapshotItems(latestRequestedVerificationSummary?.ai_bets_display_snapshot);
     const snapshotDisplayBets =
       snapshotDisplayBetsFromPrediction.length > 0
         ? snapshotDisplayBetsFromPrediction
         : legacySnapshotDisplayBetsFromPrediction.length > 0
           ? legacySnapshotDisplayBetsFromPrediction
-          : snapshotDisplayBetsFromVerification.length > 0
-            ? snapshotDisplayBetsFromVerification
-            : legacySnapshotDisplayBetsFromVerification;
+          : [];
     const snapshotFullBets =
       predictionJson?.ai_bets_full_snapshot && typeof predictionJson.ai_bets_full_snapshot === "object"
         ? predictionJson.ai_bets_full_snapshot
@@ -5395,10 +5384,6 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         ? "prediction_snapshot"
         : legacySnapshotDisplayBetsFromPrediction.length > 0
           ? "prediction_snapshot_legacy_display"
-          : snapshotDisplayBetsFromVerification.length > 0
-            ? "verification_snapshot"
-          : legacySnapshotDisplayBetsFromVerification.length > 0
-            ? "verification_snapshot_legacy_display"
           : "none";
     const prevVerificationVersion = Number.isFinite(Number(latestVerificationSummary?.verification_version))
       ? Number(latestVerificationSummary.verification_version)
@@ -5535,13 +5520,11 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       final_recommended_bets_count: snapshotDisplayBets.length,
       snapshot_source:
         predictionJson?.final_recommended_bets_snapshot_source ||
-        (snapshotDisplayBetsFromVerification.length > 0
-          ? "verification_final_recommended_bets_snapshot"
-          : legacySnapshotDisplayBetsFromVerification.length > 0
-            ? "verification_snapshot"
-            : legacySnapshotDisplayBetsFromPrediction.length > 0
-              ? "prediction_snapshot"
-              : "missing_final_recommended_bets_snapshot"),
+        (snapshotDisplayBetsFromPrediction.length > 0
+          ? "prediction_final_recommended_bets_snapshot"
+          : legacySnapshotDisplayBetsFromPrediction.length > 0
+            ? "prediction_snapshot_legacy_display"
+            : "missing_final_recommended_bets_snapshot"),
       ai_bets_display_snapshot: snapshotDisplayBets,
       ai_bets_full_snapshot: snapshotFullBets,
       verification_bet_source: verificationBetSource,
