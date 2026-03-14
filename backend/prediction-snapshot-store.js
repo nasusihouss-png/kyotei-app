@@ -485,13 +485,22 @@ export function buildVerifiedLearningRows() {
         head_distribution_json: learning?.head_distribution_json || context?.head_distribution_json || [],
         baseline_head_distribution_json:
           learning?.baseline_head_distribution_json || context?.baseline_head_distribution_json || [],
+        second_distribution_json:
+          learning?.second_distribution_json || context?.second_distribution_json || [],
         aggressive_adjustment_json:
           learning?.aggressive_adjustment_json || context?.aggressive_adjustment_json || [],
+        inner_course_bias_applied: toNum(
+          learning?.inner_course_bias_applied ?? context?.inner_course_bias_applied,
+          0
+        ),
         outer_head_guard_applied: toNum(
           learning?.outer_head_guard_applied ?? context?.outer_head_guard_applied,
           0
         ),
         survival_guard_applied: toNum(learning?.survival_guard_applied ?? context?.survival_guard_applied, 0),
+        final_balance_adjustment_json:
+          learning?.final_balance_adjustment_json || context?.final_balance_adjustment_json || {},
+        hit_rate_focus_applied: toNum(learning?.hit_rate_focus_applied ?? context?.hit_rate_focus_applied, 0),
         removed_candidate_reason_tags: Array.isArray(learning?.removed_candidate_reason_tags)
           ? learning.removed_candidate_reason_tags
           : Array.isArray(context?.removed_candidate_reason_tags)
@@ -535,6 +544,11 @@ export function buildVerifiedLearningRows() {
         escape_second_place_bias_json: learning?.escape_second_place_bias_json || context?.escape_second_place_bias_json || {},
         participation_decision: learning?.participation_decision || null,
         participation_decision_reason: learning?.participation_decision_reason || null,
+        participate_watch_skip_reason_tags: Array.isArray(learning?.participate_watch_skip_reason_tags)
+          ? learning.participate_watch_skip_reason_tags
+          : Array.isArray(context?.participate_watch_skip_reason_tags)
+            ? context.participate_watch_skip_reason_tags
+          : [],
         participation_score_components: participationScoreComponents,
         feature_contribution_summary: featureContributionSummary,
         contender_signals: learning?.contender_signals || context?.contender_signals || {},
