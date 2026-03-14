@@ -2231,6 +2231,95 @@ function buildBoat1HeadBetsSnapshot({
   };
 }
 
+function ensureExplanationTagList(row, tag) {
+  return [...new Set([...(Array.isArray(row?.explanation_tags) ? row.explanation_tags : []), tag])];
+}
+
+function applyBoat1PriorityModeToTickets({
+  recommendedBets,
+  optimizedTickets,
+  boat1HeadSnapshot,
+  headScenarioBalanceAnalysis
+}) {
+  const optimizeRows = normalizeSavedBetSnapshotItems(optimizedTickets);
+  const recommendRows = normalizeSavedBetSnapshotItems(recommendedBets);
+  const sourceRows = optimizeRows.length > 0 ? optimizeRows : recommendRows;
+  const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const lane1Weight = toNum(
+    safeArray(headScenarioBalanceAnalysis?.head_distribution_json).find((row) => toInt(row?.lane, null) === 1)?.weight,
+    0
+  );
+  const attackDominanceMargin = toNum(headScenarioBalanceAnalysis?.attack_dominance_margin, 99);
+  const shouldApply =
+    sourceRows.length >= 3 &&
+    safeArray(boat1HeadSnapshot?.items).length > 0 &&
+    survivalResidualScore >= 34 &&
+    lane1Weight >= 0.22 &&
+    attackDominanceMargin <= 28;
+
+  const rebalanceRows = (rows) => {
+    const list = normalizeSavedBetSnapshotItems(rows);
+    if (!shouldApply || !list.length) return list;
+    const windowSize = Math.min(6, list.length);
+    const requiredBoat1Count = Math.min(windowSize - 1, Math.floor(windowSize / 2) + 1);
+    const currentBoat1Count = list.slice(0, windowSize).filter((row) => normalizeCombo(row?.combo).startsWith("1-")).length;
+    if (currentBoat1Count >= requiredBoat1Count) {
+      return list.map((row) => ({
+        ...row,
+        explanation_tags: ensureExplanationTagList(row, "BOAT1_PRIORITY_MODE")
+      }));
+    }
+
+    const promoted = [...list];
+    const thresholdProb = toNum(promoted[Math.max(0, windowSize - 1)]?.prob, 0);
+    const headCandidates = normalizeSavedBetSnapshotItems(boat1HeadSnapshot?.items)
+      .filter((row) => normalizeCombo(row?.combo).startsWith("1-"))
+      .sort((a, b) => toNum(b?.boat1_head_score ?? b?.prob, 0) - toNum(a?.boat1_head_score ?? a?.prob, 0));
+
+    let nextProb = thresholdProb + 0.0006;
+    for (const candidate of headCandidates) {
+      const topBoat1Count = promoted.slice(0, windowSize).filter((row) => normalizeCombo(row?.combo).startsWith("1-")).length;
+      if (topBoat1Count >= requiredBoat1Count) break;
+      const combo = normalizeCombo(candidate?.combo);
+      const idx = promoted.findIndex((row) => normalizeCombo(row?.combo) === combo);
+      if (idx >= 0) {
+        promoted[idx] = {
+          ...promoted[idx],
+          prob: Number((Math.max(toNum(promoted[idx]?.prob, 0), nextProb)).toFixed(4)),
+          explanation_tags: ensureExplanationTagList(promoted[idx], "BOAT1_PRIORITY_MODE")
+        };
+      } else {
+        promoted.push({
+          ...candidate,
+          combo,
+          prob: Number(nextProb.toFixed(4)),
+          explanation_tags: ensureExplanationTagList(candidate, "BOAT1_PRIORITY_MODE")
+        });
+      }
+      nextProb += 0.0004;
+      promoted.sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0));
+    }
+
+    return promoted.sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0));
+  };
+
+  const nextOptimized = optimizeRows.length > 0 ? rebalanceRows(optimizeRows) : [];
+  const nextRecommended = rebalanceRows(recommendRows);
+  const finalRows = nextOptimized.length > 0 ? nextOptimized : nextRecommended;
+  const finalWindow = Math.min(6, finalRows.length);
+  const boat1Count = finalRows.slice(0, finalWindow).filter((row) => normalizeCombo(row?.combo).startsWith("1-")).length;
+  const ratio = finalWindow > 0 ? boat1Count / finalWindow : 0;
+  return {
+    recommendedBets: nextRecommended,
+    optimizedTickets: nextOptimized,
+    boat1_priority_mode_applied: shouldApply && ratio > 0.5 ? 1 : 0,
+    boat1_head_ratio_in_final_bets: Number(ratio.toFixed(4)),
+    boat1_priority_reason_tags: shouldApply
+      ? ["BOAT1_SURVIVAL_MEANINGFUL", "BOAT1_PRIORITY_MODE"]
+      : []
+  };
+}
+
 function buildExactaCoverageSnapshot({
   ranking,
   recommendedBets,
@@ -2248,6 +2337,7 @@ function buildExactaCoverageSnapshot({
   const attackScenarioApplied = toNum(attackScenarioAnalysis?.attack_scenario_applied, 0) === 1;
   const attackScenarioScore = toNum(attackScenarioAnalysis?.attack_scenario_score, 0);
   const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const boat1PriorityModeApplied = toNum(headScenarioBalanceAnalysis?.boat1_priority_mode_applied, 0) === 1;
   const secondDistribution = Array.isArray(headScenarioBalanceAnalysis?.second_distribution_json)
     ? headScenarioBalanceAnalysis.second_distribution_json
     : [];
@@ -2331,6 +2421,7 @@ function buildExactaCoverageSnapshot({
       toNum(features?.slit_alert_flag, 0) * 10;
     const headDistributionBias = toNum(headDistributionMap.get(lane), 0) * 42;
     const stableInsideBias = lane >= 1 && lane <= 3 ? 5.5 : 0;
+    const boat1PriorityHeadBias = boat1PriorityModeApplied && lane === 1 ? 14 : 0;
     const laneAttackBias = attackScenarioApplied && getAttackScenarioHeadLane(attackScenarioType) === lane
       ? attackScenarioScore * 0.32
       : 0;
@@ -2345,6 +2436,7 @@ function buildExactaCoverageSnapshot({
       leftNeighborBias +
       headDistributionBias +
       stableInsideBias +
+      boat1PriorityHeadBias +
       laneAttackBias +
       survivalBias +
       learnedVenueHeadAdj * 0.8 +
@@ -2371,6 +2463,7 @@ function buildExactaCoverageSnapshot({
       : 0;
     const secondDistributionBias = toNum(secondDistributionMap.get(lane), 0) * 36;
     const insidePartnerBias = lane >= 1 && lane <= 3 ? 3.2 : 0;
+    const boat1PriorityPartnerBias = boat1PriorityModeApplied && lane >= 2 && lane <= 4 ? 5.5 : 0;
     const exhibitionPartnerBias = Math.max(0, 7 - toNum(features?.exhibition_rank, 6)) * 5;
     const motorPartnerBias = toNum(features?.motor_total_score, 0) * 1.5;
     const startPartnerBias = Math.max(0, 7 - toNum(features?.expected_actual_st_rank ?? features?.st_rank, 6)) * 3.4;
@@ -2385,6 +2478,7 @@ function buildExactaCoverageSnapshot({
       attackPartnerBias +
       secondDistributionBias +
       insidePartnerBias +
+      boat1PriorityPartnerBias +
       exhibitionPartnerBias +
       motorPartnerBias +
       startPartnerBias +
@@ -3736,6 +3830,25 @@ raceRouter.get("/race", async (req, res, next) => {
     });
     const snapshotCreatedAt = new Date().toISOString();
     const modelVersion = "prediction_snapshot_v2";
+    const preliminaryBoat1HeadSnapshot = buildBoat1HeadBetsSnapshot({
+      recommendedBets: bet_plan_with_stake?.recommended_bets,
+      optimizedTickets: ticketOptimizationWithStake?.optimized_tickets,
+      headScenarioBalanceAnalysis,
+      escapePatternAnalysis,
+      learningWeights,
+      race: data?.race || null
+    });
+    const boat1PriorityAdjustment = applyBoat1PriorityModeToTickets({
+      recommendedBets: bet_plan_with_stake?.recommended_bets,
+      optimizedTickets: ticketOptimizationWithStake?.optimized_tickets,
+      boat1HeadSnapshot: preliminaryBoat1HeadSnapshot,
+      headScenarioBalanceAnalysis
+    });
+    bet_plan_with_stake.recommended_bets = boat1PriorityAdjustment.recommendedBets;
+    ticketOptimizationWithStake.optimized_tickets = boat1PriorityAdjustment.optimizedTickets;
+    headScenarioBalanceAnalysis.boat1_priority_mode_applied = boat1PriorityAdjustment.boat1_priority_mode_applied;
+    headScenarioBalanceAnalysis.boat1_head_ratio_in_final_bets = boat1PriorityAdjustment.boat1_head_ratio_in_final_bets;
+    headScenarioBalanceAnalysis.boat1_priority_reason_tags = boat1PriorityAdjustment.boat1_priority_reason_tags;
     const finalRecommendedSnapshot = buildFinalRecommendedBetsSnapshot({
       recommendedBets: bet_plan_with_stake?.recommended_bets,
       optimizedTickets: ticketOptimizationWithStake?.optimized_tickets
@@ -3885,10 +3998,15 @@ raceRouter.get("/race", async (req, res, next) => {
         ? headScenarioBalanceAnalysis.removed_candidate_reason_tags
         : [],
       boat1_head_bets_snapshot: boat1HeadSnapshot.items,
+      boat1_priority_mode_applied: toInt(headScenarioBalanceAnalysis.boat1_priority_mode_applied, 0),
+      boat1_head_ratio_in_final_bets: toNullableNum(headScenarioBalanceAnalysis.boat1_head_ratio_in_final_bets),
       boat1_head_score: boat1HeadSnapshot.boat1_head_score,
       boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
       boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
-      boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags,
+      boat1_head_reason_tags: [...new Set([...
+        boat1HeadSnapshot.boat1_head_reason_tags,
+        ...safeArray(headScenarioBalanceAnalysis.boat1_priority_reason_tags)
+      ])],
       exacta_recommended_bets_snapshot: exactaSnapshot.items,
       exacta_head_score: exactaSnapshot.exacta_head_score,
       exacta_partner_score: exactaSnapshot.exacta_partner_score,
@@ -3992,6 +4110,8 @@ raceRouter.get("/race", async (req, res, next) => {
       hit_rate_focus_applied: snapshotContext.hit_rate_focus_applied,
       removed_candidate_reason_tags: snapshotContext.removed_candidate_reason_tags,
       boat1_head_bets_snapshot: snapshotContext.boat1_head_bets_snapshot,
+      boat1_priority_mode_applied: snapshotContext.boat1_priority_mode_applied,
+      boat1_head_ratio_in_final_bets: snapshotContext.boat1_head_ratio_in_final_bets,
       boat1_head_score: snapshotContext.boat1_head_score,
       boat1_survival_residual_score: snapshotContext.boat1_survival_residual_score,
       boat1_head_section_shown: snapshotContext.boat1_head_section_shown,
@@ -4070,6 +4190,8 @@ raceRouter.get("/race", async (req, res, next) => {
       hit_rate_focus_applied: snapshotContext.hit_rate_focus_applied,
       removed_candidate_reason_tags: snapshotContext.removed_candidate_reason_tags,
       boat1_head_bets_snapshot: snapshotContext.boat1_head_bets_snapshot,
+      boat1_priority_mode_applied: snapshotContext.boat1_priority_mode_applied,
+      boat1_head_ratio_in_final_bets: snapshotContext.boat1_head_ratio_in_final_bets,
       boat1_head_score: snapshotContext.boat1_head_score,
       boat1_survival_residual_score: snapshotContext.boat1_survival_residual_score,
       boat1_head_section_shown: snapshotContext.boat1_head_section_shown,
@@ -4088,10 +4210,15 @@ raceRouter.get("/race", async (req, res, next) => {
       participation_score_components: participationDecision.participation_score_components,
       participation_version: participationDecision.participation_version,
       boat1_head_bets_snapshot: boat1HeadSnapshot.items,
+      boat1_priority_mode_applied: toInt(headScenarioBalanceAnalysis.boat1_priority_mode_applied, 0),
+      boat1_head_ratio_in_final_bets: toNullableNum(headScenarioBalanceAnalysis.boat1_head_ratio_in_final_bets),
       boat1_head_score: boat1HeadSnapshot.boat1_head_score,
       boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
       boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
-      boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags,
+      boat1_head_reason_tags: [...new Set([...
+        boat1HeadSnapshot.boat1_head_reason_tags,
+        ...safeArray(headScenarioBalanceAnalysis.boat1_priority_reason_tags)
+      ])],
       exacta_recommended_bets_snapshot: exactaSnapshot.items,
       exacta_head_score: exactaSnapshot.exacta_head_score,
       exacta_partner_score: exactaSnapshot.exacta_partner_score,
@@ -4123,6 +4250,7 @@ raceRouter.get("/race", async (req, res, next) => {
           longshot_picks: Array.isArray(scenarioSuggestions?.longshot_picks) ? scenarioSuggestions.longshot_picks : []
         },
         boat1_head_bets: boat1HeadSnapshot.items,
+        boat1_priority_mode_applied: toInt(headScenarioBalanceAnalysis.boat1_priority_mode_applied, 0),
         exacta_recommended_bets: exactaSnapshot.items
       },
       ai_bets_display_snapshot: finalRecommendedSnapshot.items,
@@ -4217,10 +4345,15 @@ raceRouter.get("/race", async (req, res, next) => {
       headScenarioBalance: headScenarioBalanceAnalysis,
       boat1HeadSection: {
         boat1_head_bets_snapshot: boat1HeadSnapshot.items,
+        boat1_priority_mode_applied: toInt(headScenarioBalanceAnalysis.boat1_priority_mode_applied, 0),
+        boat1_head_ratio_in_final_bets: toNullableNum(headScenarioBalanceAnalysis.boat1_head_ratio_in_final_bets),
         boat1_head_score: boat1HeadSnapshot.boat1_head_score,
         boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
         boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
-        boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags
+        boat1_head_reason_tags: [...new Set([...
+          boat1HeadSnapshot.boat1_head_reason_tags,
+          ...safeArray(headScenarioBalanceAnalysis.boat1_priority_reason_tags)
+        ])]
       },
       exactaSection: {
         exacta_recommended_bets_snapshot: exactaSnapshot.items,
@@ -7315,6 +7448,8 @@ raceRouter.get("/results-history", async (req, res, next) => {
         final_recommended_bets_snapshot: aiBetsDisplaySnapshot,
         final_recommended_bets_count: Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot.length : 0,
         boat1_head_bets_snapshot: boat1HeadBetsSnapshot,
+        boat1_priority_mode_applied: toNum(prediction?.boat1_priority_mode_applied, 0),
+        boat1_head_ratio_in_final_bets: toNum(prediction?.boat1_head_ratio_in_final_bets, null),
         boat1_head_score: toNum(prediction?.boat1_head_score, null),
         boat1_survival_residual_score: toNum(prediction?.boat1_survival_residual_score, null),
         boat1_head_section_shown: toNum(prediction?.boat1_head_section_shown, 0),

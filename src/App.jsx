@@ -1105,6 +1105,12 @@ export default function App() {
   const boat1SurvivalResidualScore = Number(
     boat1HeadSection?.boat1_survival_residual_score ?? prediction?.boat1_survival_residual_score ?? 0
   );
+  const boat1PriorityModeApplied = Number(
+    boat1HeadSection?.boat1_priority_mode_applied ?? prediction?.boat1_priority_mode_applied ?? 0
+  ) === 1;
+  const boat1HeadRatioInFinalBets = Number(
+    boat1HeadSection?.boat1_head_ratio_in_final_bets ?? prediction?.boat1_head_ratio_in_final_bets ?? 0
+  );
   const boat1HeadScore = Number(boat1HeadSection?.boat1_head_score ?? prediction?.boat1_head_score ?? 0);
   const boat1HeadReasonTags = Array.isArray(boat1HeadSection?.boat1_head_reason_tags)
     ? boat1HeadSection.boat1_head_reason_tags
@@ -2501,10 +2507,15 @@ export default function App() {
 
                 {boat1HeadSectionShown ? (
                   <article className="card summary-card">
-                    <h2>1号艇頭 / 残し買い目</h2>
+                    <h2>1号艇頭本線候補</h2>
                     <div className="summary-inline-meta">
                       <span>{boat1HeadBets.length}件</span>
-                      <span>score {formatMaybeNumber(boat1HeadScore, 1)} / residual {formatMaybeNumber(boat1SurvivalResidualScore, 1)}</span>
+                      <span>
+                        score {formatMaybeNumber(boat1HeadScore, 1)}
+                        {" / "}
+                        residual {formatMaybeNumber(boat1SurvivalResidualScore, 1)}
+                        {boat1PriorityModeApplied ? ` / ratio ${formatMaybeNumber(boat1HeadRatioInFinalBets * 100, 1)}%` : ""}
+                      </span>
                     </div>
                     {boat1HeadReasonTags.length > 0 ? (
                       <div className="chips-wrap" style={{ marginBottom: 8 }}>

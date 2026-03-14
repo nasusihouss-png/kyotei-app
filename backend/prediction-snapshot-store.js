@@ -511,6 +511,14 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.boat1_head_bets_snapshot)
             ? context.boat1_head_bets_snapshot
             : [],
+        boat1_priority_mode_applied: toNum(
+          learning?.boat1_priority_mode_applied ?? context?.boat1_priority_mode_applied,
+          0
+        ),
+        boat1_head_ratio_in_final_bets: toNum(
+          learning?.boat1_head_ratio_in_final_bets ?? context?.boat1_head_ratio_in_final_bets,
+          null
+        ),
         boat1_head_score: toNum(learning?.boat1_head_score ?? context?.boat1_head_score, null),
         boat1_survival_residual_score: toNum(
           learning?.boat1_survival_residual_score ?? context?.boat1_survival_residual_score,
