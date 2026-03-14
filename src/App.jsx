@@ -611,6 +611,61 @@ function getLearningStatusLabel(row) {
   return categories.length > 0 ? "LEARNING_READY" : "VERIFIED_ONLY";
 }
 
+function normalizeParticipationDecisionValue(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (["recommended", "participate", "full_bet", "full bet"].includes(text)) return "recommended";
+  if (["watch", "small_bet", "small bet", "micro_bet", "micro bet"].includes(text)) return "watch";
+  if (["not_recommended", "skip"].includes(text)) return "not_recommended";
+  return "";
+}
+
+function getParticipationDecisionMeta(row) {
+  const normalized = normalizeParticipationDecisionValue(
+    row?.participation_decision ||
+    row?.prediction?.participation_decision ||
+    row?.recommendation
+  );
+  if (normalized === "recommended") {
+    return {
+      value: normalized,
+      label: "Participate",
+      className: "badge hit",
+      reason: row?.participation_decision_reason || row?.prediction?.participation_decision_reason || ""
+    };
+  }
+  if (normalized === "watch") {
+    return {
+      value: normalized,
+      label: "Watch",
+      className: "badge pending",
+      reason: row?.participation_decision_reason || row?.prediction?.participation_decision_reason || ""
+    };
+  }
+  if (normalized === "not_recommended") {
+    return {
+      value: normalized,
+      label: "Skip",
+      className: "badge miss",
+      reason: row?.participation_decision_reason || row?.prediction?.participation_decision_reason || ""
+    };
+  }
+  return {
+    value: "",
+    label: "Decision Missing",
+    className: "badge pending",
+    reason: row?.participation_decision_reason || row?.prediction?.participation_decision_reason || "Saved participation decision is missing."
+  };
+}
+
+function formatHistoryRaceTitle(row) {
+  const venue = String(row?.venue_name || row?.venue_id || row?.race_id || "Race").trim();
+  const raceNo = Number(row?.race_no);
+  if (Number.isInteger(raceNo) && raceNo > 0) {
+    return `${venue} ${raceNo}R`;
+  }
+  return venue;
+}
+
 function getVerificationHistoryKey(raceId, predictionSnapshotId = null) {
   if (Number.isFinite(Number(predictionSnapshotId))) {
     return `snapshot:${Number(predictionSnapshotId)}`;
@@ -870,6 +925,8 @@ export default function App() {
   const [resultsStatusFilter, setResultsStatusFilter] = useState("all");
   const [resultsVenueFilter, setResultsVenueFilter] = useState("all");
   const [resultsParticipationFilter, setResultsParticipationFilter] = useState("all");
+  const [bulkVerifyRunning, setBulkVerifyRunning] = useState(false);
+  const [bulkVerifySummary, setBulkVerifySummary] = useState(null);
   const [editingResultKey, setEditingResultKey] = useState("");
   const [editingResultForm, setEditingResultForm] = useState({
     raceId: "",
@@ -1283,7 +1340,9 @@ export default function App() {
         return false;
       }
       if (resultsParticipationFilter !== "all") {
-        const decision = String(row?.prediction?.participation_decision || row?.participation_decision || "").toLowerCase();
+        const decision = normalizeParticipationDecisionValue(
+          row?.participation_decision || row?.prediction?.participation_decision || row?.recommendation
+        );
         if (decision !== resultsParticipationFilter) return false;
       }
       if (resultsStatusFilter === "all") return true;
@@ -1298,6 +1357,12 @@ export default function App() {
       return true;
     });
   }, [history, resultsParticipationFilter, resultsStatusFilter, resultsVenueFilter]);
+  const bulkVerifiableHistory = useMemo(() => {
+    return filteredHistory.filter((row) => {
+      const status = String(row?.verification_status || "").toUpperCase();
+      return status === "UNVERIFIED" || status === "VERIFY_FAILED" || status === "NO_BET_SNAPSHOT";
+    });
+  }, [filteredHistory]);
   const resultVenueOptions = useMemo(() => {
     const values = Array.from(
       new Set((Array.isArray(history) ? history : []).map((row) => String(row?.venue_name || row?.venue_id || "").trim()).filter(Boolean))
@@ -1880,10 +1945,15 @@ export default function App() {
     }
   };
 
-  const onVerifyRace = async (raceId, predictionSnapshotId = null) => {
+  const onVerifyRace = async (raceId, predictionSnapshotId = null, options = {}) => {
+    const allowDuringBulk = options?.allowDuringBulk === true;
+    if (bulkVerifyRunning && !allowDuringBulk) {
+      setPerfError("一括検証の実行中です。完了後に再試行してください。");
+      return null;
+    }
     if (!raceId) {
       setPerfError("検証対象の race_id が見つかりません");
-      return;
+      return null;
     }
     const verificationKey = getVerificationHistoryKey(raceId, predictionSnapshotId);
     setPerfError("");
@@ -1911,6 +1981,7 @@ export default function App() {
         );
       }
       await loadPerformance();
+      return { ok: true, status };
     } catch (e) {
       const payload = e?.payload || {};
       const msg = String(payload?.message || e?.message || "");
@@ -1924,8 +1995,42 @@ export default function App() {
       setVerificationReasonByRace((prev) => ({ ...prev, [verificationKey]: msg || "検証に失敗しました" }));
       setPerfError(msg || "検証に失敗しました");
       await loadPerformance();
+      return { ok: false, status, error: msg || "検証に失敗しました" };
     } finally {
       setVerifyingRaceId("");
+    }
+  };
+
+  const onVerifyAllUnverified = async () => {
+    if (bulkVerifyRunning || verifyingRaceId) return;
+    const targets = bulkVerifiableHistory;
+    if (!targets.length) {
+      setVerificationNotice("一括検証対象の未検証レースはありません。");
+      return;
+    }
+    setBulkVerifyRunning(true);
+    setBulkVerifySummary({ attempted: 0, verified: 0, skipped: 0, failed: 0, total: targets.length });
+    setPerfError("");
+    let attempted = 0;
+    let verified = 0;
+    let skipped = 0;
+    let failed = 0;
+    try {
+      for (const row of targets) {
+        attempted += 1;
+        setBulkVerifySummary({ attempted, verified, skipped, failed, total: targets.length });
+        const result = await onVerifyRace(row?.race_id, row?.prediction_snapshot_id, { allowDuringBulk: true });
+        const status = String(result?.status || "").toUpperCase();
+        if (result?.ok && status.startsWith("VERIFIED")) verified += 1;
+        else if (status === "NO_BET_SNAPSHOT" || status === "NO_CONFIRMED_RESULT") skipped += 1;
+        else if (result?.ok) verified += 1;
+        else failed += 1;
+        setBulkVerifySummary({ attempted, verified, skipped, failed, total: targets.length });
+      }
+      setVerificationNotice(`一括検証完了: ${verified}件 verified / ${skipped}件 skipped / ${failed}件 failed`);
+      await loadPerformance();
+    } finally {
+      setBulkVerifyRunning(false);
     }
   };
 
@@ -3662,13 +3767,28 @@ export default function App() {
                     <option value="not_recommended">skip</option>
                   </select>
                 </label>
+                <button
+                  type="button"
+                  className="fetch-btn"
+                  onClick={onVerifyAllUnverified}
+                  disabled={bulkVerifyRunning || !!verifyingRaceId || bulkVerifiableHistory.length === 0}
+                >
+                  {bulkVerifyRunning ? "一括検証中..." : `未検証を一括検証 (${bulkVerifiableHistory.length})`}
+                </button>
               </div>
+              {bulkVerifySummary ? (
+                <p className="muted" style={{ marginBottom: 10 }}>
+                  bulk verify: {bulkVerifySummary.attempted}/{bulkVerifySummary.total}
+                  {" "}attempted / {bulkVerifySummary.verified} verified / {bulkVerifySummary.skipped} skipped / {bulkVerifySummary.failed} failed
+                </p>
+              ) : null}
               {filteredHistory.length === 0 ? <p className="muted">履歴データはまだありません。</p> : (
                 <div className="history-stack">
                   {filteredHistory.map((h) => {
                     const savedFinalRecommendedBets = getSavedFinalRecommendedBets(h);
                     const savedBoat1HeadBets = getSavedBoat1HeadBets(h);
                     const savedExactaBets = getSavedExactaBets(h);
+                    const participationMeta = getParticipationDecisionMeta(h);
                     const betSnapshotLabel = getResultsBetSnapshotLabel(h);
                     const verificationKey = getVerificationHistoryKey(h.race_id, h.prediction_snapshot_id);
                     const isEditingResult = editingResultKey === verificationKey;
@@ -3684,10 +3804,11 @@ export default function App() {
                     <div key={h.history_id || `${h.race_id}-${h.prediction_snapshot_id || h.snapshot_created_at || ""}`} className="history-item compact-history">
                       <div className="history-head">
                         <div className="history-title-block">
-                          <strong>{h.venue_name || h.venue_id} {h.race_no}R</strong>
+                          <strong>{formatHistoryRaceTitle(h)}</strong>
                           <small>{h.race_date || "-"}</small>
                         </div>
                         <div className="row-actions">
+                          <span className={participationMeta.className}>{participationMeta.label}</span>
                           <span className={h.hit_miss === "HIT" ? "badge hit" : h.hit_miss === "MISS" ? "badge miss" : "badge pending"}>{h.hit_miss}</span>
                           <span className={getVerifyStatusBadgeClass(currentVerifyStatus)}>
                             {getVerifyStatusLabel(currentVerifyStatus)}
@@ -3742,6 +3863,11 @@ export default function App() {
                       </div>
                       {!String(currentVerifyStatus || "").startsWith("VERIFIED") && verifyReason ? (
                         <p className="muted strategy-line" style={{ marginTop: 6 }}>{verifyReason}</p>
+                      ) : null}
+                      {participationMeta.reason ? (
+                        <p className="muted strategy-line" style={{ marginTop: 6 }}>
+                          participation: {participationMeta.reason}
+                        </p>
                       ) : null}
                       {h?.invalidation ? (
                         <p className="muted strategy-line" style={{ marginTop: 6 }}>
@@ -3855,6 +3981,10 @@ export default function App() {
                         <div className="history-summary-cell">
                           <span className="history-label">verification</span>
                           <strong>{h.verification?.hit_miss || h.hit_miss || "-"}</strong>
+                        </div>
+                        <div className="history-summary-cell">
+                          <span className="history-label">participation</span>
+                          <strong>{participationMeta.label}</strong>
                         </div>
                         <div className="history-summary-cell">
                           <span className="history-label">head / bet</span>

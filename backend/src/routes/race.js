@@ -7066,6 +7066,14 @@ raceRouter.get("/results-history", async (req, res, next) => {
         venue_id: snapshotRow.venue_code ?? race.venue_id ?? verification?.summary?.venue_code ?? null,
         venue_name: snapshotRow.venue_name ?? race.venue_name ?? verification?.summary?.venue_name ?? null,
         race_no: snapshotRow.race_no ?? race.race_no ?? verification?.summary?.race_no ?? null,
+        participation_decision:
+          prediction?.participation_decision ||
+          prediction?.learning_context?.participation_decision ||
+          null,
+        participation_decision_reason:
+          prediction?.participation_decision_reason ||
+          prediction?.learning_context?.participation_decision_reason ||
+          null,
         recommendation: normalizeRecommendation(logRow.recommendation || snapshotRow.raceDecision?.mode),
         predicted_entry_order: predictedEntryOrder,
         actual_entry_order: actualEntryOrder,
