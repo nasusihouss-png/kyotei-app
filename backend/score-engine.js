@@ -22,6 +22,9 @@ export function calcRacerScore(f) {
   // Exhibition bonuses
   if (f.exhibition_rank === 1) score += 8;
   else if (f.exhibition_rank === 2) score += 4;
+  score += Math.max(0, 7 - (f.exhibition_rank ?? 6)) * 1.6;
+  score += Math.max(0, f.lap_attack_strength || 0) * 0.22;
+  if (f.lap_attack_flag === 1) score += 3.5;
 
   // Exhibition ST bonus
   if (f.st_rank === 1) score += 7;

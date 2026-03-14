@@ -110,6 +110,10 @@ export function buildFeatures(racer) {
     display_time_delta_vs_left: null,
     avg_st_rank_delta_vs_left: null,
     slit_alert_flag: 0,
+    front_boat_exists: 0,
+    lap_time_delta_vs_front: null,
+    lap_attack_flag: 0,
+    lap_attack_strength: 0,
     f_hold_count: Math.max(0, toNumber(racer?.fHoldCount, 0)),
     f_hold_bias_applied: 0,
     expected_actual_st_adjustment: 0,
@@ -178,6 +182,11 @@ export function buildRaceFeatures(racers, raceContext = {}) {
   );
   const expectedActualStByLaneMap = new Map(expectedActualStByLane.map((row) => [row.lane, row]));
   const byLane = new Map(base.map((item) => [item.features.lane, item]));
+  const byCourse = new Map(
+    base
+      .map((item) => [toNumber(item.features.entry_course, null), item])
+      .filter((row) => Number.isInteger(row[0]) && row[0] >= 1)
+  );
 
   return base.map((item) => {
     const f = item.features;
@@ -204,6 +213,30 @@ export function buildRaceFeatures(racers, raceContext = {}) {
       avgStRankDeltaVsLeft > 0
         ? 1
         : 0;
+    const frontCourse = Number.isFinite(f.entry_course) && f.entry_course > 1 ? f.entry_course - 1 : null;
+    const frontItem = Number.isFinite(frontCourse) && frontCourse >= 1
+      ? byCourse.get(frontCourse) || leftItem
+      : leftItem;
+    const frontFeatures = frontItem?.features || {};
+    const selfLapTime = Number.isFinite(f.exhibition_time) ? f.exhibition_time : null;
+    const frontLapTime = Number.isFinite(frontFeatures?.exhibition_time) ? frontFeatures.exhibition_time : null;
+    const lapTimeDeltaVsFront =
+      Number.isFinite(selfLapTime) && Number.isFinite(frontLapTime)
+        ? Number((frontLapTime - selfLapTime).toFixed(3))
+        : null;
+    const lapAttackStrength = Number.isFinite(lapTimeDeltaVsFront)
+      ? Number(Math.max(0, (lapTimeDeltaVsFront - 0.02) * 100).toFixed(2))
+      : 0;
+    const lapAttackFlag =
+      Number.isFinite(lapTimeDeltaVsFront) &&
+      lapTimeDeltaVsFront >= 0.05 &&
+      (
+        toNumber(f.slit_alert_flag, 0) === 1 ||
+        (Number.isFinite(avgStRankDeltaVsLeft) && avgStRankDeltaVsLeft >= 0) ||
+        (expectedActualStRanks.get(f.lane) ?? 6) <= ((frontItem && expectedActualStRanks.get(frontItem.features.lane)) ?? 6)
+      )
+        ? 1
+        : 0;
     return {
       ...item,
       features: {
@@ -223,6 +256,10 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         display_time_delta_vs_left: displayTimeDeltaVsLeft,
         avg_st_rank_delta_vs_left: avgStRankDeltaVsLeft,
         slit_alert_flag: slitAlertFlag,
+        front_boat_exists: frontItem ? 1 : 0,
+        lap_time_delta_vs_front: lapTimeDeltaVsFront,
+        lap_attack_flag: lapAttackFlag,
+        lap_attack_strength: lapAttackStrength,
         f_hold_count: expectedActualStMeta.fHoldCount ?? 0,
         f_hold_bias_applied: (expectedActualStMeta.fHoldCount ?? 0) > 0 ? 1 : 0,
         expected_actual_st_adjustment: expectedActualStMeta.adjustment ?? 0,

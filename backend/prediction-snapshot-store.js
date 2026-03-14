@@ -544,10 +544,22 @@ export function buildVerifiedLearningRows() {
             : [],
         partner_search_bias_json:
           learning?.partner_search_bias_json || context?.partner_search_bias_json || {},
+        partner_search_lap_bias_json:
+          learning?.partner_search_lap_bias_json || context?.partner_search_lap_bias_json || {},
         boat1_partner_search_applied: toNum(
           learning?.boat1_partner_search_applied ?? context?.boat1_partner_search_applied,
           0
         ),
+        stronger_lap_bias_applied: toNum(
+          learning?.stronger_lap_bias_applied ?? context?.stronger_lap_bias_applied,
+          0
+        ),
+        inside_baseline_priority_applied: toNum(
+          learning?.inside_baseline_priority_applied ?? context?.inside_baseline_priority_applied,
+          0
+        ),
+        candidate_balance_adjustment_json:
+          learning?.candidate_balance_adjustment_json || context?.candidate_balance_adjustment_json || {},
         scoring_family_components_json:
           learning?.scoring_family_components_json || context?.scoring_family_components_json || {},
         rebalance_version:

@@ -354,6 +354,7 @@ function buildFeatureContributionComponents(row) {
     ).toFixed(3)),
     exhibition_score_component: Number((
       (exhibitionRank === 1 ? 8 : exhibitionRank === 2 ? 4 : 0) +
+      Math.max(0, toNum(f.lap_attack_strength, 0)) * 0.4 +
       toNum(f.tilt_bonus, 0) +
       toNum(f.course_fit_score, 0)
     ).toFixed(3)),
@@ -367,7 +368,9 @@ function buildFeatureContributionComponents(row) {
     left_neighbor_bias_component: Number((
       Math.max(0, toNum(f.display_time_delta_vs_left, 0)) * 10 +
       Math.max(0, toNum(f.avg_st_rank_delta_vs_left, 0)) * 1.5 +
-      toNum(f.slit_alert_flag, 0) * 6
+      toNum(f.slit_alert_flag, 0) * 6 +
+      Math.max(0, toNum(f.lap_time_delta_vs_front, 0)) * 12 +
+      toNum(f.lap_attack_flag, 0) * 4
     ).toFixed(3)),
     f_hold_bias_component: Number((-toNum(f.f_hold_caution_penalty, 0)).toFixed(3)),
     scenario_bias_component: Number((
@@ -1266,13 +1269,16 @@ function buildSeparatedCandidateDistributions({
   const firstPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
-    const firstWeight =
-      toNum(row?.score, 0) * 0.56 +
-      toNum(priorMap.get(lane), 0) * 42 +
-      toNum(headMap.get(lane), 0) * 34 +
-      Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 3.6 +
-      toNum(f?.motor_total_score, 0) * 1.15 +
-      Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.8 -
+      const firstWeight =
+        toNum(row?.score, 0) * 0.56 +
+        toNum(priorMap.get(lane), 0) * 42 +
+        toNum(headMap.get(lane), 0) * 34 +
+        Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 3.6 +
+        Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * 18 +
+        toNum(f?.lap_attack_flag, 0) * 4 +
+        toNum(f?.lap_attack_strength, 0) * 0.34 +
+        toNum(f?.motor_total_score, 0) * 1.15 +
+        Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.8 -
       toNum(f?.f_hold_caution_penalty, 0) * 4.5 +
       (lane === 1 ? toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0) * 0.22 : 0) +
       (attackHeadLane && lane === attackHeadLane ? toNum(attackScenarioAnalysis?.attack_scenario_score, 0) * 0.08 : 0) +
@@ -1295,6 +1301,9 @@ function buildSeparatedCandidateDistributions({
       escapePartnerBias +
       insideRemainBias +
       Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 2.4 +
+      Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * 16 +
+      toNum(f?.lap_attack_flag, 0) * 3.5 +
+      toNum(f?.lap_attack_strength, 0) * 0.28 +
       toNum(f?.motor_total_score, 0) * 0.95 +
       Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.1 +
       Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 16 +
@@ -1320,6 +1329,8 @@ function buildSeparatedCandidateDistributions({
       toNum(row?.score, 0) * 0.18 +
       insideResidualBias +
       Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 1.7 +
+      Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * 10 +
+      toNum(f?.lap_attack_strength, 0) * 0.16 +
       toNum(f?.motor_total_score, 0) * 0.72 +
       Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 10 -
       toNum(f?.f_hold_caution_penalty, 0) * 2.4;
@@ -1337,7 +1348,22 @@ function buildSeparatedCandidateDistributions({
       strongest_second_lanes: secondPlaceDistribution.slice(0, 3),
       strongest_third_lanes: thirdPlaceDistribution.slice(0, 4)
     },
+    partner_search_lap_bias_json: {
+      top_lap_attack_second_lanes: secondPlaceDistribution
+        .filter((row) => toInt(row?.lane, null) >= 2)
+        .slice(0, 3),
+      top_lap_attack_third_lanes: thirdPlaceDistribution
+        .filter((row) => toInt(row?.lane, null) >= 2)
+        .slice(0, 4)
+    },
     boat1_partner_search_applied: mainHeadLane === 1 ? 1 : 0,
+    stronger_lap_bias_applied: 1,
+    inside_baseline_priority_applied: 1,
+    candidate_balance_adjustment_json: {
+      first_place_distribution_top: firstPlaceDistribution.slice(0, 4),
+      second_place_distribution_top: secondPlaceDistribution.slice(0, 4),
+      third_place_distribution_top: thirdPlaceDistribution.slice(0, 4)
+    },
     hit_rate_focus_applied: 1,
     scoring_family_components_json: {
       first_place: {
@@ -1345,6 +1371,7 @@ function buildSeparatedCandidateDistributions({
         ranking_weight: 0.56,
         head_distribution_weight: 34,
         exhibition_weight: 3.6,
+        lap_relative_weight: 18,
         motor_weight: 1.15,
         st_weight: 2.8
       },
@@ -1352,11 +1379,13 @@ function buildSeparatedCandidateDistributions({
         existing_second_distribution_weight: 42,
         ranking_weight: 0.34,
         escape_partner_bias_weight: 1.9,
+        lap_relative_weight: 16,
         inside_partner_bias: { 2: 8, 3: 7, 4: 4.2 }
       },
       third_place: {
         residual_ticket_weight: 48,
         ranking_weight: 0.18,
+        lap_relative_weight: 10,
         inside_residual_bias: { 2: 4.5, 3: 4.1, 4: 2.8 }
       }
     },
@@ -1814,6 +1843,7 @@ function analyzeAttackScenarioLayer({
       lane3Attack * 0.42 +
         wallWeakness * 0.22 +
         slitSupport3 * 0.18 +
+        Math.max(0, toNum(lane3?.features?.lap_attack_strength, 0)) * 0.2 +
         makuriProbPct * 0.22 +
         Math.max(0, toNum(raceIndexes?.makuri_index, 0) - 50) * 0.35 -
         attackVsEscapePenalty
@@ -1824,6 +1854,7 @@ function analyzeAttackScenarioLayer({
       lane3Attack * 0.34 +
         partialCollapse * 0.24 +
         slitSupport3 * 0.12 +
+        Math.max(0, toNum(lane3?.features?.lap_attack_strength, 0)) * 0.16 +
         makurizashiProbPct * 0.28 +
         Math.max(0, toNum(raceIndexes?.makurizashi_index, 0) - 50) * 0.32 -
         attackVsEscapePenalty
@@ -1835,6 +1866,7 @@ function analyzeAttackScenarioLayer({
         cadoAdvantage * 0.24 +
         wallWeakness * 0.18 +
         slitSupport4 * 0.18 +
+        Math.max(0, toNum(lane4?.features?.lap_attack_strength, 0)) * 0.22 +
         makuriProbPct * 0.18 -
         attackVsEscapePenalty
     ),
@@ -1845,6 +1877,7 @@ function analyzeAttackScenarioLayer({
         cadoAdvantage * 0.2 +
         partialCollapse * 0.2 +
         slitSupport4 * 0.12 +
+        Math.max(0, toNum(lane4?.features?.lap_attack_strength, 0)) * 0.18 +
         makurizashiProbPct * 0.24 -
         attackVsEscapePenalty
     )
@@ -2699,6 +2732,10 @@ function buildExactaCoverageSnapshot({
     const features = row?.features || {};
     const exhibitionRank = toNum(features?.exhibition_rank, 6);
     const exhibitionStrength = Math.max(0, 7 - exhibitionRank) * 9.5 + Math.max(0, 6.9 - toNum(row?.racer?.exhibitionTime, 6.9)) * 20;
+    const lapFrontBias =
+      Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 26 +
+      toNum(features?.lap_attack_flag, 0) * 7 +
+      toNum(features?.lap_attack_strength, 0) * 0.36;
     const motorStrength = toNum(features?.motor_total_score, 0) * 2.2 + toNum(features?.motor_trend_score, 0) * 0.7;
     const playerStrength =
       toNum(features?.class_score, 0) * 5.5 +
@@ -2727,6 +2764,7 @@ function buildExactaCoverageSnapshot({
       playerStrength +
       startStrength +
       leftNeighborBias +
+      lapFrontBias +
       headDistributionBias +
       stableInsideBias +
       boat1PriorityHeadBias +
@@ -2765,6 +2803,10 @@ function buildExactaCoverageSnapshot({
       Math.max(0, toNum(features?.display_time_delta_vs_left, 0)) * 22 +
       Math.max(0, toNum(features?.avg_st_rank_delta_vs_left, 0)) * 4 +
       toNum(features?.slit_alert_flag, 0) * 8;
+    const lapFrontBias =
+      Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 18 +
+      toNum(features?.lap_attack_flag, 0) * 4 +
+      toNum(features?.lap_attack_strength, 0) * 0.22;
     const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * 10;
     const score =
       toNum(row?.score, 0) * 0.44 +
@@ -2777,6 +2819,7 @@ function buildExactaCoverageSnapshot({
       motorPartnerBias +
       startPartnerBias +
       leftNeighborBias -
+      lapFrontBias -
       (lane === 5 ? 5.5 : lane === 6 ? 8.5 : 0) -
       fHoldPenalty;
     return {
@@ -4094,7 +4137,11 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.second_place_distribution_json = candidateDistributions.second_place_distribution_json;
     headScenarioBalanceAnalysis.third_place_distribution_json = candidateDistributions.third_place_distribution_json;
     headScenarioBalanceAnalysis.partner_search_bias_json = candidateDistributions.partner_search_bias_json;
+    headScenarioBalanceAnalysis.partner_search_lap_bias_json = candidateDistributions.partner_search_lap_bias_json;
     headScenarioBalanceAnalysis.boat1_partner_search_applied = candidateDistributions.boat1_partner_search_applied;
+    headScenarioBalanceAnalysis.stronger_lap_bias_applied = candidateDistributions.stronger_lap_bias_applied;
+    headScenarioBalanceAnalysis.inside_baseline_priority_applied = candidateDistributions.inside_baseline_priority_applied;
+    headScenarioBalanceAnalysis.candidate_balance_adjustment_json = candidateDistributions.candidate_balance_adjustment_json;
     headScenarioBalanceAnalysis.scoring_family_components_json = candidateDistributions.scoring_family_components_json;
     headScenarioBalanceAnalysis.rebalance_version = candidateDistributions.rebalance_version;
     bet_plan_with_stake.recommended_bets = applySeparatedDistributionBiasToTickets(
@@ -4230,6 +4277,9 @@ raceRouter.get("/race", async (req, res, next) => {
               display_time_delta_vs_left: toNullableNum(laneFeatures?.display_time_delta_vs_left),
               avg_st_rank_delta_vs_left: toNullableNum(laneFeatures?.avg_st_rank_delta_vs_left),
               slit_alert_flag: toInt(laneFeatures?.slit_alert_flag, 0),
+              lap_time_delta_vs_front: toNullableNum(laneFeatures?.lap_time_delta_vs_front),
+              lap_attack_flag: toInt(laneFeatures?.lap_attack_flag, 0),
+              lap_attack_strength: toNullableNum(laneFeatures?.lap_attack_strength),
               feature_snapshot: laneFeatures,
               contribution_components: contributionComponents
             }
@@ -4317,7 +4367,11 @@ raceRouter.get("/race", async (req, res, next) => {
       second_place_distribution_json: headScenarioBalanceAnalysis.second_place_distribution_json,
       third_place_distribution_json: headScenarioBalanceAnalysis.third_place_distribution_json,
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
+      partner_search_lap_bias_json: headScenarioBalanceAnalysis.partner_search_lap_bias_json,
       boat1_partner_search_applied: toInt(headScenarioBalanceAnalysis.boat1_partner_search_applied, 0),
+      stronger_lap_bias_applied: toInt(headScenarioBalanceAnalysis.stronger_lap_bias_applied, 0),
+      inside_baseline_priority_applied: toInt(headScenarioBalanceAnalysis.inside_baseline_priority_applied, 0),
+      candidate_balance_adjustment_json: headScenarioBalanceAnalysis.candidate_balance_adjustment_json || {},
       aggressive_adjustment_json: headScenarioBalanceAnalysis.aggressive_adjustment_json,
       scoring_family_components_json: headScenarioBalanceAnalysis.scoring_family_components_json,
       rebalance_version: headScenarioBalanceAnalysis.rebalance_version,
@@ -4444,7 +4498,11 @@ raceRouter.get("/race", async (req, res, next) => {
       second_place_distribution_json: snapshotContext.second_place_distribution_json,
       third_place_distribution_json: snapshotContext.third_place_distribution_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
+      partner_search_lap_bias_json: snapshotContext.partner_search_lap_bias_json,
       boat1_partner_search_applied: snapshotContext.boat1_partner_search_applied,
+      stronger_lap_bias_applied: snapshotContext.stronger_lap_bias_applied,
+      inside_baseline_priority_applied: snapshotContext.inside_baseline_priority_applied,
+      candidate_balance_adjustment_json: snapshotContext.candidate_balance_adjustment_json,
       aggressive_adjustment_json: snapshotContext.aggressive_adjustment_json,
       scoring_family_components_json: snapshotContext.scoring_family_components_json,
       rebalance_version: snapshotContext.rebalance_version,
@@ -4537,7 +4595,11 @@ raceRouter.get("/race", async (req, res, next) => {
       second_place_distribution_json: snapshotContext.second_place_distribution_json,
       third_place_distribution_json: snapshotContext.third_place_distribution_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
+      partner_search_lap_bias_json: snapshotContext.partner_search_lap_bias_json,
       boat1_partner_search_applied: snapshotContext.boat1_partner_search_applied,
+      stronger_lap_bias_applied: snapshotContext.stronger_lap_bias_applied,
+      inside_baseline_priority_applied: snapshotContext.inside_baseline_priority_applied,
+      candidate_balance_adjustment_json: snapshotContext.candidate_balance_adjustment_json,
       aggressive_adjustment_json: snapshotContext.aggressive_adjustment_json,
       scoring_family_components_json: snapshotContext.scoring_family_components_json,
       rebalance_version: snapshotContext.rebalance_version,
