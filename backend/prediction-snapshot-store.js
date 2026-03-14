@@ -439,6 +439,7 @@ export function buildVerifiedLearningRows() {
         invalid_reason: verificationRow?.invalid_reason || summary?.invalid_reason || null,
         invalidated_at: verificationRow?.invalidated_at || summary?.invalidated_at || null,
         mismatch_categories: Array.isArray(mismatchCategories) ? mismatchCategories : [],
+        miss_pattern_tags: Array.isArray(summary?.miss_pattern_tags) ? summary.miss_pattern_tags : [],
         confirmed_result: verificationRow?.confirmed_result || summary?.confirmed_result_canonical || null,
         verification_reason: verificationRow?.verification_reason || summary?.verification_reason || null,
         recommendation_mode: summary?.recommendation_mode || snapshot.raceDecision?.mode || null,

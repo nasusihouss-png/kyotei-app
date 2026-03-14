@@ -611,6 +611,65 @@ function getLearningStatusLabel(row) {
   return categories.length > 0 ? "LEARNING_READY" : "VERIFIED_ONLY";
 }
 
+function getResultMissPatternTags(row) {
+  const verification = row?.verification || {};
+  const summary = verification?.summary || {};
+  const rawTags = Array.isArray(verification?.miss_pattern_tags)
+    ? verification.miss_pattern_tags
+    : Array.isArray(summary?.miss_pattern_tags)
+      ? summary.miss_pattern_tags
+      : [];
+  const tagSet = new Set(rawTags.map((tag) => String(tag || "").toLowerCase()));
+  const compact = [];
+  if (tagSet.has("head_hit")) compact.push("HEAD HIT");
+  else if (tagSet.has("head_miss")) compact.push("HEAD MISS");
+  if (tagSet.has("second_place_hit")) compact.push("2ND HIT");
+  else if (tagSet.has("second_place_miss")) compact.push("2ND MISS");
+  if (tagSet.has("third_place_hit")) compact.push("3RD HIT");
+  else if (tagSet.has("third_place_miss")) compact.push("3RD MISS");
+  if (tagSet.has("second_third_swap")) compact.push("SWAP");
+  if (tagSet.has("structure_near_miss") || tagSet.has("structure_near_but_order_miss")) compact.push("NEAR");
+  if (tagSet.has("partner_selection_miss")) compact.push("PARTNER MISS");
+  if (tagSet.has("third_place_noise")) compact.push("3RD NOISE");
+  if (tagSet.has("exacta_hit")) compact.push("EXACTA HIT");
+  else if (tagSet.has("exacta_miss")) compact.push("EXACTA MISS");
+  if (tagSet.has("boat1_survival_underestimated")) compact.push("1 SURVIVAL");
+  if (tagSet.has("outer_head_overpromotion")) compact.push("OUTER OVER");
+  if (tagSet.has("attack_scenario_overweight")) compact.push("ATTACK OVER");
+  if (tagSet.has("attack_scenario_underweight")) compact.push("ATTACK UNDER");
+  return compact;
+}
+
+function buildResultsMissPatternSummary(rows) {
+  const items = Array.isArray(rows) ? rows : [];
+  const summary = {
+    headMisses: 0,
+    secondPlaceMisses: 0,
+    thirdPlaceMisses: 0,
+    swaps: 0,
+    exactaHits: 0,
+    exactaMisses: 0,
+    nearMisses: 0
+  };
+  for (const row of items) {
+    const verification = row?.verification || {};
+    const rawTags = Array.isArray(verification?.miss_pattern_tags)
+      ? verification.miss_pattern_tags
+      : Array.isArray(verification?.summary?.miss_pattern_tags)
+        ? verification.summary.miss_pattern_tags
+        : [];
+    const tagSet = new Set(rawTags.map((tag) => String(tag || "").toLowerCase()));
+    if (tagSet.has("head_miss")) summary.headMisses += 1;
+    if (tagSet.has("second_place_miss")) summary.secondPlaceMisses += 1;
+    if (tagSet.has("third_place_miss")) summary.thirdPlaceMisses += 1;
+    if (tagSet.has("second_third_swap")) summary.swaps += 1;
+    if (tagSet.has("exacta_hit")) summary.exactaHits += 1;
+    if (tagSet.has("exacta_miss")) summary.exactaMisses += 1;
+    if (tagSet.has("structure_near_miss") || tagSet.has("structure_near_but_order_miss")) summary.nearMisses += 1;
+  }
+  return summary;
+}
+
 function normalizeParticipationDecisionValue(value) {
   const text = String(value || "").trim().toLowerCase();
   if (["recommended", "participate", "full_bet", "full bet"].includes(text)) return "recommended";
@@ -1375,6 +1434,10 @@ export default function App() {
       return status === "UNVERIFIED" || status === "VERIFY_FAILED" || status === "NO_BET_SNAPSHOT";
     });
   }, [filteredHistory]);
+  const resultsMissPatternSummary = useMemo(
+    () => buildResultsMissPatternSummary(filteredHistory),
+    [filteredHistory]
+  );
   const resultVenueOptions = useMemo(() => {
     const values = Array.from(
       new Set((Array.isArray(history) ? history : []).map((row) => String(row?.venue_name || row?.venue_id || "").trim()).filter(Boolean))
@@ -3800,6 +3863,32 @@ export default function App() {
                   {" "}attempted / {bulkVerifySummary.verified} verified / {bulkVerifySummary.skipped} skipped / {bulkVerifySummary.failed} failed
                 </p>
               ) : null}
+              <div className="result-miss-summary">
+                <div className="result-miss-summary-item">
+                  <span>head misses</span>
+                  <strong>{resultsMissPatternSummary.headMisses}</strong>
+                </div>
+                <div className="result-miss-summary-item">
+                  <span>2nd misses</span>
+                  <strong>{resultsMissPatternSummary.secondPlaceMisses}</strong>
+                </div>
+                <div className="result-miss-summary-item">
+                  <span>3rd misses</span>
+                  <strong>{resultsMissPatternSummary.thirdPlaceMisses}</strong>
+                </div>
+                <div className="result-miss-summary-item">
+                  <span>swaps</span>
+                  <strong>{resultsMissPatternSummary.swaps}</strong>
+                </div>
+                <div className="result-miss-summary-item">
+                  <span>exacta hit / miss</span>
+                  <strong>{resultsMissPatternSummary.exactaHits} / {resultsMissPatternSummary.exactaMisses}</strong>
+                </div>
+                <div className="result-miss-summary-item">
+                  <span>near misses</span>
+                  <strong>{resultsMissPatternSummary.nearMisses}</strong>
+                </div>
+              </div>
               {filteredHistory.length === 0 ? <p className="muted">履歴データはまだありません。</p> : (
                 <div className="history-stack">
                   {filteredHistory.map((h) => {
@@ -3818,6 +3907,7 @@ export default function App() {
                       h.verification_reason ||
                       h?.verification?.summary?.warning ||
                       "";
+                    const compactMissTags = getResultMissPatternTags(h);
                     return (
                     <div key={h.history_id || `${h.race_id}-${h.prediction_snapshot_id || h.snapshot_created_at || ""}`} className="history-item compact-history">
                       <div className="history-head">
@@ -4019,6 +4109,13 @@ export default function App() {
                           </div>
                         ) : null}
                       </div>
+                      {compactMissTags.length ? (
+                        <div className="chips-wrap">
+                          {compactMissTags.map((tag) => (
+                            <span className="chip" key={`miss-pattern-${h.race_id}-${tag}`}>{tag}</span>
+                          ))}
+                        </div>
+                      ) : null}
                       {Array.isArray(h?.verification?.mismatch_categories) && h.verification.mismatch_categories.length ? (
                         <div className="chips-wrap">
                           {h.verification.mismatch_categories.map((tag) => (
@@ -4029,6 +4126,31 @@ export default function App() {
                       <details className="result-detail-block" style={{ marginTop: 8 }}>
                         <summary>details</summary>
                         <div style={{ marginTop: 8 }}>
+                          <div className="history-grid" style={{ marginTop: 8 }}>
+                            <div>predicted top: {Array.isArray(h.predicted_top3) && h.predicted_top3.length ? h.predicted_top3.join("-") : "-"}</div>
+                            <div>confirmed result: {h.confirmed_result || "-"}</div>
+                            <div>
+                              place match:
+                              {" "}
+                              {verificationSummaryData?.head_correct === true ? "1st HIT" : verificationSummaryData?.head_correct === false ? "1st MISS" : "-"}
+                              {" / "}
+                              {verificationSummaryData?.second_place_correct === true ? "2nd HIT" : verificationSummaryData?.second_place_correct === false ? "2nd MISS" : "-"}
+                              {" / "}
+                              {verificationSummaryData?.third_place_correct === true ? "3rd HIT" : verificationSummaryData?.third_place_correct === false ? "3rd MISS" : "-"}
+                            </div>
+                            <div>near structure: {verificationSummaryData?.structure_near_but_order_miss ? "YES" : "NO"}</div>
+                            <div>partner miss: {verificationSummaryData?.partner_selection_miss ? "YES" : "NO"}</div>
+                            <div>3rd noise: {verificationSummaryData?.third_place_noise ? "YES" : "NO"}</div>
+                            <div>exacta recommendation: {savedExactaBets.length ? savedExactaBets.map((b) => b.combo).join(", ") : "-"}</div>
+                            <div>exacta result: {h.exacta_verification_status || "-"}</div>
+                            <div>
+                              reason tags:
+                              {" "}
+                              {Array.isArray(verificationSummaryData?.learning_adjustment_reason_tags) && verificationSummaryData.learning_adjustment_reason_tags.length
+                                ? verificationSummaryData.learning_adjustment_reason_tags.join(", ")
+                                : "-"}
+                            </div>
+                          </div>
                           {savedFinalRecommendedBets.length > 0 ? (
                             <div className="table-wrap" style={{ marginTop: 8 }}>
                               <table>

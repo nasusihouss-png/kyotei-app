@@ -659,6 +659,43 @@ function buildMismatchAnalysis({
   if (secondThirdSwap) categories.push("second_third_swap");
   if (structureNearButOrderMiss) categories.push("structure_near_but_order_miss");
 
+  const predictedHead = Number(predictedTop3[0]);
+  const predictedSecond = Number(predictedTop3[1]);
+  const predictedThird = Number(predictedTop3[2]);
+  const attackScenarioType = String(predictionJson?.attack_scenario_type || "").trim();
+  const attackScenarioApplied = Number(predictionJson?.attack_scenario_applied) === 1;
+  const survivalResidualScore = toNum(
+    predictionJson?.boat1_survival_residual_score ?? predictionJson?.survival_residual_score,
+    0
+  );
+  const outerAttackPredicted = predictedHead === 5 || predictedHead === 6;
+  const actualOuterHead = actualHead === 5 || actualHead === 6;
+  const boat1SurvivalUnderestimated =
+    actualHead === 1 &&
+    !headCorrect &&
+    survivalResidualScore >= 30 &&
+    predictedHead !== 1;
+  const outerHeadOverpromotion =
+    hitMiss === "MISS" &&
+    outerAttackPredicted &&
+    !actualOuterHead &&
+    survivalResidualScore >= 24;
+  const attackScenarioOverweight =
+    hitMiss === "MISS" &&
+    attackScenarioApplied &&
+    !!attackScenarioType &&
+    predictedHead !== actualHead;
+  const attackScenarioUnderweight =
+    hitMiss === "MISS" &&
+    !!attackScenarioType &&
+    actualHead !== 1 &&
+    predictedHead === 1;
+
+  if (boat1SurvivalUnderestimated) categories.push("boat1_survival_underestimated");
+  if (outerHeadOverpromotion) categories.push("outer_head_overpromotion");
+  if (attackScenarioOverweight) categories.push("attack_scenario_overweight");
+  if (attackScenarioUnderweight) categories.push("attack_scenario_underweight");
+
   const entryChanged = !!predictionJson?.entry_changed;
   if (entryChanged && hitMiss === "MISS") categories.push("ENTRY_CHANGE_IMPACT");
 
@@ -692,6 +729,31 @@ function buildMismatchAnalysis({
   if (actualHead === 1 && (partnerSelectionMiss || thirdPlaceMiss)) {
     learningAdjustmentReasonTags.push("REFINE_BOAT1_ESCAPE_PARTNER_SEARCH");
   }
+  if (boat1SurvivalUnderestimated) learningAdjustmentReasonTags.push("STRENGTHEN_BOAT1_SURVIVAL_GUARD");
+  if (outerHeadOverpromotion) learningAdjustmentReasonTags.push("SUPPRESS_OUTER_HEAD_PROMOTION");
+  if (attackScenarioOverweight) learningAdjustmentReasonTags.push("REDUCE_ATTACK_SCENARIO_WEIGHT");
+  if (attackScenarioUnderweight) learningAdjustmentReasonTags.push("RESTORE_ATTACK_COUNTER_COVERAGE");
+
+  const missPatternTags = [];
+  missPatternTags.push(headCorrect ? "head_hit" : "head_miss");
+  if (actualTop3.length >= 2) missPatternTags.push(secondCorrect ? "second_place_hit" : "second_place_miss");
+  if (actualTop3.length >= 3) missPatternTags.push(thirdCorrect ? "third_place_hit" : "third_place_miss");
+  if (secondThirdSwap) missPatternTags.push("second_third_swap");
+  if (partnerSelectionMiss) missPatternTags.push("partner_selection_miss");
+  if (thirdPlaceNoise) missPatternTags.push("third_place_noise");
+  if (structureNearButOrderMiss) missPatternTags.push("structure_near_miss");
+  if (actualCombo && !hitMatchFound && hasNearStructureWithHead) missPatternTags.push("structure_near_but_order_miss");
+  const exactaHit =
+    predictedTop3.length >= 2 &&
+    actualTop3.length >= 2 &&
+    predictedHead === actualHead &&
+    predictedSecond === actualSecond;
+  if (exactaHit) missPatternTags.push("exacta_hit");
+  else if (actualTop3.length >= 2) missPatternTags.push("exacta_miss");
+  if (boat1SurvivalUnderestimated) missPatternTags.push("boat1_survival_underestimated");
+  if (outerHeadOverpromotion) missPatternTags.push("outer_head_overpromotion");
+  if (attackScenarioOverweight) missPatternTags.push("attack_scenario_overweight");
+  if (attackScenarioUnderweight) missPatternTags.push("attack_scenario_underweight");
 
   return {
     hit_miss: hitMiss,
@@ -706,6 +768,7 @@ function buildMismatchAnalysis({
     second_third_swap: secondThirdSwap,
     structure_near_but_order_miss: structureNearButOrderMiss,
     categories: [...new Set(categories)],
+    miss_pattern_tags: [...new Set(missPatternTags)],
     learning_adjustment_reason_tags: [...new Set(learningAdjustmentReasonTags)],
     predicted_combo: predictedCombo,
     actual_combo: actualCombo,
@@ -7685,6 +7748,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
         verified_at: row.verified_at || null,
         hit_miss: row.hit_miss || null,
         mismatch_categories: safeJsonParse(row.mismatch_categories_json, []),
+        miss_pattern_tags: Array.isArray(summary?.miss_pattern_tags) ? summary.miss_pattern_tags : [],
         prediction_snapshot_id: Number.isFinite(Number(row?.prediction_snapshot_id))
           ? Number(row.prediction_snapshot_id)
           : Number.isFinite(Number(summary?.prediction_snapshot_id))
@@ -7697,6 +7761,12 @@ raceRouter.get("/results-history", async (req, res, next) => {
             : null,
         verification_status: row?.verification_status || summary?.verification_status || null,
         verification_reason: row?.verification_reason || summary?.verification_reason || null,
+        second_place_miss: summary?.second_place_miss === true,
+        third_place_miss: summary?.third_place_miss === true,
+        second_third_swap: summary?.second_third_swap === true,
+        structure_near_miss:
+          summary?.structure_near_but_order_miss === true ||
+          (Array.isArray(summary?.miss_pattern_tags) && summary.miss_pattern_tags.includes("structure_near_miss")),
         summary
       };
       if (Number.isFinite(snapshotId) && !verificationBySnapshotId.has(snapshotId)) {
@@ -8380,6 +8450,7 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       third_place_noise: analysis.third_place_noise,
       second_third_swap: analysis.second_third_swap,
       structure_near_but_order_miss: analysis.structure_near_but_order_miss,
+      miss_pattern_tags: analysis.miss_pattern_tags,
       learning_adjustment_reason_tags: analysis.learning_adjustment_reason_tags,
       recommendation_mode: latestPrediction?.recommendation || featureLog?.recommendation_mode || null,
       confidence: Number.isFinite(Number(featureLog?.confidence)) ? Number(featureLog.confidence) : null,
