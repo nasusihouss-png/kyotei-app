@@ -651,6 +651,17 @@ function buildMismatchAnalysis({
     thirdPlaceMiss &&
     !hasCorrectThirdWithHead &&
     !actualThirdSeenAnywhere;
+  const boat1InsidePartnerUnderweighted =
+    actualHead === 1 &&
+    secondPlaceMiss &&
+    [2, 3, 4].includes(actualSecond) &&
+    !hasCorrectSecondWithHead;
+  const boat1InsidePartnerOverweighted =
+    predictedHead === 1 &&
+    predictedSecond >= 2 &&
+    predictedSecond <= 4 &&
+    actualHead === 1 &&
+    actualSecond >= 5;
 
   if (secondPlaceMiss) categories.push("second_place_miss");
   if (thirdPlaceMiss) categories.push("third_place_miss");
@@ -658,6 +669,8 @@ function buildMismatchAnalysis({
   if (thirdPlaceNoise) categories.push("third_place_noise");
   if (secondThirdSwap) categories.push("second_third_swap");
   if (structureNearButOrderMiss) categories.push("structure_near_but_order_miss");
+  if (boat1InsidePartnerUnderweighted) categories.push("boat1_inside_partner_underweighted");
+  if (boat1InsidePartnerOverweighted) categories.push("boat1_inside_partner_overweighted");
 
   const predictedHead = Number(predictedTop3[0]);
   const predictedSecond = Number(predictedTop3[1]);
@@ -729,6 +742,8 @@ function buildMismatchAnalysis({
   if (actualHead === 1 && (partnerSelectionMiss || thirdPlaceMiss)) {
     learningAdjustmentReasonTags.push("REFINE_BOAT1_ESCAPE_PARTNER_SEARCH");
   }
+  if (boat1InsidePartnerUnderweighted) learningAdjustmentReasonTags.push("STRENGTHEN_1_2_3_4_PARTNER_FAMILY");
+  if (boat1InsidePartnerOverweighted) learningAdjustmentReasonTags.push("RELAX_INNER_PARTNER_FAMILY");
   if (boat1SurvivalUnderestimated) learningAdjustmentReasonTags.push("STRENGTHEN_BOAT1_SURVIVAL_GUARD");
   if (outerHeadOverpromotion) learningAdjustmentReasonTags.push("SUPPRESS_OUTER_HEAD_PROMOTION");
   if (attackScenarioOverweight) learningAdjustmentReasonTags.push("REDUCE_ATTACK_SCENARIO_WEIGHT");
@@ -742,6 +757,8 @@ function buildMismatchAnalysis({
   if (partnerSelectionMiss) missPatternTags.push("partner_selection_miss");
   if (thirdPlaceNoise) missPatternTags.push("third_place_noise");
   if (structureNearButOrderMiss) missPatternTags.push("structure_near_miss");
+  if (boat1InsidePartnerUnderweighted) missPatternTags.push("boat1_inside_partner_underweighted");
+  if (boat1InsidePartnerOverweighted) missPatternTags.push("boat1_inside_partner_overweighted");
   if (actualCombo && !hitMatchFound && hasNearStructureWithHead) missPatternTags.push("structure_near_but_order_miss");
   const exactaHit =
     predictedTop3.length >= 2 &&
@@ -1435,6 +1452,7 @@ function buildSeparatedCandidateDistributions({
     toInt(race?.venueId, null),
     "outer_head_suppression_adjustment"
   );
+  const boat1EscapePartnerVersion = "boat1_escape_partner_v1";
 
   const firstPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
@@ -1518,23 +1536,145 @@ function buildSeparatedCandidateDistributions({
     return { lane, role: "third", weight: thirdWeight };
   }));
 
+  const boat1SecondPlaceDistribution =
+    mainHeadLane === 1
+      ? normalizeDistributionRows(
+          rows
+            .map((row) => {
+              const lane = toInt(row?.racer?.lane, null);
+              if (!Number.isInteger(lane) || lane === 1) return null;
+              const f = row?.features || {};
+              const escapeBias = escapePatternAnalysis?.escape_pattern_applied
+                ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, lane) * 3.1
+                : 0;
+              const insidePriority = lane === 2 ? 18 : lane === 3 ? 15 : lane === 4 ? 10 : lane === 5 ? -3.5 : -5.5;
+              const stabilityBias =
+                toNum(f?.class_score, 0) * 1.9 +
+                toNum(f?.nationwide_win_rate, 0) * 0.42 +
+                toNum(f?.local_win_rate, 0) * 0.5;
+              const partnerWeight =
+                toNum(secondMapFromExisting.get(lane), 0) * 38 +
+                escapeBias +
+                insidePriority +
+                venuePartnerAdj * (lane >= 2 && lane <= 4 ? 1.7 : -1) +
+                Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 3.2 +
+                Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * (18 + venueLapWeightAdj * 18) +
+                toNum(f?.motor_total_score, 0) * 1.15 +
+                Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.8 +
+                toNum(f?.entry_advantage_score, 0) * 0.8 +
+                Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 18 +
+                toNum(f?.slit_alert_flag, 0) * 4.5 +
+                stabilityBias -
+                (lane === 5 ? 8.5 + venueOuterSuppressionAdj * 1.1 : lane === 6 ? 12.5 + venueOuterSuppressionAdj * 1.3 : 0) -
+                toNum(f?.f_hold_caution_penalty, 0) * (4.6 + venueFHoldAdj * 0.55);
+              return { lane, role: lane <= 4 ? "boat1_partner_primary" : "boat1_partner_secondary", weight: partnerWeight };
+            })
+            .filter(Boolean)
+        )
+      : [];
+
+  const boat1ThirdPlaceDistribution =
+    mainHeadLane === 1
+      ? normalizeDistributionRows(
+          rows
+            .map((row) => {
+              const lane = toInt(row?.racer?.lane, null);
+              if (!Number.isInteger(lane) || lane === 1) return null;
+              const f = row?.features || {};
+              const insideRemainBias = lane === 2 ? 9 : lane === 3 ? 8.2 : lane === 4 ? 6 : lane === 5 ? -1.6 : -2.8;
+              const residualWeight =
+                toNum(thirdCounts.get(lane), 0) * 42 +
+                insideRemainBias +
+                venueThirdResidualAdj * (lane >= 2 && lane <= 4 ? 1.5 : -0.8) +
+                Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 1.9 +
+                Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * (9 + venueLapWeightAdj * 9) +
+                toNum(f?.motor_total_score, 0) * 0.88 +
+                Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 10 +
+                toNum(f?.entry_advantage_score, 0) * 0.35 -
+                (lane === 5 ? 3.5 + venueOuterSuppressionAdj * 0.7 : lane === 6 ? 5.4 + venueOuterSuppressionAdj * 0.9 : 0) -
+                toNum(f?.f_hold_caution_penalty, 0) * (2.6 + venueFHoldAdj * 0.35);
+              return { lane, role: lane <= 4 ? "boat1_third_primary" : "boat1_third_secondary", weight: residualWeight };
+            })
+            .filter(Boolean)
+        )
+      : [];
+
+  const effectiveSecondPlaceDistribution =
+    mainHeadLane === 1 && boat1SecondPlaceDistribution.length > 0
+      ? normalizeDistributionRows(
+          rows
+            .map((row) => {
+              const lane = toInt(row?.racer?.lane, null);
+              if (!Number.isInteger(lane)) return null;
+              const generic = toNum(secondPlaceDistribution.find((item) => toInt(item?.lane, null) === lane)?.weight, 0);
+              const boat1Specific = toNum(boat1SecondPlaceDistribution.find((item) => toInt(item?.lane, null) === lane)?.weight, 0);
+              return {
+                lane,
+                role: boat1Specific > generic ? "boat1_partner_primary" : "partner",
+                weight: generic * 0.42 + boat1Specific * 0.58
+              };
+            })
+            .filter(Boolean)
+        )
+      : secondPlaceDistribution;
+
+  const effectiveThirdPlaceDistribution =
+    mainHeadLane === 1 && boat1ThirdPlaceDistribution.length > 0
+      ? normalizeDistributionRows(
+          rows
+            .map((row) => {
+              const lane = toInt(row?.racer?.lane, null);
+              if (!Number.isInteger(lane)) return null;
+              const generic = toNum(thirdPlaceDistribution.find((item) => toInt(item?.lane, null) === lane)?.weight, 0);
+              const boat1Specific = toNum(boat1ThirdPlaceDistribution.find((item) => toInt(item?.lane, null) === lane)?.weight, 0);
+              return {
+                lane,
+                role: boat1Specific > generic ? "boat1_third_primary" : "third",
+                weight: generic * 0.48 + boat1Specific * 0.52
+              };
+            })
+            .filter(Boolean)
+        )
+      : thirdPlaceDistribution;
+
+  const boat1PartnerReasonTags = [];
+  if (mainHeadLane === 1) {
+    boat1PartnerReasonTags.push("BOAT1_ESCAPE_PARTNER_MODEL");
+    if (escapePatternAnalysis?.escape_pattern_applied) boat1PartnerReasonTags.push("ESCAPE_DICTIONARY");
+    if (venuePartnerAdj !== 0) boat1PartnerReasonTags.push("VENUE_PARTNER_CORRECTION");
+    if (venueThirdResidualAdj !== 0) boat1PartnerReasonTags.push("VENUE_THIRD_CORRECTION");
+    boat1PartnerReasonTags.push("INSIDE_234_PRIORITY");
+  }
+
   return {
     formation_first_place_prior_json: formationFirstPlacePrior,
     first_place_distribution_json: firstPlaceDistribution,
-    second_place_distribution_json: secondPlaceDistribution,
-    third_place_distribution_json: thirdPlaceDistribution,
+    second_place_distribution_json: effectiveSecondPlaceDistribution,
+    third_place_distribution_json: effectiveThirdPlaceDistribution,
+    boat1_second_place_distribution_json: boat1SecondPlaceDistribution,
+    boat1_third_place_distribution_json: boat1ThirdPlaceDistribution,
     partner_search_bias_json: {
       boat1_main_head: mainHeadLane === 1 ? 1 : 0,
       escape_pattern_applied: escapePatternAnalysis?.escape_pattern_applied ? 1 : 0,
       boat1_partner_priority_lanes: mainHeadLane === 1 ? [2, 3, 4] : [],
-      strongest_second_lanes: secondPlaceDistribution.slice(0, 3),
-      strongest_third_lanes: thirdPlaceDistribution.slice(0, 4)
+      strongest_second_lanes: effectiveSecondPlaceDistribution.slice(0, 3),
+      strongest_third_lanes: effectiveThirdPlaceDistribution.slice(0, 4)
     },
+    boat1_partner_bias_json: {
+      boat1_main_head: mainHeadLane === 1 ? 1 : 0,
+      second_place_top: boat1SecondPlaceDistribution.slice(0, 4),
+      third_place_top: boat1ThirdPlaceDistribution.slice(0, 4),
+      inside_family_priority: ["1-2-x", "1-3-x", "1-4-x"],
+      venue_partner_adjustment: venuePartnerAdj,
+      venue_third_adjustment: venueThirdResidualAdj,
+      outer_head_suppression_adjustment: venueOuterSuppressionAdj
+    },
+    boat1_partner_reason_tags: [...new Set(boat1PartnerReasonTags)],
     partner_search_lap_bias_json: {
-      top_lap_attack_second_lanes: secondPlaceDistribution
+      top_lap_attack_second_lanes: effectiveSecondPlaceDistribution
         .filter((row) => toInt(row?.lane, null) >= 2)
         .slice(0, 3),
-      top_lap_attack_third_lanes: thirdPlaceDistribution
+      top_lap_attack_third_lanes: effectiveThirdPlaceDistribution
         .filter((row) => toInt(row?.lane, null) >= 2)
         .slice(0, 4)
     },
@@ -1562,9 +1702,13 @@ function buildSeparatedCandidateDistributions({
     inside_baseline_priority_applied: 1,
     candidate_balance_adjustment_json: {
       first_place_distribution_top: firstPlaceDistribution.slice(0, 4),
-      second_place_distribution_top: secondPlaceDistribution.slice(0, 4),
-      third_place_distribution_top: thirdPlaceDistribution.slice(0, 4)
+      second_place_distribution_top: effectiveSecondPlaceDistribution.slice(0, 4),
+      third_place_distribution_top: effectiveThirdPlaceDistribution.slice(0, 4),
+      boat1_second_place_distribution_top: boat1SecondPlaceDistribution.slice(0, 4),
+      boat1_third_place_distribution_top: boat1ThirdPlaceDistribution.slice(0, 4)
     },
+    boat1_partner_model_applied: mainHeadLane === 1 ? 1 : 0,
+    boat1_escape_partner_version: boat1EscapePartnerVersion,
     hit_rate_focus_applied: 1,
     scoring_family_components_json: {
       first_place: {
@@ -1600,6 +1744,8 @@ function applySeparatedDistributionBiasToTickets(tickets, candidateDistributions
   const firstMap = new Map(safeArray(candidateDistributions?.first_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
   const secondMap = new Map(safeArray(candidateDistributions?.second_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
   const thirdMap = new Map(safeArray(candidateDistributions?.third_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const boat1SecondMap = new Map(safeArray(candidateDistributions?.boat1_second_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const boat1ThirdMap = new Map(safeArray(candidateDistributions?.boat1_third_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
   const boat1PartnerApplied = toInt(candidateDistributions?.boat1_partner_search_applied, 0) === 1;
   return [...rows]
     .map((row) => {
@@ -1607,11 +1753,13 @@ function applySeparatedDistributionBiasToTickets(tickets, candidateDistributions
       const lanes = combo ? combo.split("-").map((value) => toInt(value, null)).filter(Number.isInteger) : [];
       const [headLane, secondLane, thirdLane] = lanes;
       const firstBias = toNum(firstMap.get(headLane), 0) * 0.028;
-      const secondBias = toNum(secondMap.get(secondLane), 0) * 0.026;
-      const thirdBias = toNum(thirdMap.get(thirdLane), 0) * 0.015;
+      const secondSourceMap = boat1PartnerApplied && headLane === 1 && boat1SecondMap.size > 0 ? boat1SecondMap : secondMap;
+      const thirdSourceMap = boat1PartnerApplied && headLane === 1 && boat1ThirdMap.size > 0 ? boat1ThirdMap : thirdMap;
+      const secondBias = toNum(secondSourceMap.get(secondLane), 0) * 0.026;
+      const thirdBias = toNum(thirdSourceMap.get(thirdLane), 0) * 0.015;
       const boat1PartnerBonus =
         boat1PartnerApplied && headLane === 1 && (secondLane === 2 || secondLane === 3 || secondLane === 4)
-          ? 0.0085
+          ? (secondLane === 2 ? 0.012 : secondLane === 3 ? 0.0105 : 0.0088)
           : 0;
       const outerHeadPenalty = headLane === 5 ? 0.005 : headLane === 6 ? 0.009 : 0;
       const totalBias = Number((firstBias + secondBias + thirdBias + boat1PartnerBonus - outerHeadPenalty).toFixed(4));
@@ -1869,6 +2017,14 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis, learn
     "venue",
     toInt(race?.venueId, null),
     "f_hold_caution_adjustment"
+  );
+  const boat1SecondDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_second_place_distribution_json);
+  const boat1ThirdDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_third_place_distribution_json);
+  const boat1SecondMap = new Map(
+    boat1SecondDistribution.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]).filter(([lane]) => Number.isInteger(lane))
+  );
+  const boat1ThirdMap = new Map(
+    boat1ThirdDistribution.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]).filter(([lane]) => Number.isInteger(lane))
   );
   return [...rows]
     .map((row) => {
@@ -2686,6 +2842,7 @@ function buildBoat1HeadBetsSnapshot({
       (escapePatternAnalysis?.escape_pattern_applied
           ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, lane) * 2.1
           : 0) +
+        toNum(boat1SecondMap.get(lane), 0) * 62 +
         venuePartnerAdj * (lane >= 2 && lane <= 4 ? 1.2 : -0.5) +
         Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 4.2 +
         toNum(f?.motor_total_score, 0) * 1.3 +
@@ -2744,7 +2901,7 @@ function buildBoat1HeadBetsSnapshot({
       const compositeScore =
         survivalResidualScore +
         second.partnerScore * 0.68 +
-        third.partnerScore * 0.34 +
+        (third.partnerScore + toNum(boat1ThirdMap.get(third.lane), 0) * 38) * 0.34 +
         escapeBias +
         attackPartnerBonus +
         (learnedPatternAdj + learnedVenueAdj) * 0.35 +
@@ -4425,11 +4582,17 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.first_place_distribution_json = candidateDistributions.first_place_distribution_json;
     headScenarioBalanceAnalysis.second_place_distribution_json = candidateDistributions.second_place_distribution_json;
     headScenarioBalanceAnalysis.third_place_distribution_json = candidateDistributions.third_place_distribution_json;
+    headScenarioBalanceAnalysis.boat1_second_place_distribution_json = candidateDistributions.boat1_second_place_distribution_json;
+    headScenarioBalanceAnalysis.boat1_third_place_distribution_json = candidateDistributions.boat1_third_place_distribution_json;
     headScenarioBalanceAnalysis.partner_search_bias_json = candidateDistributions.partner_search_bias_json;
+    headScenarioBalanceAnalysis.boat1_partner_bias_json = candidateDistributions.boat1_partner_bias_json;
+    headScenarioBalanceAnalysis.boat1_partner_reason_tags = candidateDistributions.boat1_partner_reason_tags;
     headScenarioBalanceAnalysis.partner_search_lap_bias_json = candidateDistributions.partner_search_lap_bias_json;
     headScenarioBalanceAnalysis.venue_correction_summary = candidateDistributions.venue_correction_summary;
     headScenarioBalanceAnalysis.third_place_residual_bias_json = candidateDistributions.third_place_residual_bias_json;
     headScenarioBalanceAnalysis.boat1_partner_search_applied = candidateDistributions.boat1_partner_search_applied;
+    headScenarioBalanceAnalysis.boat1_partner_model_applied = candidateDistributions.boat1_partner_model_applied;
+    headScenarioBalanceAnalysis.boat1_escape_partner_version = candidateDistributions.boat1_escape_partner_version;
     headScenarioBalanceAnalysis.stronger_lap_bias_applied = candidateDistributions.stronger_lap_bias_applied;
     headScenarioBalanceAnalysis.inside_baseline_priority_applied = candidateDistributions.inside_baseline_priority_applied;
     headScenarioBalanceAnalysis.candidate_balance_adjustment_json = candidateDistributions.candidate_balance_adjustment_json;
@@ -4658,12 +4821,18 @@ raceRouter.get("/race", async (req, res, next) => {
       second_distribution_json: headScenarioBalanceAnalysis.second_distribution_json,
       second_place_distribution_json: headScenarioBalanceAnalysis.second_place_distribution_json,
       third_place_distribution_json: headScenarioBalanceAnalysis.third_place_distribution_json,
+      boat1_second_place_distribution_json: headScenarioBalanceAnalysis.boat1_second_place_distribution_json,
+      boat1_third_place_distribution_json: headScenarioBalanceAnalysis.boat1_third_place_distribution_json,
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
+      boat1_partner_bias_json: headScenarioBalanceAnalysis.boat1_partner_bias_json,
+      boat1_partner_reason_tags: headScenarioBalanceAnalysis.boat1_partner_reason_tags,
       partner_search_lap_bias_json: headScenarioBalanceAnalysis.partner_search_lap_bias_json,
       venue_correction_summary: headScenarioBalanceAnalysis.venue_correction_summary,
       third_place_residual_bias_json: headScenarioBalanceAnalysis.third_place_residual_bias_json,
       boat1_partner_search_applied: toInt(headScenarioBalanceAnalysis.boat1_partner_search_applied, 0),
+      boat1_partner_model_applied: toInt(headScenarioBalanceAnalysis.boat1_partner_model_applied, 0),
+      boat1_escape_partner_version: headScenarioBalanceAnalysis.boat1_escape_partner_version,
       stronger_lap_bias_applied: toInt(headScenarioBalanceAnalysis.stronger_lap_bias_applied, 0),
       inside_baseline_priority_applied: toInt(headScenarioBalanceAnalysis.inside_baseline_priority_applied, 0),
       candidate_balance_adjustment_json: headScenarioBalanceAnalysis.candidate_balance_adjustment_json || {},
@@ -4792,12 +4961,18 @@ raceRouter.get("/race", async (req, res, next) => {
       second_distribution_json: snapshotContext.second_distribution_json,
       second_place_distribution_json: snapshotContext.second_place_distribution_json,
       third_place_distribution_json: snapshotContext.third_place_distribution_json,
+      boat1_second_place_distribution_json: snapshotContext.boat1_second_place_distribution_json,
+      boat1_third_place_distribution_json: snapshotContext.boat1_third_place_distribution_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
+      boat1_partner_bias_json: snapshotContext.boat1_partner_bias_json,
+      boat1_partner_reason_tags: snapshotContext.boat1_partner_reason_tags,
       partner_search_lap_bias_json: snapshotContext.partner_search_lap_bias_json,
       venue_correction_summary: snapshotContext.venue_correction_summary,
       third_place_residual_bias_json: snapshotContext.third_place_residual_bias_json,
       boat1_partner_search_applied: snapshotContext.boat1_partner_search_applied,
+      boat1_partner_model_applied: snapshotContext.boat1_partner_model_applied,
+      boat1_escape_partner_version: snapshotContext.boat1_escape_partner_version,
       stronger_lap_bias_applied: snapshotContext.stronger_lap_bias_applied,
       inside_baseline_priority_applied: snapshotContext.inside_baseline_priority_applied,
       candidate_balance_adjustment_json: snapshotContext.candidate_balance_adjustment_json,
@@ -4892,12 +5067,18 @@ raceRouter.get("/race", async (req, res, next) => {
       second_distribution_json: snapshotContext.second_distribution_json,
       second_place_distribution_json: snapshotContext.second_place_distribution_json,
       third_place_distribution_json: snapshotContext.third_place_distribution_json,
+      boat1_second_place_distribution_json: snapshotContext.boat1_second_place_distribution_json,
+      boat1_third_place_distribution_json: snapshotContext.boat1_third_place_distribution_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
+      boat1_partner_bias_json: snapshotContext.boat1_partner_bias_json,
+      boat1_partner_reason_tags: snapshotContext.boat1_partner_reason_tags,
       partner_search_lap_bias_json: snapshotContext.partner_search_lap_bias_json,
       venue_correction_summary: snapshotContext.venue_correction_summary,
       third_place_residual_bias_json: snapshotContext.third_place_residual_bias_json,
       boat1_partner_search_applied: snapshotContext.boat1_partner_search_applied,
+      boat1_partner_model_applied: snapshotContext.boat1_partner_model_applied,
+      boat1_escape_partner_version: snapshotContext.boat1_escape_partner_version,
       stronger_lap_bias_applied: snapshotContext.stronger_lap_bias_applied,
       inside_baseline_priority_applied: snapshotContext.inside_baseline_priority_applied,
       candidate_balance_adjustment_json: snapshotContext.candidate_balance_adjustment_json,
@@ -8236,6 +8417,8 @@ raceRouter.get("/results-history", async (req, res, next) => {
             0
           ),
           venue_correction_summary: prediction?.learning_context?.venue_correction_summary || {},
+          boat1_partner_model_applied: toNum(prediction?.learning_context?.boat1_partner_model_applied, 0) === 1,
+          boat1_escape_partner_version: prediction?.learning_context?.boat1_escape_partner_version || null,
           confidence_calibration_applied: toNum(prediction?.learning_context?.confidence_calibration_applied, 0) === 1,
           confidence_calibration_source: prediction?.learning_context?.confidence_calibration_source || null,
           head_confidence_raw: toNum(prediction?.learning_context?.head_confidence_raw, null),

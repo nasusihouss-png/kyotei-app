@@ -635,6 +635,8 @@ function getResultMissPatternTags(row) {
   else if (tagSet.has("exacta_miss")) compact.push("EXACTA MISS");
   if (tagSet.has("boat1_survival_underestimated")) compact.push("1 SURVIVAL");
   if (tagSet.has("outer_head_overpromotion")) compact.push("OUTER OVER");
+  if (tagSet.has("boat1_inside_partner_underweighted")) compact.push("1-234 UNDER");
+  if (tagSet.has("boat1_inside_partner_overweighted")) compact.push("1-234 OVER");
   if (tagSet.has("attack_scenario_overweight")) compact.push("ATTACK OVER");
   if (tagSet.has("attack_scenario_underweight")) compact.push("ATTACK UNDER");
   return compact;
@@ -4313,6 +4315,8 @@ export default function App() {
                             <div>venue correction: {h?.feature_snapshot_debug?.venue_correction_applied ? "YES" : "NO"}</div>
                             <div>venue segment: {h?.feature_snapshot_debug?.venue_segment_key || "-"}</div>
                             <div>venue sample count: {h?.feature_snapshot_debug?.venue_sample_count ?? 0}</div>
+                            <div>boat1 partner model: {h?.feature_snapshot_debug?.boat1_partner_model_applied ? "YES" : "NO"}</div>
+                            <div>boat1 partner version: {h?.feature_snapshot_debug?.boat1_escape_partner_version || "-"}</div>
                             <div>confidence calibration: {h?.feature_snapshot_debug?.confidence_calibration_applied ? "YES" : "NO"}</div>
                             <div>calibration source: {h?.feature_snapshot_debug?.confidence_calibration_source || "-"}</div>
                             <div>head raw/cal: {Number.isFinite(Number(h?.feature_snapshot_debug?.head_confidence_raw)) || Number.isFinite(Number(h?.feature_snapshot_debug?.head_confidence_calibrated))

@@ -555,10 +555,27 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.third_place_distribution_json)
             ? context.third_place_distribution_json
             : [],
+        boat1_second_place_distribution_json: Array.isArray(learning?.boat1_second_place_distribution_json)
+          ? learning.boat1_second_place_distribution_json
+          : Array.isArray(context?.boat1_second_place_distribution_json)
+            ? context.boat1_second_place_distribution_json
+            : [],
+        boat1_third_place_distribution_json: Array.isArray(learning?.boat1_third_place_distribution_json)
+          ? learning.boat1_third_place_distribution_json
+          : Array.isArray(context?.boat1_third_place_distribution_json)
+            ? context.boat1_third_place_distribution_json
+            : [],
         partner_search_bias_json:
           learning?.partner_search_bias_json || context?.partner_search_bias_json || {},
         boat1_partner_search_bias_json:
           learning?.boat1_partner_search_bias_json || context?.boat1_partner_search_bias_json || {},
+        boat1_partner_bias_json:
+          learning?.boat1_partner_bias_json || context?.boat1_partner_bias_json || {},
+        boat1_partner_reason_tags: Array.isArray(learning?.boat1_partner_reason_tags)
+          ? learning.boat1_partner_reason_tags
+          : Array.isArray(context?.boat1_partner_reason_tags)
+            ? context.boat1_partner_reason_tags
+            : [],
         partner_search_lap_bias_json:
           learning?.partner_search_lap_bias_json || context?.partner_search_lap_bias_json || {},
         venue_correction_summary:
@@ -569,6 +586,12 @@ export function buildVerifiedLearningRows() {
           learning?.boat1_partner_search_applied ?? context?.boat1_partner_search_applied,
           0
         ),
+        boat1_partner_model_applied: toNum(
+          learning?.boat1_partner_model_applied ?? context?.boat1_partner_model_applied,
+          0
+        ),
+        boat1_escape_partner_version:
+          learning?.boat1_escape_partner_version || context?.boat1_escape_partner_version || null,
         learning_adjustment_reason_tags: Array.isArray(learning?.learning_adjustment_reason_tags)
           ? learning.learning_adjustment_reason_tags
           : Array.isArray(summary?.learning_adjustment_reason_tags)
