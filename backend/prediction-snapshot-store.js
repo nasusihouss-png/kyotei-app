@@ -483,6 +483,14 @@ export function buildVerifiedLearningRows() {
         counter_scenario_type: learning?.counter_scenario_type || context?.counter_scenario_type || null,
         survival_scenario_type: learning?.survival_scenario_type || context?.survival_scenario_type || null,
         head_distribution_json: learning?.head_distribution_json || context?.head_distribution_json || [],
+        baseline_head_distribution_json:
+          learning?.baseline_head_distribution_json || context?.baseline_head_distribution_json || [],
+        aggressive_adjustment_json:
+          learning?.aggressive_adjustment_json || context?.aggressive_adjustment_json || [],
+        outer_head_guard_applied: toNum(
+          learning?.outer_head_guard_applied ?? context?.outer_head_guard_applied,
+          0
+        ),
         survival_guard_applied: toNum(learning?.survival_guard_applied ?? context?.survival_guard_applied, 0),
         removed_candidate_reason_tags: Array.isArray(learning?.removed_candidate_reason_tags)
           ? learning.removed_candidate_reason_tags
