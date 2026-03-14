@@ -609,6 +609,11 @@ export function buildVerifiedLearningRows() {
           learning?.candidate_balance_adjustment_json || context?.candidate_balance_adjustment_json || {},
         scoring_family_components_json:
           learning?.scoring_family_components_json || context?.scoring_family_components_json || {},
+        confidence_version:
+          learning?.confidence_version ||
+          context?.confidence_version ||
+          snapshot?.prediction?.confidence_version ||
+          null,
         rebalance_version:
           learning?.rebalance_version || context?.rebalance_version || null,
         boat1_head_bets_snapshot: Array.isArray(learning?.boat1_head_bets_snapshot)

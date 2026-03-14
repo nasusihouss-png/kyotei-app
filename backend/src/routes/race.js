@@ -110,6 +110,44 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS evaluation_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    date_range_start TEXT,
+    date_range_end TEXT,
+    latest_verified_at TEXT,
+    verified_race_count INTEGER NOT NULL DEFAULT 0,
+    trifecta_hit_rate REAL NOT NULL DEFAULT 0,
+    exacta_hit_rate REAL NOT NULL DEFAULT 0,
+    head_hit_rate REAL NOT NULL DEFAULT 0,
+    second_place_hit_rate REAL NOT NULL DEFAULT 0,
+    third_place_hit_rate REAL NOT NULL DEFAULT 0,
+    model_version TEXT,
+    learning_run_id INTEGER,
+    summary_json TEXT NOT NULL DEFAULT '{}'
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS evaluation_segments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evaluation_run_id INTEGER NOT NULL,
+    segment_type TEXT NOT NULL,
+    segment_key TEXT NOT NULL,
+    model_version TEXT,
+    learning_run_id INTEGER,
+    verified_race_count INTEGER NOT NULL DEFAULT 0,
+    trifecta_hit_rate REAL NOT NULL DEFAULT 0,
+    exacta_hit_rate REAL NOT NULL DEFAULT 0,
+    head_hit_rate REAL NOT NULL DEFAULT 0,
+    second_place_hit_rate REAL NOT NULL DEFAULT 0,
+    third_place_hit_rate REAL NOT NULL DEFAULT 0,
+    evaluation_created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    metrics_json TEXT NOT NULL DEFAULT '{}'
+  );
+`);
+
 function ensureVerificationLogColumns() {
   const cols = db.prepare("PRAGMA table_info(race_verification_logs)").all();
   const names = new Set(cols.map((c) => String(c.name)));
@@ -218,6 +256,374 @@ function calcRates({ bet, payout, hit, total }) {
   return {
     hit_rate: pct(hit, total),
     recovery_rate: pct(payout, bet)
+  };
+}
+
+function normalizeParticipationDecision(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (["participate", "buy", "enter"].includes(raw)) return "participate";
+  if (["watch", "hold"].includes(raw)) return "watch";
+  if (["skip", "pass"].includes(raw)) return "skip";
+  return "unknown";
+}
+
+function hasTag(tags, expected) {
+  const needle = String(expected || "").trim().toLowerCase();
+  if (!needle) return false;
+  return safeArray(tags).some((tag) => String(tag || "").trim().toLowerCase() === needle);
+}
+
+function asDistributionRows(distribution) {
+  return safeArray(distribution)
+    .map((row) => ({
+      lane: toInt(row?.lane ?? row?.boat ?? row?.course, null),
+      weight: toNum(row?.weight ?? row?.score ?? row?.probability, 0)
+    }))
+    .filter((row) => Number.isInteger(row.lane) && row.lane >= 1 && row.lane <= 6 && row.weight > 0)
+    .sort((a, b) => b.weight - a.weight);
+}
+
+function topDistributionLane(distribution) {
+  const rows = asDistributionRows(distribution);
+  return rows[0]?.lane ?? null;
+}
+
+function distributionConcentrationForEvaluation(distribution, topN = 2) {
+  const rows = asDistributionRows(distribution);
+  if (!rows.length) return 0;
+  const total = rows.reduce((acc, row) => acc + row.weight, 0);
+  if (!total) return 0;
+  const top = rows.slice(0, topN).reduce((acc, row) => acc + row.weight, 0);
+  return Number(((top / total) * 100).toFixed(2));
+}
+
+function deriveBoat1HeadEvaluation(row) {
+  if (toNum(row?.boat1_partner_model_applied, 0) === 1) return true;
+  if (toNum(row?.boat1_priority_mode_applied, 0) === 1) return true;
+  const firstLane =
+    topDistributionLane(row?.first_place_distribution_json) ??
+    topDistributionLane(row?.head_distribution_json);
+  if (firstLane === 1) return true;
+  return false;
+}
+
+function derivePredictionModeKey(row) {
+  const recommendationMode = normalizeModeValue(row?.recommendation_mode);
+  const focus = toNum(row?.hit_rate_focus_applied, 0) === 1 ? "hit_rate" : "standard";
+  return `${focus}:${recommendationMode}`;
+}
+
+function deriveModelVersion(row) {
+  const rebalance = row?.rebalance_version || "legacy_rebalance";
+  const confidence = row?.confidence_version || "legacy_confidence";
+  return `${rebalance} | ${confidence}`;
+}
+
+function computeEvaluationMetrics(rows) {
+  const items = Array.isArray(rows) ? rows : [];
+  const verifiedRaceCount = items.length;
+  const trifectaHitCount = items.filter((row) => toNum(row?.hit_flag, 0) === 1).length;
+  const headHitCount = items.filter((row) => toNum(row?.head_hit, 0) === 1).length;
+  const exactaRows = items.filter((row) => toNullableNum(row?.exacta_hit) !== null);
+  const exactaHitCount = exactaRows.filter((row) => toNum(row?.exacta_hit, 0) === 1).length;
+  const secondRows = items.filter((row) => toNullableNum(row?.second_place_miss) !== null);
+  const secondPlaceHitCount = secondRows.filter((row) => toNum(row?.second_place_miss, 0) === 0).length;
+  const thirdRows = items.filter((row) => toNullableNum(row?.third_place_miss) !== null);
+  const thirdPlaceHitCount = thirdRows.filter((row) => toNum(row?.third_place_miss, 0) === 0).length;
+  const secondThirdSwapCount = items.filter((row) => toNum(row?.second_third_swap, 0) === 1).length;
+  const nearMissCount = items.filter((row) => (
+    toNum(row?.structure_near_but_order_miss, 0) === 1 ||
+    hasTag(row?.miss_pattern_tags, "structure_near_miss")
+  )).length;
+  const partnerSelectionMissCount = items.filter((row) => toNum(row?.partner_selection_miss, 0) === 1).length;
+  const thirdPlaceNoiseCount = items.filter((row) => toNum(row?.third_place_noise, 0) === 1).length;
+  const boat1SurvivalUnderestimatedCount = items.filter((row) => hasTag(row?.miss_pattern_tags, "boat1_survival_underestimated")).length;
+  const outerHeadOverpromotionCount = items.filter((row) => hasTag(row?.miss_pattern_tags, "outer_head_overpromotion")).length;
+  const qualityGateRows = items.filter((row) => toNum(row?.quality_gate_applied, 0) === 1);
+  const participateRows = items.filter((row) => normalizeParticipationDecision(row?.participation_decision) === "participate");
+  const watchRows = items.filter((row) => normalizeParticipationDecision(row?.participation_decision) === "watch");
+  const skipRows = items.filter((row) => normalizeParticipationDecision(row?.participation_decision) === "skip");
+  const participateHitCount = participateRows.filter((row) => toNum(row?.hit_flag, 0) === 1).length;
+  const watchHitCount = watchRows.filter((row) => toNum(row?.hit_flag, 0) === 1).length;
+  const skipCorrectCount = skipRows.filter((row) => toNum(row?.hit_flag, 0) !== 1).length;
+
+  return {
+    verified_race_count: verifiedRaceCount,
+    trifecta_hit_count: trifectaHitCount,
+    trifecta_hit_rate: pct(trifectaHitCount, verifiedRaceCount),
+    exacta_hit_count: exactaHitCount,
+    exacta_hit_rate: pct(exactaHitCount, exactaRows.length),
+    head_hit_count: headHitCount,
+    head_hit_rate: pct(headHitCount, verifiedRaceCount),
+    second_place_hit_count: secondPlaceHitCount,
+    second_place_hit_rate: pct(secondPlaceHitCount, secondRows.length),
+    third_place_hit_count: thirdPlaceHitCount,
+    third_place_hit_rate: pct(thirdPlaceHitCount, thirdRows.length),
+    second_third_swap_count: secondThirdSwapCount,
+    near_miss_count: nearMissCount,
+    partner_selection_miss_count: partnerSelectionMissCount,
+    third_place_noise_count: thirdPlaceNoiseCount,
+    boat1_survival_underestimated_count: boat1SurvivalUnderestimatedCount,
+    outer_head_overpromotion_count: outerHeadOverpromotionCount,
+    participate_race_count: participateRows.length,
+    participate_only_hit_rate: pct(participateHitCount, participateRows.length),
+    watch_race_count: watchRows.length,
+    watch_hit_rate: pct(watchHitCount, watchRows.length),
+    skip_race_count: skipRows.length,
+    skip_correct_count: skipCorrectCount,
+    skip_correctness_rate: pct(skipCorrectCount, skipRows.length),
+    quality_gate_applied_count: qualityGateRows.length,
+    quality_gate_hit_rate: pct(
+      qualityGateRows.filter((row) => toNum(row?.hit_flag, 0) === 1).length,
+      qualityGateRows.length
+    )
+  };
+}
+
+function buildEvaluationTrend(rows, windowSize = 30) {
+  const ordered = [...safeArray(rows)].sort((a, b) =>
+    String(b?.verified_at || b?.prediction_timestamp || "").localeCompare(
+      String(a?.verified_at || a?.prediction_timestamp || "")
+    )
+  );
+  const recent = ordered.slice(0, windowSize);
+  const previous = ordered.slice(windowSize, windowSize * 2);
+  const recentMetrics = computeEvaluationMetrics(recent);
+  const previousMetrics = computeEvaluationMetrics(previous);
+  return {
+    recent_window_size: recent.length,
+    previous_window_size: previous.length,
+    recent: recentMetrics,
+    previous: previousMetrics,
+    trifecta_hit_rate_delta: Number((recentMetrics.trifecta_hit_rate - previousMetrics.trifecta_hit_rate).toFixed(2)),
+    exacta_hit_rate_delta: Number((recentMetrics.exacta_hit_rate - previousMetrics.exacta_hit_rate).toFixed(2)),
+    head_hit_rate_delta: Number((recentMetrics.head_hit_rate - previousMetrics.head_hit_rate).toFixed(2))
+  };
+}
+
+function buildEvaluationSegments(rows, learningRunId = null) {
+  const segmentDefs = [
+    { type: "venue", getKey: (row) => row?.venue_name || (row?.venue_id ? String(row.venue_id) : null) },
+    { type: "formation_pattern", getKey: (row) => row?.formation_pattern || null },
+    { type: "scenario_type", getKey: (row) => row?.scenario_type || null },
+    { type: "boat1_head_mode", getKey: (row) => (deriveBoat1HeadEvaluation(row) ? "boat1_head" : "non_boat1_head") },
+    { type: "f_hold_present", getKey: (row) => (toNum(row?.f_hold_lane_count, 0) > 0 ? "present" : "absent") },
+    { type: "entry_change_present", getKey: (row) => (toNum(row?.entry_changed, 0) === 1 ? "present" : "absent") },
+    { type: "prediction_mode", getKey: (row) => derivePredictionModeKey(row) },
+    { type: "rebalance_version", getKey: (row) => row?.rebalance_version || "legacy_rebalance" },
+    { type: "confidence_version", getKey: (row) => row?.confidence_version || "legacy_confidence" }
+  ];
+
+  const segments = [];
+
+  for (const def of segmentDefs) {
+    const grouped = new Map();
+    for (const row of safeArray(rows)) {
+      const key = def.getKey(row);
+      if (!key) continue;
+      const bucket = grouped.get(key) || [];
+      bucket.push(row);
+      grouped.set(key, bucket);
+    }
+    for (const [segmentKey, bucketRows] of grouped.entries()) {
+      const metrics = computeEvaluationMetrics(bucketRows);
+      segments.push({
+        segment_type: def.type,
+        segment_key: segmentKey,
+        verified_race_count: metrics.verified_race_count,
+        trifecta_hit_rate: metrics.trifecta_hit_rate,
+        exacta_hit_rate: metrics.exacta_hit_rate,
+        head_hit_rate: metrics.head_hit_rate,
+        second_place_hit_rate: metrics.second_place_hit_rate,
+        third_place_hit_rate: metrics.third_place_hit_rate,
+        model_version: deriveModelVersion(
+          [...bucketRows].sort((a, b) =>
+            String(b?.verified_at || b?.prediction_timestamp || "").localeCompare(
+              String(a?.verified_at || a?.prediction_timestamp || "")
+            )
+          )[0] || {}
+        ),
+        learning_run_id: learningRunId,
+        metrics
+      });
+    }
+  }
+
+  return segments;
+}
+
+function pickSegmentHighlights(segments, segmentType, direction = "best", limit = 5, minSample = 5) {
+  const filtered = safeArray(segments).filter(
+    (segment) => segment?.segment_type === segmentType && toNum(segment?.verified_race_count, 0) >= minSample
+  );
+  const sorted = [...filtered].sort((a, b) => {
+    const rateDiff = toNum(b?.trifecta_hit_rate, 0) - toNum(a?.trifecta_hit_rate, 0);
+    if (rateDiff !== 0) return rateDiff;
+    return toNum(b?.verified_race_count, 0) - toNum(a?.verified_race_count, 0);
+  });
+  return (direction === "best" ? sorted : sorted.reverse()).slice(0, limit);
+}
+
+function buildEvaluationComparisons(segments) {
+  const types = ["rebalance_version", "confidence_version", "prediction_mode", "boat1_head_mode"];
+  return types.reduce((acc, type) => {
+    acc[type] = safeArray(segments)
+      .filter((segment) => segment?.segment_type === type)
+      .sort((a, b) => toNum(b?.verified_race_count, 0) - toNum(a?.verified_race_count, 0));
+    return acc;
+  }, {});
+}
+
+function persistEvaluationSnapshot(evaluation, segments) {
+  const overall = evaluation?.overall || {};
+  const latestRun = db
+    .prepare(
+      `
+      SELECT id, latest_verified_at, verified_race_count, model_version, learning_run_id
+      FROM evaluation_runs
+      ORDER BY id DESC
+      LIMIT 1
+    `
+    )
+    .get();
+
+  if (
+    latestRun &&
+    String(latestRun.latest_verified_at || "") === String(evaluation?.date_range?.latest_verified_at || "") &&
+    toNum(latestRun.verified_race_count, 0) === toNum(overall.verified_race_count, 0) &&
+    String(latestRun.model_version || "") === String(evaluation?.model_version || "") &&
+    toNullableNum(latestRun.learning_run_id) === toNullableNum(evaluation?.learning_run_id)
+  ) {
+    return latestRun.id;
+  }
+
+  const insertRun = db.prepare(
+    `
+    INSERT INTO evaluation_runs (
+      date_range_start,
+      date_range_end,
+      latest_verified_at,
+      verified_race_count,
+      trifecta_hit_rate,
+      exacta_hit_rate,
+      head_hit_rate,
+      second_place_hit_rate,
+      third_place_hit_rate,
+      model_version,
+      learning_run_id,
+      summary_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `
+  );
+
+  const runResult = insertRun.run(
+    evaluation?.date_range?.start || null,
+    evaluation?.date_range?.end || null,
+    evaluation?.date_range?.latest_verified_at || null,
+    toNum(overall.verified_race_count, 0),
+    toNum(overall.trifecta_hit_rate, 0),
+    toNum(overall.exacta_hit_rate, 0),
+    toNum(overall.head_hit_rate, 0),
+    toNum(overall.second_place_hit_rate, 0),
+    toNum(overall.third_place_hit_rate, 0),
+    evaluation?.model_version || null,
+    toNullableNum(evaluation?.learning_run_id),
+    JSON.stringify(evaluation || {})
+  );
+  const evaluationRunId = Number(runResult.lastInsertRowid);
+
+  const insertSegment = db.prepare(
+    `
+    INSERT INTO evaluation_segments (
+      evaluation_run_id,
+      segment_type,
+      segment_key,
+      model_version,
+      learning_run_id,
+      verified_race_count,
+      trifecta_hit_rate,
+      exacta_hit_rate,
+      head_hit_rate,
+      second_place_hit_rate,
+      third_place_hit_rate,
+      metrics_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `
+  );
+
+  const insertMany = db.transaction((segmentRows) => {
+    for (const segment of segmentRows) {
+      insertSegment.run(
+        evaluationRunId,
+        segment.segment_type,
+        segment.segment_key,
+        segment.model_version || null,
+        toNullableNum(segment.learning_run_id),
+        toNum(segment.verified_race_count, 0),
+        toNum(segment.trifecta_hit_rate, 0),
+        toNum(segment.exacta_hit_rate, 0),
+        toNum(segment.head_hit_rate, 0),
+        toNum(segment.second_place_hit_rate, 0),
+        toNum(segment.third_place_hit_rate, 0),
+        JSON.stringify(segment.metrics || {})
+      );
+    }
+  });
+  insertMany(safeArray(segments));
+
+  return evaluationRunId;
+}
+
+function buildEvaluationSummary(verifiedRows) {
+  const rows = safeArray(verifiedRows);
+  const latestLearningRun = getLatestLearningRun();
+  const learningRunId = toNullableNum(latestLearningRun?.run_id);
+  const overall = computeEvaluationMetrics(rows);
+  const orderedRows = [...rows].sort((a, b) =>
+    String(a?.verified_at || a?.prediction_timestamp || "").localeCompare(
+      String(b?.verified_at || b?.prediction_timestamp || "")
+    )
+  );
+  const dateRange = {
+    start: orderedRows[0]?.prediction_timestamp?.slice?.(0, 10) || orderedRows[0]?.verified_at?.slice?.(0, 10) || null,
+    end:
+      orderedRows[orderedRows.length - 1]?.prediction_timestamp?.slice?.(0, 10) ||
+      orderedRows[orderedRows.length - 1]?.verified_at?.slice?.(0, 10) ||
+      null,
+    latest_verified_at: orderedRows[orderedRows.length - 1]?.verified_at || null
+  };
+  const latestRow = [...rows].sort((a, b) =>
+    String(b?.verified_at || b?.prediction_timestamp || "").localeCompare(
+      String(a?.verified_at || a?.prediction_timestamp || "")
+    )
+  )[0] || {};
+  const modelVersion = deriveModelVersion(latestRow);
+  const segments = buildEvaluationSegments(rows, learningRunId);
+  const evaluation = {
+    evaluation_run_id: null,
+    date_range: dateRange,
+    overall,
+    recent_trend: buildEvaluationTrend(rows),
+    highlights: {
+      strongest_venues: pickSegmentHighlights(segments, "venue", "best"),
+      weakest_venues: pickSegmentHighlights(segments, "venue", "worst"),
+      strongest_formations: pickSegmentHighlights(segments, "formation_pattern", "best"),
+      weakest_formations: pickSegmentHighlights(segments, "formation_pattern", "worst")
+    },
+    comparisons: buildEvaluationComparisons(segments),
+    segment_counts: segments.reduce((acc, segment) => {
+      acc[segment.segment_type] = (acc[segment.segment_type] || 0) + 1;
+      return acc;
+    }, {}),
+    model_version: modelVersion,
+    learning_run_id: learningRunId,
+    evaluation_created_at: new Date().toISOString()
+  };
+  const evaluationRunId = persistEvaluationSnapshot(evaluation, segments);
+  return {
+    ...evaluation,
+    evaluation_run_id: evaluationRunId,
+    segments
   };
 }
 
@@ -7110,6 +7516,7 @@ raceRouter.get("/placed-bets/summaries", async (req, res, next) => {
 
 raceRouter.get("/stats", async (_req, res, next) => {
   try {
+    const evaluation = buildEvaluationSummary(buildVerifiedLearningRows());
     const settlementRows = db
       .prepare(
         `
@@ -7212,7 +7619,8 @@ raceRouter.get("/stats", async (_req, res, next) => {
         "SMALL BET": finalizeBucket(byRecommendationBuckets["SMALL BET"]),
         "MICRO BET": finalizeBucket(byRecommendationBuckets["MICRO BET"]),
         SKIP: finalizeBucket(byRecommendationBuckets.SKIP)
-      }
+      },
+      evaluation
     });
   } catch (err) {
     return next(err);

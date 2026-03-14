@@ -385,6 +385,13 @@ function formatMaybeNumber(value, digits = 2) {
   return num.toFixed(digits);
 }
 
+function formatSignedRateDelta(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const num = Number(value);
+  if (Number.isNaN(num)) return String(value);
+  return `${num >= 0 ? "+" : ""}${num.toFixed(2)}pt`;
+}
+
 function getRiskClass(recommendation) {
   const rec = String(recommendation || "").toUpperCase();
   if (rec === "SKIP") return "risk-skip";
@@ -3434,6 +3441,152 @@ export default function App() {
               <article className="card stat-card"><span>回収率</span><strong>{formatMaybeNumber(stats?.recovery_rate, 2)}%</strong></article>
               <article className="card stat-card"><span>総損益</span><strong>JPY {(stats?.total_profit_loss ?? 0).toLocaleString()}</strong></article>
               <article className="card stat-card"><span>平均EV</span><strong>{formatMaybeNumber(stats?.average_ev_of_placed_bets, 4)}</strong></article>
+            </section>
+
+            <section className="card">
+              <h2>バックテスト / 評価</h2>
+              <div className="stats-grid">
+                <article className="card stat-card">
+                  <span>検証済みレース</span>
+                  <strong>{stats?.evaluation?.overall?.verified_race_count ?? 0}</strong>
+                  <small>run_id {stats?.evaluation?.evaluation_run_id ?? "-"}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>3連単的中率</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.trifecta_hit_rate, 2)}%</strong>
+                  <small>的中 {stats?.evaluation?.overall?.trifecta_hit_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>2連単的中率</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.exacta_hit_rate, 2)}%</strong>
+                  <small>的中 {stats?.evaluation?.overall?.exacta_hit_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>頭的中率</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.head_hit_rate, 2)}%</strong>
+                  <small>的中 {stats?.evaluation?.overall?.head_hit_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>2着精度</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.second_place_hit_rate, 2)}%</strong>
+                  <small>3着精度 {formatMaybeNumber(stats?.evaluation?.overall?.third_place_hit_rate, 2)}%</small>
+                </article>
+                <article className="card stat-card">
+                  <span>直近トレンド</span>
+                  <strong>{formatSignedRateDelta(stats?.evaluation?.recent_trend?.trifecta_hit_rate_delta)}</strong>
+                  <small>2連単 {formatSignedRateDelta(stats?.evaluation?.recent_trend?.exacta_hit_rate_delta)}</small>
+                  <small>頭 {formatSignedRateDelta(stats?.evaluation?.recent_trend?.head_hit_rate_delta)}</small>
+                </article>
+              </div>
+              <p className="muted strategy-line" style={{ marginTop: 8 }}>
+                2着MISS {stats?.evaluation?.overall?.partner_selection_miss_count ?? 0} /
+                3着MISS {stats?.evaluation?.overall?.third_place_noise_count ?? 0} /
+                NEAR {stats?.evaluation?.overall?.near_miss_count ?? 0} /
+                外攻め過剰 {stats?.evaluation?.overall?.outer_head_overpromotion_count ?? 0}
+              </p>
+
+              <div className="table-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Strongest Venues</th>
+                      <th>件数</th>
+                      <th>3連単</th>
+                      <th>2連単</th>
+                      <th>頭</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(stats?.evaluation?.highlights?.strongest_venues || []).map((row) => (
+                      <tr key={`eval-best-venue-${row.segment_key}`}>
+                        <td>{row.segment_key}</td>
+                        <td>{row.verified_race_count ?? 0}</td>
+                        <td>{formatMaybeNumber(row.trifecta_hit_rate, 2)}%</td>
+                        <td>{formatMaybeNumber(row.exacta_hit_rate, 2)}%</td>
+                        <td>{formatMaybeNumber(row.head_hit_rate, 2)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <details style={{ marginTop: 10 }}>
+                <summary>評価の詳細</summary>
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Weakest Venues</th>
+                        <th>件数</th>
+                        <th>3連単</th>
+                        <th>2着</th>
+                        <th>3着</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(stats?.evaluation?.highlights?.weakest_venues || []).map((row) => (
+                        <tr key={`eval-worst-venue-${row.segment_key}`}>
+                          <td>{row.segment_key}</td>
+                          <td>{row.verified_race_count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.trifecta_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.second_place_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.third_place_hit_rate, 2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Strong / Weak Formation</th>
+                        <th>件数</th>
+                        <th>3連単</th>
+                        <th>頭</th>
+                        <th>2着</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...(stats?.evaluation?.highlights?.strongest_formations || []), ...(stats?.evaluation?.highlights?.weakest_formations || [])].map((row, idx) => (
+                        <tr key={`eval-formation-${row.segment_key}-${idx}`}>
+                          <td>{row.segment_key}</td>
+                          <td>{row.verified_race_count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.trifecta_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.head_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.second_place_hit_rate, 2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Rebalance Version</th>
+                        <th>件数</th>
+                        <th>3連単</th>
+                        <th>2連単</th>
+                        <th>頭</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(stats?.evaluation?.comparisons?.rebalance_version || []).map((row) => (
+                        <tr key={`eval-rebalance-${row.segment_key}`}>
+                          <td>{row.segment_key}</td>
+                          <td>{row.verified_race_count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.trifecta_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.exacta_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.head_hit_rate, 2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
             </section>
 
             <section className="card">
