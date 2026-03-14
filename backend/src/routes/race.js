@@ -2273,7 +2273,7 @@ function buildBoat1HeadBetsSnapshot({
 
   const items = [...bucket.values()]
     .sort((a, b) => toNum(b?.boat1_head_score, 0) - toNum(a?.boat1_head_score, 0))
-    .slice(0, 5)
+    .slice(0, 8)
     .map((row) => ({
       ...row,
       boat1_head_score: Number(toNum(row?.boat1_head_score, 0).toFixed(2))
@@ -2284,6 +2284,7 @@ function buildBoat1HeadBetsSnapshot({
     boat1_head_score: items.length > 0 ? Number(toNum(items[0]?.boat1_head_score, survivalResidualScore).toFixed(2)) : Number(survivalResidualScore.toFixed(2)),
     boat1_survival_residual_score: Number(survivalResidualScore.toFixed(2)),
     boat1_head_reason_tags: [...new Set(items.flatMap((row) => safeArray(row?.boat1_head_reason_tags)).slice(0, 6))],
+    boat1_head_top8_generated: items.length > 0 ? 1 : 0,
     items
   };
 }
@@ -4062,6 +4063,7 @@ raceRouter.get("/race", async (req, res, next) => {
       boat1_head_score: boat1HeadSnapshot.boat1_head_score,
       boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
       boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
+      boat1_head_top8_generated: boat1HeadSnapshot.boat1_head_top8_generated,
       boat1_head_reason_tags: [...new Set([...
         boat1HeadSnapshot.boat1_head_reason_tags,
         ...safeArray(headScenarioBalanceAnalysis.boat1_priority_reason_tags)
@@ -4174,6 +4176,7 @@ raceRouter.get("/race", async (req, res, next) => {
       boat1_head_score: snapshotContext.boat1_head_score,
       boat1_survival_residual_score: snapshotContext.boat1_survival_residual_score,
       boat1_head_section_shown: snapshotContext.boat1_head_section_shown,
+      boat1_head_top8_generated: snapshotContext.boat1_head_top8_generated,
       boat1_head_reason_tags: snapshotContext.boat1_head_reason_tags,
       exacta_recommended_bets_snapshot: snapshotContext.exacta_recommended_bets_snapshot,
       exacta_head_score: snapshotContext.exacta_head_score,
@@ -4254,6 +4257,7 @@ raceRouter.get("/race", async (req, res, next) => {
       boat1_head_score: snapshotContext.boat1_head_score,
       boat1_survival_residual_score: snapshotContext.boat1_survival_residual_score,
       boat1_head_section_shown: snapshotContext.boat1_head_section_shown,
+      boat1_head_top8_generated: snapshotContext.boat1_head_top8_generated,
       boat1_head_reason_tags: snapshotContext.boat1_head_reason_tags,
       exacta_recommended_bets_snapshot: snapshotContext.exacta_recommended_bets_snapshot,
       exacta_head_score: snapshotContext.exacta_head_score,
@@ -4274,6 +4278,7 @@ raceRouter.get("/race", async (req, res, next) => {
       boat1_head_score: boat1HeadSnapshot.boat1_head_score,
       boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
       boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
+      boat1_head_top8_generated: boat1HeadSnapshot.boat1_head_top8_generated,
       boat1_head_reason_tags: [...new Set([...
         boat1HeadSnapshot.boat1_head_reason_tags,
         ...safeArray(headScenarioBalanceAnalysis.boat1_priority_reason_tags)
@@ -4409,6 +4414,7 @@ raceRouter.get("/race", async (req, res, next) => {
         boat1_head_score: boat1HeadSnapshot.boat1_head_score,
         boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
         boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
+        boat1_head_top8_generated: boat1HeadSnapshot.boat1_head_top8_generated,
         boat1_head_reason_tags: [...new Set([...
           boat1HeadSnapshot.boat1_head_reason_tags,
           ...safeArray(headScenarioBalanceAnalysis.boat1_priority_reason_tags)
@@ -7512,6 +7518,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
         boat1_head_score: toNum(prediction?.boat1_head_score, null),
         boat1_survival_residual_score: toNum(prediction?.boat1_survival_residual_score, null),
         boat1_head_section_shown: toNum(prediction?.boat1_head_section_shown, 0),
+        boat1_head_top8_generated: toNum(prediction?.boat1_head_top8_generated, 0),
         boat1_head_reason_tags: Array.isArray(prediction?.boat1_head_reason_tags) ? prediction.boat1_head_reason_tags : [],
         exacta_recommended_bets_snapshot: exactaBetsSnapshot,
         exacta_head_score: toNum(prediction?.exacta_head_score, null),

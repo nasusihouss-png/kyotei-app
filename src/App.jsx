@@ -1112,6 +1112,9 @@ export default function App() {
   const boat1PriorityModeApplied = Number(
     boat1HeadSection?.boat1_priority_mode_applied ?? prediction?.boat1_priority_mode_applied ?? 0
   ) === 1;
+  const boat1HeadTop8Generated = Number(
+    boat1HeadSection?.boat1_head_top8_generated ?? prediction?.boat1_head_top8_generated ?? 0
+  ) === 1;
   const boat1HeadRatioInFinalBets = Number(
     boat1HeadSection?.boat1_head_ratio_in_final_bets ?? prediction?.boat1_head_ratio_in_final_bets ?? 0
   );
@@ -2510,7 +2513,7 @@ export default function App() {
 
                 {boat1HeadSectionShown ? (
                   <article className="card summary-card">
-                    <h2>1号艇頭本線候補</h2>
+                    <h2>1号艇が頭になる場合の予想</h2>
                     <div className="summary-inline-meta">
                       <span>{boat1HeadBets.length}件</span>
                       <span>
@@ -2518,6 +2521,7 @@ export default function App() {
                         {" / "}
                         residual {formatMaybeNumber(boat1SurvivalResidualScore, 1)}
                         {boat1PriorityModeApplied ? ` / ratio ${formatMaybeNumber(boat1HeadRatioInFinalBets * 100, 1)}%` : ""}
+                        {boat1HeadTop8Generated ? " / top8" : ""}
                       </span>
                     </div>
                     {boat1HeadReasonTags.length > 0 ? (

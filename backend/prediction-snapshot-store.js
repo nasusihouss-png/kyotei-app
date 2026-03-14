@@ -525,6 +525,7 @@ export function buildVerifiedLearningRows() {
           null
         ),
         boat1_head_section_shown: toNum(learning?.boat1_head_section_shown ?? context?.boat1_head_section_shown, 0),
+        boat1_head_top8_generated: toNum(learning?.boat1_head_top8_generated ?? context?.boat1_head_top8_generated, 0),
         boat1_head_reason_tags: Array.isArray(learning?.boat1_head_reason_tags)
           ? learning.boat1_head_reason_tags
           : Array.isArray(context?.boat1_head_reason_tags)
