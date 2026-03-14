@@ -546,6 +546,27 @@ function getSavedFinalRecommendedBets(row) {
     .filter(Boolean);
 }
 
+function getSavedBoat1HeadBets(row) {
+  const snapshot = Array.isArray(row?.boat1_head_bets_snapshot)
+    ? row.boat1_head_bets_snapshot
+    : [];
+  return snapshot
+    .map((bet) => {
+      const combo = normalizeCombo(bet?.combo ?? bet);
+      if (!combo || combo.split("-").length !== 3) return null;
+      return {
+        ...(bet && typeof bet === "object" ? bet : {}),
+        combo,
+        recommended_bet: Number.isFinite(Number(bet?.recommended_bet))
+          ? Number(bet.recommended_bet)
+          : Number.isFinite(Number(bet?.bet))
+            ? Number(bet.bet)
+            : 0
+      };
+    })
+    .filter(Boolean);
+}
+
 function getResultsBetSnapshotLabel(row) {
   const saved = getSavedFinalRecommendedBets(row);
   return saved.length > 0 ? null : "NO_BET_SNAPSHOT";
@@ -2294,9 +2315,6 @@ export default function App() {
                     <div><span>formation</span><strong>{formationPatternLabel}</strong></div>
                     {attackScenarioLabel ? <div><span>attack</span><strong>{attackScenarioLabel}</strong></div> : null}
                   </div>
-                  {participationDecision?.summary ? (
-                    <p className="muted strategy-line">{participationDecision.summary}</p>
-                  ) : null}
                   {!isRecommendedRace ? (
                     <p className="muted strategy-line">このレースは見送り判定です。ベット追加は無効化されています。</p>
                   ) : null}
@@ -2304,9 +2322,6 @@ export default function App() {
                     <div className="chips-wrap">
                       {defaultReasonTags.map((tag) => <span className="chip" key={`pd-tag-${tag}`}>{tag}</span>)}
                     </div>
-                  ) : null}
-                  {explainability?.race_summary ? (
-                    <p className="muted strategy-line">{explainability.race_summary}</p>
                   ) : null}
                 </section>
 
@@ -3578,6 +3593,7 @@ export default function App() {
                 <div className="history-stack">
                   {filteredHistory.map((h) => {
                     const savedFinalRecommendedBets = getSavedFinalRecommendedBets(h);
+                    const savedBoat1HeadBets = getSavedBoat1HeadBets(h);
                     const betSnapshotLabel = getResultsBetSnapshotLabel(h);
                     const verificationKey = getVerificationHistoryKey(h.race_id, h.prediction_snapshot_id);
                     const isEditingResult = editingResultKey === verificationKey;
@@ -3737,6 +3753,16 @@ export default function App() {
                             ) : betSnapshotLabel}
                           </div>
                         </div>
+                        {savedBoat1HeadBets.length > 0 ? (
+                          <div className="history-summary-cell">
+                            <span className="history-label">1-head bets</span>
+                            <div className="history-bet-strip">
+                              {savedBoat1HeadBets.map((b, idx) => (
+                                <ComboBadge combo={b?.combo} key={`boat1-${h.race_id}-${idx}`} />
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
                         <div className="history-summary-cell">
                           <span className="history-label">confirmed result</span>
                           <strong>{h.confirmed_result || "-"}</strong>
@@ -3751,18 +3777,6 @@ export default function App() {
                             {verificationSummaryData?.head_correct === true ? "YES" : verificationSummaryData?.head_correct === false ? "NO" : "-"}
                             {" / "}
                             {verificationSummaryData?.hit_miss === "HIT" ? "YES" : verificationSummaryData?.hit_miss === "MISS" ? "NO" : "-"}
-                          </strong>
-                        </div>
-                        <div className="history-summary-cell">
-                          <span className="history-label">learning</span>
-                          <strong>{getLearningStatusLabel(h)}</strong>
-                        </div>
-                        <div className="history-summary-cell">
-                          <span className="history-label">bet count</span>
-                          <strong>
-                            {Number.isFinite(Number(h.final_recommended_bets_count))
-                              ? Number(h.final_recommended_bets_count)
-                              : savedFinalRecommendedBets.length}
                           </strong>
                         </div>
                       </div>
@@ -3795,6 +3809,30 @@ export default function App() {
                                       <td>{formatMaybeNumber(bet?.prob, 3)}</td>
                                       <td>{formatMaybeNumber(bet?.odds, 1)}</td>
                                       <td>{formatMaybeNumber(bet?.ev, 2)}</td>
+                                      <td>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : null}
+                          {savedBoat1HeadBets.length > 0 ? (
+                            <div className="table-wrap" style={{ marginTop: 8 }}>
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th>1号艇頭買い目</th>
+                                    <th>確率</th>
+                                    <th>score</th>
+                                    <th>金額</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {savedBoat1HeadBets.map((bet, idx) => (
+                                    <tr key={`boat1-bet-${h.history_id || h.race_id}-${idx}`}>
+                                      <td><ComboBadge combo={bet?.combo} /></td>
+                                      <td>{formatMaybeNumber(bet?.prob, 3)}</td>
+                                      <td>{formatMaybeNumber(bet?.boat1_head_score, 1)}</td>
                                       <td>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</td>
                                     </tr>
                                   ))}
@@ -3886,6 +3924,8 @@ export default function App() {
                       ) : null}
                       {h.verification ? (
                         <div className="history-grid" style={{ marginTop: 8 }}>
+                          <div>learning: {getLearningStatusLabel(h)}</div>
+                          <div>saved 1-head bets: {savedBoat1HeadBets.length}</div>
                           <div>検証日時: {h.verification.verified_at ? new Date(h.verification.verified_at).toLocaleString() : "-"}</div>
                           <div>検証結果: {h.verification.hit_miss || "-"}</div>
                           <div>verification_version: {h?.verification?.summary?.verification_version ?? "-"}</div>

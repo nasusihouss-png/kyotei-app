@@ -37,6 +37,10 @@
   padding: 14px;
 }
 
+.summary-card h2 {
+  margin-bottom: 10px;
+}
+
 .topbar {
   display: grid;
   gap: 12px;
@@ -343,6 +347,10 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.summary-card .chips-wrap {
+  margin-top: 8px;
 }
 
 .summary-inline-meta {
@@ -801,7 +809,7 @@
 
 .history-summary-grid {
   display: grid;
-  grid-template-columns: 1.8fr repeat(5, minmax(110px, 1fr));
+  grid-template-columns: 1.8fr 1.35fr repeat(4, minmax(110px, 1fr));
   gap: 8px;
   margin: 8px 0;
 }
@@ -826,6 +834,21 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.history-item .row-actions .fetch-btn {
+  min-height: 38px;
+}
+
+.result-detail-block > summary,
+.card > summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #e5eefb;
+}
+
+.result-detail-block > summary {
+  padding: 2px 0;
 }
 
 .result-detail-block {
@@ -1304,6 +1327,11 @@ th {
 
   .history-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .summary-inline-meta {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .list-row,

@@ -6404,6 +6404,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const latestLogDisplayBets = Array.isArray(betPlan?.recommended_bets) ? betPlan.recommended_bets : [];
       const finalRecommendedFromPrediction = normalizeSavedBetSnapshotItems(prediction?.final_recommended_bets_snapshot);
       const legacyDisplaySnapshotFromPrediction = normalizeSavedBetSnapshotItems(prediction?.ai_bets_display_snapshot);
+      const boat1HeadBetsSnapshot = normalizeSavedBetSnapshotItems(prediction?.boat1_head_bets_snapshot);
       const savedFinalRecommendedBetsSnapshot = finalRecommendedFromPrediction.length > 0
         ? finalRecommendedFromPrediction
         : legacyDisplaySnapshotFromPrediction;
@@ -6575,6 +6576,11 @@ raceRouter.get("/results-history", async (req, res, next) => {
         ai_bets_display_snapshot: aiBetsDisplaySnapshot,
         final_recommended_bets_snapshot: aiBetsDisplaySnapshot,
         final_recommended_bets_count: Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot.length : 0,
+        boat1_head_bets_snapshot: boat1HeadBetsSnapshot,
+        boat1_head_score: toNum(prediction?.boat1_head_score, null),
+        boat1_survival_residual_score: toNum(prediction?.boat1_survival_residual_score, null),
+        boat1_head_section_shown: toNum(prediction?.boat1_head_section_shown, 0),
+        boat1_head_reason_tags: Array.isArray(prediction?.boat1_head_reason_tags) ? prediction.boat1_head_reason_tags : [],
         ai_bets_latest_log: latestLogDisplayBets,
         debug_bet_compare: {
           confirmed_result: confirmedResult,
