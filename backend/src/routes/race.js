@@ -1057,6 +1057,9 @@ function buildMismatchAnalysis({
     thirdPlaceMiss &&
     !hasCorrectThirdWithHead &&
     !actualThirdSeenAnywhere;
+  const predictedHead = Number(predictedTop3[0]);
+  const predictedSecond = Number(predictedTop3[1]);
+  const predictedThird = Number(predictedTop3[2]);
   const boat1InsidePartnerUnderweighted =
     actualHead === 1 &&
     secondPlaceMiss &&
@@ -1077,10 +1080,6 @@ function buildMismatchAnalysis({
   if (structureNearButOrderMiss) categories.push("structure_near_but_order_miss");
   if (boat1InsidePartnerUnderweighted) categories.push("boat1_inside_partner_underweighted");
   if (boat1InsidePartnerOverweighted) categories.push("boat1_inside_partner_overweighted");
-
-  const predictedHead = Number(predictedTop3[0]);
-  const predictedSecond = Number(predictedTop3[1]);
-  const predictedThird = Number(predictedTop3[2]);
   const attackScenarioType = String(predictionJson?.attack_scenario_type || "").trim();
   const attackScenarioApplied = Number(predictionJson?.attack_scenario_applied) === 1;
   const survivalResidualScore = toNum(
@@ -7384,6 +7383,17 @@ raceRouter.post("/results/edit", async (req, res, next) => {
       notedVerificationCount = latestVerificationRows.length;
     }
 
+    const savedResultRow = db
+      .prepare(
+        `
+        SELECT race_id, finish_1, finish_2, finish_3, payout_2t, payout_3t, decision_type
+        FROM results
+        WHERE race_id = ?
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+
     return res.json({
       ok: true,
       race_id: raceId,
@@ -7395,6 +7405,19 @@ raceRouter.post("/results/edit", async (req, res, next) => {
       invalidated_verification_count: invalidatedVerificationCount,
       noted_verification_count: notedVerificationCount,
       settlement_update: settlementUpdate,
+      saved_result_record: savedResultRow
+        ? {
+            race_id: savedResultRow.race_id,
+            confirmed_result: normalizeCombo([
+              savedResultRow.finish_1,
+              savedResultRow.finish_2,
+              savedResultRow.finish_3
+            ].join("-")),
+            payout_2t: savedResultRow.payout_2t ?? null,
+            payout_3t: savedResultRow.payout_3t ?? null,
+            decision_type: savedResultRow.decision_type ?? null
+          }
+        : null,
       message: confirmedResultChanged
         ? "Confirmed result updated. Existing verification records were invalidated and re-verification is required."
         : "Confirmed result note updated."
@@ -8707,6 +8730,8 @@ raceRouter.get("/results-history", async (req, res, next) => {
               ? Number(summary.prediction_snapshot_id)
               : null;
       const normalizedVerification = {
+        id: Number.isFinite(Number(row?.id)) ? Number(row.id) : null,
+        race_id: row?.race_id || null,
         verified_at: row.verified_at || null,
         hit_miss: row.hit_miss || null,
         mismatch_categories: safeJsonParse(row.mismatch_categories_json, []),
@@ -8723,6 +8748,16 @@ raceRouter.get("/results-history", async (req, res, next) => {
             : null,
         verification_status: row?.verification_status || summary?.verification_status || null,
         verification_reason: row?.verification_reason || summary?.verification_reason || null,
+        confirmed_result:
+          row?.confirmed_result ||
+          summary?.confirmed_result_canonical ||
+          summary?.confirmed_result ||
+          null,
+        invalid_reason: row?.invalid_reason || summary?.invalid_reason || null,
+        invalidated_at: row?.invalidated_at || summary?.invalidated_at || null,
+        is_hidden_from_results: Number(row?.is_hidden_from_results) === 1 ? 1 : 0,
+        is_invalid_verification: Number(row?.is_invalid_verification) === 1 ? 1 : 0,
+        exclude_from_learning: Number(row?.exclude_from_learning) === 1 ? 1 : 0,
         second_place_miss: summary?.second_place_miss === true,
         third_place_miss: summary?.third_place_miss === true,
         second_third_swap: summary?.second_third_swap === true,
@@ -8927,6 +8962,12 @@ raceRouter.get("/results-history", async (req, res, next) => {
           ? computedHitMiss
           : (persistedHitMiss || computedHitMiss);
       const confirmedResult =
+        normalizeCombo(
+          verification?.confirmed_result ||
+          verificationSummary?.confirmed_result_canonical ||
+          verificationSummary?.confirmed_result ||
+          ""
+        ) ||
         actualCombo ||
         (startDisplay?.settled_result ? normalizeCombo(startDisplay.settled_result) : null) ||
         (startDisplay?.fetched_result ? normalizeCombo(startDisplay.fetched_result) : null) ||
