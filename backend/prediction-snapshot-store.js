@@ -410,6 +410,18 @@ export function buildVerifiedLearningRows() {
         bet_hit:
           betHitValue,
         structure_hit: summary?.second_third_correct === true ? 1 : summary?.second_third_correct === false ? 0 : null,
+        second_place_miss: summary?.second_place_miss === true ? 1 : summary?.second_place_miss === false ? 0 : null,
+        third_place_miss: summary?.third_place_miss === true ? 1 : summary?.third_place_miss === false ? 0 : null,
+        partner_selection_miss:
+          summary?.partner_selection_miss === true ? 1 : summary?.partner_selection_miss === false ? 0 : null,
+        third_place_noise: summary?.third_place_noise === true ? 1 : summary?.third_place_noise === false ? 0 : null,
+        second_third_swap: summary?.second_third_swap === true ? 1 : summary?.second_third_swap === false ? 0 : null,
+        structure_near_but_order_miss:
+          summary?.structure_near_but_order_miss === true
+            ? 1
+            : summary?.structure_near_but_order_miss === false
+              ? 0
+              : null,
         exacta_hit: summary?.exacta_hit === true ? 1 : summary?.exacta_hit === false ? 0 : null,
         exacta_miss: summary?.exacta_miss === true ? 1 : summary?.exacta_miss === false ? 0 : null,
         exacta_verification_status: summary?.exacta_verification_status || null,
@@ -548,10 +560,17 @@ export function buildVerifiedLearningRows() {
           learning?.boat1_partner_search_bias_json || context?.boat1_partner_search_bias_json || {},
         partner_search_lap_bias_json:
           learning?.partner_search_lap_bias_json || context?.partner_search_lap_bias_json || {},
+        third_place_residual_bias_json:
+          learning?.third_place_residual_bias_json || context?.third_place_residual_bias_json || {},
         boat1_partner_search_applied: toNum(
           learning?.boat1_partner_search_applied ?? context?.boat1_partner_search_applied,
           0
         ),
+        learning_adjustment_reason_tags: Array.isArray(learning?.learning_adjustment_reason_tags)
+          ? learning.learning_adjustment_reason_tags
+          : Array.isArray(summary?.learning_adjustment_reason_tags)
+            ? summary.learning_adjustment_reason_tags
+            : [],
         stronger_lap_bias_applied: toNum(
           learning?.stronger_lap_bias_applied ?? context?.stronger_lap_bias_applied,
           0

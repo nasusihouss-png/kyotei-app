@@ -587,18 +587,77 @@ function buildMismatchAnalysis({
   const recBetSet = new Set(recBets);
   const hitMatchFound = !!(actualCombo && recBetSet.has(actualCombo));
   const hitMiss = actualCombo ? (hitMatchFound ? "HIT" : "MISS") : "PENDING";
+  const actualHead = Number(actualTop3[0]);
+  const actualSecond = Number(actualTop3[1]);
+  const actualThird = Number(actualTop3[2]);
 
   const headCorrect =
     predictedTop3.length > 0 && actualTop3.length > 0 && Number(predictedTop3[0]) === Number(actualTop3[0]);
   if (headCorrect) categories.push("HEAD_HIT");
   else categories.push("HEAD_MISS");
 
-  const secondThirdCorrect =
+  const secondCorrect =
+    predictedTop3.length >= 2 &&
+    actualTop3.length >= 2 &&
+    Number(predictedTop3[1]) === actualSecond;
+  const thirdCorrect =
     predictedTop3.length >= 3 &&
     actualTop3.length >= 3 &&
-    Number(predictedTop3[1]) === Number(actualTop3[1]) &&
-    Number(predictedTop3[2]) === Number(actualTop3[2]);
+    Number(predictedTop3[2]) === actualThird;
+  const secondThirdCorrect =
+    secondCorrect && thirdCorrect;
   if (!secondThirdCorrect) categories.push("PARTNER_MISS");
+
+  const canonicalCombos = recBets
+    .map((combo) => combo.split("-").map((value) => toInt(value, null)))
+    .filter((lanes) => lanes.length === 3 && lanes.every((lane) => Number.isInteger(lane)));
+  const combosWithCorrectHead = canonicalCombos.filter((lanes) => lanes[0] === actualHead);
+  const hasCorrectSecondWithHead = combosWithCorrectHead.some((lanes) => lanes[1] === actualSecond);
+  const hasCorrectThirdWithHead = combosWithCorrectHead.some((lanes) => lanes[2] === actualThird);
+  const hasSecondThirdSwap = combosWithCorrectHead.some(
+    (lanes) => lanes[1] === actualThird && lanes[2] === actualSecond
+  );
+  const hasNearStructureWithHead = combosWithCorrectHead.some((lanes) => {
+    const actualTail = [actualSecond, actualThird].sort((a, b) => a - b).join("-");
+    const predictedTail = [lanes[1], lanes[2]].sort((a, b) => a - b).join("-");
+    return actualTail === predictedTail;
+  });
+  const actualSecondSeenAnywhere = canonicalCombos.some((lanes) => lanes[1] === actualSecond || lanes[2] === actualSecond);
+  const actualThirdSeenAnywhere = canonicalCombos.some((lanes) => lanes[2] === actualThird || lanes[1] === actualThird);
+
+  const secondPlaceMiss =
+    actualTop3.length >= 2 &&
+    (!secondCorrect || (headCorrect && combosWithCorrectHead.length > 0 && !hasCorrectSecondWithHead));
+  const thirdPlaceMiss =
+    actualTop3.length >= 3 &&
+    (!thirdCorrect || (headCorrect && combosWithCorrectHead.length > 0 && !hasCorrectThirdWithHead));
+  const secondThirdSwap =
+    actualTop3.length >= 3 &&
+    !secondThirdCorrect &&
+    hasSecondThirdSwap;
+  const structureNearButOrderMiss =
+    actualTop3.length >= 3 &&
+    !secondThirdCorrect &&
+    hasNearStructureWithHead;
+  const partnerSelectionMiss =
+    actualTop3.length >= 2 &&
+    actualHead === 1 &&
+    headCorrect &&
+    secondPlaceMiss &&
+    !hasCorrectSecondWithHead &&
+    !actualSecondSeenAnywhere;
+  const thirdPlaceNoise =
+    actualTop3.length >= 3 &&
+    thirdPlaceMiss &&
+    !hasCorrectThirdWithHead &&
+    !actualThirdSeenAnywhere;
+
+  if (secondPlaceMiss) categories.push("second_place_miss");
+  if (thirdPlaceMiss) categories.push("third_place_miss");
+  if (partnerSelectionMiss) categories.push("partner_selection_miss");
+  if (thirdPlaceNoise) categories.push("third_place_noise");
+  if (secondThirdSwap) categories.push("second_third_swap");
+  if (structureNearButOrderMiss) categories.push("structure_near_but_order_miss");
 
   const entryChanged = !!predictionJson?.entry_changed;
   if (entryChanged && hitMiss === "MISS") categories.push("ENTRY_CHANGE_IMPACT");
@@ -625,11 +684,29 @@ function buildMismatchAnalysis({
     categories.push("ENTRY_CHANGE_IMPACT");
   }
 
+  const learningAdjustmentReasonTags = [];
+  if (partnerSelectionMiss) learningAdjustmentReasonTags.push("REFINE_SECOND_PLACE_PARTNER");
+  if (thirdPlaceMiss) learningAdjustmentReasonTags.push("REFINE_THIRD_PLACE_RESIDUAL");
+  if (thirdPlaceNoise) learningAdjustmentReasonTags.push("SUPPRESS_THIRD_PLACE_NOISE");
+  if (secondThirdSwap || structureNearButOrderMiss) learningAdjustmentReasonTags.push("REFINE_SECOND_THIRD_ORDER");
+  if (actualHead === 1 && (partnerSelectionMiss || thirdPlaceMiss)) {
+    learningAdjustmentReasonTags.push("REFINE_BOAT1_ESCAPE_PARTNER_SEARCH");
+  }
+
   return {
     hit_miss: hitMiss,
     head_correct: headCorrect,
+    second_place_correct: secondCorrect,
+    third_place_correct: thirdCorrect,
     second_third_correct: secondThirdCorrect,
+    second_place_miss: secondPlaceMiss,
+    third_place_miss: thirdPlaceMiss,
+    partner_selection_miss: partnerSelectionMiss,
+    third_place_noise: thirdPlaceNoise,
+    second_third_swap: secondThirdSwap,
+    structure_near_but_order_miss: structureNearButOrderMiss,
     categories: [...new Set(categories)],
+    learning_adjustment_reason_tags: [...new Set(learningAdjustmentReasonTags)],
     predicted_combo: predictedCombo,
     actual_combo: actualCombo,
     verified_against_bets: [...recBetSet],
@@ -1365,6 +1442,16 @@ function buildSeparatedCandidateDistributions({
       top_lap_attack_third_lanes: thirdPlaceDistribution
         .filter((row) => toInt(row?.lane, null) >= 2)
         .slice(0, 4)
+    },
+    third_place_residual_bias_json: {
+      strongest_third_lanes: thirdPlaceDistribution.slice(0, 4),
+      inside_residual_priority: [2, 3, 4],
+      noisy_outer_lanes: thirdPlaceDistribution
+        .filter((row) => {
+          const lane = toInt(row?.lane, null);
+          return lane === 5 || lane === 6;
+        })
+        .slice(0, 2)
     },
     boat1_partner_search_applied: mainHeadLane === 1 ? 1 : 0,
     stronger_lap_bias_applied: 1,
@@ -4159,10 +4246,12 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.third_place_distribution_json = candidateDistributions.third_place_distribution_json;
     headScenarioBalanceAnalysis.partner_search_bias_json = candidateDistributions.partner_search_bias_json;
     headScenarioBalanceAnalysis.partner_search_lap_bias_json = candidateDistributions.partner_search_lap_bias_json;
+    headScenarioBalanceAnalysis.third_place_residual_bias_json = candidateDistributions.third_place_residual_bias_json;
     headScenarioBalanceAnalysis.boat1_partner_search_applied = candidateDistributions.boat1_partner_search_applied;
     headScenarioBalanceAnalysis.stronger_lap_bias_applied = candidateDistributions.stronger_lap_bias_applied;
     headScenarioBalanceAnalysis.inside_baseline_priority_applied = candidateDistributions.inside_baseline_priority_applied;
     headScenarioBalanceAnalysis.candidate_balance_adjustment_json = candidateDistributions.candidate_balance_adjustment_json;
+    headScenarioBalanceAnalysis.hit_rate_focus_applied = candidateDistributions.hit_rate_focus_applied;
     headScenarioBalanceAnalysis.scoring_family_components_json = candidateDistributions.scoring_family_components_json;
     headScenarioBalanceAnalysis.rebalance_version = candidateDistributions.rebalance_version;
     bet_plan_with_stake.recommended_bets = applySeparatedDistributionBiasToTickets(
@@ -4390,6 +4479,7 @@ raceRouter.get("/race", async (req, res, next) => {
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       partner_search_lap_bias_json: headScenarioBalanceAnalysis.partner_search_lap_bias_json,
+      third_place_residual_bias_json: headScenarioBalanceAnalysis.third_place_residual_bias_json,
       boat1_partner_search_applied: toInt(headScenarioBalanceAnalysis.boat1_partner_search_applied, 0),
       stronger_lap_bias_applied: toInt(headScenarioBalanceAnalysis.stronger_lap_bias_applied, 0),
       inside_baseline_priority_applied: toInt(headScenarioBalanceAnalysis.inside_baseline_priority_applied, 0),
@@ -4522,6 +4612,7 @@ raceRouter.get("/race", async (req, res, next) => {
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       partner_search_lap_bias_json: snapshotContext.partner_search_lap_bias_json,
+      third_place_residual_bias_json: snapshotContext.third_place_residual_bias_json,
       boat1_partner_search_applied: snapshotContext.boat1_partner_search_applied,
       stronger_lap_bias_applied: snapshotContext.stronger_lap_bias_applied,
       inside_baseline_priority_applied: snapshotContext.inside_baseline_priority_applied,
@@ -4620,6 +4711,7 @@ raceRouter.get("/race", async (req, res, next) => {
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       partner_search_lap_bias_json: snapshotContext.partner_search_lap_bias_json,
+      third_place_residual_bias_json: snapshotContext.third_place_residual_bias_json,
       boat1_partner_search_applied: snapshotContext.boat1_partner_search_applied,
       stronger_lap_bias_applied: snapshotContext.stronger_lap_bias_applied,
       inside_baseline_priority_applied: snapshotContext.inside_baseline_priority_applied,
@@ -8277,9 +8369,18 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       predicted_top3: predictedTop3,
       actual_top3: actualTop3,
       head_correct: analysis.head_correct,
+      second_place_correct: analysis.second_place_correct,
+      third_place_correct: analysis.third_place_correct,
       second_third_correct: analysis.second_third_correct,
       hit_miss: analysis.hit_miss,
       mismatch_categories: analysis.categories,
+      second_place_miss: analysis.second_place_miss,
+      third_place_miss: analysis.third_place_miss,
+      partner_selection_miss: analysis.partner_selection_miss,
+      third_place_noise: analysis.third_place_noise,
+      second_third_swap: analysis.second_third_swap,
+      structure_near_but_order_miss: analysis.structure_near_but_order_miss,
+      learning_adjustment_reason_tags: analysis.learning_adjustment_reason_tags,
       recommendation_mode: latestPrediction?.recommendation || featureLog?.recommendation_mode || null,
       confidence: Number.isFinite(Number(featureLog?.confidence)) ? Number(featureLog.confidence) : null,
       recommendation_score: Number.isFinite(Number(featureLog?.recommendation_score))
