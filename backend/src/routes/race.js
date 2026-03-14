@@ -2406,32 +2406,6 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis, learn
     toInt(race?.venueId, null),
     "second_place_bias_correction"
   );
-  const venuePartnerAdj = getSegmentCorrectionValue(
-    learningWeights,
-    "venue",
-    toInt(race?.venueId, null),
-    "second_place_partner_adjustment"
-  );
-  const venueLapAdj = getSegmentCorrectionValue(
-    learningWeights,
-    "venue",
-    toInt(race?.venueId, null),
-    "lap_weight_adjustment"
-  );
-  const venueFHoldAdj = getSegmentCorrectionValue(
-    learningWeights,
-    "venue",
-    toInt(race?.venueId, null),
-    "f_hold_caution_adjustment"
-  );
-  const boat1SecondDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_second_place_distribution_json);
-  const boat1ThirdDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_third_place_distribution_json);
-  const boat1SecondMap = new Map(
-    boat1SecondDistribution.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]).filter(([lane]) => Number.isInteger(lane))
-  );
-  const boat1ThirdMap = new Map(
-    boat1ThirdDistribution.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]).filter(([lane]) => Number.isInteger(lane))
-  );
   return [...rows]
     .map((row) => {
       const lane = toInt(row?.racer?.lane, null);
@@ -3237,6 +3211,32 @@ function buildBoat1HeadBetsSnapshot({
     "venue",
     toInt(race?.venueId, null),
     "second_place_bias_correction"
+  );
+  const venuePartnerAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "second_place_partner_adjustment"
+  );
+  const venueLapAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "lap_weight_adjustment"
+  );
+  const venueFHoldAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "f_hold_caution_adjustment"
+  );
+  const boat1SecondDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_second_place_distribution_json);
+  const boat1ThirdDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_third_place_distribution_json);
+  const boat1SecondMap = new Map(
+    boat1SecondDistribution.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]).filter(([lane]) => Number.isInteger(lane))
+  );
+  const boat1ThirdMap = new Map(
+    boat1ThirdDistribution.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]).filter(([lane]) => Number.isInteger(lane))
   );
   const partnerRows = rows
     .filter((row) => toInt(row?.racer?.lane, null) !== 1)
