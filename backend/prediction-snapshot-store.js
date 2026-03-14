@@ -658,6 +658,16 @@ export function buildVerifiedLearningRows() {
         escape_second_place_bias_json: learning?.escape_second_place_bias_json || context?.escape_second_place_bias_json || {},
         participation_decision: learning?.participation_decision || null,
         participation_decision_reason: learning?.participation_decision_reason || null,
+        data_quality_score: toNum(learning?.data_quality_score ?? context?.data_quality_score, null),
+        race_stability_score: toNum(learning?.race_stability_score ?? context?.race_stability_score, null),
+        partner_clarity_score: toNum(learning?.partner_clarity_score ?? context?.partner_clarity_score, null),
+        quality_gate_applied: toNum(learning?.quality_gate_applied ?? context?.quality_gate_applied, 0),
+        gating_adjustment_json: learning?.gating_adjustment_json || context?.gating_adjustment_json || {},
+        prediction_readability_score: toNum(
+          learning?.prediction_readability_score ?? context?.prediction_readability_score,
+          null
+        ),
+        exacta_stability_score: toNum(learning?.exacta_stability_score ?? context?.exacta_stability_score, null),
         participate_watch_skip_reason_tags: Array.isArray(learning?.participate_watch_skip_reason_tags)
           ? learning.participate_watch_skip_reason_tags
           : Array.isArray(context?.participate_watch_skip_reason_tags)

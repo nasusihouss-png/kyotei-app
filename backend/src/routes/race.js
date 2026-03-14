@@ -3351,7 +3351,10 @@ const PARTICIPATION_TUNING = {
     contradictionHardMin: 3,
     lowHeadHardMax: 51,
     lowBetHardMax: 46,
-    skipModeConfidenceHardMax: 48
+    skipModeConfidenceHardMax: 48,
+    dataQualityHardMax: 46,
+    raceStabilityHardMax: 42,
+    partnerClarityHardMax: 38
   },
   caution: {
     headStrongCautionMin: 58,
@@ -3368,8 +3371,154 @@ const PARTICIPATION_TUNING = {
   cautionPenalty: {
     fHoldWeight: 0.15,
     contradictionPenalty: 4.5
+  },
+  qualityGate: {
+    participateDataQualityMin: 66,
+    participateRaceStabilityMin: 63,
+    participatePartnerClarityMin: 60,
+    watchDataQualityMin: 48,
+    watchRaceStabilityMin: 44,
+    watchPartnerClarityMin: 40
   }
 };
+
+function distributionConcentration(distribution, topCount = 2) {
+  return safeArray(distribution)
+    .slice(0, topCount)
+    .reduce((sum, row) => sum + toNum(row?.weight, 0), 0) * 100;
+}
+
+function buildQualityGateScores({
+  ranking,
+  racers,
+  entryMeta,
+  confidenceScores,
+  raceStructure,
+  escapePatternAnalysis,
+  headScenarioBalanceAnalysis,
+  exactaSnapshot,
+  learningWeights,
+  race
+}) {
+  const rows = Array.isArray(ranking) ? ranking : [];
+  const racerRows = Array.isArray(racers) ? racers : [];
+  const features = rows.map((row) => row?.features || {});
+  const featureCount = Math.max(1, Math.max(rows.length, racerRows.length, 6));
+  const exhibitionStReady = features.filter((f) => Number.isFinite(Number(f?.exhibition_st))).length / featureCount;
+  const exhibitionTimeReady = features.filter((f) => Number.isFinite(Number(f?.exhibition_time))).length / featureCount;
+  const lapReady = features.filter((f) => Number.isFinite(Number(f?.lap_attack_strength)) || Number.isFinite(Number(f?.lap_time_delta_vs_front))).length / featureCount;
+  const playerMotorReady = features.filter((f) =>
+    Number.isFinite(Number(f?.motor_total_score)) && Number.isFinite(Number(f?.class_score))
+  ).length / featureCount;
+  const entryClarity = entryMeta?.entry_changed
+    ? entryMeta?.severity === "high"
+      ? 18
+      : entryMeta?.severity === "medium"
+        ? 40
+        : 58
+    : 88;
+  const formationConfidence = toNum(escapePatternAnalysis?.escape_pattern_confidence, 0);
+  const cautionFlags = Array.isArray(confidenceScores?.confidence_reason_tags)
+    ? confidenceScores.confidence_reason_tags
+    : [];
+  const missingPenalty =
+    (cautionFlags.includes("INSUFFICIENT_EXHIBITION_DATA") ? 18 : 0) +
+    (cautionFlags.includes("START_SIGNAL_UNSTABLE") ? 8 : 0) +
+    (cautionFlags.includes("ENTRY_CHANGE_PENALTY") ? 6 : 0);
+  const dataQualityScore = clamp(
+    0,
+    100,
+    exhibitionStReady * 24 +
+      exhibitionTimeReady * 22 +
+      lapReady * 16 +
+      playerMotorReady * 18 +
+      entryClarity * 0.12 +
+      formationConfidence * 0.16 -
+      missingPenalty
+  );
+
+  const headConcentration = distributionConcentration(headScenarioBalanceAnalysis?.head_distribution_json, 2);
+  const secondConcentration = distributionConcentration(headScenarioBalanceAnalysis?.second_place_distribution_json, 2);
+  const thirdConcentration = distributionConcentration(headScenarioBalanceAnalysis?.third_place_distribution_json, 2);
+  const survivalResidual = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const attackMargin = Math.abs(toNum(headScenarioBalanceAnalysis?.attack_dominance_margin, 0));
+  const outerGuardPenalty = toNum(headScenarioBalanceAnalysis?.outer_head_guard_applied, 0) === 1 ? 8 : 0;
+  const contradictionPenalty = toNum(raceStructure?.chaos_risk_score, 0) >= 76 ? 10 : 0;
+  const fHoldUncertainty = features.reduce((sum, f) => sum + toNum(f?.f_hold_caution_penalty, 0), 0) / featureCount;
+  const entryUncertainty = entryMeta?.entry_changed
+    ? entryMeta?.severity === "high"
+      ? 14
+      : entryMeta?.severity === "medium"
+        ? 8
+        : 4
+    : 0;
+  const venueUncertainty = Math.abs(
+    getSegmentCorrectionValue(learningWeights, "venue", toInt(race?.venueId, null), "recommendation_score_adjustment")
+  ) * 1.5;
+  const raceStabilityScore = clamp(
+    0,
+    100,
+    headConcentration * 0.34 +
+      secondConcentration * 0.22 +
+      thirdConcentration * 0.12 +
+      Math.min(18, survivalResidual * 0.22) +
+      Math.max(0, 12 - attackMargin * 0.12) -
+      outerGuardPenalty -
+      contradictionPenalty -
+      fHoldUncertainty * 6 -
+      entryUncertainty -
+      venueUncertainty
+  );
+
+  const boat1SecondDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_second_place_distribution_json);
+  const boat1ThirdDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_third_place_distribution_json);
+  const boat1SecondFocus = distributionConcentration(
+    boat1SecondDistribution.length ? boat1SecondDistribution : headScenarioBalanceAnalysis?.second_place_distribution_json,
+    3
+  );
+  const boat1ThirdFocus = distributionConcentration(
+    boat1ThirdDistribution.length ? boat1ThirdDistribution : headScenarioBalanceAnalysis?.third_place_distribution_json,
+    4
+  );
+  const boat1FamilySupport = boat1SecondDistribution
+    .filter((row) => [2, 3, 4].includes(toInt(row?.lane, null)))
+    .reduce((sum, row) => sum + toNum(row?.weight, 0), 0) * 100;
+  const exactaStabilityScore = Array.isArray(exactaSnapshot?.items) && exactaSnapshot.items.length > 0
+    ? clamp(
+        0,
+        100,
+        distributionConcentration(
+          exactaSnapshot.items.map((item) => ({ weight: toNum(item?.prob, 0) })),
+          2
+        ) * 0.9
+      )
+    : clamp(0, 100, headConcentration * 0.58 + secondConcentration * 0.42);
+  const partnerClarityScore = clamp(
+    0,
+    100,
+    boat1SecondFocus * 0.34 +
+      boat1ThirdFocus * 0.16 +
+      boat1FamilySupport * 0.32 +
+      exactaStabilityScore * 0.12 +
+      Math.min(12, survivalResidual * 0.16) -
+      Math.max(0, 26 - thirdConcentration) * 0.2
+  );
+  const predictionReadabilityScore = clamp(
+    0,
+    100,
+    dataQualityScore * 0.34 +
+      raceStabilityScore * 0.38 +
+      ((toInt(headScenarioBalanceAnalysis?.main_head_lane, null) === 1 ? partnerClarityScore : exactaStabilityScore) * 0.28)
+  );
+
+  return {
+    data_quality_score: Number(dataQualityScore.toFixed(2)),
+    race_stability_score: Number(raceStabilityScore.toFixed(2)),
+    partner_clarity_score: Number(partnerClarityScore.toFixed(2)),
+    prediction_readability_score: Number(predictionReadabilityScore.toFixed(2)),
+    exacta_stability_score: Number(exactaStabilityScore.toFixed(2))
+  };
+}
 
 function buildParticipationDecision({
   raceDecision,
@@ -3381,7 +3530,12 @@ function buildParticipationDecision({
   raceFlow,
   escapePatternAnalysis,
   attackScenarioAnalysis,
-  headScenarioBalanceAnalysis = null
+  headScenarioBalanceAnalysis = null,
+  ranking = [],
+  racers = [],
+  exactaSnapshot = null,
+  learningWeights = null,
+  race = null
 }) {
   const mode = normalizeModeValue(raceDecision?.mode || raceRisk?.recommendation || "UNKNOWN");
   const confidence = toNum(raceDecision?.confidence, 0);
@@ -3447,6 +3601,33 @@ function buildParticipationDecision({
     outerHeadGuardApplied && (mainHeadLane === 5 || mainHeadLane === 6) && attackDominanceMargin < 30
       ? 5.8
       : 0;
+  const qualityScores = buildQualityGateScores({
+    ranking,
+    racers,
+    entryMeta,
+    confidenceScores,
+    raceStructure,
+    escapePatternAnalysis,
+    headScenarioBalanceAnalysis,
+    exactaSnapshot,
+    learningWeights,
+    race
+  });
+  const dataQualityScore = toNum(qualityScores?.data_quality_score, 50);
+  const raceStabilityScore = toNum(qualityScores?.race_stability_score, 50);
+  const partnerClarityScore = toNum(qualityScores?.partner_clarity_score, 50);
+  const exactaStabilityScore = toNum(qualityScores?.exacta_stability_score, 50);
+  const predictionReadabilityScore = toNum(qualityScores?.prediction_readability_score, 50);
+  const qualityGatePenalty =
+    Math.max(0, PARTICIPATION_TUNING.qualityGate.participateDataQualityMin - dataQualityScore) * 0.16 +
+    Math.max(0, PARTICIPATION_TUNING.qualityGate.participateRaceStabilityMin - raceStabilityScore) * 0.14 +
+    (mainHeadLane === 1
+      ? Math.max(0, PARTICIPATION_TUNING.qualityGate.participatePartnerClarityMin - partnerClarityScore) * 0.15
+      : Math.max(0, 52 - exactaStabilityScore) * 0.08);
+  const qualityGateApplied =
+    dataQualityScore < PARTICIPATION_TUNING.qualityGate.participateDataQualityMin ||
+    raceStabilityScore < PARTICIPATION_TUNING.qualityGate.participateRaceStabilityMin ||
+    (mainHeadLane === 1 && partnerClarityScore < PARTICIPATION_TUNING.qualityGate.participatePartnerClarityMin);
   const adjustedHeadFixed = Math.min(
     100,
     Math.max(
@@ -3460,6 +3641,7 @@ function buildParticipationDecision({
         segmentParticipationCorrection * 0.6 -
         fHoldPenalty * 0.65 -
         outerHeadWatchPenalty * 0.8 -
+        qualityGatePenalty * 0.7 -
         contradictionPenalty * 0.55
     )
   );
@@ -3476,6 +3658,7 @@ function buildParticipationDecision({
         segmentParticipationCorrection -
         fHoldPenalty * 0.8 -
         outerHeadWatchPenalty -
+        qualityGatePenalty -
         contradictionPenalty * 0.75
     )
   );
@@ -3505,10 +3688,23 @@ function buildParticipationDecision({
   if (headStability >= 62) reasonTags.push("HEAD_STABILITY_GOOD");
   if (adjustedHeadFixed >= 72) reasonTags.push("HEAD_CONFIDENCE_GOOD");
   if (adjustedBetConf >= 64) reasonTags.push("BET_CONFIDENCE_GOOD");
+  if (dataQualityScore >= 72) reasonTags.push("HIGH_QUALITY");
+  else if (dataQualityScore < PARTICIPATION_TUNING.qualityGate.watchDataQualityMin) reasonTags.push("LOW_DATA_QUALITY");
+  if (raceStabilityScore >= 68) reasonTags.push("STABLE");
+  else if (raceStabilityScore < PARTICIPATION_TUNING.qualityGate.watchRaceStabilityMin) reasonTags.push("LOW_STABILITY");
+  if (mainHeadLane === 1 && partnerClarityScore >= 64) reasonTags.push("PARTNER_CLEAR");
+  else if (mainHeadLane === 1 && partnerClarityScore < PARTICIPATION_TUNING.qualityGate.watchPartnerClarityMin) {
+    reasonTags.push("PARTNER_UNCLEAR");
+  }
+  if (exactaStabilityScore >= 66) reasonTags.push("EXACTA_STABLE");
+  if (qualityGateApplied) reasonTags.push("QUALITY_GATE_APPLIED");
 
   let decision = "watch";
   if (
     mode !== "SKIP" &&
+    dataQualityScore >= PARTICIPATION_TUNING.qualityGate.participateDataQualityMin &&
+    raceStabilityScore >= PARTICIPATION_TUNING.qualityGate.participateRaceStabilityMin &&
+    (mainHeadLane !== 1 || partnerClarityScore >= PARTICIPATION_TUNING.qualityGate.participatePartnerClarityMin) &&
     adjustedHeadFixed >= PARTICIPATION_CONFIDENCE_THRESHOLDS.participate.headFixedMin &&
     adjustedBetConf >= PARTICIPATION_CONFIDENCE_THRESHOLDS.participate.betMin &&
     (
@@ -3521,6 +3717,9 @@ function buildParticipationDecision({
   ) {
     decision = "recommended";
   } else if (
+    dataQualityScore <= PARTICIPATION_TUNING.skip.dataQualityHardMax ||
+    raceStabilityScore <= PARTICIPATION_TUNING.skip.raceStabilityHardMax ||
+    (mainHeadLane === 1 && partnerClarityScore <= PARTICIPATION_TUNING.skip.partnerClarityHardMax) ||
     adjustedHeadFixed <= PARTICIPATION_TUNING.skip.lowHeadHardMax ||
     adjustedBetConf <= PARTICIPATION_TUNING.skip.lowBetHardMax ||
     (mode === "SKIP" && hasStrongCaution && confidence < PARTICIPATION_TUNING.skip.skipModeConfidenceHardMax) ||
@@ -3530,6 +3729,9 @@ function buildParticipationDecision({
     decision = "not_recommended";
   } else if (
     mode !== "SKIP" &&
+    dataQualityScore >= PARTICIPATION_TUNING.qualityGate.watchDataQualityMin &&
+    raceStabilityScore >= PARTICIPATION_TUNING.qualityGate.watchRaceStabilityMin &&
+    (mainHeadLane !== 1 || partnerClarityScore >= PARTICIPATION_TUNING.qualityGate.watchPartnerClarityMin) &&
     adjustedHeadFixed >= PARTICIPATION_CONFIDENCE_THRESHOLDS.watch.headMin &&
     adjustedBetConf >= PARTICIPATION_CONFIDENCE_THRESHOLDS.watch.betMin
   ) {
@@ -3560,6 +3762,12 @@ function buildParticipationDecision({
       attack_scenario_boost: Number(attackScenarioBoost.toFixed(2)),
       f_hold_caution_score: Number(fHoldCautionScore.toFixed(2)),
       contradiction_count: contradictionCount,
+      data_quality_score: Number(dataQualityScore.toFixed(2)),
+      race_stability_score: Number(raceStabilityScore.toFixed(2)),
+      partner_clarity_score: Number(partnerClarityScore.toFixed(2)),
+      prediction_readability_score: Number(predictionReadabilityScore.toFixed(2)),
+      exacta_stability_score: Number(exactaStabilityScore.toFixed(2)),
+      quality_gate_applied: qualityGateApplied ? 1 : 0,
       inside_stability_bonus: Number(insideStabilityBonus.toFixed(2)),
       outer_head_watch_penalty: Number(outerHeadWatchPenalty.toFixed(2)),
       segment_participation_correction: Number(segmentParticipationCorrection.toFixed(2)),
@@ -3578,6 +3786,23 @@ function buildParticipationDecision({
       escape_pattern_focus_boost: Number(escapeFocusBoost.toFixed(2)),
       slit_boost: Number(slitBoost.toFixed(2)),
       attack_scenario_boost: Number(attackScenarioBoost.toFixed(2)),
+      data_quality_score: Number(dataQualityScore.toFixed(2)),
+      race_stability_score: Number(raceStabilityScore.toFixed(2)),
+      partner_clarity_score: Number(partnerClarityScore.toFixed(2)),
+      prediction_readability_score: Number(predictionReadabilityScore.toFixed(2)),
+      exacta_stability_score: Number(exactaStabilityScore.toFixed(2)),
+      quality_gate_applied: qualityGateApplied ? 1 : 0,
+      gating_adjustment_json: {
+        data_quality_penalty: Number(Math.max(0, PARTICIPATION_TUNING.qualityGate.participateDataQualityMin - dataQualityScore).toFixed(2)),
+        race_stability_penalty: Number(Math.max(0, PARTICIPATION_TUNING.qualityGate.participateRaceStabilityMin - raceStabilityScore).toFixed(2)),
+        partner_clarity_penalty: Number(
+          (mainHeadLane === 1
+            ? Math.max(0, PARTICIPATION_TUNING.qualityGate.participatePartnerClarityMin - partnerClarityScore)
+            : 0
+          ).toFixed(2)
+        ),
+        quality_gate_penalty: Number(qualityGatePenalty.toFixed(2))
+      },
       inside_stability_bonus: Number(insideStabilityBonus.toFixed(2)),
       f_hold_penalty: Number(fHoldPenalty.toFixed(2)),
       outer_head_watch_penalty: Number(outerHeadWatchPenalty.toFixed(2)),
@@ -4630,18 +4855,6 @@ raceRouter.get("/race", async (req, res, next) => {
       escapePatternAnalysis,
       race: data?.race || null
     });
-    const participationDecision = buildParticipationDecision({
-      raceDecision,
-      raceRisk,
-      raceStructure,
-      entryMeta,
-      confidenceScores,
-      scenarioSuggestions,
-      raceFlow,
-      escapePatternAnalysis,
-      attackScenarioAnalysis,
-      headScenarioBalanceAnalysis
-    });
     const segmentCorrectionUsage = buildSegmentCorrectionUsageSummary({
       learningWeights,
       race: data?.race || null,
@@ -4696,6 +4909,23 @@ raceRouter.get("/race", async (req, res, next) => {
       headScenarioBalanceAnalysis,
       escapePatternAnalysis,
       attackScenarioAnalysis,
+      learningWeights,
+      race: data?.race || null
+    });
+    const participationDecision = buildParticipationDecision({
+      raceDecision,
+      raceRisk,
+      raceStructure,
+      entryMeta,
+      confidenceScores,
+      scenarioSuggestions,
+      raceFlow,
+      escapePatternAnalysis,
+      attackScenarioAnalysis,
+      headScenarioBalanceAnalysis,
+      ranking,
+      racers: data?.racers || [],
+      exactaSnapshot,
       learningWeights,
       race: data?.race || null
     });
@@ -4872,6 +5102,13 @@ raceRouter.get("/race", async (req, res, next) => {
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
       escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
       f_hold_bias_applied: ranking.some((row) => toNum(row?.features?.f_hold_bias_applied, 0) > 0) ? 1 : 0,
+      data_quality_score: toNullableNum(participationDecision?.metrics?.data_quality_score),
+      race_stability_score: toNullableNum(participationDecision?.metrics?.race_stability_score),
+      partner_clarity_score: toNullableNum(participationDecision?.metrics?.partner_clarity_score),
+      quality_gate_applied: toInt(participationDecision?.metrics?.quality_gate_applied, 0),
+      gating_adjustment_json: participationDecision?.participation_score_components?.gating_adjustment_json || {},
+      prediction_readability_score: toNullableNum(participationDecision?.metrics?.prediction_readability_score),
+      exacta_stability_score: toNullableNum(participationDecision?.metrics?.exacta_stability_score),
       contender_signals: contenderAdjusted.contenderSignals,
       feature_contribution_families: {
         head_fixed_confidence_raw: confidenceScores.head_confidence_raw,
@@ -4925,6 +5162,13 @@ raceRouter.get("/race", async (req, res, next) => {
       entry_change_type: entryMeta.entry_change_type || "none",
       recommendation_score,
       confidence: raceDecision?.confidence ?? null,
+      data_quality_score: snapshotContext.data_quality_score,
+      race_stability_score: snapshotContext.race_stability_score,
+      partner_clarity_score: snapshotContext.partner_clarity_score,
+      quality_gate_applied: snapshotContext.quality_gate_applied,
+      gating_adjustment_json: snapshotContext.gating_adjustment_json,
+      prediction_readability_score: snapshotContext.prediction_readability_score,
+      exacta_stability_score: snapshotContext.exacta_stability_score,
       head_confidence: confidenceScores.head_confidence_calibrated,
       bet_confidence: confidenceScores.bet_confidence_calibrated,
       head_confidence_raw: confidenceScores.head_confidence_raw,
@@ -5010,6 +5254,13 @@ raceRouter.get("/race", async (req, res, next) => {
       participation_decision: participationDecision.decision,
       participation_decision_reason: participationDecision.summary,
       participate_watch_skip_reason_tags: participationDecision.reason_tags,
+      data_quality_score: snapshotContext.data_quality_score,
+      race_stability_score: snapshotContext.race_stability_score,
+      partner_clarity_score: snapshotContext.partner_clarity_score,
+      quality_gate_applied: snapshotContext.quality_gate_applied,
+      gating_adjustment_json: snapshotContext.gating_adjustment_json,
+      prediction_readability_score: snapshotContext.prediction_readability_score,
+      exacta_stability_score: snapshotContext.exacta_stability_score,
       participation_score_components: participationDecision.participation_score_components,
       participation_version: participationDecision.participation_version,
       contender_signals: contenderAdjusted.contenderSignals,

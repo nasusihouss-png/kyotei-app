@@ -718,6 +718,21 @@ function getParticipationDecisionMeta(row) {
   };
 }
 
+function getPredictionQualityLabels(participationDecision, prediction) {
+  const scoreSource =
+    participationDecision?.participation_score_components && typeof participationDecision.participation_score_components === "object"
+      ? participationDecision.participation_score_components
+      : prediction?.participation_score_components && typeof prediction.participation_score_components === "object"
+        ? prediction.participation_score_components
+        : {};
+  const labels = [];
+  if (Number(scoreSource?.data_quality_score) >= 72) labels.push("High Quality");
+  if (Number(scoreSource?.race_stability_score) >= 68) labels.push("Stable");
+  if (Number(scoreSource?.partner_clarity_score) >= 64) labels.push("Partner Clear");
+  if (Number(scoreSource?.quality_gate_applied) === 1) labels.push("Quality Gate");
+  return labels;
+}
+
 function formatHistoryRaceTitle(row) {
   const venue = String(row?.venue_name || row?.venue_id || row?.race_id || "Race").trim();
   const raceNo = Number(row?.race_no);
@@ -1204,6 +1219,7 @@ export default function App() {
     ...(Array.isArray(participationDecision?.reason_tags) ? participationDecision.reason_tags : []),
     ...(Array.isArray(explainability?.race_tags) ? explainability.race_tags : [])
   ].filter(Boolean).slice(0, 6);
+  const predictionQualityLabels = getPredictionQualityLabels(participationDecision, prediction);
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
 
   const racersByLane = useMemo(() => {
@@ -2549,6 +2565,11 @@ export default function App() {
                   {defaultReasonTags.length > 0 ? (
                     <div className="chips-wrap">
                       {defaultReasonTags.map((tag) => <span className="chip" key={`pd-tag-${tag}`}>{tag}</span>)}
+                    </div>
+                  ) : null}
+                  {predictionQualityLabels.length > 0 ? (
+                    <div className="chips-wrap">
+                      {predictionQualityLabels.map((tag) => <span className="chip" key={`pd-quality-${tag}`}>{tag}</span>)}
                     </div>
                   ) : null}
                 </section>
