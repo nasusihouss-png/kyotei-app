@@ -493,13 +493,29 @@ export function buildVerifiedLearningRows() {
           learning?.inner_course_bias_applied ?? context?.inner_course_bias_applied,
           0
         ),
+        stronger_inner_bias_applied: toNum(
+          learning?.stronger_inner_bias_applied ?? context?.stronger_inner_bias_applied,
+          0
+        ),
         outer_head_guard_applied: toNum(
           learning?.outer_head_guard_applied ?? context?.outer_head_guard_applied,
           0
         ),
         survival_guard_applied: toNum(learning?.survival_guard_applied ?? context?.survival_guard_applied, 0),
+        boat1_survival_guard_strength: toNum(
+          learning?.boat1_survival_guard_strength ?? context?.boat1_survival_guard_strength,
+          null
+        ),
+        outer_head_promotion_threshold: toNum(
+          learning?.outer_head_promotion_threshold ?? context?.outer_head_promotion_threshold,
+          null
+        ),
         final_balance_adjustment_json:
           learning?.final_balance_adjustment_json || context?.final_balance_adjustment_json || {},
+        exacta_inside_bias_applied: toNum(
+          learning?.exacta_inside_bias_applied ?? context?.exacta_inside_bias_applied,
+          0
+        ),
         hit_rate_focus_applied: toNum(learning?.hit_rate_focus_applied ?? context?.hit_rate_focus_applied, 0),
         removed_candidate_reason_tags: Array.isArray(learning?.removed_candidate_reason_tags)
           ? learning.removed_candidate_reason_tags

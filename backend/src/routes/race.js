@@ -1258,23 +1258,23 @@ function getEscapeSecondPlaceBiasScore(biasByCombo, lane) {
 
 const HIT_RATE_FOCUS_TUNING = {
   inner_lane_base_bias: {
-    1: 4.4,
-    2: 3.1,
-    3: 2.1,
+    1: 5.3,
+    2: 3.9,
+    3: 2.8,
     4: 0.25,
-    5: -0.9,
-    6: -1.7
+    5: -1.4,
+    6: -2.4
   },
-  inner_lane_quality_scale: 0.24,
-  expected_st_scale: 2.2,
-  escape_survival_bonus: 2.6,
-  boat2_counter_bonus: 1.8,
-  boat3_counter_bonus: 1.35,
+  inner_lane_quality_scale: 0.28,
+  expected_st_scale: 2.45,
+  escape_survival_bonus: 3.4,
+  boat2_counter_bonus: 2.4,
+  boat3_counter_bonus: 1.85,
   outer_head_soft_threshold: {
-    5: 72,
-    6: 78
+    5: 78,
+    6: 84
   },
-  outer_head_soft_penalty_scale: 0.11
+  outer_head_soft_penalty_scale: 0.13
 };
 
 function computePreAttackOuterEvidenceScore(row, escapePatternAnalysis) {
@@ -1697,13 +1697,13 @@ function applyAttackScenarioBiasToRanking(ranking, attackScenarioAnalysis) {
       }
     }));
   }
-  const multiplier = clamp(0.28, 0.82, toNum(attackScenarioAnalysis?.attack_scenario_score, 0) / 82);
+  const multiplier = clamp(0.22, 0.68, toNum(attackScenarioAnalysis?.attack_scenario_score, 0) / 96);
   return [...rows]
     .map((row) => {
       const lane = toInt(row?.racer?.lane, null);
       const baseLaneBias = Number.isFinite(Number(config.lane_bias?.[lane])) ? Number(config.lane_bias[lane]) : 0;
       const partnerBias = Number.isFinite(Number(config.partner_bias?.[lane])) ? Number(config.partner_bias[lane]) : 0;
-      const outsideHeadCap = lane === 5 || lane === 6 ? 0.55 : lane === 4 ? 0.82 : 1;
+      const outsideHeadCap = lane === 5 || lane === 6 ? 0.42 : lane === 4 ? 0.72 : 1;
       const appliedBias = Number(((baseLaneBias * multiplier + partnerBias * multiplier * 0.45) * outsideHeadCap).toFixed(2));
       return {
         ...row,
@@ -1737,16 +1737,16 @@ function applyAttackScenarioBiasToTickets(tickets, attackScenarioAnalysis) {
   const rows = Array.isArray(tickets) ? tickets : [];
   if (!toNum(attackScenarioAnalysis?.attack_scenario_applied, 0)) return rows;
   const targets = getAttackScenarioTargetLanes(attackScenarioAnalysis?.attack_scenario_type);
-  const scoreFactor = clamp(0.16, 0.78, toNum(attackScenarioAnalysis?.attack_scenario_score, 0) / 84);
+  const scoreFactor = clamp(0.12, 0.62, toNum(attackScenarioAnalysis?.attack_scenario_score, 0) / 96);
   return [...rows]
     .map((row) => {
       const combo = normalizeCombo(row?.combo);
       const lanes = combo ? combo.split("-").map((n) => toInt(n, null)).filter(Number.isInteger) : [];
       const headLane = lanes[0];
-      const outsideHeadCap = headLane === 5 || headLane === 6 ? 0.48 : headLane === 4 ? 0.72 : 1;
-      const headBonus = targets.head.includes(headLane) ? 0.014 * scoreFactor * outsideHeadCap : 0;
-      const partnerBonus = targets.partner.includes(lanes[1]) ? 0.009 * scoreFactor : 0;
-      const thirdBonus = targets.partner.includes(lanes[2]) ? 0.005 * scoreFactor : 0;
+      const outsideHeadCap = headLane === 5 || headLane === 6 ? 0.34 : headLane === 4 ? 0.64 : 1;
+      const headBonus = targets.head.includes(headLane) ? 0.011 * scoreFactor * outsideHeadCap : 0;
+      const partnerBonus = targets.partner.includes(lanes[1]) ? 0.007 * scoreFactor : 0;
+      const thirdBonus = targets.partner.includes(lanes[2]) ? 0.004 * scoreFactor : 0;
       const prob = Number.isFinite(Number(row?.prob)) ? Number(row.prob) : null;
       const totalBonus = Number((headBonus + partnerBonus + thirdBonus).toFixed(4));
       return {
@@ -1817,9 +1817,13 @@ function buildFinalBalanceAdjustmentSummary({ ranking, recommendedBets, headScen
   const uniqueTopHeads = [...new Set(topHeads)];
   return {
     hit_rate_focus_applied: 1,
+    stronger_inner_bias_applied: 1,
+    exacta_inside_bias_applied: 1,
     inner_course_bias_applied: rows.some((row) => toInt(row?.features?.inner_course_bias_applied, 0) === 1) ? 1 : 0,
     outer_head_guard_applied: toInt(headScenarioBalanceAnalysis?.outer_head_guard_applied, 0),
     survival_guard_applied: toInt(headScenarioBalanceAnalysis?.survival_guard_applied, 0),
+    boat1_survival_guard_strength: toNum(headScenarioBalanceAnalysis?.boat1_survival_guard_strength, null),
+    outer_head_promotion_threshold: toNum(headScenarioBalanceAnalysis?.outer_head_promotion_threshold, null),
     top_head_count: uniqueTopHeads.length,
     top_heads: uniqueTopHeads,
     main_head_lane: toInt(headScenarioBalanceAnalysis?.main_head_lane, null),
@@ -1940,13 +1944,18 @@ function buildHeadScenarioBalanceAnalysis({
     (toInt(headSelection?.main_head, null) === 1 ? 10 : 0) +
     (secondaryHeads.includes(1) ? 6 : 0) +
     Math.max(0, lane1Score - 56) * 0.32;
+  const strongerInnerBiasApplied = 1;
+  const outerHeadPromotionThreshold = Math.max(
+    toNum(HIT_RATE_FOCUS_TUNING.outer_head_soft_threshold?.[5], 0),
+    toNum(HIT_RATE_FOCUS_TUNING.outer_head_soft_threshold?.[6], 0)
+  );
   const survivalResidualScore = clamp(
     0,
     100,
-    nigeProbPct * 0.66 +
-      escapeConfidence * 0.24 +
+    nigeProbPct * 0.72 +
+      escapeConfidence * 0.3 +
       lane1Support -
-      boat1Weakness * 0.2
+      boat1Weakness * 0.16
   );
   const attackDominanceMargin = attackScenarioScore - survivalResidualScore;
   const scenarioCandidates = Array.isArray(attackScenarioAnalysis?.scenario_candidates)
@@ -1979,11 +1988,14 @@ function buildHeadScenarioBalanceAnalysis({
   const survivalGuardApplied =
     !!attackHeadLane &&
     attackHeadLane !== 1 &&
-    survivalResidualScore >= 38 &&
-    nigeProbPct >= 18 &&
-    attackScenarioScore >= 58 &&
-    attackDominanceMargin <= 24 &&
+    survivalResidualScore >= 34 &&
+    nigeProbPct >= 16 &&
+    attackScenarioScore >= 56 &&
+    attackDominanceMargin <= 28 &&
     attackScenarioScore < 84;
+  const boat1SurvivalGuardStrength = survivalGuardApplied
+    ? Number((1.15 + Math.max(0, survivalResidualScore - 34) * 0.02).toFixed(2))
+    : Number((Math.max(0.85, survivalResidualScore / 50)).toFixed(2));
 
   const headWeightsRaw = {};
   const baselineTop = baselineHeadDistributionJson[0] || null;
@@ -2051,6 +2063,9 @@ function buildHeadScenarioBalanceAnalysis({
     second_distribution_json: secondDistributionJson,
     aggressive_adjustment_json: aggressiveAdjustmentJson,
     head_distribution_json: headDistributionJson,
+    stronger_inner_bias_applied: strongerInnerBiasApplied,
+    boat1_survival_guard_strength: boat1SurvivalGuardStrength,
+    outer_head_promotion_threshold: outerHeadPromotionThreshold,
     outer_head_guard_applied: outerHeadGuardApplied ? 1 : 0,
     survival_guard_applied: survivalGuardApplied ? 1 : 0,
     removed_candidate_reason_tags: removedCandidateReasonTags
@@ -2104,18 +2119,19 @@ function applyHeadScenarioBalanceToTickets(tickets, headScenarioBalanceAnalysis)
       balanceTags.push("THIRD_HEAD_SCENARIO");
     }
     if (survivalGuardApplied && lanes[0] === 1) {
-      bonus += 0.013 + Math.max(0, survivalResidualScore - 34) * 0.00035;
+      const survivalGuardStrength = toNum(headScenarioBalanceAnalysis?.boat1_survival_guard_strength, 1);
+      bonus += (0.016 + Math.max(0, survivalResidualScore - 30) * 0.00042) * survivalGuardStrength;
       balanceTags.push("SURVIVAL_GUARD");
       if (attackHeadLane && lanes.slice(1).includes(attackHeadLane)) {
-        bonus += 0.0075;
+        bonus += 0.009;
         balanceTags.push("ATTACK_SURVIVAL_BALANCE");
       }
     } else if (attackHeadLane && lanes[0] === attackHeadLane) {
       bonus += attackDominanceMargin >= 14 ? 0.0025 : 0;
     }
     if (outerHeadGuardApplied && (headLane === 5 || headLane === 6)) {
-      if (aggressiveAdjustment <= 1.55 || outerSupportScore < 76) {
-        bonus -= 0.011;
+      if (aggressiveAdjustment <= 1.7 || outerSupportScore < 80) {
+        bonus -= 0.013;
         balanceTags.push("OUTER_HEAD_GUARD");
       }
     }
@@ -2311,15 +2327,15 @@ function applyBoat1PriorityModeToTickets({
   const shouldApply =
     sourceRows.length >= 3 &&
     safeArray(boat1HeadSnapshot?.items).length > 0 &&
-    survivalResidualScore >= 30 &&
-    lane1Weight >= 0.2 &&
-    attackDominanceMargin <= 30;
+    survivalResidualScore >= 28 &&
+    lane1Weight >= 0.18 &&
+    attackDominanceMargin <= 32;
 
   const rebalanceRows = (rows) => {
     const list = normalizeSavedBetSnapshotItems(rows);
     if (!shouldApply || !list.length) return list;
     const windowSize = Math.min(6, list.length);
-    const requiredBoat1Count = Math.min(windowSize - 1, Math.max(2, Math.ceil(windowSize * 0.6)));
+    const requiredBoat1Count = Math.min(windowSize - 1, Math.max(2, Math.ceil(windowSize * 0.67)));
     const currentBoat1Count = list.slice(0, windowSize).filter((row) => normalizeCombo(row?.combo).startsWith("1-")).length;
       if (currentBoat1Count >= requiredBoat1Count) {
         return list.map((row) => ({
@@ -2370,7 +2386,7 @@ function applyBoat1PriorityModeToTickets({
   return {
     recommendedBets: nextRecommended,
     optimizedTickets: nextOptimized,
-    boat1_priority_mode_applied: shouldApply && ratio >= 0.6 ? 1 : 0,
+    boat1_priority_mode_applied: shouldApply && ratio >= 0.65 ? 1 : 0,
     boat1_head_ratio_in_final_bets: Number(ratio.toFixed(4)),
     boat1_priority_reason_tags: shouldApply
       ? ["BOAT1_SURVIVAL_MEANINGFUL", "BOAT1_PRIORITY_MODE"]
@@ -2478,14 +2494,14 @@ function buildExactaCoverageSnapshot({
       Math.max(0, toNum(features?.avg_st_rank_delta_vs_left, 0)) * 5 +
       toNum(features?.slit_alert_flag, 0) * 10;
     const headDistributionBias = toNum(headDistributionMap.get(lane), 0) * 42;
-    const stableInsideBias = lane === 1 ? 10.5 : lane === 2 ? 7.2 : lane === 3 ? 5.8 : 0;
-    const boat1PriorityHeadBias = boat1PriorityModeApplied && lane === 1 ? 18 : 0;
+    const stableInsideBias = lane === 1 ? 13.5 : lane === 2 ? 9.2 : lane === 3 ? 7.2 : 0;
+    const boat1PriorityHeadBias = boat1PriorityModeApplied && lane === 1 ? 22 : 0;
     const laneAttackBias = attackScenarioApplied && getAttackScenarioHeadLane(attackScenarioType) === lane
-      ? attackScenarioScore * 0.32
+      ? attackScenarioScore * 0.24
       : 0;
-    const survivalBias = lane === 1 ? survivalResidualScore * 0.46 : lane === 2 ? survivalResidualScore * 0.08 : lane === 3 ? survivalResidualScore * 0.05 : 0;
+    const survivalBias = lane === 1 ? survivalResidualScore * 0.54 : lane === 2 ? survivalResidualScore * 0.12 : lane === 3 ? survivalResidualScore * 0.08 : 0;
     const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * 16;
-    const outerHeadPenalty = lane === 5 ? 8 : lane === 6 ? 14 : 0;
+    const outerHeadPenalty = lane === 5 ? 11 : lane === 6 ? 18 : 0;
     const score =
       toNum(row?.score, 0) * 0.68 +
       exhibitionStrength +
@@ -2519,11 +2535,11 @@ function buildExactaCoverageSnapshot({
       ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, lane) * 1.4
       : 0;
     const attackPartnerBias = attackScenarioApplied && getAttackScenarioTargetLanes(attackScenarioType).partner.includes(lane)
-      ? attackScenarioScore * 0.14
+      ? attackScenarioScore * 0.1
       : 0;
     const secondDistributionBias = toNum(secondDistributionMap.get(lane), 0) * 36;
-    const insidePartnerBias = lane === 2 ? 7 : lane === 3 ? 6 : lane === 4 ? 3.8 : 0;
-    const boat1PriorityPartnerBias = boat1PriorityModeApplied && lane >= 2 && lane <= 4 ? 8 : 0;
+    const insidePartnerBias = lane === 2 ? 9 : lane === 3 ? 7.5 : lane === 4 ? 4.6 : 0;
+    const boat1PriorityPartnerBias = boat1PriorityModeApplied && lane >= 2 && lane <= 4 ? 10 : 0;
     const exhibitionPartnerBias = Math.max(0, 7 - toNum(features?.exhibition_rank, 6)) * 5;
     const motorPartnerBias = toNum(features?.motor_total_score, 0) * 1.5;
     const startPartnerBias = Math.max(0, 7 - toNum(features?.expected_actual_st_rank ?? features?.st_rank, 6)) * 3.4;
@@ -2543,7 +2559,7 @@ function buildExactaCoverageSnapshot({
       motorPartnerBias +
       startPartnerBias +
       leftNeighborBias -
-      (lane === 5 ? 3.5 : lane === 6 ? 6 : 0) -
+      (lane === 5 ? 5.5 : lane === 6 ? 8.5 : 0) -
       fHoldPenalty;
     return {
       lane,
@@ -2568,8 +2584,8 @@ function buildExactaCoverageSnapshot({
         balanceTag
       ].filter(Boolean);
       const compositeScore =
-        head.score * 0.58 +
-        partner.score * 0.42 +
+        head.score * 0.61 +
+        partner.score * 0.39 +
         toNum(evidence?.prob, 0) * 220 +
         Math.min(24, toNum(evidence?.recommended_bet, 0) / 100);
       const existing = bucket.get(combo);
@@ -4053,9 +4069,13 @@ raceRouter.get("/race", async (req, res, next) => {
       second_distribution_json: headScenarioBalanceAnalysis.second_distribution_json,
       aggressive_adjustment_json: headScenarioBalanceAnalysis.aggressive_adjustment_json,
       inner_course_bias_applied: ranking.some((row) => toInt(row?.features?.inner_course_bias_applied, 0) === 1) ? 1 : 0,
+      stronger_inner_bias_applied: toInt(headScenarioBalanceAnalysis.stronger_inner_bias_applied, 0),
       outer_head_guard_applied: toInt(headScenarioBalanceAnalysis.outer_head_guard_applied, 0),
       survival_guard_applied: toInt(headScenarioBalanceAnalysis.survival_guard_applied, 0),
+      boat1_survival_guard_strength: toNullableNum(headScenarioBalanceAnalysis.boat1_survival_guard_strength),
+      outer_head_promotion_threshold: toNullableNum(headScenarioBalanceAnalysis.outer_head_promotion_threshold),
       final_balance_adjustment_json: finalBalanceAdjustmentJson,
+      exacta_inside_bias_applied: 1,
       hit_rate_focus_applied: 1,
       removed_candidate_reason_tags: Array.isArray(headScenarioBalanceAnalysis.removed_candidate_reason_tags)
         ? headScenarioBalanceAnalysis.removed_candidate_reason_tags
@@ -4168,9 +4188,13 @@ raceRouter.get("/race", async (req, res, next) => {
       second_distribution_json: snapshotContext.second_distribution_json,
       aggressive_adjustment_json: snapshotContext.aggressive_adjustment_json,
       inner_course_bias_applied: snapshotContext.inner_course_bias_applied,
+      stronger_inner_bias_applied: snapshotContext.stronger_inner_bias_applied,
       outer_head_guard_applied: snapshotContext.outer_head_guard_applied,
       survival_guard_applied: snapshotContext.survival_guard_applied,
+      boat1_survival_guard_strength: snapshotContext.boat1_survival_guard_strength,
+      outer_head_promotion_threshold: snapshotContext.outer_head_promotion_threshold,
       final_balance_adjustment_json: snapshotContext.final_balance_adjustment_json,
+      exacta_inside_bias_applied: snapshotContext.exacta_inside_bias_applied,
       hit_rate_focus_applied: snapshotContext.hit_rate_focus_applied,
       removed_candidate_reason_tags: snapshotContext.removed_candidate_reason_tags,
       boat1_head_bets_snapshot: snapshotContext.boat1_head_bets_snapshot,
@@ -4249,9 +4273,13 @@ raceRouter.get("/race", async (req, res, next) => {
       second_distribution_json: snapshotContext.second_distribution_json,
       aggressive_adjustment_json: snapshotContext.aggressive_adjustment_json,
       inner_course_bias_applied: snapshotContext.inner_course_bias_applied,
+      stronger_inner_bias_applied: snapshotContext.stronger_inner_bias_applied,
       outer_head_guard_applied: snapshotContext.outer_head_guard_applied,
       survival_guard_applied: snapshotContext.survival_guard_applied,
+      boat1_survival_guard_strength: snapshotContext.boat1_survival_guard_strength,
+      outer_head_promotion_threshold: snapshotContext.outer_head_promotion_threshold,
       final_balance_adjustment_json: snapshotContext.final_balance_adjustment_json,
+      exacta_inside_bias_applied: snapshotContext.exacta_inside_bias_applied,
       hit_rate_focus_applied: snapshotContext.hit_rate_focus_applied,
       removed_candidate_reason_tags: snapshotContext.removed_candidate_reason_tags,
       boat1_head_bets_snapshot: snapshotContext.boat1_head_bets_snapshot,
