@@ -522,6 +522,36 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.removed_candidate_reason_tags)
             ? context.removed_candidate_reason_tags
             : [],
+        formation_first_place_prior_json: Array.isArray(learning?.formation_first_place_prior_json)
+          ? learning.formation_first_place_prior_json
+          : Array.isArray(context?.formation_first_place_prior_json)
+            ? context.formation_first_place_prior_json
+            : [],
+        first_place_distribution_json: Array.isArray(learning?.first_place_distribution_json)
+          ? learning.first_place_distribution_json
+          : Array.isArray(context?.first_place_distribution_json)
+            ? context.first_place_distribution_json
+            : [],
+        second_place_distribution_json: Array.isArray(learning?.second_place_distribution_json)
+          ? learning.second_place_distribution_json
+          : Array.isArray(context?.second_place_distribution_json)
+            ? context.second_place_distribution_json
+            : [],
+        third_place_distribution_json: Array.isArray(learning?.third_place_distribution_json)
+          ? learning.third_place_distribution_json
+          : Array.isArray(context?.third_place_distribution_json)
+            ? context.third_place_distribution_json
+            : [],
+        partner_search_bias_json:
+          learning?.partner_search_bias_json || context?.partner_search_bias_json || {},
+        boat1_partner_search_applied: toNum(
+          learning?.boat1_partner_search_applied ?? context?.boat1_partner_search_applied,
+          0
+        ),
+        scoring_family_components_json:
+          learning?.scoring_family_components_json || context?.scoring_family_components_json || {},
+        rebalance_version:
+          learning?.rebalance_version || context?.rebalance_version || null,
         boat1_head_bets_snapshot: Array.isArray(learning?.boat1_head_bets_snapshot)
           ? learning.boat1_head_bets_snapshot
           : Array.isArray(context?.boat1_head_bets_snapshot)
