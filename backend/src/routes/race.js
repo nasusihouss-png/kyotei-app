@@ -1628,6 +1628,241 @@ function applyAttackScenarioBiasToTickets(tickets, attackScenarioAnalysis) {
     .sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0));
 }
 
+function getAttackScenarioHeadLane(type) {
+  if (type === "two_sashi") return 2;
+  if (type === "three_makuri" || type === "three_makuri_sashi") return 3;
+  if (type === "four_cado_makuri" || type === "four_cado_makuri_sashi") return 4;
+  return null;
+}
+
+function buildHeadScenarioBalanceAnalysis({
+  ranking,
+  raceFlow,
+  headSelection,
+  attackScenarioAnalysis,
+  escapePatternAnalysis
+}) {
+  const rows = Array.isArray(ranking) ? ranking : [];
+  const lane1 = laneRowFromRanking(rows, 1);
+  const lane1Score = toNum(lane1?.score, 56);
+  const nigeProbPct = toNum(raceFlow?.nige_prob, 0) * 100;
+  const boat1Weakness = toNum(attackScenarioAnalysis?.evidence?.boat1_weakness, 0);
+  const escapeConfidence = toNum(escapePatternAnalysis?.escape_pattern_confidence, 0);
+  const attackType = attackScenarioAnalysis?.attack_scenario_type || null;
+  const attackHeadLane = getAttackScenarioHeadLane(attackType);
+  const attackScenarioScore = toNum(attackScenarioAnalysis?.attack_scenario_score, 0);
+  const secondaryHeads = Array.isArray(headSelection?.secondary_heads) ? headSelection.secondary_heads : [];
+  const lane1Support =
+    (toInt(headSelection?.main_head, null) === 1 ? 10 : 0) +
+    (secondaryHeads.includes(1) ? 6 : 0) +
+    Math.max(0, lane1Score - 56) * 0.32;
+  const survivalResidualScore = clamp(
+    0,
+    100,
+    nigeProbPct * 0.66 +
+      escapeConfidence * 0.24 +
+      lane1Support -
+      boat1Weakness * 0.2
+  );
+  const attackDominanceMargin = attackScenarioScore - survivalResidualScore;
+  const scenarioCandidates = Array.isArray(attackScenarioAnalysis?.scenario_candidates)
+    ? attackScenarioAnalysis.scenario_candidates
+    : [];
+  const counterAttackType = scenarioCandidates.find((candidate) => candidate?.type && candidate.type !== attackType)?.type || null;
+  const survivalGuardApplied =
+    !!attackHeadLane &&
+    attackHeadLane !== 1 &&
+    survivalResidualScore >= 38 &&
+    nigeProbPct >= 18 &&
+    attackScenarioScore >= 58 &&
+    attackDominanceMargin <= 24 &&
+    attackScenarioScore < 84;
+
+  const headWeightsRaw = {};
+  if (attackHeadLane) {
+    headWeightsRaw[String(attackHeadLane)] = Math.max(0.08, attackScenarioScore / 100);
+  }
+  headWeightsRaw["1"] = Math.max(0.06, survivalResidualScore / 100);
+  for (const lane of secondaryHeads.slice(0, 2)) {
+    if (!Number.isInteger(lane) || lane === 1 || lane === attackHeadLane) continue;
+    headWeightsRaw[String(lane)] = Math.max(headWeightsRaw[String(lane)] || 0, 0.08);
+  }
+  const totalWeight = Object.values(headWeightsRaw).reduce((sum, value) => sum + toNum(value, 0), 0) || 1;
+  const headDistributionJson = Object.entries(headWeightsRaw)
+    .map(([lane, weight]) => ({
+      lane: Number(lane),
+      role:
+        Number(lane) === attackHeadLane
+          ? "main"
+          : Number(lane) === 1
+            ? (survivalGuardApplied ? "survival" : "counter")
+            : "counter",
+      weight: Number((weight / totalWeight).toFixed(4))
+    }))
+    .sort((a, b) => b.weight - a.weight);
+
+  const removedCandidateReasonTags = [];
+  if (attackHeadLane && attackDominanceMargin > 24) removedCandidateReasonTags.push("ATTACK_DOMINANCE_HIGH");
+  if (survivalResidualScore < 38) removedCandidateReasonTags.push("ONE_SURVIVAL_RESIDUAL_LOW");
+  if (nigeProbPct < 18) removedCandidateReasonTags.push("NIGE_PROB_TOO_LOW");
+
+  return {
+    main_scenario_type: attackHeadLane
+      ? attackType
+      : toInt(headSelection?.main_head, null) === 1
+        ? "one_head_survival"
+        : null,
+    counter_scenario_type: survivalGuardApplied
+      ? "one_head_survival"
+      : counterAttackType,
+    survival_scenario_type: survivalResidualScore >= 32 ? "one_head_survival" : null,
+    attack_head_lane: attackHeadLane,
+    survival_head_lane: 1,
+    survival_residual_score: Number(survivalResidualScore.toFixed(2)),
+    attack_dominance_margin: Number(attackDominanceMargin.toFixed(2)),
+    head_distribution_json: headDistributionJson,
+    survival_guard_applied: survivalGuardApplied ? 1 : 0,
+    removed_candidate_reason_tags: removedCandidateReasonTags
+  };
+}
+
+function applyHeadScenarioBalanceToTickets(tickets, headScenarioBalanceAnalysis) {
+  const rows = Array.isArray(tickets) ? tickets : [];
+  if (!rows.length) return rows;
+
+  const attackHeadLane = toInt(headScenarioBalanceAnalysis?.attack_head_lane, null);
+  const survivalGuardApplied = toNum(headScenarioBalanceAnalysis?.survival_guard_applied, 0) === 1;
+  const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const attackDominanceMargin = toNum(headScenarioBalanceAnalysis?.attack_dominance_margin, 99);
+  const adjusted = rows.map((row) => {
+    const combo = normalizeCombo(row?.combo);
+    const lanes = combo
+      ? combo.split("-").map((value) => toInt(value, null)).filter(Number.isInteger)
+      : [];
+    let bonus = 0;
+    const balanceTags = Array.isArray(row?.scenario_balance_tags) ? [...row.scenario_balance_tags] : [];
+    if (survivalGuardApplied && lanes[0] === 1) {
+      bonus += 0.010 + Math.max(0, survivalResidualScore - 38) * 0.0003;
+      balanceTags.push("SURVIVAL_GUARD");
+      if (attackHeadLane && lanes.slice(1).includes(attackHeadLane)) {
+        bonus += 0.006;
+        balanceTags.push("ATTACK_SURVIVAL_BALANCE");
+      }
+    } else if (attackHeadLane && lanes[0] === attackHeadLane) {
+      bonus += attackDominanceMargin >= 14 ? 0.0025 : 0;
+    }
+    const prob = Number.isFinite(Number(row?.prob)) ? Number(row.prob) : null;
+    return {
+      ...row,
+      prob: Number.isFinite(prob) ? Number((prob + bonus).toFixed(4)) : prob,
+      scenario_balance_bonus: Number(bonus.toFixed(4)),
+      scenario_balance_tags: [...new Set(balanceTags)]
+    };
+  });
+
+  adjusted.sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0));
+
+  if (!survivalGuardApplied) return adjusted;
+
+  const previewCount = Math.min(4, adjusted.length);
+  const hasHeadOneCoverage = adjusted.slice(0, previewCount).some((row) => normalizeCombo(row?.combo).startsWith("1-"));
+  if (hasHeadOneCoverage) return adjusted;
+
+  const bestHeadOneIndex = adjusted.findIndex((row) => normalizeCombo(row?.combo).startsWith("1-"));
+  if (bestHeadOneIndex < 0) {
+    return adjusted;
+  }
+
+  const targetProb = toNum(adjusted[Math.max(0, previewCount - 1)]?.prob, 0);
+  adjusted[bestHeadOneIndex] = {
+    ...adjusted[bestHeadOneIndex],
+    prob: Number((targetProb + 0.0002).toFixed(4)),
+    scenario_balance_bonus: Number((toNum(adjusted[bestHeadOneIndex]?.scenario_balance_bonus, 0) + 0.0002).toFixed(4)),
+    scenario_balance_tags: [
+      ...new Set([...(Array.isArray(adjusted[bestHeadOneIndex]?.scenario_balance_tags) ? adjusted[bestHeadOneIndex].scenario_balance_tags : []), "SURVIVAL_GUARD_PROMOTED"])
+    ]
+  };
+
+  return adjusted.sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0));
+}
+
+function buildBoat1HeadBetsSnapshot({
+  recommendedBets,
+  optimizedTickets,
+  headScenarioBalanceAnalysis,
+  escapePatternAnalysis,
+  learningWeights,
+  race
+}) {
+  const merged = normalizeSavedBetSnapshotItems([
+    ...(Array.isArray(optimizedTickets) ? optimizedTickets : []),
+    ...(Array.isArray(recommendedBets) ? recommendedBets : [])
+  ]);
+  const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const attackHeadLane = toInt(headScenarioBalanceAnalysis?.attack_head_lane, null);
+  const shown = survivalResidualScore >= 32;
+  const learnedPatternAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "formation_pattern",
+    escapePatternAnalysis?.formation_pattern || null,
+    "second_place_bias_correction"
+  );
+  const learnedVenueAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "second_place_bias_correction"
+  );
+
+  const bucket = new Map();
+  for (const row of merged) {
+    const combo = normalizeCombo(row?.combo);
+    if (!combo.startsWith("1-")) continue;
+    const lanes = combo.split("-").map((value) => toInt(value, null)).filter(Number.isInteger);
+    const secondLane = lanes[1];
+    const escapeBias = escapePatternAnalysis?.escape_pattern_applied
+      ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, secondLane) * 0.0024
+      : 0;
+    const balanceBonus = toNum(row?.scenario_balance_bonus, 0);
+    const attackPartnerBonus = attackHeadLane && lanes.includes(attackHeadLane) ? 0.005 : 0;
+    const learnedBonus = (learnedPatternAdj + learnedVenueAdj) * 0.0008;
+    const prob = toNum(row?.prob, 0);
+    const compositeScore = prob + balanceBonus + escapeBias + attackPartnerBonus + learnedBonus;
+    const reasonTags = [
+      "BOAT1_HEAD",
+      survivalResidualScore >= 38 ? "SURVIVAL_RESIDUAL_ACTIVE" : null,
+      escapePatternAnalysis?.escape_pattern_applied ? "ESCAPE_PATTERN_CONTEXT" : null,
+      attackPartnerBonus > 0 ? "ATTACK_COUNTER_PARTNER" : null
+    ].filter(Boolean);
+    const nextRow = {
+      ...row,
+      combo,
+      boat1_head_score: Number((compositeScore * 100).toFixed(2)),
+      boat1_head_reason_tags: [...new Set(reasonTags)]
+    };
+    const existing = bucket.get(combo);
+    if (!existing || toNum(existing?.boat1_head_score, 0) < nextRow.boat1_head_score) {
+      bucket.set(combo, nextRow);
+    }
+  }
+
+  const items = [...bucket.values()]
+    .sort((a, b) => toNum(b?.boat1_head_score, 0) - toNum(a?.boat1_head_score, 0))
+    .slice(0, 5)
+    .map((row) => ({
+      ...row,
+      boat1_head_score: Number(toNum(row?.boat1_head_score, 0).toFixed(2))
+    }));
+
+  return {
+    shown: shown && items.length > 0,
+    boat1_head_score: items.length > 0 ? Number(toNum(items[0]?.boat1_head_score, survivalResidualScore).toFixed(2)) : Number(survivalResidualScore.toFixed(2)),
+    boat1_survival_residual_score: Number(survivalResidualScore.toFixed(2)),
+    boat1_head_reason_tags: [...new Set(items.flatMap((row) => safeArray(row?.boat1_head_reason_tags)).slice(0, 6))],
+    items
+  };
+}
+
 const CONFIDENCE_VERSION = "v1.1";
 const PARTICIPATION_VERSION = "v1.2";
 const PARTICIPATION_CONFIDENCE_THRESHOLDS = {
@@ -2781,6 +3016,43 @@ raceRouter.get("/race", async (req, res, next) => {
       ticketOptimizationWithStake.optimized_tickets,
       attackScenarioAnalysis
     );
+    const headScenarioBalanceAnalysis = buildHeadScenarioBalanceAnalysis({
+      ranking,
+      raceFlow,
+      headSelection: headSelectionRefined,
+      attackScenarioAnalysis,
+      escapePatternAnalysis
+    });
+    bet_plan_with_stake.recommended_bets = applyHeadScenarioBalanceToTickets(
+      bet_plan_with_stake.recommended_bets,
+      headScenarioBalanceAnalysis
+    );
+    ticketOptimizationWithStake.optimized_tickets = applyHeadScenarioBalanceToTickets(
+      ticketOptimizationWithStake.optimized_tickets,
+      headScenarioBalanceAnalysis
+    );
+    if (toNum(headScenarioBalanceAnalysis?.survival_guard_applied, 0) === 1) {
+      const optimizedRows = Array.isArray(ticketOptimizationWithStake.optimized_tickets)
+        ? ticketOptimizationWithStake.optimized_tickets
+        : [];
+      const optimizedHasHeadOne = optimizedRows.some((row) => normalizeCombo(row?.combo).startsWith("1-"));
+      if (!optimizedHasHeadOne) {
+        const bestHeadOneFallback = (Array.isArray(bet_plan_with_stake.recommended_bets)
+          ? bet_plan_with_stake.recommended_bets
+          : []
+        ).find((row) => normalizeCombo(row?.combo).startsWith("1-"));
+        if (bestHeadOneFallback) {
+          ticketOptimizationWithStake.optimized_tickets = [...optimizedRows, {
+            ...bestHeadOneFallback,
+            ticket_type: bestHeadOneFallback?.ticket_type || "backup",
+            survival_guard_injected: 1,
+            scenario_balance_tags: [
+              ...new Set([...(Array.isArray(bestHeadOneFallback?.scenario_balance_tags) ? bestHeadOneFallback.scenario_balance_tags : []), "SURVIVAL_GUARD_INJECTED"])
+            ]
+          }].sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0));
+        }
+      }
+    }
 
     saveFeatureSnapshots(raceId, ranking);
 
@@ -2825,6 +3097,14 @@ raceRouter.get("/race", async (req, res, next) => {
     const finalRecommendedSnapshot = buildFinalRecommendedBetsSnapshot({
       recommendedBets: bet_plan_with_stake?.recommended_bets,
       optimizedTickets: ticketOptimizationWithStake?.optimized_tickets
+    });
+    const boat1HeadSnapshot = buildBoat1HeadBetsSnapshot({
+      recommendedBets: bet_plan_with_stake?.recommended_bets,
+      optimizedTickets: ticketOptimizationWithStake?.optimized_tickets,
+      headScenarioBalanceAnalysis,
+      escapePatternAnalysis,
+      learningWeights,
+      race: data?.race || null
     });
     const startDisplay = saveRaceStartDisplaySnapshot({
       raceId,
@@ -2935,6 +3215,19 @@ raceRouter.get("/race", async (req, res, next) => {
       three_makuri_sashi_score: toNullableNum(attackScenarioAnalysis?.three_makuri_sashi_score),
       four_cado_makuri_score: toNullableNum(attackScenarioAnalysis?.four_cado_makuri_score),
       four_cado_makuri_sashi_score: toNullableNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score),
+      main_scenario_type: headScenarioBalanceAnalysis.main_scenario_type,
+      counter_scenario_type: headScenarioBalanceAnalysis.counter_scenario_type,
+      survival_scenario_type: headScenarioBalanceAnalysis.survival_scenario_type,
+      head_distribution_json: headScenarioBalanceAnalysis.head_distribution_json,
+      survival_guard_applied: toInt(headScenarioBalanceAnalysis.survival_guard_applied, 0),
+      removed_candidate_reason_tags: Array.isArray(headScenarioBalanceAnalysis.removed_candidate_reason_tags)
+        ? headScenarioBalanceAnalysis.removed_candidate_reason_tags
+        : [],
+      boat1_head_bets_snapshot: boat1HeadSnapshot.items,
+      boat1_head_score: boat1HeadSnapshot.boat1_head_score,
+      boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
+      boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
+      boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -3019,6 +3312,17 @@ raceRouter.get("/race", async (req, res, next) => {
       three_makuri_sashi_score: snapshotContext.three_makuri_sashi_score,
       four_cado_makuri_score: snapshotContext.four_cado_makuri_score,
       four_cado_makuri_sashi_score: snapshotContext.four_cado_makuri_sashi_score,
+      main_scenario_type: snapshotContext.main_scenario_type,
+      counter_scenario_type: snapshotContext.counter_scenario_type,
+      survival_scenario_type: snapshotContext.survival_scenario_type,
+      head_distribution_json: snapshotContext.head_distribution_json,
+      survival_guard_applied: snapshotContext.survival_guard_applied,
+      removed_candidate_reason_tags: snapshotContext.removed_candidate_reason_tags,
+      boat1_head_bets_snapshot: snapshotContext.boat1_head_bets_snapshot,
+      boat1_head_score: snapshotContext.boat1_head_score,
+      boat1_survival_residual_score: snapshotContext.boat1_survival_residual_score,
+      boat1_head_section_shown: snapshotContext.boat1_head_section_shown,
+      boat1_head_reason_tags: snapshotContext.boat1_head_reason_tags,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -3073,6 +3377,17 @@ raceRouter.get("/race", async (req, res, next) => {
       three_makuri_sashi_score: toNullableNum(attackScenarioAnalysis?.three_makuri_sashi_score),
       four_cado_makuri_score: toNullableNum(attackScenarioAnalysis?.four_cado_makuri_score),
       four_cado_makuri_sashi_score: toNullableNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score),
+      main_scenario_type: snapshotContext.main_scenario_type,
+      counter_scenario_type: snapshotContext.counter_scenario_type,
+      survival_scenario_type: snapshotContext.survival_scenario_type,
+      head_distribution_json: snapshotContext.head_distribution_json,
+      survival_guard_applied: snapshotContext.survival_guard_applied,
+      removed_candidate_reason_tags: snapshotContext.removed_candidate_reason_tags,
+      boat1_head_bets_snapshot: snapshotContext.boat1_head_bets_snapshot,
+      boat1_head_score: snapshotContext.boat1_head_score,
+      boat1_survival_residual_score: snapshotContext.boat1_survival_residual_score,
+      boat1_head_section_shown: snapshotContext.boat1_head_section_shown,
+      boat1_head_reason_tags: snapshotContext.boat1_head_reason_tags,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -3080,6 +3395,11 @@ raceRouter.get("/race", async (req, res, next) => {
       participation_decision_reason: participationDecision.summary,
       participation_score_components: participationDecision.participation_score_components,
       participation_version: participationDecision.participation_version,
+      boat1_head_bets_snapshot: boat1HeadSnapshot.items,
+      boat1_head_score: boat1HeadSnapshot.boat1_head_score,
+      boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
+      boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
+      boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags,
       final_recommended_bets_snapshot: finalRecommendedSnapshot.items,
       final_recommended_bets_count: finalRecommendedSnapshot.items.length,
       final_recommended_bets_snapshot_source: finalRecommendedSnapshot.snapshot_source,
@@ -3104,7 +3424,8 @@ raceRouter.get("/race", async (req, res, next) => {
           main_picks: Array.isArray(scenarioSuggestions?.main_picks) ? scenarioSuggestions.main_picks : [],
           backup_picks: Array.isArray(scenarioSuggestions?.backup_picks) ? scenarioSuggestions.backup_picks : [],
           longshot_picks: Array.isArray(scenarioSuggestions?.longshot_picks) ? scenarioSuggestions.longshot_picks : []
-        }
+        },
+        boat1_head_bets: boat1HeadSnapshot.items
       },
       ai_bets_display_snapshot: finalRecommendedSnapshot.items,
       prediction_before_entry_change,
@@ -3195,6 +3516,14 @@ raceRouter.get("/race", async (req, res, next) => {
       participationDecision,
       confidenceScores,
       attackScenario: attackScenarioAnalysis,
+      headScenarioBalance: headScenarioBalanceAnalysis,
+      boat1HeadSection: {
+        boat1_head_bets_snapshot: boat1HeadSnapshot.items,
+        boat1_head_score: boat1HeadSnapshot.boat1_head_score,
+        boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
+        boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
+        boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags
+      },
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,

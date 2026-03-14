@@ -985,6 +985,24 @@ export default function App() {
     data?.prediction?.attack_scenario_type ||
     prediction?.attack_scenario_type ||
     null;
+  const boat1HeadSection = data?.boat1HeadSection || prediction?.boat1HeadSection || {};
+  const boat1HeadBets = Array.isArray(boat1HeadSection?.boat1_head_bets_snapshot)
+    ? boat1HeadSection.boat1_head_bets_snapshot
+    : Array.isArray(prediction?.boat1_head_bets_snapshot)
+      ? prediction.boat1_head_bets_snapshot
+      : [];
+  const boat1HeadSectionShown =
+    Number(boat1HeadSection?.boat1_head_section_shown ?? prediction?.boat1_head_section_shown ?? 0) === 1 &&
+    boat1HeadBets.length > 0;
+  const boat1SurvivalResidualScore = Number(
+    boat1HeadSection?.boat1_survival_residual_score ?? prediction?.boat1_survival_residual_score ?? 0
+  );
+  const boat1HeadScore = Number(boat1HeadSection?.boat1_head_score ?? prediction?.boat1_head_score ?? 0);
+  const boat1HeadReasonTags = Array.isArray(boat1HeadSection?.boat1_head_reason_tags)
+    ? boat1HeadSection.boat1_head_reason_tags
+    : Array.isArray(prediction?.boat1_head_reason_tags)
+      ? prediction.boat1_head_reason_tags
+      : [];
   const defaultReasonTags = [
     ...(Array.isArray(participationDecision?.reason_tags) ? participationDecision.reason_tags : []),
     ...(Array.isArray(explainability?.race_tags) ? explainability.race_tags : [])
@@ -2314,6 +2332,41 @@ export default function App() {
                     ))}
                   </div>
                 </article>
+
+                {boat1HeadSectionShown ? (
+                  <article className="card summary-card">
+                    <h2>1号艇頭 / 残し買い目</h2>
+                    <div className="summary-inline-meta">
+                      <span>{boat1HeadBets.length}件</span>
+                      <span>score {formatMaybeNumber(boat1HeadScore, 1)} / residual {formatMaybeNumber(boat1SurvivalResidualScore, 1)}</span>
+                    </div>
+                    {boat1HeadReasonTags.length > 0 ? (
+                      <div className="chips-wrap" style={{ marginBottom: 8 }}>
+                        {boat1HeadReasonTags.map((tag) => <span className="chip" key={`b1-tag-${tag}`}>{tag}</span>)}
+                      </div>
+                    ) : null}
+                    <div className="list-stack compact-list">
+                      {boat1HeadBets.map((bet, idx) => (
+                        <div key={`b1-${bet.combo}-${idx}`} className="list-stack">
+                          <div className="list-row list-row-actions">
+                            <strong><ComboBadge combo={bet.combo} /></strong>
+                            <span>p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                            <span>score {formatMaybeNumber(bet?.boat1_head_score, 1)}</span>
+                            <span>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</span>
+                            <button
+                              className="fetch-btn secondary"
+                              onClick={() => onUsePredictedTicket(bet)}
+                              disabled={disableBetActions}
+                              title={disableBetActions ? "Not Recommended race" : ""}
+                            >
+                              記録に追加
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ) : null}
                 </div>
 
                 <details className="card">

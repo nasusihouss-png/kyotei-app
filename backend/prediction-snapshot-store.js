@@ -476,6 +476,32 @@ export function buildVerifiedLearningRows() {
         three_makuri_sashi_score: toNum(learning?.three_makuri_sashi_score ?? context?.three_makuri_sashi_score, null),
         four_cado_makuri_score: toNum(learning?.four_cado_makuri_score ?? context?.four_cado_makuri_score, null),
         four_cado_makuri_sashi_score: toNum(learning?.four_cado_makuri_sashi_score ?? context?.four_cado_makuri_sashi_score, null),
+        main_scenario_type: learning?.main_scenario_type || context?.main_scenario_type || null,
+        counter_scenario_type: learning?.counter_scenario_type || context?.counter_scenario_type || null,
+        survival_scenario_type: learning?.survival_scenario_type || context?.survival_scenario_type || null,
+        head_distribution_json: learning?.head_distribution_json || context?.head_distribution_json || [],
+        survival_guard_applied: toNum(learning?.survival_guard_applied ?? context?.survival_guard_applied, 0),
+        removed_candidate_reason_tags: Array.isArray(learning?.removed_candidate_reason_tags)
+          ? learning.removed_candidate_reason_tags
+          : Array.isArray(context?.removed_candidate_reason_tags)
+            ? context.removed_candidate_reason_tags
+            : [],
+        boat1_head_bets_snapshot: Array.isArray(learning?.boat1_head_bets_snapshot)
+          ? learning.boat1_head_bets_snapshot
+          : Array.isArray(context?.boat1_head_bets_snapshot)
+            ? context.boat1_head_bets_snapshot
+            : [],
+        boat1_head_score: toNum(learning?.boat1_head_score ?? context?.boat1_head_score, null),
+        boat1_survival_residual_score: toNum(
+          learning?.boat1_survival_residual_score ?? context?.boat1_survival_residual_score,
+          null
+        ),
+        boat1_head_section_shown: toNum(learning?.boat1_head_section_shown ?? context?.boat1_head_section_shown, 0),
+        boat1_head_reason_tags: Array.isArray(learning?.boat1_head_reason_tags)
+          ? learning.boat1_head_reason_tags
+          : Array.isArray(context?.boat1_head_reason_tags)
+            ? context.boat1_head_reason_tags
+            : [],
         predicted_entry_order: Array.isArray(context?.entry?.predicted_entry_order) ? context.entry.predicted_entry_order : [],
         actual_entry_order: Array.isArray(context?.entry?.actual_entry_order) ? context.entry.actual_entry_order : [],
         start_display_st: context?.entry?.start_exhibition_st || {},
