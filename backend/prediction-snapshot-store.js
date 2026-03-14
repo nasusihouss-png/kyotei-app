@@ -561,6 +561,8 @@ export function buildVerifiedLearningRows() {
           learning?.boat1_partner_search_bias_json || context?.boat1_partner_search_bias_json || {},
         partner_search_lap_bias_json:
           learning?.partner_search_lap_bias_json || context?.partner_search_lap_bias_json || {},
+        venue_correction_summary:
+          learning?.venue_correction_summary || context?.venue_correction_summary || {},
         third_place_residual_bias_json:
           learning?.third_place_residual_bias_json || context?.third_place_residual_bias_json || {},
         boat1_partner_search_applied: toNum(

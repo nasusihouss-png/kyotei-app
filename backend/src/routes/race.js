@@ -1405,23 +1405,53 @@ function buildSeparatedCandidateDistributions({
     toInt(race?.venueId, null),
     "recommendation_score_adjustment"
   );
+  const venuePartnerAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "second_place_partner_adjustment"
+  );
+  const venueThirdResidualAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "third_place_residual_adjustment"
+  );
+  const venueLapWeightAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "lap_weight_adjustment"
+  );
+  const venueFHoldAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "f_hold_caution_adjustment"
+  );
+  const venueOuterSuppressionAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "outer_head_suppression_adjustment"
+  );
 
   const firstPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
-    const outerHeadPenalty = lane === 5 ? 9 : lane === 6 ? 15 : 0;
+    const outerHeadPenalty = lane === 5 ? 9 + venueOuterSuppressionAdj * 1.3 : lane === 6 ? 15 + venueOuterSuppressionAdj * 1.3 : 0;
       const firstWeight =
         toNum(row?.score, 0) * 0.56 +
         toNum(priorMap.get(lane), 0) * 42 +
         toNum(headMap.get(lane), 0) * 34 +
         Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 3.6 +
-        Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * 18 +
+        Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * (18 + venueLapWeightAdj * 20) +
         toNum(f?.lap_attack_flag, 0) * 4 +
-        toNum(f?.lap_attack_strength, 0) * 0.34 +
+        toNum(f?.lap_attack_strength, 0) * (0.34 + venueLapWeightAdj * 0.2) +
         toNum(f?.motor_total_score, 0) * 1.15 +
         Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.8 -
       outerHeadPenalty -
-      toNum(f?.f_hold_caution_penalty, 0) * 4.5 +
+      toNum(f?.f_hold_caution_penalty, 0) * (4.5 + venueFHoldAdj * 0.6) +
       (lane === 1 ? toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0) * 0.22 : 0) +
       (attackHeadLane && lane === attackHeadLane ? toNum(attackScenarioAnalysis?.attack_scenario_score, 0) * 0.08 : 0) +
       formationLearnedAdj * 0.5 +
@@ -1440,22 +1470,23 @@ function buildSeparatedCandidateDistributions({
       mainHeadLane === 1
         ? lane === 2 ? 12 : lane === 3 ? 10 : lane === 4 ? 6.4 : lane === 1 ? 1.4 : -2
         : lane === 2 ? 8 : lane === 3 ? 7 : lane === 4 ? 4.2 : lane === 1 ? 1.8 : 0;
-    const outerPartnerPenalty = lane === 5 ? 5.5 : lane === 6 ? 8.5 : 0;
+    const outerPartnerPenalty = lane === 5 ? 5.5 + venueOuterSuppressionAdj : lane === 6 ? 8.5 + venueOuterSuppressionAdj : 0;
     const partnerWeight =
       toNum(secondMapFromExisting.get(lane), 0) * 42 +
       toNum(row?.score, 0) * 0.34 +
       escapePartnerBias +
       insideRemainBias +
+      venuePartnerAdj * (lane >= 2 && lane <= 4 ? 1.4 : lane === 1 ? 0.2 : -0.8) +
       Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 2.4 +
-      Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * 16 +
+      Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * (16 + venueLapWeightAdj * 18) +
       toNum(f?.lap_attack_flag, 0) * 3.5 +
-      toNum(f?.lap_attack_strength, 0) * 0.28 +
+      toNum(f?.lap_attack_strength, 0) * (0.28 + venueLapWeightAdj * 0.16) +
       toNum(f?.motor_total_score, 0) * 0.95 +
       Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.1 +
       Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 16 +
       toNum(f?.slit_alert_flag, 0) * 4 -
       outerPartnerPenalty -
-      toNum(f?.f_hold_caution_penalty, 0) * 3.8;
+      toNum(f?.f_hold_caution_penalty, 0) * (3.8 + venueFHoldAdj * 0.55);
     return { lane, role: lane === 2 || lane === 3 ? "primary_partner" : "partner", weight: partnerWeight };
   }));
 
@@ -1471,18 +1502,19 @@ function buildSeparatedCandidateDistributions({
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
     const insideResidualBias = lane === 2 ? 5.4 : lane === 3 ? 4.8 : lane === 4 ? 3.2 : lane === 1 ? 2.4 : 0;
-    const outerThirdPenalty = lane === 5 ? 2.4 : lane === 6 ? 3.8 : 0;
+    const outerThirdPenalty = lane === 5 ? 2.4 + venueOuterSuppressionAdj * 0.75 : lane === 6 ? 3.8 + venueOuterSuppressionAdj * 0.75 : 0;
     const thirdWeight =
       toNum(thirdCounts.get(lane), 0) * 48 +
       toNum(row?.score, 0) * 0.18 +
       insideResidualBias +
+      venueThirdResidualAdj * (lane >= 2 && lane <= 4 ? 1.2 : lane === 1 ? 0.4 : -0.6) +
       Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 1.7 +
-      Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * 10 +
-      toNum(f?.lap_attack_strength, 0) * 0.16 +
+      Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * (10 + venueLapWeightAdj * 10) +
+      toNum(f?.lap_attack_strength, 0) * (0.16 + venueLapWeightAdj * 0.08) +
       toNum(f?.motor_total_score, 0) * 0.72 +
       Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 10 -
       outerThirdPenalty -
-      toNum(f?.f_hold_caution_penalty, 0) * 2.4;
+      toNum(f?.f_hold_caution_penalty, 0) * (2.4 + venueFHoldAdj * 0.4);
     return { lane, role: "third", weight: thirdWeight };
   }));
 
@@ -1505,6 +1537,15 @@ function buildSeparatedCandidateDistributions({
       top_lap_attack_third_lanes: thirdPlaceDistribution
         .filter((row) => toInt(row?.lane, null) >= 2)
         .slice(0, 4)
+    },
+    venue_correction_summary: {
+      venue_segment_key: toInt(race?.venueId, null) ?? race?.venueName ?? null,
+      recommendation_score_adjustment: venueLearnedAdj,
+      second_place_partner_adjustment: venuePartnerAdj,
+      third_place_residual_adjustment: venueThirdResidualAdj,
+      lap_weight_adjustment: venueLapWeightAdj,
+      f_hold_caution_adjustment: venueFHoldAdj,
+      outer_head_suppression_adjustment: venueOuterSuppressionAdj
     },
     third_place_residual_bias_json: {
       strongest_third_lanes: thirdPlaceDistribution.slice(0, 4),
@@ -1810,6 +1851,24 @@ function applyEscapeFormationBiasToRanking(ranking, escapePatternAnalysis, learn
     "venue",
     toInt(race?.venueId, null),
     "second_place_bias_correction"
+  );
+  const venuePartnerAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "second_place_partner_adjustment"
+  );
+  const venueLapAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "lap_weight_adjustment"
+  );
+  const venueFHoldAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "f_hold_caution_adjustment"
   );
   return [...rows]
     .map((row) => {
@@ -2330,7 +2389,9 @@ function buildHeadScenarioBalanceAnalysis({
   raceFlow,
   headSelection,
   attackScenarioAnalysis,
-  escapePatternAnalysis
+  escapePatternAnalysis,
+  learningWeights,
+  race
 }) {
   const rows = Array.isArray(ranking) ? ranking : [];
   const baselineRows = Array.isArray(baselineRanking) ? baselineRanking : rows;
@@ -2348,17 +2409,30 @@ function buildHeadScenarioBalanceAnalysis({
     (secondaryHeads.includes(1) ? 6 : 0) +
     Math.max(0, lane1Score - 56) * 0.32;
   const strongerInnerBiasApplied = 1;
+  const venueBoat1SurvivalAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "boat1_survival_guard_adjustment"
+  );
+  const venueOuterSuppressionAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "outer_head_suppression_adjustment"
+  );
   const outerHeadPromotionThreshold = Math.max(
     toNum(HIT_RATE_FOCUS_TUNING.outer_head_soft_threshold?.[5], 0),
     toNum(HIT_RATE_FOCUS_TUNING.outer_head_soft_threshold?.[6], 0)
-  );
+  ) + venueOuterSuppressionAdj * 1.8;
   const survivalResidualScore = clamp(
     0,
     100,
     nigeProbPct * 0.76 +
       escapeConfidence * 0.34 +
       lane1Support -
-      boat1Weakness * 0.13
+      boat1Weakness * 0.13 +
+      venueBoat1SurvivalAdj * 32
   );
   const attackDominanceMargin = attackScenarioScore - survivalResidualScore;
   const scenarioCandidates = Array.isArray(attackScenarioAnalysis?.scenario_candidates)
@@ -2397,8 +2471,8 @@ function buildHeadScenarioBalanceAnalysis({
     attackDominanceMargin <= 30 &&
     attackScenarioScore < 84;
   const boat1SurvivalGuardStrength = survivalGuardApplied
-    ? Number((1.15 + Math.max(0, survivalResidualScore - 34) * 0.02).toFixed(2))
-    : Number((Math.max(0.85, survivalResidualScore / 50)).toFixed(2));
+    ? Number((1.15 + Math.max(0, survivalResidualScore - 34) * 0.02 + venueBoat1SurvivalAdj * 0.4).toFixed(2))
+    : Number((Math.max(0.85, survivalResidualScore / 50 + venueBoat1SurvivalAdj * 0.24)).toFixed(2));
 
   const headWeightsRaw = {};
   const baselineTop = baselineHeadDistributionJson[0] || null;
@@ -2612,14 +2686,15 @@ function buildBoat1HeadBetsSnapshot({
       (escapePatternAnalysis?.escape_pattern_applied
           ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, lane) * 2.1
           : 0) +
+        venuePartnerAdj * (lane >= 2 && lane <= 4 ? 1.2 : -0.5) +
         Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 4.2 +
         toNum(f?.motor_total_score, 0) * 1.3 +
         Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.6 +
         Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 22 +
-        Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * 16 +
+        Math.max(0, toNum(f?.lap_time_delta_vs_front, 0)) * (16 + venueLapAdj * 16) +
         toNum(f?.slit_alert_flag, 0) * 6 -
         (lane === 5 ? 4.5 : lane === 6 ? 7.5 : 0) -
-        toNum(f?.f_hold_caution_penalty, 0) * 7;
+        toNum(f?.f_hold_caution_penalty, 0) * (7 + venueFHoldAdj * 0.6);
       return { lane, partnerScore: Number(partnerScore.toFixed(2)) };
     })
     .filter((row) => Number.isInteger(row.lane))
@@ -2672,7 +2747,8 @@ function buildBoat1HeadBetsSnapshot({
         third.partnerScore * 0.34 +
         escapeBias +
         attackPartnerBonus +
-        (learnedPatternAdj + learnedVenueAdj) * 0.35;
+        (learnedPatternAdj + learnedVenueAdj) * 0.35 +
+        venuePartnerAdj * 0.6;
       const nextRow = {
         combo,
         prob: Number((compositeScore / 1000).toFixed(4)),
@@ -2889,6 +2965,42 @@ function buildExactaCoverageSnapshot({
     rowsHaveFHold(rows) ? "yes" : "no",
     "f_hold_penalty_adjustment"
   );
+  const venuePartnerAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "second_place_partner_adjustment"
+  );
+  const venueThirdAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "third_place_residual_adjustment"
+  );
+  const venueOuterSuppressionAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "outer_head_suppression_adjustment"
+  );
+  const venueLapAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "lap_weight_adjustment"
+  );
+  const venueExactaAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "exacta_balance_adjustment"
+  );
+  const venueFHoldAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "f_hold_caution_adjustment"
+  );
 
   const headScores = rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
@@ -2896,9 +3008,9 @@ function buildExactaCoverageSnapshot({
     const exhibitionRank = toNum(features?.exhibition_rank, 6);
     const exhibitionStrength = Math.max(0, 7 - exhibitionRank) * 9.5 + Math.max(0, 6.9 - toNum(row?.racer?.exhibitionTime, 6.9)) * 20;
     const lapFrontBias =
-      Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 26 +
+      Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * (26 + venueLapAdj * 24) +
       toNum(features?.lap_attack_flag, 0) * 7 +
-      toNum(features?.lap_attack_strength, 0) * 0.36;
+      toNum(features?.lap_attack_strength, 0) * (0.36 + venueLapAdj * 0.22);
     const motorStrength = toNum(features?.motor_total_score, 0) * 2.2 + toNum(features?.motor_trend_score, 0) * 0.7;
     const playerStrength =
       toNum(features?.class_score, 0) * 5.5 +
@@ -2918,8 +3030,8 @@ function buildExactaCoverageSnapshot({
       ? attackScenarioScore * 0.24
       : 0;
     const survivalBias = lane === 1 ? survivalResidualScore * 0.54 : lane === 2 ? survivalResidualScore * 0.12 : lane === 3 ? survivalResidualScore * 0.08 : 0;
-    const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * 16;
-    const outerHeadPenalty = lane === 5 ? 11 : lane === 6 ? 18 : 0;
+    const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * (16 + venueFHoldAdj * 0.7);
+    const outerHeadPenalty = lane === 5 ? 11 + venueOuterSuppressionAdj * 1.5 : lane === 6 ? 18 + venueOuterSuppressionAdj * 1.7 : 0;
     const score =
       toNum(row?.score, 0) * 0.68 +
       exhibitionStrength +
@@ -2935,7 +3047,8 @@ function buildExactaCoverageSnapshot({
       survivalBias +
       learnedVenueHeadAdj * 0.8 +
       learnedFormationHeadAdj * 0.8 +
-      learnedScenarioHeadAdj * 0.6 -
+      learnedScenarioHeadAdj * 0.6 +
+      venueExactaAdj * 0.8 -
       outerHeadPenalty -
       fHoldPenalty -
       learnedFHoldAdj * 3;
@@ -2967,23 +3080,25 @@ function buildExactaCoverageSnapshot({
       Math.max(0, toNum(features?.avg_st_rank_delta_vs_left, 0)) * 4 +
       toNum(features?.slit_alert_flag, 0) * 8;
     const lapFrontBias =
-      Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 18 +
+      Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * (18 + venueLapAdj * 18) +
       toNum(features?.lap_attack_flag, 0) * 4 +
-      toNum(features?.lap_attack_strength, 0) * 0.22;
-    const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * 10;
+      toNum(features?.lap_attack_strength, 0) * (0.22 + venueLapAdj * 0.14);
+    const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * (10 + venueFHoldAdj * 0.5);
     const score =
       toNum(row?.score, 0) * 0.44 +
       escapeBias +
       attackPartnerBias +
       secondDistributionBias +
       insidePartnerBias +
+      venuePartnerAdj * (lane >= 2 && lane <= 4 ? 1.3 : -0.5) +
+      venueThirdAdj * (lane >= 2 && lane <= 4 ? 0.35 : lane === 1 ? 0.1 : -0.2) +
       boat1PriorityPartnerBias +
       exhibitionPartnerBias +
       motorPartnerBias +
       startPartnerBias +
       leftNeighborBias -
       lapFrontBias -
-      (lane === 5 ? 5.5 : lane === 6 ? 8.5 : 0) -
+      (lane === 5 ? 5.5 + venueOuterSuppressionAdj : lane === 6 ? 8.5 + venueOuterSuppressionAdj : 0) -
       fHoldPenalty;
     return {
       lane,
@@ -3018,7 +3133,8 @@ function buildExactaCoverageSnapshot({
         partner.score * 0.39 +
         toNum(evidence?.prob, 0) * 220 +
         Math.min(24, toNum(evidence?.recommended_bet, 0) / 100) +
-        boat1InsideExactaBonus -
+        boat1InsideExactaBonus +
+        venueExactaAdj * (head.lane === 1 ? 0.9 : 0.35) -
         outerHeadExactaPenalty;
       const existing = bucket.get(combo);
       const nextRow = {
@@ -4255,7 +4371,9 @@ raceRouter.get("/race", async (req, res, next) => {
       raceFlow,
       headSelection: headSelectionRefined,
       attackScenarioAnalysis,
-      escapePatternAnalysis
+      escapePatternAnalysis,
+      learningWeights,
+      race: data?.race || null
     });
     bet_plan_with_stake.recommended_bets = applyHeadScenarioBalanceToTickets(
       bet_plan_with_stake.recommended_bets,
@@ -4309,6 +4427,7 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.third_place_distribution_json = candidateDistributions.third_place_distribution_json;
     headScenarioBalanceAnalysis.partner_search_bias_json = candidateDistributions.partner_search_bias_json;
     headScenarioBalanceAnalysis.partner_search_lap_bias_json = candidateDistributions.partner_search_lap_bias_json;
+    headScenarioBalanceAnalysis.venue_correction_summary = candidateDistributions.venue_correction_summary;
     headScenarioBalanceAnalysis.third_place_residual_bias_json = candidateDistributions.third_place_residual_bias_json;
     headScenarioBalanceAnalysis.boat1_partner_search_applied = candidateDistributions.boat1_partner_search_applied;
     headScenarioBalanceAnalysis.stronger_lap_bias_applied = candidateDistributions.stronger_lap_bias_applied;
@@ -4542,6 +4661,7 @@ raceRouter.get("/race", async (req, res, next) => {
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       partner_search_lap_bias_json: headScenarioBalanceAnalysis.partner_search_lap_bias_json,
+      venue_correction_summary: headScenarioBalanceAnalysis.venue_correction_summary,
       third_place_residual_bias_json: headScenarioBalanceAnalysis.third_place_residual_bias_json,
       boat1_partner_search_applied: toInt(headScenarioBalanceAnalysis.boat1_partner_search_applied, 0),
       stronger_lap_bias_applied: toInt(headScenarioBalanceAnalysis.stronger_lap_bias_applied, 0),
@@ -4675,6 +4795,7 @@ raceRouter.get("/race", async (req, res, next) => {
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       partner_search_lap_bias_json: snapshotContext.partner_search_lap_bias_json,
+      venue_correction_summary: snapshotContext.venue_correction_summary,
       third_place_residual_bias_json: snapshotContext.third_place_residual_bias_json,
       boat1_partner_search_applied: snapshotContext.boat1_partner_search_applied,
       stronger_lap_bias_applied: snapshotContext.stronger_lap_bias_applied,
@@ -4774,6 +4895,7 @@ raceRouter.get("/race", async (req, res, next) => {
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       partner_search_lap_bias_json: snapshotContext.partner_search_lap_bias_json,
+      venue_correction_summary: snapshotContext.venue_correction_summary,
       third_place_residual_bias_json: snapshotContext.third_place_residual_bias_json,
       boat1_partner_search_applied: snapshotContext.boat1_partner_search_applied,
       stronger_lap_bias_applied: snapshotContext.stronger_lap_bias_applied,
@@ -8104,6 +8226,16 @@ raceRouter.get("/results-history", async (req, res, next) => {
             Object.keys(prediction.learning_context.feature_contribution_summary).length
           ),
           segment_corrections_used_count: toNum(prediction?.learning_context?.segment_corrections_used?.segment_count, 0),
+          venue_correction_applied: !!(
+            prediction?.learning_context?.venue_correction_summary &&
+            Object.keys(prediction.learning_context.venue_correction_summary).length
+          ),
+          venue_segment_key: prediction?.learning_context?.venue_correction_summary?.venue_segment_key || null,
+          venue_sample_count: toNum(
+            prediction?.learning_context?.segment_corrections_used?.segments?.find((row) => row?.type === "venue")?.sample_count,
+            0
+          ),
+          venue_correction_summary: prediction?.learning_context?.venue_correction_summary || {},
           confidence_calibration_applied: toNum(prediction?.learning_context?.confidence_calibration_applied, 0) === 1,
           confidence_calibration_source: prediction?.learning_context?.confidence_calibration_source || null,
           head_confidence_raw: toNum(prediction?.learning_context?.head_confidence_raw, null),

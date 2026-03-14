@@ -4310,6 +4310,9 @@ export default function App() {
                             <div>count: {h?.feature_snapshot_debug?.feature_snapshot_count ?? 0}</div>
                             <div>latest id: {h?.feature_snapshot_debug?.latest_feature_snapshot_id ?? "-"}</div>
                             <div>segment corrections used: {h?.feature_snapshot_debug?.segment_corrections_used_count ?? 0}</div>
+                            <div>venue correction: {h?.feature_snapshot_debug?.venue_correction_applied ? "YES" : "NO"}</div>
+                            <div>venue segment: {h?.feature_snapshot_debug?.venue_segment_key || "-"}</div>
+                            <div>venue sample count: {h?.feature_snapshot_debug?.venue_sample_count ?? 0}</div>
                             <div>confidence calibration: {h?.feature_snapshot_debug?.confidence_calibration_applied ? "YES" : "NO"}</div>
                             <div>calibration source: {h?.feature_snapshot_debug?.confidence_calibration_source || "-"}</div>
                             <div>head raw/cal: {Number.isFinite(Number(h?.feature_snapshot_debug?.head_confidence_raw)) || Number.isFinite(Number(h?.feature_snapshot_debug?.head_confidence_calibrated))

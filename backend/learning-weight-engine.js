@@ -80,6 +80,9 @@ function ensureLearningTables() {
       sample_count INTEGER NOT NULL DEFAULT 0,
       hit_rate REAL,
       head_hit_rate REAL,
+      second_place_hit_rate REAL,
+      third_place_hit_rate REAL,
+      exacta_hit_rate REAL,
       bet_hit_rate REAL,
       confidence_error REAL,
       correction_values_json TEXT NOT NULL,
@@ -98,6 +101,15 @@ function ensureLearningTables() {
   }
   if (!segmentNames.has("calibrated_at")) {
     db.exec("ALTER TABLE learning_segment_corrections ADD COLUMN calibrated_at TEXT");
+  }
+  if (!segmentNames.has("second_place_hit_rate")) {
+    db.exec("ALTER TABLE learning_segment_corrections ADD COLUMN second_place_hit_rate REAL");
+  }
+  if (!segmentNames.has("third_place_hit_rate")) {
+    db.exec("ALTER TABLE learning_segment_corrections ADD COLUMN third_place_hit_rate REAL");
+  }
+  if (!segmentNames.has("exacta_hit_rate")) {
+    db.exec("ALTER TABLE learning_segment_corrections ADD COLUMN exacta_hit_rate REAL");
   }
   const row = db.prepare(`SELECT id FROM learning_weight_state WHERE id = 1`).get();
   if (!row) {
@@ -510,6 +522,19 @@ function fHoldZoneKey(playerContext) {
   return "none";
 }
 
+function safeTagMatch(tags, target) {
+  return (Array.isArray(tags) ? tags : []).some((tag) => String(tag || "").toLowerCase() === String(target || "").toLowerCase());
+}
+
+function maxLapSignalFromPlayers(playerContext) {
+  const players = Array.isArray(playerContext) ? playerContext : [];
+  return players.reduce((max, row) => {
+    const lapStrength = toNum(row?.lap_attack_strength, 0);
+    const lapDelta = Math.max(0, toNum(row?.lap_time_delta_vs_front, 0));
+    return Math.max(max, lapStrength + lapDelta * 10);
+  }, 0);
+}
+
 function buildSegmentEntries(row) {
   const segments = [];
   const add = (type, key) => {
@@ -546,6 +571,15 @@ function buildSegmentCorrectionPack(dataset) {
   const globalHeadHitRate = rows.length
     ? (rows.filter((row) => toNum(row?.head_hit, 0) === 1).length / rows.length) * 100
     : 0;
+  const globalSecondPlaceHitRate = rows.length
+    ? (rows.filter((row) => toNum(row?.second_place_miss, 0) !== 1).length / rows.length) * 100
+    : 0;
+  const globalThirdPlaceHitRate = rows.length
+    ? (rows.filter((row) => toNum(row?.third_place_miss, 0) !== 1).length / rows.length) * 100
+    : 0;
+  const globalExactaHitRate = rows.length
+    ? (rows.filter((row) => toNum(row?.exacta_hit, 0) === 1).length / rows.length) * 100
+    : 0;
   const segmentStats = new Map();
 
   for (const row of rows) {
@@ -564,14 +598,50 @@ function buildSegmentCorrectionPack(dataset) {
         sample_count: 0,
         hit_count: 0,
         head_hit_count: 0,
+        second_place_hit_count: 0,
+        third_place_hit_count: 0,
+        exacta_hit_count: 0,
         bet_hit_count: 0,
+        second_place_miss_count: 0,
+        third_place_miss_count: 0,
+        second_third_swap_count: 0,
+        boat1_survival_underestimated_count: 0,
+        outer_head_overpromotion_count: 0,
+        attack_scenario_overweight_count: 0,
+        attack_scenario_underweight_count: 0,
+        third_place_noise_count: 0,
+        f_hold_row_count: 0,
+        f_hold_hit_count: 0,
+        lap_signal_sum: 0,
+        lap_signal_hits_sum: 0,
+        lap_signal_miss_sum: 0,
         confidence_error_sum: 0,
         head_confidence_error_sum: 0
       };
       bucket.sample_count += 1;
       bucket.hit_count += toNum(row?.hit_flag, 0) === 1 ? 1 : 0;
       bucket.head_hit_count += toNum(row?.head_hit, 0) === 1 ? 1 : 0;
+      bucket.second_place_hit_count += toNum(row?.second_place_miss, 0) === 1 ? 0 : 1;
+      bucket.third_place_hit_count += toNum(row?.third_place_miss, 0) === 1 ? 0 : 1;
+      bucket.exacta_hit_count += toNum(row?.exacta_hit, 0) === 1 ? 1 : 0;
       bucket.bet_hit_count += toNum(row?.bet_hit, 0) === 1 ? 1 : 0;
+      bucket.second_place_miss_count += toNum(row?.second_place_miss, 0) === 1 ? 1 : 0;
+      bucket.third_place_miss_count += toNum(row?.third_place_miss, 0) === 1 ? 1 : 0;
+      bucket.second_third_swap_count += toNum(row?.second_third_swap, 0) === 1 ? 1 : 0;
+      bucket.boat1_survival_underestimated_count += safeTagMatch(row?.miss_pattern_tags, "boat1_survival_underestimated") ? 1 : 0;
+      bucket.outer_head_overpromotion_count += safeTagMatch(row?.miss_pattern_tags, "outer_head_overpromotion") ? 1 : 0;
+      bucket.attack_scenario_overweight_count += safeTagMatch(row?.miss_pattern_tags, "attack_scenario_overweight") ? 1 : 0;
+      bucket.attack_scenario_underweight_count += safeTagMatch(row?.miss_pattern_tags, "attack_scenario_underweight") ? 1 : 0;
+      bucket.third_place_noise_count += toNum(row?.third_place_noise, 0) === 1 ? 1 : 0;
+      const hasFHold = toNum(row?.f_hold_lane_count, 0) > 0;
+      if (hasFHold) {
+        bucket.f_hold_row_count += 1;
+        bucket.f_hold_hit_count += toNum(row?.hit_flag, 0) === 1 ? 1 : 0;
+      }
+      const lapSignal = maxLapSignalFromPlayers(row?.player_context);
+      bucket.lap_signal_sum += lapSignal;
+      if (toNum(row?.hit_flag, 0) === 1) bucket.lap_signal_hits_sum += lapSignal;
+      else bucket.lap_signal_miss_sum += lapSignal;
       bucket.confidence_error_sum += confidenceError;
       bucket.head_confidence_error_sum += headConfidenceError;
       segmentStats.set(mapKey, bucket);
@@ -579,7 +649,7 @@ function buildSegmentCorrectionPack(dataset) {
   }
 
   const minSamplesByType = {
-    venue: 12,
+    venue: 18,
     predicted_entry_pattern: 10,
     actual_entry_pattern: 10,
     entry_change_present: 12,
@@ -604,11 +674,33 @@ function buildSegmentCorrectionPack(dataset) {
     if (bucket.sample_count < minSample) continue;
     const hitRate = (bucket.hit_count / Math.max(1, bucket.sample_count)) * 100;
     const headHitRate = (bucket.head_hit_count / Math.max(1, bucket.sample_count)) * 100;
+    const secondPlaceHitRate = (bucket.second_place_hit_count / Math.max(1, bucket.sample_count)) * 100;
+    const thirdPlaceHitRate = (bucket.third_place_hit_count / Math.max(1, bucket.sample_count)) * 100;
+    const exactaHitRate = (bucket.exacta_hit_count / Math.max(1, bucket.sample_count)) * 100;
     const betHitRate = (bucket.bet_hit_count / Math.max(1, bucket.sample_count)) * 100;
     const confidenceError = bucket.confidence_error_sum / Math.max(1, bucket.sample_count);
     const headConfidenceError = bucket.head_confidence_error_sum / Math.max(1, bucket.sample_count);
+    const secondPlaceMissRate = (bucket.second_place_miss_count / Math.max(1, bucket.sample_count)) * 100;
+    const thirdPlaceMissRate = (bucket.third_place_miss_count / Math.max(1, bucket.sample_count)) * 100;
+    const secondThirdSwapRate = (bucket.second_third_swap_count / Math.max(1, bucket.sample_count)) * 100;
+    const boat1SurvivalUnderRate = (bucket.boat1_survival_underestimated_count / Math.max(1, bucket.sample_count)) * 100;
+    const outerHeadOverRate = (bucket.outer_head_overpromotion_count / Math.max(1, bucket.sample_count)) * 100;
+    const attackOverRate = (bucket.attack_scenario_overweight_count / Math.max(1, bucket.sample_count)) * 100;
+    const attackUnderRate = (bucket.attack_scenario_underweight_count / Math.max(1, bucket.sample_count)) * 100;
+    const thirdPlaceNoiseRate = (bucket.third_place_noise_count / Math.max(1, bucket.sample_count)) * 100;
+    const fHoldHitRate = bucket.f_hold_row_count > 0
+      ? (bucket.f_hold_hit_count / Math.max(1, bucket.f_hold_row_count)) * 100
+      : hitRate;
+    const lapSignalAvg = bucket.lap_signal_sum / Math.max(1, bucket.sample_count);
+    const lapSignalHitAvg = bucket.hit_count > 0 ? bucket.lap_signal_hits_sum / Math.max(1, bucket.hit_count) : lapSignalAvg;
+    const lapSignalMissAvg = (bucket.sample_count - bucket.hit_count) > 0
+      ? bucket.lap_signal_miss_sum / Math.max(1, bucket.sample_count - bucket.hit_count)
+      : lapSignalAvg;
     const performanceDelta = hitRate - globalHitRate;
     const headDelta = headHitRate - globalHeadHitRate;
+    const secondDelta = secondPlaceHitRate - globalSecondPlaceHitRate;
+    const thirdDelta = thirdPlaceHitRate - globalThirdPlaceHitRate;
+    const exactaDelta = exactaHitRate - globalExactaHitRate;
     const isHighMiss = (bucket.type === "head_confidence_behavior" || bucket.type === "bet_confidence_behavior") && String(bucket.key).includes("high_miss");
     const isLowHit = (bucket.type === "head_confidence_behavior" || bucket.type === "bet_confidence_behavior") && String(bucket.key).includes("low_hit");
     const calibrationTilt = isHighMiss ? -1.35 : isLowHit ? 0.85 : 0;
@@ -626,14 +718,85 @@ function buildSegmentCorrectionPack(dataset) {
       ),
       recommendation_score_adjustment: Number(clamp(-4, 4, performanceDelta * 0.12).toFixed(3)),
       entry_changed_penalty_delta: Number(clamp(-2, 2, (bucket.type === "entry_change_present" || bucket.type === "entry_type" ? -performanceDelta * 0.06 : 0)).toFixed(3)),
-      motor_lap_overlap_adjustment: Number(clamp(-3, 3, (bucket.type === "motor_exhibition_overlap_bucket" ? performanceDelta * 0.08 : 0)).toFixed(3))
+      motor_lap_overlap_adjustment: Number(clamp(-3, 3, (bucket.type === "motor_exhibition_overlap_bucket" ? performanceDelta * 0.08 : 0)).toFixed(3)),
+      second_place_partner_adjustment: Number(
+        clamp(
+          -3.5,
+          3.5,
+          bucket.type === "venue"
+            ? secondDelta * 0.12 - secondThirdSwapRate * 0.03
+            : 0
+        ).toFixed(3)
+      ),
+      third_place_residual_adjustment: Number(
+        clamp(
+          -3.5,
+          3.5,
+          bucket.type === "venue"
+            ? thirdDelta * 0.12 - thirdPlaceNoiseRate * 0.05
+            : 0
+        ).toFixed(3)
+      ),
+      boat1_survival_guard_adjustment: Number(
+        clamp(
+          -0.2,
+          0.35,
+          bucket.type === "venue"
+            ? boat1SurvivalUnderRate * 0.01 - outerHeadOverRate * 0.002 + headDelta * 0.002
+            : 0
+        ).toFixed(3)
+      ),
+      outer_head_suppression_adjustment: Number(
+        clamp(
+          0,
+          4,
+          bucket.type === "venue"
+            ? outerHeadOverRate * 0.08 + attackOverRate * 0.05 - attackUnderRate * 0.03
+            : 0
+        ).toFixed(3)
+      ),
+      f_hold_caution_adjustment: Number(
+        clamp(
+          -2.5,
+          2.5,
+          bucket.type === "venue"
+            ? (hitRate - fHoldHitRate) * 0.035
+            : 0
+        ).toFixed(3)
+      ),
+      lap_weight_adjustment: Number(
+        clamp(
+          -0.18,
+          0.22,
+          bucket.type === "venue"
+            ? (lapSignalHitAvg - lapSignalMissAvg) * 0.28 + exactaDelta * 0.002
+            : 0
+        ).toFixed(3)
+      ),
+      exacta_balance_adjustment: Number(
+        clamp(
+          -3,
+          3,
+          bucket.type === "venue"
+            ? exactaDelta * 0.12 + secondDelta * 0.04
+            : 0
+        ).toFixed(3)
+      )
     };
+    correctionValues.second_place_hit_rate = Number(secondPlaceHitRate.toFixed(2));
+    correctionValues.third_place_hit_rate = Number(thirdPlaceHitRate.toFixed(2));
+    correctionValues.exacta_hit_rate = Number(exactaHitRate.toFixed(2));
+    correctionValues.f_hold_hit_rate = Number(fHoldHitRate.toFixed(2));
+    correctionValues.lap_signal_avg = Number(lapSignalAvg.toFixed(3));
 
     if (!grouped[bucket.type]) grouped[bucket.type] = {};
     grouped[bucket.type][bucket.key] = {
       sample_count: bucket.sample_count,
       hit_rate: Number(hitRate.toFixed(2)),
       head_hit_rate: Number(headHitRate.toFixed(2)),
+      second_place_hit_rate: Number(secondPlaceHitRate.toFixed(2)),
+      third_place_hit_rate: Number(thirdPlaceHitRate.toFixed(2)),
+      exacta_hit_rate: Number(exactaHitRate.toFixed(2)),
       bet_hit_rate: Number(betHitRate.toFixed(2)),
       confidence_error: Number(confidenceError.toFixed(3)),
       head_confidence_error: Number(headConfidenceError.toFixed(3)),
@@ -651,6 +814,9 @@ function buildSegmentCorrectionPack(dataset) {
       sample_count: bucket.sample_count,
       hit_rate: Number(hitRate.toFixed(2)),
       head_hit_rate: Number(headHitRate.toFixed(2)),
+      second_place_hit_rate: Number(secondPlaceHitRate.toFixed(2)),
+      third_place_hit_rate: Number(thirdPlaceHitRate.toFixed(2)),
+      exacta_hit_rate: Number(exactaHitRate.toFixed(2)),
       bet_hit_rate: Number(betHitRate.toFixed(2)),
       confidence_error: Number(confidenceError.toFixed(3)),
       correction_values_json: correctionValues,
@@ -689,13 +855,16 @@ function persistSegmentCorrections(runId, segmentRows) {
       sample_count,
       hit_rate,
       head_hit_rate,
+      second_place_hit_rate,
+      third_place_hit_rate,
+      exacta_hit_rate,
       bet_hit_rate,
       confidence_error,
       correction_values_json,
       calibration_adjustment_json,
       learned_at,
       calibrated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   );
   const tx = db.transaction((items) => {
@@ -709,6 +878,9 @@ function persistSegmentCorrections(runId, segmentRows) {
         toNum(row.sample_count, 0),
         toNum(row.hit_rate, null),
         toNum(row.head_hit_rate, null),
+        toNum(row.second_place_hit_rate, null),
+        toNum(row.third_place_hit_rate, null),
+        toNum(row.exacta_hit_rate, null),
         toNum(row.bet_hit_rate, null),
         toNum(row.confidence_error, null),
         JSON.stringify(row.correction_values_json || {}),
