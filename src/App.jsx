@@ -523,6 +523,14 @@ function normalizeCombo(value) {
   return digits.slice(0, 3).join("-");
 }
 
+function normalizeExactaCombo(value) {
+  const digits = String(value || "").match(/[1-6]/g) || [];
+  const lanes = digits.slice(0, 2);
+  if (lanes.length !== 2) return "";
+  if (lanes[0] === lanes[1]) return "";
+  return lanes.join("-");
+}
+
 function getSavedFinalRecommendedBets(row) {
   const snapshot = Array.isArray(row?.final_recommended_bets_snapshot)
     ? row.final_recommended_bets_snapshot
@@ -554,6 +562,29 @@ function getSavedBoat1HeadBets(row) {
     .map((bet) => {
       const combo = normalizeCombo(bet?.combo ?? bet);
       if (!combo || combo.split("-").length !== 3) return null;
+      return {
+        ...(bet && typeof bet === "object" ? bet : {}),
+        combo,
+        recommended_bet: Number.isFinite(Number(bet?.recommended_bet))
+          ? Number(bet.recommended_bet)
+          : Number.isFinite(Number(bet?.bet))
+            ? Number(bet.bet)
+            : 0
+      };
+    })
+    .filter(Boolean);
+}
+
+function getSavedExactaBets(row) {
+  const snapshot = Array.isArray(row?.exacta_recommended_bets_snapshot)
+    ? row.exacta_recommended_bets_snapshot
+    : Array.isArray(row?.ai_bets_full_snapshot?.exacta_recommended_bets)
+      ? row.ai_bets_full_snapshot.exacta_recommended_bets
+      : [];
+  return snapshot
+    .map((bet) => {
+      const combo = normalizeExactaCombo(bet?.combo ?? bet);
+      if (!combo || combo.split("-").length !== 2) return null;
       return {
         ...(bet && typeof bet === "object" ? bet : {}),
         combo,
@@ -633,7 +664,7 @@ function normalizeSelectionByType(betType, input) {
 
 function ComboBadge({ combo }) {
   const lanes = splitCombo(combo);
-  if (lanes.length !== 3) return <span>{combo || "-"}</span>;
+  if (lanes.length !== 2 && lanes.length !== 3) return <span>{combo || "-"}</span>;
 
   return (
     <span className="combo-badge">
@@ -966,7 +997,6 @@ export default function App() {
   const scenarioSuggestions = data?.scenarioSuggestions || {};
   const explainability = data?.explainability || {};
   const manualLapEvaluation = data?.manualLapEvaluation || null;
-  const manualLapImpact = data?.manualLapImpact || null;
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
   const raceDecision = data?.raceDecision || {};
   const participationDecision = data?.participationDecision || {};
@@ -1023,6 +1053,22 @@ export default function App() {
     ? boat1HeadSection.boat1_head_reason_tags
     : Array.isArray(prediction?.boat1_head_reason_tags)
       ? prediction.boat1_head_reason_tags
+      : [];
+  const exactaSection = data?.exactaSection || prediction?.exactaSection || {};
+  const exactaBets = Array.isArray(exactaSection?.exacta_recommended_bets_snapshot)
+    ? exactaSection.exacta_recommended_bets_snapshot
+    : Array.isArray(prediction?.exacta_recommended_bets_snapshot)
+      ? prediction.exacta_recommended_bets_snapshot
+      : [];
+  const exactaSectionShown =
+    Number(exactaSection?.exacta_section_shown ?? prediction?.exacta_section_shown ?? 0) === 1 &&
+    exactaBets.length > 0;
+  const exactaHeadScore = Number(exactaSection?.exacta_head_score ?? prediction?.exacta_head_score ?? 0);
+  const exactaPartnerScore = Number(exactaSection?.exacta_partner_score ?? prediction?.exacta_partner_score ?? 0);
+  const exactaReasonTags = Array.isArray(exactaSection?.exacta_reason_tags)
+    ? exactaSection.exacta_reason_tags
+    : Array.isArray(prediction?.exacta_reason_tags)
+      ? prediction.exacta_reason_tags
       : [];
   const defaultReasonTags = [
     ...(Array.isArray(participationDecision?.reason_tags) ? participationDecision.reason_tags : []),
@@ -2382,6 +2428,34 @@ export default function App() {
                     </div>
                   </article>
                 ) : null}
+
+                {exactaSectionShown ? (
+                  <article className="card summary-card">
+                    <h2>二連単本線カバー</h2>
+                    <div className="summary-inline-meta">
+                      <span>{exactaBets.length}件</span>
+                      <span>head {formatMaybeNumber(exactaHeadScore, 1)} / partner {formatMaybeNumber(exactaPartnerScore, 1)}</span>
+                    </div>
+                    {exactaReasonTags.length > 0 ? (
+                      <div className="chips-wrap" style={{ marginBottom: 8 }}>
+                        {exactaReasonTags.map((tag) => <span className="chip" key={`exacta-tag-${tag}`}>{tag}</span>)}
+                      </div>
+                    ) : null}
+                    <div className="list-stack compact-list">
+                      {exactaBets.map((bet, idx) => (
+                        <div key={`exacta-${bet.combo}-${idx}`} className="list-stack">
+                          <div className="list-row list-row-actions">
+                            <strong><ComboBadge combo={bet.combo} /></strong>
+                            <span>p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                            <span>head {formatMaybeNumber(bet?.exacta_head_score, 1)}</span>
+                            <span>partner {formatMaybeNumber(bet?.exacta_partner_score, 1)}</span>
+                            <span>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ) : null}
                 </div>
 
                 <details className="card">
@@ -3594,6 +3668,7 @@ export default function App() {
                   {filteredHistory.map((h) => {
                     const savedFinalRecommendedBets = getSavedFinalRecommendedBets(h);
                     const savedBoat1HeadBets = getSavedBoat1HeadBets(h);
+                    const savedExactaBets = getSavedExactaBets(h);
                     const betSnapshotLabel = getResultsBetSnapshotLabel(h);
                     const verificationKey = getVerificationHistoryKey(h.race_id, h.prediction_snapshot_id);
                     const isEditingResult = editingResultKey === verificationKey;
@@ -3763,6 +3838,16 @@ export default function App() {
                             </div>
                           </div>
                         ) : null}
+                        {savedExactaBets.length > 0 ? (
+                          <div className="history-summary-cell">
+                            <span className="history-label">exacta</span>
+                            <div className="history-bet-strip">
+                              {savedExactaBets.map((b, idx) => (
+                                <ComboBadge combo={b?.combo} key={`exacta-${h.race_id}-${idx}`} />
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
                         <div className="history-summary-cell">
                           <span className="history-label">confirmed result</span>
                           <strong>{h.confirmed_result || "-"}</strong>
@@ -3779,6 +3864,12 @@ export default function App() {
                             {verificationSummaryData?.hit_miss === "HIT" ? "YES" : verificationSummaryData?.hit_miss === "MISS" ? "NO" : "-"}
                           </strong>
                         </div>
+                        {savedExactaBets.length > 0 ? (
+                          <div className="history-summary-cell">
+                            <span className="history-label">exacta result</span>
+                            <strong>{h.exacta_verification_status || "-"}</strong>
+                          </div>
+                        ) : null}
                       </div>
                       {Array.isArray(h?.verification?.mismatch_categories) && h.verification.mismatch_categories.length ? (
                         <div className="chips-wrap">
@@ -3840,6 +3931,32 @@ export default function App() {
                               </table>
                             </div>
                           ) : null}
+                          {savedExactaBets.length > 0 ? (
+                            <div className="table-wrap" style={{ marginTop: 8 }}>
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th>二連単本線</th>
+                                    <th>確率</th>
+                                    <th>head</th>
+                                    <th>partner</th>
+                                    <th>金額</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {savedExactaBets.map((bet, idx) => (
+                                    <tr key={`exacta-bet-${h.history_id || h.race_id}-${idx}`}>
+                                      <td><ComboBadge combo={bet?.combo} /></td>
+                                      <td>{formatMaybeNumber(bet?.prob, 3)}</td>
+                                      <td>{formatMaybeNumber(bet?.exacta_head_score, 1)}</td>
+                                      <td>{formatMaybeNumber(bet?.exacta_partner_score, 1)}</td>
+                                      <td>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : null}
                           <div className="history-start-display">
                             <h3>Start Exhibition</h3>
                             <StartExhibitionDisplay startDisplay={h.startDisplay || null} compact />
@@ -3892,6 +4009,26 @@ export default function App() {
                                 ))
                                 : "-"}
                             </div>
+                            <div>
+                              saved exacta:
+                              {" "}
+                              {Array.isArray(h?.debug_bet_compare?.saved_exacta_snapshot) && h.debug_bet_compare.saved_exacta_snapshot.length
+                                ? h.debug_bet_compare.saved_exacta_snapshot.map((b, idx) => (
+                                  <ComboBadge combo={b?.combo ?? b} key={`debug-exacta-saved-${h.history_id || h.race_id}-${idx}`} />
+                                ))
+                                : "-"}
+                            </div>
+                            <div>
+                              exacta input:
+                              {" "}
+                              {Array.isArray(h?.debug_bet_compare?.verification_input_exacta_bet_list) && h.debug_bet_compare.verification_input_exacta_bet_list.length
+                                ? h.debug_bet_compare.verification_input_exacta_bet_list.map((b, idx) => (
+                                  <ComboBadge combo={b?.combo ?? b} key={`debug-exacta-verify-${h.history_id || h.race_id}-${idx}`} />
+                                ))
+                                : "-"}
+                            </div>
+                            <div>confirmed exacta: {h?.debug_bet_compare?.confirmed_exacta_result || "-"}</div>
+                            <div>final exacta: {h?.debug_bet_compare?.final_exacta_result || "-"}</div>
                           </div>
                         </details>
                       ) : null}
@@ -3926,8 +4063,10 @@ export default function App() {
                         <div className="history-grid" style={{ marginTop: 8 }}>
                           <div>learning: {getLearningStatusLabel(h)}</div>
                           <div>saved 1-head bets: {savedBoat1HeadBets.length}</div>
+                          <div>saved exacta bets: {savedExactaBets.length}</div>
                           <div>検証日時: {h.verification.verified_at ? new Date(h.verification.verified_at).toLocaleString() : "-"}</div>
                           <div>検証結果: {h.verification.hit_miss || "-"}</div>
+                          <div>exacta検証: {h.exacta_verification_status || "-"}</div>
                           <div>verification_version: {h?.verification?.summary?.verification_version ?? "-"}</div>
                           <div>verified_snapshot_id: {h?.verification?.summary?.verified_against_snapshot_id ?? "-"}</div>
                           <div>カテゴリ: {Array.isArray(h.verification.mismatch_categories) && h.verification.mismatch_categories.length ? h.verification.mismatch_categories.join(", ") : "-"}</div>

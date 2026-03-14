@@ -410,6 +410,9 @@ export function buildVerifiedLearningRows() {
         bet_hit:
           betHitValue,
         structure_hit: summary?.second_third_correct === true ? 1 : summary?.second_third_correct === false ? 0 : null,
+        exacta_hit: summary?.exacta_hit === true ? 1 : summary?.exacta_hit === false ? 0 : null,
+        exacta_miss: summary?.exacta_miss === true ? 1 : summary?.exacta_miss === false ? 0 : null,
+        exacta_verification_status: summary?.exacta_verification_status || null,
         learning_ready:
           Number(verificationRow?.exclude_from_learning) === 1
             ? 0
@@ -502,6 +505,19 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.boat1_head_reason_tags)
             ? context.boat1_head_reason_tags
             : [],
+        exacta_recommended_bets_snapshot: Array.isArray(learning?.exacta_recommended_bets_snapshot)
+          ? learning.exacta_recommended_bets_snapshot
+          : Array.isArray(context?.exacta_recommended_bets_snapshot)
+            ? context.exacta_recommended_bets_snapshot
+            : [],
+        exacta_head_score: toNum(learning?.exacta_head_score ?? context?.exacta_head_score, null),
+        exacta_partner_score: toNum(learning?.exacta_partner_score ?? context?.exacta_partner_score, null),
+        exacta_reason_tags: Array.isArray(learning?.exacta_reason_tags)
+          ? learning.exacta_reason_tags
+          : Array.isArray(context?.exacta_reason_tags)
+            ? context.exacta_reason_tags
+            : [],
+        exacta_section_shown: toNum(learning?.exacta_section_shown ?? context?.exacta_section_shown, 0),
         predicted_entry_order: Array.isArray(context?.entry?.predicted_entry_order) ? context.entry.predicted_entry_order : [],
         actual_entry_order: Array.isArray(context?.entry?.actual_entry_order) ? context.entry.actual_entry_order : [],
         start_display_st: context?.entry?.start_exhibition_st || {},

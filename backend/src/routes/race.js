@@ -226,6 +226,14 @@ function normalizeCombo(value) {
   return digits.slice(0, 3).join("-");
 }
 
+function normalizeExactaCombo(value) {
+  const digits = String(value || "").match(/[1-6]/g) || [];
+  const lanes = digits.slice(0, 2);
+  if (lanes.length !== 2) return "";
+  if (lanes[0] === lanes[1]) return "";
+  return lanes.join("-");
+}
+
 function dateKey(value) {
   const text = String(value || "").trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
@@ -296,6 +304,31 @@ function normalizeSavedBetSnapshotItems(items) {
         explanation_summary: row?.explanation_summary || null,
         trap_flags: Array.isArray(row?.trap_flags) ? [...row.trap_flags] : [],
         explanation_reasons: Array.isArray(row?.explanation_reasons) ? [...row.explanation_reasons] : []
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeSavedExactaSnapshotItems(items) {
+  return safeArray(items)
+    .map((row) => {
+      const combo = normalizeExactaCombo(row?.combo ?? row);
+      if (!combo || combo.split("-").length !== 2) return null;
+      return {
+        ...(row && typeof row === "object" ? row : {}),
+        combo,
+        prob: Number.isFinite(Number(row?.prob)) ? Number(row.prob) : null,
+        odds: Number.isFinite(Number(row?.odds)) ? Number(row.odds) : null,
+        ev: Number.isFinite(Number(row?.ev)) ? Number(row.ev) : null,
+        recommended_bet: Number.isFinite(Number(row?.recommended_bet))
+          ? Number(row.recommended_bet)
+          : Number.isFinite(Number(row?.bet))
+            ? Number(row.bet)
+            : 100,
+        exacta_head_score: Number.isFinite(Number(row?.exacta_head_score)) ? Number(row.exacta_head_score) : null,
+        exacta_partner_score: Number.isFinite(Number(row?.exacta_partner_score)) ? Number(row.exacta_partner_score) : null,
+        exacta_reason_tags: Array.isArray(row?.exacta_reason_tags) ? [...row.exacta_reason_tags] : [],
+        explanation_tags: Array.isArray(row?.explanation_tags) ? [...row.explanation_tags] : []
       };
     })
     .filter(Boolean);
@@ -1863,6 +1896,217 @@ function buildBoat1HeadBetsSnapshot({
   };
 }
 
+function buildExactaCoverageSnapshot({
+  ranking,
+  recommendedBets,
+  optimizedTickets,
+  finalRecommendedSnapshot,
+  boat1HeadSnapshot,
+  headScenarioBalanceAnalysis,
+  escapePatternAnalysis,
+  attackScenarioAnalysis,
+  learningWeights,
+  race
+}) {
+  const rows = Array.isArray(ranking) ? ranking : [];
+  const attackScenarioType = attackScenarioAnalysis?.attack_scenario_type || null;
+  const attackScenarioApplied = toNum(attackScenarioAnalysis?.attack_scenario_applied, 0) === 1;
+  const attackScenarioScore = toNum(attackScenarioAnalysis?.attack_scenario_score, 0);
+  const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const headDistribution = Array.isArray(headScenarioBalanceAnalysis?.head_distribution_json)
+    ? headScenarioBalanceAnalysis.head_distribution_json
+    : [];
+  const headDistributionMap = new Map(
+    headDistribution
+      .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
+      .filter(([lane]) => Number.isInteger(lane))
+  );
+  const exactaEvidence = normalizeSavedBetSnapshotItems([
+    ...safeArray(optimizedTickets),
+    ...safeArray(recommendedBets),
+    ...safeArray(finalRecommendedSnapshot?.items),
+    ...safeArray(boat1HeadSnapshot?.items)
+  ]);
+  const exactaEvidenceMap = new Map();
+  for (const row of exactaEvidence) {
+    const combo = normalizeCombo(row?.combo);
+    if (!combo) continue;
+    const pair = normalizeExactaCombo(combo);
+    if (!pair) continue;
+    const current = exactaEvidenceMap.get(pair) || {
+      prob: 0,
+      recommended_bet: 0,
+      explanation_tags: []
+    };
+    current.prob = Math.max(current.prob, toNum(row?.prob, 0));
+    current.recommended_bet = Math.max(current.recommended_bet, toNum(row?.recommended_bet ?? row?.bet, 0));
+    current.explanation_tags = [...new Set([...current.explanation_tags, ...safeArray(row?.explanation_tags)])];
+    exactaEvidenceMap.set(pair, current);
+  }
+
+  const learnedVenueHeadAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "head_confidence_correction"
+  );
+  const learnedFormationHeadAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "formation_pattern",
+    escapePatternAnalysis?.formation_pattern || null,
+    "pattern_strength_adjustment"
+  );
+  const learnedScenarioHeadAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "scenario_type",
+    attackScenarioType || null,
+    "recommendation_score_adjustment"
+  );
+  const learnedFHoldAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "has_f_hold",
+    rowsHaveFHold(rows) ? "yes" : "no",
+    "f_hold_penalty_adjustment"
+  );
+
+  const headScores = rows.map((row) => {
+    const lane = toInt(row?.racer?.lane, null);
+    const features = row?.features || {};
+    const exhibitionRank = toNum(features?.exhibition_rank, 6);
+    const exhibitionStrength = Math.max(0, 7 - exhibitionRank) * 9.5 + Math.max(0, 6.9 - toNum(row?.racer?.exhibitionTime, 6.9)) * 20;
+    const motorStrength = toNum(features?.motor_total_score, 0) * 2.2 + toNum(features?.motor_trend_score, 0) * 0.7;
+    const playerStrength =
+      toNum(features?.class_score, 0) * 5.5 +
+      toNum(features?.nationwide_win_rate, 0) * 1.6 +
+      toNum(features?.local_win_rate, 0) * 1.9;
+    const startStrength =
+      toNum(features?.expected_actual_st_inv, 0) * 42 +
+      Math.max(0, 7 - toNum(features?.expected_actual_st_rank ?? features?.st_rank, 6)) * 4.5;
+    const leftNeighborBias =
+      Math.max(0, toNum(features?.display_time_delta_vs_left, 0)) * 35 +
+      Math.max(0, toNum(features?.avg_st_rank_delta_vs_left, 0)) * 5 +
+      toNum(features?.slit_alert_flag, 0) * 10;
+    const headDistributionBias = toNum(headDistributionMap.get(lane), 0) * 42;
+    const laneAttackBias = attackScenarioApplied && getAttackScenarioHeadLane(attackScenarioType) === lane
+      ? attackScenarioScore * 0.32
+      : 0;
+    const survivalBias = lane === 1 ? survivalResidualScore * 0.36 : 0;
+    const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * 16;
+    const score =
+      toNum(row?.score, 0) * 0.68 +
+      exhibitionStrength +
+      motorStrength +
+      playerStrength +
+      startStrength +
+      leftNeighborBias +
+      headDistributionBias +
+      laneAttackBias +
+      survivalBias +
+      learnedVenueHeadAdj * 0.8 +
+      learnedFormationHeadAdj * 0.8 +
+      learnedScenarioHeadAdj * 0.6 -
+      fHoldPenalty -
+      learnedFHoldAdj * 3;
+    return {
+      lane,
+      score: Number(score.toFixed(2)),
+      exhibition_strength: Number(exhibitionStrength.toFixed(2))
+    };
+  });
+  const headScoreMap = new Map(headScores.map((row) => [row.lane, row]));
+
+  const partnerScores = rows.map((row) => {
+    const lane = toInt(row?.racer?.lane, null);
+    const features = row?.features || {};
+    const escapeBias = escapePatternAnalysis?.escape_pattern_applied
+      ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, lane) * 1.4
+      : 0;
+    const attackPartnerBias = attackScenarioApplied && getAttackScenarioTargetLanes(attackScenarioType).partner.includes(lane)
+      ? attackScenarioScore * 0.14
+      : 0;
+    const exhibitionPartnerBias = Math.max(0, 7 - toNum(features?.exhibition_rank, 6)) * 5;
+    const motorPartnerBias = toNum(features?.motor_total_score, 0) * 1.5;
+    const startPartnerBias = Math.max(0, 7 - toNum(features?.expected_actual_st_rank ?? features?.st_rank, 6)) * 3.4;
+    const leftNeighborBias =
+      Math.max(0, toNum(features?.display_time_delta_vs_left, 0)) * 22 +
+      Math.max(0, toNum(features?.avg_st_rank_delta_vs_left, 0)) * 4 +
+      toNum(features?.slit_alert_flag, 0) * 8;
+    const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * 10;
+    const score =
+      toNum(row?.score, 0) * 0.44 +
+      escapeBias +
+      attackPartnerBias +
+      exhibitionPartnerBias +
+      motorPartnerBias +
+      startPartnerBias +
+      leftNeighborBias -
+      fHoldPenalty;
+    return {
+      lane,
+      score: Number(score.toFixed(2))
+    };
+  });
+  const partnerScoreMap = new Map(partnerScores.map((row) => [row.lane, row]));
+
+  const bucket = new Map();
+  for (const head of headScores) {
+    for (const partner of partnerScores) {
+      if (!Number.isInteger(head.lane) || !Number.isInteger(partner.lane) || head.lane === partner.lane) continue;
+      const combo = `${head.lane}-${partner.lane}`;
+      const evidence = exactaEvidenceMap.get(combo) || { prob: 0, recommended_bet: 0, explanation_tags: [] };
+      const balanceTag = head.lane === 1 && survivalResidualScore >= 32 ? "BOAT1_SURVIVAL" : null;
+      const reasonTags = [
+        head.exhibition_strength >= 40 ? "ONE_LAP_EXHIBITION_HEAD" : null,
+        escapePatternAnalysis?.escape_pattern_applied && head.lane === 1 ? "ESCAPE_CONTEXT" : null,
+        attackScenarioApplied && getAttackScenarioHeadLane(attackScenarioType) === head.lane ? "ATTACK_HEAD" : null,
+        attackScenarioApplied && getAttackScenarioTargetLanes(attackScenarioType).partner.includes(partner.lane) ? "ATTACK_PARTNER" : null,
+        toNum(partnerScoreMap.get(partner.lane)?.score, 0) >= 70 ? "STRONG_PARTNER" : null,
+        balanceTag
+      ].filter(Boolean);
+      const compositeScore =
+        head.score * 0.58 +
+        partner.score * 0.42 +
+        toNum(evidence?.prob, 0) * 220 +
+        Math.min(24, toNum(evidence?.recommended_bet, 0) / 100);
+      const existing = bucket.get(combo);
+      const nextRow = {
+        combo,
+        prob: Number((compositeScore / 1000).toFixed(4)),
+        recommended_bet: Math.max(100, Math.round(Math.max(120, compositeScore * 1.3) / 100) * 100),
+        exacta_head_score: head.score,
+        exacta_partner_score: partner.score,
+        exacta_reason_tags: [...new Set(reasonTags)],
+        explanation_tags: [...new Set(safeArray(evidence?.explanation_tags))],
+        source_prob: Number(toNum(evidence?.prob, 0).toFixed(4))
+      };
+      if (!existing || toNum(existing?.exacta_head_score, 0) + toNum(existing?.exacta_partner_score, 0) < head.score + partner.score) {
+        bucket.set(combo, nextRow);
+      }
+    }
+  }
+
+  const items = [...bucket.values()]
+    .sort((a, b) => {
+      const scoreA = toNum(a?.prob, 0) * 1000 + toNum(a?.exacta_head_score, 0) + toNum(a?.exacta_partner_score, 0);
+      const scoreB = toNum(b?.prob, 0) * 1000 + toNum(b?.exacta_head_score, 0) + toNum(b?.exacta_partner_score, 0);
+      return scoreB - scoreA;
+    })
+    .slice(0, 4)
+    .map((row) => ({
+      ...row,
+      exacta_head_score: Number(toNum(row?.exacta_head_score, 0).toFixed(2)),
+      exacta_partner_score: Number(toNum(row?.exacta_partner_score, 0).toFixed(2))
+    }));
+
+  return {
+    shown: items.length > 0,
+    exacta_head_score: items.length > 0 ? Number(toNum(items[0]?.exacta_head_score, 0).toFixed(2)) : 0,
+    exacta_partner_score: items.length > 0 ? Number(toNum(items[0]?.exacta_partner_score, 0).toFixed(2)) : 0,
+    exacta_reason_tags: [...new Set(items.flatMap((row) => safeArray(row?.exacta_reason_tags)).slice(0, 8))],
+    items
+  };
+}
+
 const CONFIDENCE_VERSION = "v1.1";
 const PARTICIPATION_VERSION = "v1.2";
 const PARTICIPATION_CONFIDENCE_THRESHOLDS = {
@@ -3106,6 +3350,18 @@ raceRouter.get("/race", async (req, res, next) => {
       learningWeights,
       race: data?.race || null
     });
+    const exactaSnapshot = buildExactaCoverageSnapshot({
+      ranking,
+      recommendedBets: bet_plan_with_stake?.recommended_bets,
+      optimizedTickets: ticketOptimizationWithStake?.optimized_tickets,
+      finalRecommendedSnapshot,
+      boat1HeadSnapshot,
+      headScenarioBalanceAnalysis,
+      escapePatternAnalysis,
+      attackScenarioAnalysis,
+      learningWeights,
+      race: data?.race || null
+    });
     const startDisplay = saveRaceStartDisplaySnapshot({
       raceId,
       racers: data.racers,
@@ -3228,6 +3484,11 @@ raceRouter.get("/race", async (req, res, next) => {
       boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
       boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
       boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags,
+      exacta_recommended_bets_snapshot: exactaSnapshot.items,
+      exacta_head_score: exactaSnapshot.exacta_head_score,
+      exacta_partner_score: exactaSnapshot.exacta_partner_score,
+      exacta_reason_tags: exactaSnapshot.exacta_reason_tags,
+      exacta_section_shown: exactaSnapshot.shown ? 1 : 0,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -3323,6 +3584,11 @@ raceRouter.get("/race", async (req, res, next) => {
       boat1_survival_residual_score: snapshotContext.boat1_survival_residual_score,
       boat1_head_section_shown: snapshotContext.boat1_head_section_shown,
       boat1_head_reason_tags: snapshotContext.boat1_head_reason_tags,
+      exacta_recommended_bets_snapshot: snapshotContext.exacta_recommended_bets_snapshot,
+      exacta_head_score: snapshotContext.exacta_head_score,
+      exacta_partner_score: snapshotContext.exacta_partner_score,
+      exacta_reason_tags: snapshotContext.exacta_reason_tags,
+      exacta_section_shown: snapshotContext.exacta_section_shown,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -3388,6 +3654,11 @@ raceRouter.get("/race", async (req, res, next) => {
       boat1_survival_residual_score: snapshotContext.boat1_survival_residual_score,
       boat1_head_section_shown: snapshotContext.boat1_head_section_shown,
       boat1_head_reason_tags: snapshotContext.boat1_head_reason_tags,
+      exacta_recommended_bets_snapshot: snapshotContext.exacta_recommended_bets_snapshot,
+      exacta_head_score: snapshotContext.exacta_head_score,
+      exacta_partner_score: snapshotContext.exacta_partner_score,
+      exacta_reason_tags: snapshotContext.exacta_reason_tags,
+      exacta_section_shown: snapshotContext.exacta_section_shown,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -3400,6 +3671,11 @@ raceRouter.get("/race", async (req, res, next) => {
       boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
       boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
       boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags,
+      exacta_recommended_bets_snapshot: exactaSnapshot.items,
+      exacta_head_score: exactaSnapshot.exacta_head_score,
+      exacta_partner_score: exactaSnapshot.exacta_partner_score,
+      exacta_reason_tags: exactaSnapshot.exacta_reason_tags,
+      exacta_section_shown: exactaSnapshot.shown ? 1 : 0,
       final_recommended_bets_snapshot: finalRecommendedSnapshot.items,
       final_recommended_bets_count: finalRecommendedSnapshot.items.length,
       final_recommended_bets_snapshot_source: finalRecommendedSnapshot.snapshot_source,
@@ -3425,7 +3701,8 @@ raceRouter.get("/race", async (req, res, next) => {
           backup_picks: Array.isArray(scenarioSuggestions?.backup_picks) ? scenarioSuggestions.backup_picks : [],
           longshot_picks: Array.isArray(scenarioSuggestions?.longshot_picks) ? scenarioSuggestions.longshot_picks : []
         },
-        boat1_head_bets: boat1HeadSnapshot.items
+        boat1_head_bets: boat1HeadSnapshot.items,
+        exacta_recommended_bets: exactaSnapshot.items
       },
       ai_bets_display_snapshot: finalRecommendedSnapshot.items,
       prediction_before_entry_change,
@@ -3523,6 +3800,13 @@ raceRouter.get("/race", async (req, res, next) => {
         boat1_survival_residual_score: boat1HeadSnapshot.boat1_survival_residual_score,
         boat1_head_section_shown: boat1HeadSnapshot.shown ? 1 : 0,
         boat1_head_reason_tags: boat1HeadSnapshot.boat1_head_reason_tags
+      },
+      exactaSection: {
+        exacta_recommended_bets_snapshot: exactaSnapshot.items,
+        exacta_head_score: exactaSnapshot.exacta_head_score,
+        exacta_partner_score: exactaSnapshot.exacta_partner_score,
+        exacta_reason_tags: exactaSnapshot.exacta_reason_tags,
+        exacta_section_shown: exactaSnapshot.shown ? 1 : 0
       },
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
@@ -6405,6 +6689,16 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const finalRecommendedFromPrediction = normalizeSavedBetSnapshotItems(prediction?.final_recommended_bets_snapshot);
       const legacyDisplaySnapshotFromPrediction = normalizeSavedBetSnapshotItems(prediction?.ai_bets_display_snapshot);
       const boat1HeadBetsSnapshot = normalizeSavedBetSnapshotItems(prediction?.boat1_head_bets_snapshot);
+      const exactaBetsFromPrediction = normalizeSavedExactaSnapshotItems(
+        prediction?.exacta_recommended_bets_snapshot ||
+        prediction?.ai_bets_full_snapshot?.exacta_recommended_bets
+      );
+      const exactaBetsFromVerification = normalizeSavedExactaSnapshotItems(
+        verificationSummary?.exacta_recommended_bets_snapshot
+      );
+      const exactaBetsSnapshot = exactaBetsFromPrediction.length > 0
+        ? exactaBetsFromPrediction
+        : exactaBetsFromVerification;
       const savedFinalRecommendedBetsSnapshot = finalRecommendedFromPrediction.length > 0
         ? finalRecommendedFromPrediction
         : legacyDisplaySnapshotFromPrediction;
@@ -6413,6 +6707,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           ? prediction.ai_bets_full_snapshot
           : {
               recommended_bets: latestLogDisplayBets,
+              exacta_recommended_bets: [],
               optimized_tickets: [],
               ticket_generation_v2: { primary_tickets: [], secondary_tickets: [] },
               scenario_suggestions: { main_picks: [], backup_picks: [], longshot_picks: [] }
@@ -6444,6 +6739,7 @@ raceRouter.get("/results-history", async (req, res, next) => {
           : "missing_final_recommended_bets_snapshot";
       const predictedCombo = predictedTop3.length === 3 ? predictedTop3.join("-") : null;
       const actualCombo = actualTop3.length === 3 ? actualTop3.join("-") : null;
+      const actualExactaCombo = actualTop3.length >= 2 ? actualTop3.slice(0, 2).join("-") : null;
       const verificationAgainstSnapshotId = Number.isFinite(Number(verification?.verified_against_snapshot_id))
         ? Number(verification.verified_against_snapshot_id)
         : Number.isFinite(Number(verificationSummary?.verified_against_snapshot_id))
@@ -6458,7 +6754,11 @@ raceRouter.get("/results-history", async (req, res, next) => {
       const displaySnapshotCombos = (Array.isArray(aiBetsDisplaySnapshot) ? aiBetsDisplaySnapshot : [])
         .map((row) => normalizeCombo(row?.combo ?? row))
         .filter((c) => c && c.split("-").length === 3);
+      const exactaSnapshotCombos = exactaBetsSnapshot
+        .map((row) => normalizeExactaCombo(row?.combo ?? row))
+        .filter((c) => c && c.split("-").length === 2);
       const hasValidBetSnapshot = displaySnapshotCombos.length > 0;
+      const hasValidExactaSnapshot = exactaSnapshotCombos.length > 0;
       const verificationBetSource = String(verificationSummary?.verification_bet_source || "").toLowerCase();
       const verificationUsedSavedBetSnapshot =
         verificationBetSource === "prediction_snapshot" ||
@@ -6474,6 +6774,15 @@ raceRouter.get("/results-history", async (req, res, next) => {
         : actualCombo
           ? (displaySnapshotCombos.includes(actualCombo) ? "HIT" : "MISS")
           : "PENDING";
+      const persistedExactaStatus = String(verificationSummary?.exacta_verification_status || "").toUpperCase();
+      const computedExactaStatus = !hasValidExactaSnapshot
+        ? "NO_BET_SNAPSHOT"
+        : actualExactaCombo
+          ? (exactaSnapshotCombos.includes(actualExactaCombo) ? "HIT" : "MISS")
+          : "NO_CONFIRMED_RESULT";
+      const exactaVerificationStatus = invalidatedVerification
+        ? "INVALIDATED"
+        : persistedExactaStatus || computedExactaStatus;
       const persistedHitMiss = String(verification?.hit_miss || "").toUpperCase();
       const recoveredSnapshotNeedsReverify =
         hasValidBetSnapshot &&
@@ -6581,15 +6890,27 @@ raceRouter.get("/results-history", async (req, res, next) => {
         boat1_survival_residual_score: toNum(prediction?.boat1_survival_residual_score, null),
         boat1_head_section_shown: toNum(prediction?.boat1_head_section_shown, 0),
         boat1_head_reason_tags: Array.isArray(prediction?.boat1_head_reason_tags) ? prediction.boat1_head_reason_tags : [],
+        exacta_recommended_bets_snapshot: exactaBetsSnapshot,
+        exacta_head_score: toNum(prediction?.exacta_head_score, null),
+        exacta_partner_score: toNum(prediction?.exacta_partner_score, null),
+        exacta_reason_tags: Array.isArray(prediction?.exacta_reason_tags) ? prediction.exacta_reason_tags : [],
+        exacta_section_shown: toNum(prediction?.exacta_section_shown, 0),
+        exacta_hit: exactaVerificationStatus === "HIT",
+        exacta_miss: exactaVerificationStatus === "MISS",
+        exacta_verification_status: exactaVerificationStatus,
         ai_bets_latest_log: latestLogDisplayBets,
         debug_bet_compare: {
           confirmed_result: confirmedResult,
+          confirmed_exacta_result: actualExactaCombo,
           saved_display_snapshot: savedFinalRecommendedBetsSnapshot,
+          saved_exacta_snapshot: exactaBetsSnapshot,
           displayed_in_results: aiBetsDisplaySnapshot,
           verification_display_snapshot: verificationDisplaySnapshot,
           verification_input_bet_list: displaySnapshotCombos,
+          verification_input_exacta_bet_list: exactaSnapshotCombos,
           latest_log_bets: latestLogDisplayBets,
-          final_hit_miss_result: hitMiss
+          final_hit_miss_result: hitMiss,
+          final_exacta_result: exactaVerificationStatus
         },
         feature_snapshot_debug: {
           feature_snapshot_exists: !!featureSnapshotMeta?.feature_snapshot_count,
@@ -6782,11 +7103,16 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         : legacySnapshotDisplayBetsFromPrediction.length > 0
           ? legacySnapshotDisplayBetsFromPrediction
           : [];
+    const snapshotExactaBets = normalizeSavedExactaSnapshotItems(
+      predictionJson?.exacta_recommended_bets_snapshot ||
+      predictionJson?.ai_bets_full_snapshot?.exacta_recommended_bets
+    );
     const snapshotFullBets =
       predictionJson?.ai_bets_full_snapshot && typeof predictionJson.ai_bets_full_snapshot === "object"
         ? predictionJson.ai_bets_full_snapshot
         : {
             recommended_bets: safeArray(betPlanJson?.recommended_bets),
+            exacta_recommended_bets: [],
             optimized_tickets: [],
             ticket_generation_v2: { primary_tickets: [], secondary_tickets: [] },
             scenario_suggestions: { main_picks: [], backup_picks: [], longshot_picks: [] }
@@ -6835,6 +7161,10 @@ raceRouter.post("/results/verify", async (req, res, next) => {
     const canonicalSnapshotBets = safeArray(predictedBets)
       .map((row) => normalizeCombo(row?.combo ?? row))
       .filter((combo) => combo && combo.split("-").length === 3);
+    const canonicalExactaSnapshotBets = safeArray(snapshotExactaBets)
+      .map((row) => normalizeExactaCombo(row?.combo ?? row))
+      .filter((combo) => combo && combo.split("-").length === 2);
+    const actualExactaCombo = actualTop3.length >= 2 ? actualTop3.slice(0, 2).join("-") : null;
     if (canonicalSnapshotBets.length === 0) {
       const summary = {
         race_id: raceId,
@@ -6868,7 +7198,20 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         verification_bet_source: verificationBetSource,
         verified_against_bets: [],
         confirmed_result_canonical: actualTop3.length === 3 ? actualTop3.join("-") : null,
+        exacta_recommended_bets_snapshot: snapshotExactaBets,
+        exacta_verification_status: canonicalExactaSnapshotBets.length === 0
+          ? "NO_BET_SNAPSHOT"
+          : actualExactaCombo && canonicalExactaSnapshotBets.includes(actualExactaCombo)
+            ? "HIT"
+            : actualExactaCombo
+              ? "MISS"
+              : "NO_CONFIRMED_RESULT",
+        exacta_hit: canonicalExactaSnapshotBets.length > 0 && !!actualExactaCombo && canonicalExactaSnapshotBets.includes(actualExactaCombo),
+        exacta_miss: canonicalExactaSnapshotBets.length > 0 && !!actualExactaCombo && !canonicalExactaSnapshotBets.includes(actualExactaCombo),
+        verified_against_exacta_bets: canonicalExactaSnapshotBets,
+        confirmed_exacta_result_canonical: actualExactaCombo,
         hit_match_found: false,
+        exacta_hit_match_found: canonicalExactaSnapshotBets.length > 0 && !!actualExactaCombo && canonicalExactaSnapshotBets.includes(actualExactaCombo),
         learning_ready: false,
         warning: null
       };
@@ -6968,6 +7311,19 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       verified_against_bets: analysis.verified_against_bets,
       confirmed_result_canonical: analysis.confirmed_result_canonical,
       hit_match_found: analysis.hit_match_found,
+      exacta_recommended_bets_snapshot: snapshotExactaBets,
+      exacta_verification_status: canonicalExactaSnapshotBets.length === 0
+        ? "NO_BET_SNAPSHOT"
+        : actualExactaCombo && canonicalExactaSnapshotBets.includes(actualExactaCombo)
+          ? "HIT"
+          : actualExactaCombo
+            ? "MISS"
+            : "NO_CONFIRMED_RESULT",
+      exacta_hit: canonicalExactaSnapshotBets.length > 0 && !!actualExactaCombo && canonicalExactaSnapshotBets.includes(actualExactaCombo),
+      exacta_miss: canonicalExactaSnapshotBets.length > 0 && !!actualExactaCombo && !canonicalExactaSnapshotBets.includes(actualExactaCombo),
+      verified_against_exacta_bets: canonicalExactaSnapshotBets,
+      confirmed_exacta_result_canonical: actualExactaCombo,
+      exacta_hit_match_found: canonicalExactaSnapshotBets.length > 0 && !!actualExactaCombo && canonicalExactaSnapshotBets.includes(actualExactaCombo),
       learning_ready: analysis.categories.length > 0,
       warning: verifyWarning
     };
@@ -7032,8 +7388,12 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       verification_version: nextVerificationVersion,
       verified_against_snapshot_id: verifiedAgainstSnapshotId,
       verified_against_bets: analysis.verified_against_bets,
+      verified_against_exacta_bets: canonicalExactaSnapshotBets,
       confirmed_result_canonical: analysis.confirmed_result_canonical,
+      confirmed_exacta_result_canonical: actualExactaCombo,
       hit_match_found: analysis.hit_match_found,
+      exacta_hit_match_found: canonicalExactaSnapshotBets.length > 0 && !!actualExactaCombo && canonicalExactaSnapshotBets.includes(actualExactaCombo),
+      exacta_verification_status: summary.exacta_verification_status,
       verification_bet_source: verificationBetSource,
       continuous_learning: continuousLearning,
       confirmed_result: actualTop3.join("-"),
