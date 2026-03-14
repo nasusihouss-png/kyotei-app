@@ -1099,19 +1099,22 @@ export default function App() {
     : Array.isArray(prediction?.boat1_head_bets_snapshot)
       ? prediction.boat1_head_bets_snapshot
       : [];
-  const boat1HeadSectionShown =
-    Number(boat1HeadSection?.boat1_head_section_shown ?? prediction?.boat1_head_section_shown ?? 0) === 1 &&
-    boat1HeadBets.length > 0;
+  const boat1HeadSectionFlag = Number(
+    boat1HeadSection?.boat1_head_section_shown ?? prediction?.boat1_head_section_shown ?? 0
+  );
+  const boat1HeadScore = Number(boat1HeadSection?.boat1_head_score ?? prediction?.boat1_head_score ?? 0);
   const boat1SurvivalResidualScore = Number(
     boat1HeadSection?.boat1_survival_residual_score ?? prediction?.boat1_survival_residual_score ?? 0
   );
+  const boat1HeadSectionShown =
+    boat1HeadBets.length > 0 &&
+    (boat1HeadSectionFlag === 1 || boat1HeadScore >= 20 || boat1SurvivalResidualScore >= 18);
   const boat1PriorityModeApplied = Number(
     boat1HeadSection?.boat1_priority_mode_applied ?? prediction?.boat1_priority_mode_applied ?? 0
   ) === 1;
   const boat1HeadRatioInFinalBets = Number(
     boat1HeadSection?.boat1_head_ratio_in_final_bets ?? prediction?.boat1_head_ratio_in_final_bets ?? 0
   );
-  const boat1HeadScore = Number(boat1HeadSection?.boat1_head_score ?? prediction?.boat1_head_score ?? 0);
   const boat1HeadReasonTags = Array.isArray(boat1HeadSection?.boat1_head_reason_tags)
     ? boat1HeadSection.boat1_head_reason_tags
     : Array.isArray(prediction?.boat1_head_reason_tags)

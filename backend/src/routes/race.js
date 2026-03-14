@@ -2155,6 +2155,7 @@ function applyHeadScenarioBalanceToTickets(tickets, headScenarioBalanceAnalysis)
 }
 
 function buildBoat1HeadBetsSnapshot({
+  ranking,
   recommendedBets,
   optimizedTickets,
   headScenarioBalanceAnalysis,
@@ -2166,9 +2167,10 @@ function buildBoat1HeadBetsSnapshot({
     ...(Array.isArray(optimizedTickets) ? optimizedTickets : []),
     ...(Array.isArray(recommendedBets) ? recommendedBets : [])
   ]);
+  const rows = Array.isArray(ranking) ? ranking : [];
   const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
   const attackHeadLane = toInt(headScenarioBalanceAnalysis?.attack_head_lane, null);
-  const shown = survivalResidualScore >= 32;
+  const shown = survivalResidualScore >= 18;
   const learnedPatternAdj = getSegmentCorrectionValue(
     learningWeights,
     "formation_pattern",
@@ -2181,6 +2183,26 @@ function buildBoat1HeadBetsSnapshot({
     toInt(race?.venueId, null),
     "second_place_bias_correction"
   );
+  const partnerRows = rows
+    .filter((row) => toInt(row?.racer?.lane, null) !== 1)
+    .map((row) => {
+      const lane = toInt(row?.racer?.lane, null);
+      const f = row?.features || {};
+      const partnerScore =
+        toNum(row?.score, 0) * 0.62 +
+        (escapePatternAnalysis?.escape_pattern_applied
+          ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, lane) * 1.6
+          : 0) +
+        Math.max(0, 7 - toNum(f?.exhibition_rank, 6)) * 4.2 +
+        toNum(f?.motor_total_score, 0) * 1.3 +
+        Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.6 +
+        Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 22 +
+        toNum(f?.slit_alert_flag, 0) * 6 -
+        toNum(f?.f_hold_caution_penalty, 0) * 7;
+      return { lane, partnerScore: Number(partnerScore.toFixed(2)) };
+    })
+    .filter((row) => Number.isInteger(row.lane))
+    .sort((a, b) => b.partnerScore - a.partnerScore);
 
   const bucket = new Map();
   for (const row of merged) {
@@ -2214,6 +2236,41 @@ function buildBoat1HeadBetsSnapshot({
     }
   }
 
+  const fallbackPartners = partnerRows.slice(0, 5);
+  for (const second of fallbackPartners) {
+    for (const third of fallbackPartners) {
+      if (second.lane === third.lane) continue;
+      const combo = `1-${second.lane}-${third.lane}`;
+      const escapeBias = escapePatternAnalysis?.escape_pattern_applied
+        ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, second.lane) * 0.32
+        : 0;
+      const attackPartnerBonus = attackHeadLane && third.lane === attackHeadLane ? 0.55 : 0;
+      const compositeScore =
+        survivalResidualScore +
+        second.partnerScore * 0.68 +
+        third.partnerScore * 0.34 +
+        escapeBias +
+        attackPartnerBonus +
+        (learnedPatternAdj + learnedVenueAdj) * 0.35;
+      const nextRow = {
+        combo,
+        prob: Number((compositeScore / 1000).toFixed(4)),
+        recommended_bet: 100,
+        boat1_head_score: Number(compositeScore.toFixed(2)),
+        boat1_head_reason_tags: [
+          "BOAT1_HEAD",
+          "BOAT1_FALLBACK_GENERATED",
+          survivalResidualScore >= 28 ? "SURVIVAL_RESIDUAL_ACTIVE" : null,
+          escapePatternAnalysis?.escape_pattern_applied ? "ESCAPE_PATTERN_CONTEXT" : null
+        ].filter(Boolean)
+      };
+      const existing = bucket.get(combo);
+      if (!existing || toNum(existing?.boat1_head_score, 0) < nextRow.boat1_head_score) {
+        bucket.set(combo, nextRow);
+      }
+    }
+  }
+
   const items = [...bucket.values()]
     .sort((a, b) => toNum(b?.boat1_head_score, 0) - toNum(a?.boat1_head_score, 0))
     .slice(0, 5)
@@ -2223,7 +2280,7 @@ function buildBoat1HeadBetsSnapshot({
     }));
 
   return {
-    shown: shown && items.length > 0,
+    shown: (shown || toNum(items[0]?.boat1_head_score, 0) >= 24) && items.length > 0,
     boat1_head_score: items.length > 0 ? Number(toNum(items[0]?.boat1_head_score, survivalResidualScore).toFixed(2)) : Number(survivalResidualScore.toFixed(2)),
     boat1_survival_residual_score: Number(survivalResidualScore.toFixed(2)),
     boat1_head_reason_tags: [...new Set(items.flatMap((row) => safeArray(row?.boat1_head_reason_tags)).slice(0, 6))],
@@ -3831,6 +3888,7 @@ raceRouter.get("/race", async (req, res, next) => {
     const snapshotCreatedAt = new Date().toISOString();
     const modelVersion = "prediction_snapshot_v2";
     const preliminaryBoat1HeadSnapshot = buildBoat1HeadBetsSnapshot({
+      ranking,
       recommendedBets: bet_plan_with_stake?.recommended_bets,
       optimizedTickets: ticketOptimizationWithStake?.optimized_tickets,
       headScenarioBalanceAnalysis,
@@ -3854,6 +3912,7 @@ raceRouter.get("/race", async (req, res, next) => {
       optimizedTickets: ticketOptimizationWithStake?.optimized_tickets
     });
     const boat1HeadSnapshot = buildBoat1HeadBetsSnapshot({
+      ranking,
       recommendedBets: bet_plan_with_stake?.recommended_bets,
       optimizedTickets: ticketOptimizationWithStake?.optimized_tickets,
       headScenarioBalanceAnalysis,
