@@ -544,6 +544,8 @@ export function buildVerifiedLearningRows() {
             : [],
         partner_search_bias_json:
           learning?.partner_search_bias_json || context?.partner_search_bias_json || {},
+        boat1_partner_search_bias_json:
+          learning?.boat1_partner_search_bias_json || context?.boat1_partner_search_bias_json || {},
         partner_search_lap_bias_json:
           learning?.partner_search_lap_bias_json || context?.partner_search_lap_bias_json || {},
         boat1_partner_search_applied: toNum(
