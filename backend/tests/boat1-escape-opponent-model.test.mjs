@@ -7,6 +7,12 @@ const {
   buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
   buildBoat3WeakStHeadSuppressionContext,
+  computeLaunchStateScores,
+  classifyLaunchStates,
+  buildIntermediateDevelopmentEvents,
+  computeRaceScenarioProbabilities,
+  computeFinishProbsByScenario,
+  combineScenarioAndFinishProbs,
   buildTopRecommendedTickets,
   computeUpsetRiskScore,
   shouldShowUpsetAlert,
@@ -865,5 +871,264 @@ const upsetAlert = buildUpsetAlert({
 });
 assert.equal(upsetAlert.shown, true, "upset alert payload should exist for risky races");
 assert.equal(upsetAlert.reference_only, true, "watch/skip races should only expose upset tickets as weak reference");
+
+const launchStateRows = [
+  makeRow(1, {
+    features: {
+      expected_actual_st: 0.11,
+      expected_actual_st_rank: 1,
+      exhibition_st: 0.11,
+      exhibition_time: 6.72
+    }
+  }),
+  makeRow(2, {
+    features: {
+      expected_actual_st: 0.12,
+      expected_actual_st_rank: 2,
+      exhibition_st: 0.12,
+      exhibition_time: 6.73
+    }
+  }),
+  makeRow(3, {
+    features: {
+      expected_actual_st: 0.145,
+      expected_actual_st_rank: 5,
+      exhibition_st: 0.145,
+      exhibition_time: 6.77,
+      lap_attack_flag: 0,
+      lap_attack_strength: 1.5,
+      slit_alert_flag: 0,
+      display_time_delta_vs_left: -0.01
+    }
+  }),
+  makeRow(4, {
+    features: {
+      expected_actual_st: 0.1,
+      expected_actual_st_rank: 1,
+      exhibition_st: 0.1,
+      exhibition_time: 6.7,
+      lap_attack_flag: 1,
+      lap_attack_strength: 9.2,
+      slit_alert_flag: 1,
+      display_time_delta_vs_left: 0.08,
+      entry_advantage_score: 10
+    }
+  }),
+  makeRow(5, {
+    features: {
+      expected_actual_st: 0.12,
+      expected_actual_st_rank: 2,
+      exhibition_st: 0.12,
+      exhibition_time: 6.71,
+      lap_attack_strength: 8.4
+    }
+  }),
+  makeRow(6, {
+    features: {
+      expected_actual_st: 0.14,
+      expected_actual_st_rank: 5,
+      exhibition_st: 0.14,
+      exhibition_time: 6.76
+    }
+  })
+];
+const launchStateScores = computeLaunchStateScores(launchStateRows);
+const launchStateLabels = classifyLaunchStates(launchStateScores);
+assert.equal(
+  launchStateLabels.find((row) => row.lane === 4)?.label,
+  "strong_out",
+  "lane 4 should become strong_out when it clearly jumps after lane 3 weakens"
+);
+assert.ok(
+  ["hollow", "strong_hollow"].includes(launchStateLabels.find((row) => row.lane === 3)?.label),
+  "lane 3 should move into a hollow state when its launch alignment weakens"
+);
+
+const intermediateEvents = buildIntermediateDevelopmentEvents({
+  launchStateScores,
+  rows: launchStateRows,
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  escapePatternAnalysis: insideEscape
+});
+assert.ok(
+  intermediateEvents.boat4_cado_ready >= 0.45,
+  "boat4_out after boat3_hollow should raise 4-cado readiness"
+);
+assert.ok(
+  intermediateEvents.weak_wall_on_3 >= 0.35,
+  "boat3_hollow should weaken the wall on 3 for development reading"
+);
+
+const launchScenarioProbabilities = computeRaceScenarioProbabilities({
+  intermediateEvents,
+  rows: launchStateRows,
+  attackScenarioAnalysis: lane4Pressure,
+  escapePatternAnalysis: insideEscape,
+  outsideHeadPromotionContext: {
+    inner_collapse_score: 38,
+    by_lane: new Map()
+  },
+  headScenarioBalanceAnalysis: insideHeadScenario
+});
+const launchScenarioMap = new Map(launchScenarioProbabilities.map((row) => [row.scenario, row.probability]));
+assert.ok(
+  Number(launchScenarioMap.get("boat4_cado_attack") || 0) > Number(launchScenarioMap.get("boat3_makuri") || 0),
+  "boat4_out after boat3_hollow should favor 4-cado over 3-makuri"
+);
+
+const stableLaunchStateRows = [
+  makeRow(1, { features: { expected_actual_st: 0.1, expected_actual_st_rank: 1, exhibition_st: 0.1 } }),
+  makeRow(2, { features: { expected_actual_st: 0.12, expected_actual_st_rank: 2, exhibition_st: 0.12 } }),
+  makeRow(3, { features: { expected_actual_st: 0.14, expected_actual_st_rank: 4, exhibition_st: 0.14 } }),
+  makeRow(4, { features: { expected_actual_st: 0.15, expected_actual_st_rank: 5, exhibition_st: 0.15 } }),
+  makeRow(5, { features: { expected_actual_st: 0.16, expected_actual_st_rank: 6, exhibition_st: 0.16 } }),
+  makeRow(6, { features: { expected_actual_st: 0.145, expected_actual_st_rank: 3, exhibition_st: 0.145 } })
+];
+const stableLaunchScores = computeLaunchStateScores(stableLaunchStateRows);
+const stableLaunchEvents = buildIntermediateDevelopmentEvents({
+  launchStateScores: stableLaunchScores,
+  rows: stableLaunchStateRows,
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  escapePatternAnalysis: insideEscape
+});
+const stableScenarioProbabilities = computeRaceScenarioProbabilities({
+  intermediateEvents: stableLaunchEvents,
+  rows: stableLaunchStateRows,
+  attackScenarioAnalysis: noAttack,
+  escapePatternAnalysis: insideEscape,
+  outsideHeadPromotionContext: {
+    inner_collapse_score: 22,
+    by_lane: new Map()
+  },
+  headScenarioBalanceAnalysis: insideHeadScenario
+});
+const stableScenarioMap = new Map(stableScenarioProbabilities.map((row) => [row.scenario, row.probability]));
+assert.ok(
+  Number(stableScenarioMap.get("boat1_escape") || 0) >= 0.5,
+  "boat1_out with inner stability should strengthen the boat1 escape scenario"
+);
+
+const boat3LaunchRows = [
+  makeRow(1, { features: { expected_actual_st: 0.11, expected_actual_st_rank: 1, exhibition_st: 0.11 } }),
+  makeRow(2, { features: { expected_actual_st: 0.125, expected_actual_st_rank: 3, exhibition_st: 0.125 } }),
+  makeRow(3, {
+    features: {
+      expected_actual_st: 0.105,
+      expected_actual_st_rank: 1,
+      exhibition_st: 0.105,
+      lap_attack_flag: 1,
+      lap_attack_strength: 8.8,
+      slit_alert_flag: 1,
+      display_time_delta_vs_left: 0.07
+    }
+  }),
+  makeRow(4, { features: { expected_actual_st: 0.13, expected_actual_st_rank: 4, exhibition_st: 0.13 } }),
+  makeRow(5, { features: { expected_actual_st: 0.135, expected_actual_st_rank: 5, exhibition_st: 0.135 } }),
+  makeRow(6, { features: { expected_actual_st: 0.14, expected_actual_st_rank: 6, exhibition_st: 0.14 } })
+];
+const boat3CandidateDistributions = buildSeparatedCandidateDistributions({
+  ranking: boat3LaunchRows,
+  tickets: [],
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  escapePatternAnalysis: insideEscape,
+  attackScenarioAnalysis: lane3Attack,
+  learningWeights,
+  race
+});
+const boat3FeatureBundle = buildPredictionFeatureBundle({
+  ranking: boat3LaunchRows,
+  race,
+  entryMeta: { predicted_entry_order: [1, 2, 3, 4, 5, 6], actual_entry_order: [1, 2, 3, 4, 5, 6] },
+  learningWeights,
+  escapePatternAnalysis: insideEscape,
+  attackScenarioAnalysis: lane3Attack,
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  candidateDistributions: boat3CandidateDistributions
+});
+const boat3FirstProbs = computeFirstPlaceProbabilities(boat3FeatureBundle);
+const boat3SecondProbs = computeSecondPlaceProbabilities(
+  boat3FeatureBundle,
+  computeBoat1EscapeProbability(boat3FeatureBundle),
+  computeAttackScenarioProbabilities(boat3FeatureBundle),
+  boat3FirstProbs
+);
+const boat3AttackProbs = computeAttackScenarioProbabilities(boat3FeatureBundle);
+const boat3SurvivalProbs = computeSurvivalProbabilities(boat3FeatureBundle);
+const boat3ThirdProbs = computeThirdPlaceProbabilities(
+  boat3FeatureBundle,
+  boat3FirstProbs,
+  boat3SecondProbs,
+  boat3AttackProbs,
+  boat3SurvivalProbs
+);
+const boat3LaunchScenarioMap = new Map(
+  boat3FeatureBundle.launch_context.race_scenario_probabilities_json.map((row) => [row.scenario, row.probability])
+);
+assert.ok(
+  Number(boat3LaunchScenarioMap.get("boat3_makuri") || 0) >= 0.18,
+  "boat3_out should still raise boat3 attack scenarios"
+);
+assert.equal(
+  boat3FirstProbs[0]?.lane,
+  1,
+  "boat3_out should not force a 3-head recommendation when boat1 survival remains strong"
+);
+const boat3ConditionalFinish = computeFinishProbsByScenario({
+  scenarioProbabilities: boat3FeatureBundle.launch_context.race_scenario_probabilities_json,
+  firstPlaceProbability: boat3FirstProbs,
+  secondPlaceProbability: boat3SecondProbs,
+  thirdPlaceProbability: boat3ThirdProbs,
+  boat1EscapeProbability: computeBoat1EscapeProbability(boat3FeatureBundle)
+});
+const boat3ScenarioCandidates = combineScenarioAndFinishProbs({
+  scenarioProbabilities: boat3FeatureBundle.launch_context.race_scenario_probabilities_json,
+  conditionalFinishProbs: boat3ConditionalFinish
+});
+assert.ok(
+  boat3ScenarioCandidates.some((row) => row.combo.startsWith("1-3-")),
+  "scenario-conditioned finish mapping should keep 1-3-x alive in boat3 attack races"
+);
+
+const hollowUpsetRisk = computeUpsetRiskScore({
+  confidenceScores: {
+    head_fixed_confidence_pct: 56,
+    recommended_bet_confidence_pct: 52
+  },
+  participationDecision: {
+    decision: "watch",
+    participation_score_components: {
+      race_stability_score: 40,
+      prediction_readability_score: 43,
+      partner_clarity_score: 35,
+      quality_gate_applied: 1
+    }
+  },
+  roleProbabilityLayers: {
+    boat1_escape_probability: 0.38,
+    first_place_probability_json: [{ lane: 1, weight: 0.35 }, { lane: 4, weight: 0.22 }, { lane: 5, weight: 0.15 }],
+    second_place_probability_json: [{ lane: 4, weight: 0.21 }, { lane: 5, weight: 0.19 }, { lane: 3, weight: 0.16 }],
+    third_place_probability_json: [{ lane: 5, weight: 0.18 }, { lane: 4, weight: 0.17 }, { lane: 2, weight: 0.15 }]
+  },
+  attackScenarioAnalysis: lane4Pressure,
+  headScenarioBalanceAnalysis: {
+    ...insideHeadScenario,
+    launch_state_labels_json: [
+      { lane: 1, label: "hollow" },
+      { lane: 4, label: "strong_out" },
+      { lane: 5, label: "out" }
+    ]
+  },
+  outsideHeadPromotionGate: {
+    inner_collapse_score: 67,
+    by_lane: {
+      "4": { matched_evidence_categories: ["entry_shape_advantage", "clear_exhibition_st_advantage", "lap_exhibition_advantage"] },
+      "5": { matched_evidence_categories: ["outer_mix_ready", "lap_exhibition_advantage", "learning_correction_match"] }
+    }
+  }
+});
+assert.ok(
+  hollowUpsetRisk >= 62,
+  "boat1_hollow plus outer pressure should raise upset risk into the alert zone"
+);
 
 console.log("boat1-escape-opponent-model tests passed");

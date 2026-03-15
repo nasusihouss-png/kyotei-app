@@ -634,6 +634,33 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.player_stat_windows_used_json)
             ? context.player_stat_windows_used_json
             : [],
+        launch_state_scores_json: Array.isArray(learning?.launch_state_scores_json)
+          ? learning.launch_state_scores_json
+          : Array.isArray(context?.launch_state_scores_json)
+            ? context.launch_state_scores_json
+            : [],
+        launch_state_labels_json: Array.isArray(learning?.launch_state_labels_json)
+          ? learning.launch_state_labels_json
+          : Array.isArray(context?.launch_state_labels_json)
+            ? context.launch_state_labels_json
+            : [],
+        intermediate_development_events_json:
+          learning?.intermediate_development_events_json || context?.intermediate_development_events_json || {},
+        race_scenario_probabilities_json: Array.isArray(learning?.race_scenario_probabilities_json)
+          ? learning.race_scenario_probabilities_json
+          : Array.isArray(context?.race_scenario_probabilities_json)
+            ? context.race_scenario_probabilities_json
+            : [],
+        finish_probabilities_by_scenario_json: Array.isArray(learning?.finish_probabilities_by_scenario_json)
+          ? learning.finish_probabilities_by_scenario_json
+          : Array.isArray(context?.finish_probabilities_by_scenario_json)
+            ? context.finish_probabilities_by_scenario_json
+            : [],
+        scenario_based_order_candidates_json: Array.isArray(learning?.scenario_based_order_candidates_json)
+          ? learning.scenario_based_order_candidates_json
+          : Array.isArray(context?.scenario_based_order_candidates_json)
+            ? context.scenario_based_order_candidates_json
+            : [],
         top_recommended_tickets_snapshot: Array.isArray(learning?.top_recommended_tickets_snapshot)
           ? learning.top_recommended_tickets_snapshot
           : Array.isArray(context?.top_recommended_tickets_snapshot)
