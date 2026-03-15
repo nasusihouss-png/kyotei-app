@@ -3914,6 +3914,11 @@ export default function App() {
                     <span>{predictionViewModel.topRecommendedTickets.length} / 10</span>
                     <span>sorted by estimated hit rate</span>
                   </div>
+                  {data?.recommendedShape?.shape ? (
+                    <p className="muted strategy-line">
+                      Recommended Shape: {data.recommendedShape.shape}
+                    </p>
+                  ) : null}
                   <div className="ticket-stack compact-list">
                     {predictionViewModel.topRecommendedTickets.map((row) => (
                       <div key={`top-ticket-${row.ticket_type}-${row.ticket}`} className="premium-ticket-row primary">

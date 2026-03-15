@@ -4989,6 +4989,177 @@ function generateMainTrifectaTickets(orderCandidates, confidence) {
     }));
 }
 
+function formatShapeGroup(lanes = []) {
+  return [...new Set(safeArray(lanes).filter(Number.isInteger))].sort((a, b) => a - b).join("");
+}
+
+function expandTrifectaShape({ first = [], second = [], third = [] }) {
+  const firstSet = [...new Set(safeArray(first).filter(Number.isInteger))];
+  const secondSet = [...new Set(safeArray(second).filter(Number.isInteger))];
+  const thirdSet = [...new Set(safeArray(third).filter(Number.isInteger))];
+  const combos = [];
+  for (const a of firstSet) {
+    for (const b of secondSet) {
+      for (const c of thirdSet) {
+        if (new Set([a, b, c]).size !== 3) continue;
+        combos.push(`${a}-${b}-${c}`);
+      }
+    }
+  }
+  return [...new Set(combos)].sort();
+}
+
+function buildHitRateShapeRecommendation({
+  firstProbs,
+  secondProbs,
+  thirdProbs,
+  boat1EscapeProbability,
+  confidence
+}) {
+  const firstRows = safeArray(firstProbs).map((row) => ({
+    lane: toInt(row?.lane, null),
+    weight: toNum(row?.weight, 0)
+  })).filter((row) => Number.isInteger(row.lane));
+  const secondRows = safeArray(secondProbs).map((row) => ({
+    lane: toInt(row?.lane, null),
+    weight: toNum(row?.weight, 0)
+  })).filter((row) => Number.isInteger(row.lane));
+  const thirdRows = safeArray(thirdProbs).map((row) => ({
+    lane: toInt(row?.lane, null),
+    weight: toNum(row?.weight, 0)
+  })).filter((row) => Number.isInteger(row.lane));
+  const topFirst = firstRows[0] || { lane: null, weight: 0 };
+  const secondFirst = firstRows[1] || { lane: null, weight: 0 };
+  const firstDominance = topFirst.weight - secondFirst.weight;
+  const secondConcentration = secondRows.slice(0, 2).reduce((sum, row) => sum + row.weight, 0);
+  const thirdConcentration = thirdRows.slice(0, 3).reduce((sum, row) => sum + row.weight, 0);
+  const dominantBoat1 =
+    topFirst.lane === 1 &&
+    topFirst.weight >= 0.33 &&
+    (firstDominance >= 0.08 || toNum(boat1EscapeProbability, 0) >= 0.48) &&
+    toNum(confidence, 0) >= 50;
+  if (!dominantBoat1) {
+    return {
+      selected_shape: null,
+      expanded_tickets: [],
+      reason_tags: [],
+      concentration_metrics: {
+        first_place_dominance: Number(firstDominance.toFixed(4)),
+        second_place_concentration: Number(secondConcentration.toFixed(4)),
+        third_place_concentration: Number(thirdConcentration.toFixed(4))
+      }
+    };
+  }
+
+  const secondCandidates = secondRows
+    .filter((row) => row.lane !== 1)
+    .slice(0, secondConcentration >= 0.58 ? 2 : 1)
+    .map((row) => row.lane);
+  const thirdCandidates = thirdRows
+    .filter((row) => row.lane !== 1)
+    .slice(0, thirdConcentration >= 0.7 ? 3 : secondConcentration >= 0.54 ? 2 : 1)
+    .map((row) => row.lane);
+  if (secondCandidates.length === 0 || thirdCandidates.length === 0) {
+    return {
+      selected_shape: null,
+      expanded_tickets: [],
+      reason_tags: [],
+      concentration_metrics: {
+        first_place_dominance: Number(firstDominance.toFixed(4)),
+        second_place_concentration: Number(secondConcentration.toFixed(4)),
+        third_place_concentration: Number(thirdConcentration.toFixed(4))
+      }
+    };
+  }
+  const shape = {
+    first: [1],
+    second: secondCandidates,
+    third: [...new Set([...secondCandidates, ...thirdCandidates])].sort((a, b) => a - b)
+  };
+  const selectedShape = `${formatShapeGroup(shape.first)}-${formatShapeGroup(shape.second)}-${formatShapeGroup(shape.third)}`;
+  const expandedTickets = expandTrifectaShape(shape);
+  return {
+    selected_shape: selectedShape,
+    expanded_tickets: expandedTickets,
+    first: shape.first,
+    second: shape.second,
+    third: shape.third,
+    reason_tags: [
+      "HIT_RATE_SHAPE",
+      "BOAT1_FIRST_DOMINANT",
+      secondCandidates.length >= 2 ? "SECOND_PLACE_CONCENTRATED" : "SECOND_PLACE_SINGLE_FOCUS",
+      thirdCandidates.length >= 3 ? "THIRD_PLACE_SURVIVOR_CLUSTER" : "THIRD_PLACE_TIGHT_CLUSTER"
+    ],
+    concentration_metrics: {
+      first_place_dominance: Number(firstDominance.toFixed(4)),
+      second_place_concentration: Number(secondConcentration.toFixed(4)),
+      third_place_concentration: Number(thirdConcentration.toFixed(4))
+    }
+  };
+}
+
+function buildShapeBasedTrifectaTickets({
+  shapeRecommendation,
+  firstProbs,
+  secondProbs,
+  thirdProbs,
+  confidence
+}) {
+  if (!shapeRecommendation?.selected_shape || !safeArray(shapeRecommendation?.expanded_tickets).length) return [];
+  const firstMap = new Map(safeArray(firstProbs).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const secondMap = new Map(safeArray(secondProbs).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const thirdMap = new Map(safeArray(thirdProbs).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const confFactor = clamp(0.9, 1.08, toNum(confidence, 50) / 62);
+  return safeArray(shapeRecommendation.expanded_tickets)
+    .map((combo, index) => {
+      const [a, b, c] = combo.split("-").map((v) => toInt(v, null));
+      if (![a, b, c].every(Number.isInteger)) return null;
+      const prob = clamp(
+        0,
+        1,
+        toNum(firstMap.get(a), 0) * toNum(secondMap.get(b), 0) * toNum(thirdMap.get(c), 0) * 7.8 * confFactor
+      );
+      return {
+        combo,
+        prob: Number(prob.toFixed(4)),
+        recommended_bet: Math.max(100, Math.round((280 - index * 30) / 100) * 100),
+        ticket_type: "shape_main",
+        explanation_tags: [...new Set([...(shapeRecommendation.reason_tags || []), `SHAPE_${shapeRecommendation.selected_shape}`])],
+        explanation_summary: `Recommended Shape: ${shapeRecommendation.selected_shape}`,
+        shape_label: shapeRecommendation.selected_shape,
+        shape_rank_bonus: Number((0.0012 - index * 0.00008).toFixed(4))
+      };
+    })
+    .filter(Boolean);
+}
+
+function mergeShapeBasedTickets(baseTickets, shapeTickets) {
+  const merged = new Map();
+  for (const row of normalizeSavedBetSnapshotItems(baseTickets)) {
+    merged.set(normalizeCombo(row?.combo), row);
+  }
+  for (const row of normalizeSavedBetSnapshotItems(shapeTickets)) {
+    const combo = normalizeCombo(row?.combo);
+    const existing = merged.get(combo);
+    if (!existing) {
+      merged.set(combo, row);
+      continue;
+    }
+    merged.set(combo, {
+      ...existing,
+      prob: Number(Math.max(toNum(existing?.prob, 0), toNum(row?.prob, 0) + toNum(row?.shape_rank_bonus, 0)).toFixed(4)),
+      recommended_bet: Math.max(toNum(existing?.recommended_bet, 100), toNum(row?.recommended_bet, 100)),
+      explanation_tags: [...new Set([...
+        safeArray(existing?.explanation_tags),
+        ...safeArray(row?.explanation_tags)
+      ])],
+      explanation_summary: existing?.explanation_summary || row?.explanation_summary || null,
+      shape_label: existing?.shape_label || row?.shape_label || null
+    });
+  }
+  return [...merged.values()].sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0));
+}
+
 function generateExactaCoverTickets(firstProbs, secondProbs, confidence) {
   const mainHeadLane = topDistributionLane(firstProbs);
   if (mainHeadLane !== 1) return [];
@@ -9426,6 +9597,28 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.boat1_priority_mode_applied = boat1PriorityAdjustment.boat1_priority_mode_applied;
     headScenarioBalanceAnalysis.boat1_head_ratio_in_final_bets = boat1PriorityAdjustment.boat1_head_ratio_in_final_bets;
     headScenarioBalanceAnalysis.boat1_priority_reason_tags = boat1PriorityAdjustment.boat1_priority_reason_tags;
+    const shapeRecommendation = buildHitRateShapeRecommendation({
+      firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
+      secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
+      thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
+      boat1EscapeProbability: explicitBoat1EscapeProbability,
+      confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+    });
+    const shapeBasedTrifectaTickets = buildShapeBasedTrifectaTickets({
+      shapeRecommendation,
+      firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
+      secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
+      thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
+      confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+    });
+    bet_plan_with_stake.recommended_bets = mergeShapeBasedTickets(
+      bet_plan_with_stake.recommended_bets,
+      shapeBasedTrifectaTickets
+    );
+    ticketOptimizationWithStake.optimized_tickets = mergeShapeBasedTickets(
+      ticketOptimizationWithStake.optimized_tickets,
+      shapeBasedTrifectaTickets
+    );
     const finalRecommendedSnapshot = buildFinalRecommendedBetsSnapshot({
       recommendedBets: bet_plan_with_stake?.recommended_bets,
       optimizedTickets: ticketOptimizationWithStake?.optimized_tickets
@@ -9456,6 +9649,10 @@ raceRouter.get("/race", async (req, res, next) => {
       roleBasedOrderCandidates,
       confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
     );
+    const roleBasedMainTrifectaWithShape = mergeShapeBasedTickets(
+      roleBasedMainTrifectaTickets,
+      shapeBasedTrifectaTickets
+    ).slice(0, 8);
     const roleBasedExactaCoverTickets = generateExactaCoverTickets(
       confirmedRoleProbabilities.confirmed_first_place_probability_json,
       confirmedRoleProbabilities.confirmed_second_place_probability_json,
@@ -9631,6 +9828,8 @@ raceRouter.get("/race", async (req, res, next) => {
       players: snapshotPlayers,
       player_summary: snapshotPlayers,
       fetched_signal_diagnostics: fetchedSignalDiagnostics,
+      recommended_shape: shapeRecommendation?.selected_shape || null,
+      recommended_shape_debug: shapeRecommendation || null,
       kyoteibiyori_fetch_status_json: data?.source?.kyotei_biyori || {},
       entry: {
         predicted_entry_order: entryMeta.predicted_entry_order,
@@ -9767,7 +9966,7 @@ raceRouter.get("/race", async (req, res, next) => {
       exacta_partner_score: exactaSnapshot.exacta_partner_score,
       exacta_reason_tags: exactaSnapshot.exacta_reason_tags,
       exacta_section_shown: exactaSnapshot.shown ? 1 : 0,
-      role_based_main_trifecta_tickets_snapshot: roleBasedMainTrifectaTickets,
+      role_based_main_trifecta_tickets_snapshot: roleBasedMainTrifectaWithShape,
       role_based_exacta_cover_tickets_snapshot: roleBasedExactaCoverTickets,
       role_based_backup_urasuji_tickets_snapshot: roleBasedBackupUrasujiTickets,
       backup_urasuji_recommendations_snapshot: backupUrasujiSnapshot.items,
@@ -10100,6 +10299,8 @@ raceRouter.get("/race", async (req, res, next) => {
         boat1HeadSnapshot.boat1_head_reason_tags,
         ...safeArray(headScenarioBalanceAnalysis.boat1_priority_reason_tags)
       ])],
+      recommended_shape: shapeRecommendation?.selected_shape || null,
+      recommended_shape_debug: shapeRecommendation || null,
       exacta_recommended_bets_snapshot: exactaSnapshot.items,
       exacta_head_score: exactaSnapshot.exacta_head_score,
       exacta_partner_score: exactaSnapshot.exacta_partner_score,
@@ -10136,7 +10337,7 @@ raceRouter.get("/race", async (req, res, next) => {
         boat1_priority_mode_applied: toInt(headScenarioBalanceAnalysis.boat1_priority_mode_applied, 0),
         exacta_recommended_bets: exactaSnapshot.items,
         backup_urasuji_recommendations: backupUrasujiSnapshot.items,
-        role_based_main_trifecta_tickets: roleBasedMainTrifectaTickets,
+        role_based_main_trifecta_tickets: roleBasedMainTrifectaWithShape,
         role_based_exacta_cover_tickets: roleBasedExactaCoverTickets,
         role_based_backup_urasuji_tickets: roleBasedBackupUrasujiTickets
       },
@@ -10272,10 +10473,18 @@ raceRouter.get("/race", async (req, res, next) => {
         backup_urasuji_reason_tags: backupUrasujiSnapshot.backup_reason_tags
       },
       roleBasedTickets: {
-        main_trifecta_tickets: roleBasedMainTrifectaTickets,
+        main_trifecta_tickets: roleBasedMainTrifectaWithShape,
         exacta_cover_tickets: roleBasedExactaCoverTickets,
         backup_urasuji_tickets: roleBasedBackupUrasujiTickets
       },
+      recommendedShape: shapeRecommendation?.selected_shape
+        ? {
+            shape: shapeRecommendation.selected_shape,
+            expanded_tickets: shapeRecommendation.expanded_tickets,
+            reason_tags: shapeRecommendation.reason_tags,
+            concentration_metrics: shapeRecommendation.concentration_metrics
+          }
+        : null,
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,
