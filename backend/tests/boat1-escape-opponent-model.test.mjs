@@ -3,7 +3,18 @@ import { __testHooks } from "../src/routes/race.js";
 
 const {
   buildSeparatedCandidateDistributions,
+  buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
+  computeBoat1EscapeProbability,
+  computeAttackScenarioProbabilities,
+  computeFirstPlaceProbabilities,
+  computeSecondPlaceProbabilities,
+  computeSurvivalProbabilities,
+  computeThirdPlaceProbabilities,
+  composeFinishOrderCandidates,
+  generateMainTrifectaTickets,
+  generateExactaCoverTickets,
+  generateBackupUrasujiTickets,
   buildExactaCoverageSnapshot,
   buildParticipationDecision,
   buildBackupUrasujiRecommendationsSnapshot
@@ -260,6 +271,49 @@ assert.equal(
   1,
   "role probability summary should keep boat 1 as main head in a survivable lane 3 attack race"
 );
+const featureBundle = buildPredictionFeatureBundle({
+  ranking: lane3AttackRows,
+  race,
+  entryMeta: { predicted_entry_order: [1, 2, 3, 4, 5, 6], actual_entry_order: [1, 2, 3, 4, 5, 6] },
+  learningWeights,
+  escapePatternAnalysis: insideEscape,
+  attackScenarioAnalysis: lane3Attack,
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  candidateDistributions: lane3Distributions
+});
+const firstPlaceProbabilities = computeFirstPlaceProbabilities(featureBundle);
+const secondPlaceProbabilities = computeSecondPlaceProbabilities(
+  featureBundle,
+  computeBoat1EscapeProbability(featureBundle),
+  computeAttackScenarioProbabilities(featureBundle),
+  firstPlaceProbabilities
+);
+const survivalProbabilities = computeSurvivalProbabilities(featureBundle);
+const thirdPlaceProbabilities = computeThirdPlaceProbabilities(
+  featureBundle,
+  firstPlaceProbabilities,
+  secondPlaceProbabilities,
+  computeAttackScenarioProbabilities(featureBundle),
+  survivalProbabilities
+);
+const finishOrderCandidates = composeFinishOrderCandidates({
+  featureBundle,
+  firstProbs: firstPlaceProbabilities,
+  secondProbs: secondPlaceProbabilities,
+  thirdProbs: thirdPlaceProbabilities,
+  attackProbs: computeAttackScenarioProbabilities(featureBundle),
+  survivalProbs: survivalProbabilities
+});
+const mainRoleTickets = generateMainTrifectaTickets(finishOrderCandidates, 68);
+assert.ok(
+  mainRoleTickets.some((row) => row.combo.startsWith("1-3-")),
+  "role-based main trifecta generation should keep 1-3-x available in lane 3 attack races"
+);
+const roleBasedExacta = generateExactaCoverTickets(firstPlaceProbabilities, secondPlaceProbabilities, 68);
+assert.ok(
+  roleBasedExacta.every((row) => row.combo.startsWith("1-")),
+  "role-based exacta cover should stay aligned with boat 1 as the main head"
+);
 
 const backupUrasujiSnapshot = buildBackupUrasujiRecommendationsSnapshot({
   recommendedBets: [
@@ -275,6 +329,15 @@ assert.equal(
   backupUrasujiSnapshot.shown,
   true,
   "optional urasuji backup should appear only when the opponent model actually flags it"
+);
+const roleBasedBackupUrasuji = generateBackupUrasujiTickets(
+  finishOrderCandidates,
+  computeAttackScenarioProbabilities(featureBundle),
+  68
+);
+assert.ok(
+  roleBasedBackupUrasuji.length <= 2,
+  "role-based backup urasuji should stay compact"
 );
 
 const messyRows = [

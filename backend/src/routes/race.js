@@ -1108,11 +1108,26 @@ function buildMismatchAnalysis({
     !!attackScenarioType &&
     actualHead !== 1 &&
     predictedHead === 1;
+  const attackReadCorrectButFinishWrong =
+    hitMiss === "MISS" &&
+    attackScenarioApplied &&
+    !!attackScenarioType &&
+    ((attackScenarioType.includes("three") && actualTop3.includes(3)) ||
+      (attackScenarioType.includes("four") && actualTop3.includes(4)) ||
+      (attackScenarioType.includes("two") && actualTop3.includes(2))) &&
+    predictedCombo !== actualCombo;
+  const boat1EscapeCorrectButOpponentWrong =
+    actualHead === 1 &&
+    predictedHead === 1 &&
+    hitMiss === "MISS" &&
+    (secondPlaceMiss || thirdPlaceMiss);
 
   if (boat1SurvivalUnderestimated) categories.push("boat1_survival_underestimated");
   if (outerHeadOverpromotion) categories.push("outer_head_overpromotion");
   if (attackScenarioOverweight) categories.push("attack_scenario_overweight");
   if (attackScenarioUnderweight) categories.push("attack_scenario_underweight");
+  if (attackReadCorrectButFinishWrong) categories.push("attack_read_correct_but_finish_wrong");
+  if (boat1EscapeCorrectButOpponentWrong) categories.push("boat1_escape_correct_but_opponent_wrong");
 
   const entryChanged = !!predictionJson?.entry_changed;
   if (entryChanged && hitMiss === "MISS") categories.push("ENTRY_CHANGE_IMPACT");
@@ -1153,6 +1168,8 @@ function buildMismatchAnalysis({
   if (outerHeadOverpromotion) learningAdjustmentReasonTags.push("SUPPRESS_OUTER_HEAD_PROMOTION");
   if (attackScenarioOverweight) learningAdjustmentReasonTags.push("REDUCE_ATTACK_SCENARIO_WEIGHT");
   if (attackScenarioUnderweight) learningAdjustmentReasonTags.push("RESTORE_ATTACK_COUNTER_COVERAGE");
+  if (attackReadCorrectButFinishWrong) learningAdjustmentReasonTags.push("SEPARATE_ATTACK_FROM_FINISH_ORDER");
+  if (boat1EscapeCorrectButOpponentWrong) learningAdjustmentReasonTags.push("REFINE_BOAT1_ESCAPE_OPPONENT_MODEL");
 
   const missPatternTags = [];
   missPatternTags.push(headCorrect ? "head_hit" : "head_miss");
@@ -1176,9 +1193,14 @@ function buildMismatchAnalysis({
   if (outerHeadOverpromotion) missPatternTags.push("outer_head_overpromotion");
   if (attackScenarioOverweight) missPatternTags.push("attack_scenario_overweight");
   if (attackScenarioUnderweight) missPatternTags.push("attack_scenario_underweight");
+  if (attackReadCorrectButFinishWrong) missPatternTags.push("attack_read_correct_but_finish_wrong");
+  if (boat1EscapeCorrectButOpponentWrong) missPatternTags.push("boat1_escape_correct_but_opponent_wrong");
 
   return {
     hit_miss: hitMiss,
+    miss_head: !headCorrect,
+    miss_second: secondPlaceMiss,
+    miss_third: thirdPlaceMiss,
     head_correct: headCorrect,
     second_place_correct: secondCorrect,
     third_place_correct: thirdCorrect,
@@ -1189,6 +1211,8 @@ function buildMismatchAnalysis({
     third_place_noise: thirdPlaceNoise,
     second_third_swap: secondThirdSwap,
     structure_near_but_order_miss: structureNearButOrderMiss,
+    attack_read_correct_but_finish_wrong: attackReadCorrectButFinishWrong,
+    boat1_escape_correct_but_opponent_wrong: boat1EscapeCorrectButOpponentWrong,
     categories: [...new Set(categories)],
     miss_pattern_tags: [...new Set(missPatternTags)],
     learning_adjustment_reason_tags: [...new Set(learningAdjustmentReasonTags)],
@@ -2031,6 +2055,224 @@ function buildRoleProbabilityLayers({
     },
     role_probability_version: "role_probability_v1"
   };
+}
+
+function buildPredictionFeatureBundle({
+  ranking,
+  race,
+  entryMeta,
+  learningWeights,
+  escapePatternAnalysis,
+  attackScenarioAnalysis,
+  headScenarioBalanceAnalysis,
+  candidateDistributions
+}) {
+  return {
+    rows: safeArray(ranking),
+    race: race || null,
+    entry_context: entryMeta || {},
+    learning_weights: learningWeights || {},
+    formation_context: {
+      formation_pattern: escapePatternAnalysis?.formation_pattern || null,
+      escape_pattern_applied: escapePatternAnalysis?.escape_pattern_applied ? 1 : 0,
+      escape_pattern_confidence: toNum(escapePatternAnalysis?.escape_pattern_confidence, 0),
+      escape_second_place_bias_json: escapePatternAnalysis?.escape_second_place_bias_json || {}
+    },
+    attack_context: attackScenarioAnalysis || {},
+    head_context: headScenarioBalanceAnalysis || {},
+    role_layers: candidateDistributions || {},
+    lane_bundle: safeArray(ranking).map((row) => ({
+      lane: toInt(row?.racer?.lane, null),
+      score: toNum(row?.score, 0),
+      features: row?.features || {},
+      racer: row?.racer || {}
+    }))
+  };
+}
+
+function computeBoat1EscapeProbability(featureBundle) {
+  return toNum(featureBundle?.role_layers?.boat1_escape_probability, 0);
+}
+
+function computeAttackScenarioProbabilities(featureBundle) {
+  return safeArray(featureBundle?.role_layers?.attack_scenario_probability_json);
+}
+
+function computeFirstPlaceProbabilities(featureBundle) {
+  return normalizeDistributionRows(
+    safeArray(featureBundle?.role_layers?.first_place_probability_json || featureBundle?.head_context?.first_place_distribution_json)
+  );
+}
+
+function computeSecondPlaceProbabilities(featureBundle, boat1EscapeProb = 0) {
+  const base = safeArray(
+    boat1EscapeProb >= 0.34 && safeArray(featureBundle?.role_layers?.boat1_second_place_probability_json).length > 0
+      ? featureBundle?.role_layers?.boat1_second_place_probability_json
+      : featureBundle?.role_layers?.second_place_probability_json || featureBundle?.head_context?.second_place_distribution_json
+  );
+  return normalizeDistributionRows(base);
+}
+
+function computeSurvivalProbabilities(featureBundle) {
+  return normalizeDistributionRows(
+    safeArray(featureBundle?.role_layers?.survival_probability_json)
+  );
+}
+
+function computeThirdPlaceProbabilities(featureBundle, firstProbs, secondProbs, attackProbs, survivalProbs) {
+  const baseRows = safeArray(
+    computeBoat1EscapeProbability(featureBundle) >= 0.34 && safeArray(featureBundle?.role_layers?.boat1_third_place_probability_json).length > 0
+      ? featureBundle?.role_layers?.boat1_third_place_probability_json
+      : featureBundle?.role_layers?.third_place_probability_json || featureBundle?.head_context?.third_place_distribution_json
+  );
+  const survivalMap = new Map(safeArray(survivalProbs).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const attackPartnerLaneSet = new Set(
+    safeArray(attackProbs).flatMap((row) => {
+      const scenario = String(row?.scenario || "");
+      if (scenario.includes("boat2")) return [2];
+      if (scenario.includes("boat3")) return [3];
+      if (scenario.includes("boat4")) return [4];
+      return [];
+    })
+  );
+  return normalizeDistributionRows(baseRows.map((row) => {
+    const lane = toInt(row?.lane, null);
+    return {
+      ...row,
+      weight: toNum(row?.weight, 0) +
+        toNum(survivalMap.get(lane), 0) * 0.18 +
+        (attackPartnerLaneSet.has(lane) ? 0.02 : 0)
+    };
+  }));
+}
+
+function composeFinishOrderCandidates({
+  featureBundle,
+  firstProbs,
+  secondProbs,
+  thirdProbs,
+  attackProbs,
+  survivalProbs
+}) {
+  const partnerBias = featureBundle?.role_layers?.partner_search_bias_json || {};
+  const boat1Bias = featureBundle?.role_layers?.boat1_partner_bias_json || {};
+  const mainHeadLane = toInt(featureBundle?.role_layers?.role_probability_summary_json?.main_head_lane, null)
+    ?? topDistributionLane(firstProbs);
+  const attackWeightMap = new Map();
+  for (const row of safeArray(attackProbs)) {
+    const scenario = String(row?.scenario || "");
+    const probability = toNum(row?.probability, 0);
+    if (scenario.includes("boat2")) attackWeightMap.set(2, Math.max(toNum(attackWeightMap.get(2), 0), probability));
+    if (scenario.includes("boat3")) attackWeightMap.set(3, Math.max(toNum(attackWeightMap.get(3), 0), probability));
+    if (scenario.includes("boat4")) attackWeightMap.set(4, Math.max(toNum(attackWeightMap.get(4), 0), probability));
+  }
+  const survivalMap = new Map(safeArray(survivalProbs).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const topFirst = safeArray(firstProbs).slice(0, 3);
+  const topSecond = safeArray(secondProbs).slice(0, mainHeadLane === 1 ? 4 : 5);
+  const topThird = safeArray(thirdProbs).slice(0, mainHeadLane === 1 ? 5 : 6);
+  const bucket = new Map();
+  for (const first of topFirst) {
+    for (const second of topSecond) {
+      for (const third of topThird) {
+        const lanes = [toInt(first?.lane, null), toInt(second?.lane, null), toInt(third?.lane, null)];
+        if (lanes.some((lane) => !Number.isInteger(lane))) continue;
+        if (new Set(lanes).size !== 3) continue;
+        const [headLane, secondLane, thirdLane] = lanes;
+        const sujiBias =
+          headLane === 1 && toInt(partnerBias?.suji_used, 0) === 1 && (secondLane === 2 || secondLane === 3)
+            ? (secondLane === 2 ? 0.03 : 0.024)
+            : 0;
+        const urasujiBias =
+          headLane === 1 && toInt(boat1Bias?.urasuji_used, 0) === 1 && (thirdLane === secondLane + 1 || secondLane === thirdLane + 1)
+            ? 0.01
+            : 0;
+        const outerHeadPenalty =
+          headLane === 5 ? 0.045 : headLane === 6 ? 0.06 : 0;
+        const boat1PriorityBonus =
+          headLane === 1 && computeBoat1EscapeProbability(featureBundle) >= 0.34
+            ? 0.04
+            : 0;
+        const attackSecondOnlyBias = toInt(partnerBias?.attack_moved_second_only_lane, null) === secondLane ? 0.018 : 0;
+        const attackThirdOnlyBias = toInt(partnerBias?.attack_moved_third_only_lane, null) === thirdLane ? 0.012 : 0;
+        const survivalBias = (toNum(survivalMap.get(secondLane), 0) + toNum(survivalMap.get(thirdLane), 0)) * 0.08;
+        const composite =
+          toNum(first?.weight, 0) * 0.52 +
+          toNum(second?.weight, 0) * 0.3 +
+          toNum(third?.weight, 0) * 0.18 +
+          toNum(attackWeightMap.get(secondLane), 0) * 0.06 +
+          survivalBias +
+          sujiBias +
+          urasujiBias +
+          boat1PriorityBonus +
+          attackSecondOnlyBias +
+          attackThirdOnlyBias -
+          outerHeadPenalty;
+        const combo = `${headLane}-${secondLane}-${thirdLane}`;
+        const existing = bucket.get(combo);
+        if (!existing || toNum(existing?.probability, 0) < composite) {
+          bucket.set(combo, {
+            combo,
+            probability: Number(clamp(0, 1, composite).toFixed(4)),
+            reason_tags: [
+              headLane === 1 ? "BOAT1_HEAD_PRIORITY" : null,
+              sujiBias > 0 ? "SUJI_PRIOR_USED" : null,
+              urasujiBias > 0 ? "URASUJI_BACKUP_USED" : null,
+              attackSecondOnlyBias > 0 ? "ATTACK_CHANGED_SECOND_ONLY" : null,
+              attackThirdOnlyBias > 0 ? "ATTACK_CHANGED_THIRD_ONLY" : null
+            ].filter(Boolean)
+          });
+        }
+      }
+    }
+  }
+  return [...bucket.values()]
+    .sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0))
+    .slice(0, 18);
+}
+
+function generateMainTrifectaTickets(orderCandidates, confidence) {
+  const confidenceFactor = clamp(0.6, 1.12, toNum(confidence, 50) / 70);
+  return safeArray(orderCandidates)
+    .slice(0, confidenceFactor >= 1 ? 6 : 5)
+    .map((row, index) => ({
+      combo: normalizeCombo(row?.combo),
+      prob: Number((toNum(row?.probability, 0) * confidenceFactor).toFixed(4)),
+      recommended_bet: Math.max(100, (6 - index) * 100),
+      ticket_type: index < 3 ? "main" : "counter",
+      explanation_tags: safeArray(row?.reason_tags)
+    }));
+}
+
+function generateExactaCoverTickets(firstProbs, secondProbs, confidence) {
+  const mainHeadLane = topDistributionLane(firstProbs);
+  if (mainHeadLane !== 1) return [];
+  const secondTop = safeArray(secondProbs).slice(0, 3);
+  const concentration = secondTop.slice(0, 2).reduce((sum, row) => sum + toNum(row?.weight, 0), 0);
+  if (concentration < 0.42 || toNum(confidence, 0) < 48) return [];
+  return secondTop
+    .slice(0, concentration >= 0.62 ? 3 : 2)
+    .filter((row) => [2, 3, 4].includes(toInt(row?.lane, null)))
+    .map((row, index) => ({
+      combo: `1-${toInt(row?.lane, null)}`,
+      prob: Number((toNum(row?.weight, 0) * clamp(0.88, 1.05, toNum(confidence, 50) / 65)).toFixed(4)),
+      recommended_bet: Math.max(100, (3 - index) * 100),
+      exacta_reason_tags: ["ROLE_BASED_EXACTA", "BOAT1_ESCAPE_COVER"]
+    }));
+}
+
+function generateBackupUrasujiTickets(orderCandidates, attackProbs, confidence) {
+  if (toNum(confidence, 0) < 52) return [];
+  const attackScenario = safeArray(attackProbs).sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0))[0];
+  if (!attackScenario || toNum(attackScenario?.probability, 0) < 0.28) return [];
+  return safeArray(orderCandidates)
+    .filter((row) => safeArray(row?.reason_tags).includes("URASUJI_BACKUP_USED"))
+    .slice(0, 2)
+    .map((row) => ({
+      combo: normalizeCombo(row?.combo),
+      prob: Number(toNum(row?.probability, 0).toFixed(4)),
+      recommended_bet: 100,
+      backup_reason_tags: ["ROLE_BASED_URASUJI", "CONDITIONAL_URASUJI"]
+    }));
 }
 
 function buildBackupUrasujiRecommendationsSnapshot({
@@ -5689,6 +5931,48 @@ raceRouter.get("/race", async (req, res, next) => {
       ticketOptimizationWithStake.optimized_tickets,
       candidateDistributions
     );
+    const predictionFeatureBundle = buildPredictionFeatureBundle({
+      ranking,
+      race: data?.race || null,
+      entryMeta,
+      learningWeights,
+      escapePatternAnalysis,
+      attackScenarioAnalysis,
+      headScenarioBalanceAnalysis,
+      candidateDistributions
+    });
+    const explicitBoat1EscapeProbability = computeBoat1EscapeProbability(predictionFeatureBundle);
+    const explicitAttackScenarioProbabilities = computeAttackScenarioProbabilities(predictionFeatureBundle);
+    const explicitFirstPlaceProbabilities = computeFirstPlaceProbabilities(
+      predictionFeatureBundle,
+      explicitBoat1EscapeProbability,
+      explicitAttackScenarioProbabilities
+    );
+    const explicitSecondPlaceProbabilities = computeSecondPlaceProbabilities(
+      predictionFeatureBundle,
+      explicitBoat1EscapeProbability,
+      explicitAttackScenarioProbabilities,
+      explicitFirstPlaceProbabilities
+    );
+    const explicitSurvivalProbabilities = computeSurvivalProbabilities(
+      predictionFeatureBundle,
+      explicitAttackScenarioProbabilities
+    );
+    const explicitThirdPlaceProbabilities = computeThirdPlaceProbabilities(
+      predictionFeatureBundle,
+      explicitFirstPlaceProbabilities,
+      explicitSecondPlaceProbabilities,
+      explicitAttackScenarioProbabilities,
+      explicitSurvivalProbabilities
+    );
+    const roleBasedOrderCandidates = composeFinishOrderCandidates({
+      featureBundle: predictionFeatureBundle,
+      firstProbs: explicitFirstPlaceProbabilities,
+      secondProbs: explicitSecondPlaceProbabilities,
+      thirdProbs: explicitThirdPlaceProbabilities,
+      attackProbs: explicitAttackScenarioProbabilities,
+      survivalProbs: explicitSurvivalProbabilities
+    });
     const finalBalanceAdjustmentJson = buildFinalBalanceAdjustmentSummary({
       ranking,
       recommendedBets: bet_plan_with_stake.recommended_bets,
@@ -5770,11 +6054,25 @@ raceRouter.get("/race", async (req, res, next) => {
       learningWeights,
       race: data?.race || null
     });
+    const roleBasedMainTrifectaTickets = generateMainTrifectaTickets(
+      roleBasedOrderCandidates,
+      confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+    );
+    const roleBasedExactaCoverTickets = generateExactaCoverTickets(
+      explicitFirstPlaceProbabilities,
+      explicitSecondPlaceProbabilities,
+      confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+    );
     const backupUrasujiSnapshot = buildBackupUrasujiRecommendationsSnapshot({
       recommendedBets: bet_plan_with_stake?.recommended_bets,
       optimizedTickets: ticketOptimizationWithStake?.optimized_tickets,
       candidateDistributions
     });
+    const roleBasedBackupUrasujiTickets = generateBackupUrasujiTickets(
+      roleBasedOrderCandidates,
+      explicitAttackScenarioProbabilities,
+      confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+    );
     const participationDecision = buildParticipationDecision({
       raceDecision,
       raceRisk,
@@ -5927,6 +6225,7 @@ raceRouter.get("/race", async (req, res, next) => {
       attack_scenario_probability_json: headScenarioBalanceAnalysis.attack_scenario_probability_json || [],
       role_probability_summary_json: headScenarioBalanceAnalysis.role_probability_summary_json || {},
       role_probability_version: headScenarioBalanceAnalysis.role_probability_version || null,
+      role_based_order_candidates_json: roleBasedOrderCandidates,
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_bias_json: headScenarioBalanceAnalysis.boat1_partner_bias_json,
@@ -5971,6 +6270,9 @@ raceRouter.get("/race", async (req, res, next) => {
       exacta_partner_score: exactaSnapshot.exacta_partner_score,
       exacta_reason_tags: exactaSnapshot.exacta_reason_tags,
       exacta_section_shown: exactaSnapshot.shown ? 1 : 0,
+      role_based_main_trifecta_tickets_snapshot: roleBasedMainTrifectaTickets,
+      role_based_exacta_cover_tickets_snapshot: roleBasedExactaCoverTickets,
+      role_based_backup_urasuji_tickets_snapshot: roleBasedBackupUrasujiTickets,
       backup_urasuji_recommendations_snapshot: backupUrasujiSnapshot.items,
       backup_urasuji_section_shown: backupUrasujiSnapshot.shown ? 1 : 0,
       backup_urasuji_reason_tags: backupUrasujiSnapshot.backup_reason_tags,
@@ -6094,6 +6396,7 @@ raceRouter.get("/race", async (req, res, next) => {
       attack_scenario_probability_json: snapshotContext.attack_scenario_probability_json,
       role_probability_summary_json: snapshotContext.role_probability_summary_json,
       role_probability_version: snapshotContext.role_probability_version,
+      role_based_order_candidates_json: snapshotContext.role_based_order_candidates_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       boat1_partner_bias_json: snapshotContext.boat1_partner_bias_json,
@@ -6133,6 +6436,9 @@ raceRouter.get("/race", async (req, res, next) => {
       exacta_partner_score: snapshotContext.exacta_partner_score,
       exacta_reason_tags: snapshotContext.exacta_reason_tags,
       exacta_section_shown: snapshotContext.exacta_section_shown,
+      role_based_main_trifecta_tickets_snapshot: snapshotContext.role_based_main_trifecta_tickets_snapshot,
+      role_based_exacta_cover_tickets_snapshot: snapshotContext.role_based_exacta_cover_tickets_snapshot,
+      role_based_backup_urasuji_tickets_snapshot: snapshotContext.role_based_backup_urasuji_tickets_snapshot,
       backup_urasuji_recommendations_snapshot: snapshotContext.backup_urasuji_recommendations_snapshot,
       backup_urasuji_section_shown: snapshotContext.backup_urasuji_section_shown,
       backup_urasuji_reason_tags: snapshotContext.backup_urasuji_reason_tags,
@@ -6220,6 +6526,7 @@ raceRouter.get("/race", async (req, res, next) => {
       attack_scenario_probability_json: snapshotContext.attack_scenario_probability_json,
       role_probability_summary_json: snapshotContext.role_probability_summary_json,
       role_probability_version: snapshotContext.role_probability_version,
+      role_based_order_candidates_json: snapshotContext.role_based_order_candidates_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       boat1_partner_bias_json: snapshotContext.boat1_partner_bias_json,
@@ -6259,6 +6566,9 @@ raceRouter.get("/race", async (req, res, next) => {
       exacta_partner_score: snapshotContext.exacta_partner_score,
       exacta_reason_tags: snapshotContext.exacta_reason_tags,
       exacta_section_shown: snapshotContext.exacta_section_shown,
+      role_based_main_trifecta_tickets_snapshot: snapshotContext.role_based_main_trifecta_tickets_snapshot,
+      role_based_exacta_cover_tickets_snapshot: snapshotContext.role_based_exacta_cover_tickets_snapshot,
+      role_based_backup_urasuji_tickets_snapshot: snapshotContext.role_based_backup_urasuji_tickets_snapshot,
       backup_urasuji_recommendations_snapshot: snapshotContext.backup_urasuji_recommendations_snapshot,
       backup_urasuji_section_shown: snapshotContext.backup_urasuji_section_shown,
       backup_urasuji_reason_tags: snapshotContext.backup_urasuji_reason_tags,
@@ -6314,7 +6624,10 @@ raceRouter.get("/race", async (req, res, next) => {
         boat1_head_bets: boat1HeadSnapshot.items,
         boat1_priority_mode_applied: toInt(headScenarioBalanceAnalysis.boat1_priority_mode_applied, 0),
         exacta_recommended_bets: exactaSnapshot.items,
-        backup_urasuji_recommendations: backupUrasujiSnapshot.items
+        backup_urasuji_recommendations: backupUrasujiSnapshot.items,
+        role_based_main_trifecta_tickets: roleBasedMainTrifectaTickets,
+        role_based_exacta_cover_tickets: roleBasedExactaCoverTickets,
+        role_based_backup_urasuji_tickets: roleBasedBackupUrasujiTickets
       },
       ai_bets_display_snapshot: finalRecommendedSnapshot.items,
       prediction_before_entry_change,
@@ -6406,6 +6719,15 @@ raceRouter.get("/race", async (req, res, next) => {
       confidenceScores,
       attackScenario: attackScenarioAnalysis,
       headScenarioBalance: headScenarioBalanceAnalysis,
+      roleCandidates: {
+        first_place_candidates: explicitFirstPlaceProbabilities,
+        second_place_candidates: explicitSecondPlaceProbabilities,
+        third_place_candidates: explicitThirdPlaceProbabilities,
+        survival_candidates: explicitSurvivalProbabilities,
+        boat1_escape_probability: explicitBoat1EscapeProbability,
+        attack_scenario_probabilities: explicitAttackScenarioProbabilities,
+        finish_order_candidates: roleBasedOrderCandidates
+      },
       boat1HeadSection: {
         boat1_head_bets_snapshot: boat1HeadSnapshot.items,
         boat1_priority_mode_applied: toInt(headScenarioBalanceAnalysis.boat1_priority_mode_applied, 0),
@@ -6425,6 +6747,16 @@ raceRouter.get("/race", async (req, res, next) => {
         exacta_partner_score: exactaSnapshot.exacta_partner_score,
         exacta_reason_tags: exactaSnapshot.exacta_reason_tags,
         exacta_section_shown: exactaSnapshot.shown ? 1 : 0
+      },
+      backupUrasujiSection: {
+        backup_urasuji_recommendations_snapshot: backupUrasujiSnapshot.items,
+        backup_urasuji_section_shown: backupUrasujiSnapshot.shown ? 1 : 0,
+        backup_urasuji_reason_tags: backupUrasujiSnapshot.backup_reason_tags
+      },
+      roleBasedTickets: {
+        main_trifecta_tickets: roleBasedMainTrifectaTickets,
+        exacta_cover_tickets: roleBasedExactaCoverTickets,
+        backup_urasuji_tickets: roleBasedBackupUrasujiTickets
       },
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
@@ -9957,6 +10289,9 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       third_place_correct: analysis.third_place_correct,
       second_third_correct: analysis.second_third_correct,
       hit_miss: analysis.hit_miss,
+      miss_head: analysis.miss_head,
+      miss_second: analysis.miss_second,
+      miss_third: analysis.miss_third,
       mismatch_categories: analysis.categories,
       second_place_miss: analysis.second_place_miss,
       third_place_miss: analysis.third_place_miss,
@@ -9964,6 +10299,8 @@ raceRouter.post("/results/verify", async (req, res, next) => {
       third_place_noise: analysis.third_place_noise,
       second_third_swap: analysis.second_third_swap,
       structure_near_but_order_miss: analysis.structure_near_but_order_miss,
+      attack_read_correct_but_finish_wrong: analysis.attack_read_correct_but_finish_wrong,
+      boat1_escape_correct_but_opponent_wrong: analysis.boat1_escape_correct_but_opponent_wrong,
       miss_pattern_tags: analysis.miss_pattern_tags,
       learning_adjustment_reason_tags: analysis.learning_adjustment_reason_tags,
       recommendation_mode: latestPrediction?.recommendation || featureLog?.recommendation_mode || null,
@@ -10360,7 +10697,18 @@ raceRouter.get("/prediction-feature-logs", async (req, res, next) => {
 
 export const __testHooks = {
   buildSeparatedCandidateDistributions,
+  buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
+  computeBoat1EscapeProbability,
+  computeAttackScenarioProbabilities,
+  computeFirstPlaceProbabilities,
+  computeSecondPlaceProbabilities,
+  computeSurvivalProbabilities,
+  computeThirdPlaceProbabilities,
+  composeFinishOrderCandidates,
+  generateMainTrifectaTickets,
+  generateExactaCoverTickets,
+  generateBackupUrasujiTickets,
   buildExactaCoverageSnapshot,
   buildParticipationDecision,
   buildBackupUrasujiRecommendationsSnapshot,

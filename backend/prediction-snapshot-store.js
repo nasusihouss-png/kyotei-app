@@ -605,6 +605,11 @@ export function buildVerifiedLearningRows() {
           learning?.role_probability_summary_json || context?.role_probability_summary_json || {},
         role_probability_version:
           learning?.role_probability_version || context?.role_probability_version || null,
+        role_based_order_candidates_json: Array.isArray(learning?.role_based_order_candidates_json)
+          ? learning.role_based_order_candidates_json
+          : Array.isArray(context?.role_based_order_candidates_json)
+            ? context.role_based_order_candidates_json
+            : [],
         partner_search_bias_json:
           learning?.partner_search_bias_json || context?.partner_search_bias_json || {},
         boat1_partner_search_bias_json:
@@ -694,6 +699,21 @@ export function buildVerifiedLearningRows() {
             ? context.exacta_reason_tags
             : [],
         exacta_section_shown: toNum(learning?.exacta_section_shown ?? context?.exacta_section_shown, 0),
+        role_based_main_trifecta_tickets_snapshot: Array.isArray(learning?.role_based_main_trifecta_tickets_snapshot)
+          ? learning.role_based_main_trifecta_tickets_snapshot
+          : Array.isArray(context?.role_based_main_trifecta_tickets_snapshot)
+            ? context.role_based_main_trifecta_tickets_snapshot
+            : [],
+        role_based_exacta_cover_tickets_snapshot: Array.isArray(learning?.role_based_exacta_cover_tickets_snapshot)
+          ? learning.role_based_exacta_cover_tickets_snapshot
+          : Array.isArray(context?.role_based_exacta_cover_tickets_snapshot)
+            ? context.role_based_exacta_cover_tickets_snapshot
+            : [],
+        role_based_backup_urasuji_tickets_snapshot: Array.isArray(learning?.role_based_backup_urasuji_tickets_snapshot)
+          ? learning.role_based_backup_urasuji_tickets_snapshot
+          : Array.isArray(context?.role_based_backup_urasuji_tickets_snapshot)
+            ? context.role_based_backup_urasuji_tickets_snapshot
+            : [],
         backup_urasuji_recommendations_snapshot: Array.isArray(learning?.backup_urasuji_recommendations_snapshot)
           ? learning.backup_urasuji_recommendations_snapshot
           : Array.isArray(context?.backup_urasuji_recommendations_snapshot)
