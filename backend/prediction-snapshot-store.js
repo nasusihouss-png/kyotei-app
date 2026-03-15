@@ -639,6 +639,8 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.launch_state_scores_json)
             ? context.launch_state_scores_json
             : [],
+        launch_state_thresholds_used_json:
+          learning?.launch_state_thresholds_used_json || context?.launch_state_thresholds_used_json || {},
         launch_state_labels_json: Array.isArray(learning?.launch_state_labels_json)
           ? learning.launch_state_labels_json
           : Array.isArray(context?.launch_state_labels_json)

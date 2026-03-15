@@ -3040,8 +3040,98 @@ function normalizeLaunchStateLabel(score) {
   return "neutral";
 }
 
+const LAUNCH_STATE_CONFIG = {
+  st_margins: {
+    ST_NEIGHBOR_STRONG_OUT_MARGIN: 0.03,
+    ST_NEIGHBOR_OUT_MARGIN: 0.015,
+    ST_NEIGHBOR_HOLLOW_MARGIN: -0.015,
+    ST_NEIGHBOR_STRONG_HOLLOW_MARGIN: -0.03,
+    ST_INSIDE_STRONG_OUT_MARGIN: 0.025,
+    ST_INSIDE_OUT_MARGIN: 0.012,
+    ST_INSIDE_HOLLOW_MARGIN: -0.012,
+    ST_INSIDE_STRONG_HOLLOW_MARGIN: -0.025
+  },
+  score_thresholds: {
+    LAUNCH_SCORE_STRONG_OUT: 28,
+    LAUNCH_SCORE_OUT: 10,
+    LAUNCH_SCORE_NEUTRAL_LOW: -9.99,
+    LAUNCH_SCORE_NEUTRAL_HIGH: 9.99,
+    LAUNCH_SCORE_HOLLOW: -10,
+    LAUNCH_SCORE_STRONG_HOLLOW: -28
+  },
+  score_weights: {
+    st_rank_weight: 8,
+    st_rank_late_penalty: 7,
+    neighbor_margin_weight: 240,
+    inside_margin_weight: 160,
+    formation_fit_weight: 0.55,
+    lap_support_weight: 0.45,
+    environment_weight: 10,
+    display_time_positive_weight: 55,
+    display_time_negative_weight: 30,
+    slit_alert_weight: 12,
+    f_hold_penalty_weight: 1.25,
+    lane1_baseline_bonus: 8
+  },
+  event_thresholds: {
+    STATE_OUT_MIN: 10,
+    STATE_STRONG_OUT_MIN: 28,
+    STATE_HOLLOW_MAX: -10,
+    STATE_STRONG_HOLLOW_MAX: -28,
+    INNER_STABLE_MIN: 48,
+    INNER_COLLAPSE_MIN: 52,
+    WEAK_WALL_ON_2_MIN: 34,
+    WEAK_WALL_ON_3_MIN: 34,
+    BOAT3_ATTACK_READY_MIN: 44,
+    BOAT4_CADO_READY_MIN: 44,
+    BOAT5_OUTER_PUSH_MIN: 40,
+    OUTER_MIX_READY_MIN: 42
+  }
+};
+
+function getLaunchStateConfig() {
+  return {
+    st_margins: { ...LAUNCH_STATE_CONFIG.st_margins },
+    score_thresholds: { ...LAUNCH_STATE_CONFIG.score_thresholds },
+    score_weights: { ...LAUNCH_STATE_CONFIG.score_weights },
+    event_thresholds: { ...LAUNCH_STATE_CONFIG.event_thresholds }
+  };
+}
+
+function normalizeLaunchStateLabelWithThresholds(score, thresholds = LAUNCH_STATE_CONFIG.score_thresholds) {
+  const value = toNum(score, 0);
+  if (value >= toNum(thresholds?.LAUNCH_SCORE_STRONG_OUT, 28)) return "strong_out";
+  if (value >= toNum(thresholds?.LAUNCH_SCORE_OUT, 10)) return "out";
+  if (value <= toNum(thresholds?.LAUNCH_SCORE_STRONG_HOLLOW, -28)) return "strong_hollow";
+  if (value <= toNum(thresholds?.LAUNCH_SCORE_HOLLOW, -10)) return "hollow";
+  return "neutral";
+}
+
+function launchStateLevel(label) {
+  switch (String(label || "")) {
+    case "strong_out":
+      return 2;
+    case "out":
+      return 1;
+    case "neutral":
+      return 0;
+    case "hollow":
+      return -1;
+    case "strong_hollow":
+      return -2;
+    default:
+      return 0;
+  }
+}
+
+function launchEventTriggered(value, threshold) {
+  return toNum(value, 0) >= toNum(threshold, 0) ? 1 : 0;
+}
+
 function computeLaunchStateScores(rows) {
   const laneRows = safeArray(rows);
+  const config = getLaunchStateConfig();
+  const weights = config.score_weights;
   const stByLane = new Map(
     laneRows
       .map((row) => [
@@ -3068,29 +3158,50 @@ function computeLaunchStateScores(rows) {
       const stMarginVsInside = Number.isFinite(selfSt) && Number.isFinite(insideAvgSt)
         ? Number((insideAvgSt - selfSt).toFixed(3))
         : null;
+      const stRankComponent =
+        Math.max(0, 4 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * toNum(weights?.st_rank_weight, 8) -
+        Math.max(0, toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6) - 3) * toNum(weights?.st_rank_late_penalty, 7);
+      const neighborMarginComponent = Number.isFinite(stMarginVsLeft)
+        ? stMarginVsLeft * toNum(weights?.neighbor_margin_weight, 240)
+        : 0;
+      const insideMarginComponent = Number.isFinite(stMarginVsInside)
+        ? stMarginVsInside * toNum(weights?.inside_margin_weight, 160)
+        : 0;
+      const formationFitComponent = toNum(f?.entry_advantage_score, 0) * toNum(weights?.formation_fit_weight, 0.55);
+      const lapSupportComponent = toNum(f?.lap_attack_strength, 0) * toNum(weights?.lap_support_weight, 0.45);
+      const environmentComponent =
+        Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * toNum(weights?.display_time_positive_weight, 55) -
+        Math.max(0, -toNum(f?.display_time_delta_vs_left, 0)) * toNum(weights?.display_time_negative_weight, 30) +
+        toNum(f?.slit_alert_flag, 0) * toNum(weights?.slit_alert_weight, 12) -
+        toNum(f?.f_hold_caution_penalty, 0) * toNum(weights?.f_hold_penalty_weight, 1.25) +
+        (lane === 1 ? toNum(weights?.lane1_baseline_bonus, 8) : 0);
       const score = Number(
         clamp(
           -100,
           100,
-          (Number.isFinite(stMarginVsLeft) ? stMarginVsLeft * 240 : 0) +
-            (Number.isFinite(stMarginVsInside) ? stMarginVsInside * 160 : 0) +
-            Math.max(0, 4 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 8 -
-            Math.max(0, toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6) - 3) * 7 +
-            Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 55 -
-            Math.max(0, -toNum(f?.display_time_delta_vs_left, 0)) * 30 +
-            toNum(f?.slit_alert_flag, 0) * 12 +
-            toNum(f?.lap_attack_strength, 0) * 0.45 +
-            toNum(f?.entry_advantage_score, 0) * 0.55 -
-            toNum(f?.f_hold_caution_penalty, 0) * 1.25 +
-            (lane === 1 ? 8 : 0)
+          stRankComponent +
+            neighborMarginComponent +
+            insideMarginComponent +
+            formationFitComponent +
+            lapSupportComponent +
+            environmentComponent
         ).toFixed(2)
       );
+      const label = normalizeLaunchStateLabelWithThresholds(score, config.score_thresholds);
       return {
         lane,
         score,
-        label: normalizeLaunchStateLabel(score),
+        label,
         st_margin_vs_left: stMarginVsLeft,
-        st_margin_vs_inside: stMarginVsInside
+        st_margin_vs_inside: stMarginVsInside,
+        st_rank_component: Number(stRankComponent.toFixed(2)),
+        neighbor_margin_component: Number(neighborMarginComponent.toFixed(2)),
+        inside_margin_component: Number(insideMarginComponent.toFixed(2)),
+        formation_fit_component: Number(formationFitComponent.toFixed(2)),
+        lap_support_component: Number(lapSupportComponent.toFixed(2)),
+        environment_component: Number(environmentComponent.toFixed(2)),
+        final_launch_state_score: score,
+        thresholds_used: config
       };
     })
     .filter(Boolean)
@@ -3100,8 +3211,9 @@ function computeLaunchStateScores(rows) {
 function classifyLaunchStates(launchStateScores) {
   return safeArray(launchStateScores).map((row) => ({
     lane: toInt(row?.lane, null),
-    label: row?.label || normalizeLaunchStateLabel(row?.score),
-    score: toNum(row?.score, 0)
+    label: row?.label || normalizeLaunchStateLabelWithThresholds(row?.score),
+    score: toNum(row?.score, 0),
+    thresholds_used: row?.thresholds_used || getLaunchStateConfig()
   }));
 }
 
@@ -3111,6 +3223,8 @@ function buildIntermediateDevelopmentEvents({
   headScenarioBalanceAnalysis,
   escapePatternAnalysis
 }) {
+  const config = getLaunchStateConfig();
+  const eventThresholds = config.event_thresholds;
   const launchMap = new Map(
     safeArray(launchStateScores).map((row) => [toInt(row?.lane, null), { score: toNum(row?.score, 0), label: row?.label || "neutral" }])
   );
@@ -3123,6 +3237,7 @@ function buildIntermediateDevelopmentEvents({
     0
   );
   const event = (value) => Number(clamp(0, 100, value).toFixed(2));
+  const laneState = (lane) => launchStateLevel(launchMap.get(lane)?.label);
   const lane1Out = Math.max(0, toNum(launchMap.get(1)?.score, 0));
   const lane1Hollow = Math.max(0, -toNum(launchMap.get(1)?.score, 0));
   const lane2Out = Math.max(0, toNum(launchMap.get(2)?.score, 0));
@@ -3143,41 +3258,60 @@ function buildIntermediateDevelopmentEvents({
       toNum(laneFeature(3)?.f_hold_caution_penalty, 0) * 4 +
       Math.max(0, toNum(laneFeature(3)?.expected_actual_st_rank ?? laneFeature(3)?.st_rank, 6) - 3) * 7
   );
-  const boat3AttackReady = event(
+  const boat3AttackBase = event(
     lane3Out * 0.75 +
       toNum(laneFeature(3)?.lap_attack_strength, 0) * 2.6 +
       toNum(laneFeature(3)?.slit_alert_flag, 0) * 18 +
       Math.max(0, toNum(laneFeature(3)?.display_time_delta_vs_left, 0)) * 85
   );
-  const boat4CadoReady = event(
+  const boat3AttackReady =
+    laneState(3) >= 1 && (laneState(2) <= -1 || weakWallOn2 >= toNum(eventThresholds?.WEAK_WALL_ON_2_MIN, 34))
+      ? boat3AttackBase
+      : Number((boat3AttackBase * 0.38).toFixed(2));
+  const boat4CadoBase = event(
     lane4Out * 0.78 +
       toNum(laneFeature(4)?.lap_attack_strength, 0) * 2.4 +
       toNum(laneFeature(4)?.entry_advantage_score, 0) * 2.2 +
       toNum(laneFeature(4)?.kado_bonus, 0) * 12 +
       toNum(laneFeature(4)?.slit_alert_flag, 0) * 16
   );
+  const boat4CadoReady =
+    laneState(4) >= 1 && (laneState(3) <= -1 || weakWallOn3 >= toNum(eventThresholds?.WEAK_WALL_ON_3_MIN, 34))
+      ? boat4CadoBase
+      : Number((boat4CadoBase * 0.36).toFixed(2));
   const boat5OuterPush = event(
     lane5Out * 0.78 +
       toNum(laneFeature(5)?.lap_attack_strength, 0) * 2.2 +
       toNum(laneFeature(5)?.motor_total_score, 0) * 1.6
   );
-  const outerMixReady = event(
+  const outerOutCount = [4, 5, 6].filter((lane) => laneState(lane) >= 1).length;
+  const outerMixBase = event(
     boat5OuterPush * 0.65 +
       lane6Out * 0.62 +
       (String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead" ? 12 : 0)
   );
-  const innerCollapse = event(
+  const outerMixReady = outerOutCount >= 2 ? outerMixBase : Number((outerMixBase * 0.45).toFixed(2));
+  const innerCollapseBase = event(
     lane1Hollow * 0.55 +
       weakWallOn2 * 0.28 +
       weakWallOn3 * 0.18 +
       outerMixReady * 0.22
   );
-  const innerStable = event(
+  const innerCollapse =
+    launchEventTriggered(innerCollapseBase, toNum(eventThresholds?.INNER_COLLAPSE_MIN, 52)) ||
+    (laneState(1) <= -1 && outerOutCount >= 2)
+      ? innerCollapseBase
+      : Number((innerCollapseBase * 0.72).toFixed(2));
+  const innerStableBase = event(
     lane1Out * 0.48 +
       boat1EscapeBase * 55 +
       Math.max(0, 55 - innerCollapse) * 0.25 +
       Math.max(0, 20 - lane2Out) * 0.4
   );
+  const innerStable =
+    laneState(1) >= 0 && laneState(2) >= 0 && boat1EscapeBase >= 0.42
+      ? innerStableBase
+      : Number((innerStableBase * 0.68).toFixed(2));
 
   return {
     inner_stable: innerStable,
@@ -3193,7 +3327,31 @@ function buildIntermediateDevelopmentEvents({
     outer_mix_ready: outerMixReady,
     inner_collapse: innerCollapse,
     weak_wall_on_2: weakWallOn2,
-    weak_wall_on_3: weakWallOn3
+    weak_wall_on_3: weakWallOn3,
+    triggered_flags: {
+      boat1_out: launchEventTriggered(event(lane1Out), toNum(eventThresholds?.STATE_OUT_MIN, 10)),
+      boat1_hollow: launchEventTriggered(event(lane1Hollow), Math.abs(toNum(eventThresholds?.STATE_HOLLOW_MAX, -10))),
+      boat2_out: launchEventTriggered(event(lane2Out), toNum(eventThresholds?.STATE_OUT_MIN, 10)),
+      boat2_hollow: laneState(2) <= -1 || weakWallOn2 >= toNum(eventThresholds?.WEAK_WALL_ON_2_MIN, 34) ? 1 : 0,
+      boat3_attack_ready:
+        laneState(3) >= 1 && (laneState(2) <= -1 || weakWallOn2 >= toNum(eventThresholds?.WEAK_WALL_ON_2_MIN, 34)) ? 1 : 0,
+      boat3_hollow: laneState(3) <= -1 ? 1 : 0,
+      boat4_cado_ready:
+        laneState(4) >= 1 && (laneState(3) <= -1 || weakWallOn3 >= toNum(eventThresholds?.WEAK_WALL_ON_3_MIN, 34)) ? 1 : 0,
+      boat4_hollow: laneState(4) <= -1 ? 1 : 0,
+      boat5_outer_push: boat5OuterPush >= toNum(eventThresholds?.BOAT5_OUTER_PUSH_MIN, 40) ? 1 : 0,
+      outer_mix_ready: outerOutCount >= 2 && outerMixReady >= toNum(eventThresholds?.OUTER_MIX_READY_MIN, 42) ? 1 : 0,
+      inner_stable:
+        laneState(1) >= 0 &&
+        laneState(2) >= 0 &&
+        innerStable >= toNum(eventThresholds?.INNER_STABLE_MIN, 48) ? 1 : 0,
+      inner_collapse:
+        (laneState(1) <= -1 && outerOutCount >= 2) ||
+        innerCollapse >= toNum(eventThresholds?.INNER_COLLAPSE_MIN, 52) ? 1 : 0,
+      weak_wall_on_2: weakWallOn2 >= toNum(eventThresholds?.WEAK_WALL_ON_2_MIN, 34) ? 1 : 0,
+      weak_wall_on_3: weakWallOn3 >= toNum(eventThresholds?.WEAK_WALL_ON_3_MIN, 34) ? 1 : 0
+    },
+    thresholds_used: config
   };
 }
 
@@ -3406,6 +3564,7 @@ function buildPredictionFeatureBundle({
     head_context: headScenarioBalanceAnalysis || {},
     role_layers: candidateDistributions || {},
     launch_context: {
+      launch_state_thresholds_used_json: candidateDistributions?.launch_state_thresholds_used_json || getLaunchStateConfig(),
       launch_state_scores_json: candidateDistributions?.launch_state_scores_json || [],
       launch_state_labels_json: candidateDistributions?.launch_state_labels_json || [],
       intermediate_development_events_json: candidateDistributions?.intermediate_development_events_json || {},
@@ -4034,6 +4193,7 @@ function buildSeparatedCandidateDistributions({
   const boat1EscapePartnerVersion = "boat1_escape_partner_v2";
   const launchStateScores = computeLaunchStateScores(rows);
   const launchStateLabels = classifyLaunchStates(launchStateScores);
+  const launchStateThresholdsUsed = getLaunchStateConfig();
   const intermediateDevelopmentEvents = buildIntermediateDevelopmentEvents({
     launchStateScores,
     rows,
@@ -4424,6 +4584,7 @@ function buildSeparatedCandidateDistributions({
     boat1_partner_model_applied: mainHeadLane === 1 ? 1 : 0,
     boat1_escape_partner_version: boat1EscapePartnerVersion,
     hit_rate_focus_applied: 1,
+    launch_state_thresholds_used_json: launchStateThresholdsUsed,
     launch_state_scores_json: launchStateScores,
     launch_state_labels_json: launchStateLabels,
     intermediate_development_events_json: intermediateDevelopmentEvents,
@@ -7834,6 +7995,7 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.boat3_weak_st_head_suppression_json = candidateDistributions.boat3_weak_st_head_suppression_json;
     headScenarioBalanceAnalysis.boat3_weak_st_head_suppressed = candidateDistributions.boat3_weak_st_head_suppressed;
     headScenarioBalanceAnalysis.launch_state_scores_json = candidateDistributions.launch_state_scores_json;
+    headScenarioBalanceAnalysis.launch_state_thresholds_used_json = candidateDistributions.launch_state_thresholds_used_json;
     headScenarioBalanceAnalysis.launch_state_labels_json = candidateDistributions.launch_state_labels_json;
     headScenarioBalanceAnalysis.intermediate_development_events_json = candidateDistributions.intermediate_development_events_json;
     headScenarioBalanceAnalysis.race_scenario_probabilities_json = candidateDistributions.race_scenario_probabilities_json;
@@ -12716,6 +12878,7 @@ export const __testHooks = {
   buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
   buildBoat3WeakStHeadSuppressionContext,
+  getLaunchStateConfig,
   computeLaunchStateScores,
   classifyLaunchStates,
   buildIntermediateDevelopmentEvents,

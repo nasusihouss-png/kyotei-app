@@ -7,6 +7,7 @@ const {
   buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
   buildBoat3WeakStHeadSuppressionContext,
+  getLaunchStateConfig,
   computeLaunchStateScores,
   classifyLaunchStates,
   buildIntermediateDevelopmentEvents,
@@ -872,6 +873,36 @@ const upsetAlert = buildUpsetAlert({
 assert.equal(upsetAlert.shown, true, "upset alert payload should exist for risky races");
 assert.equal(upsetAlert.reference_only, true, "watch/skip races should only expose upset tickets as weak reference");
 
+const launchConfig = getLaunchStateConfig();
+assert.equal(
+  launchConfig.score_thresholds.LAUNCH_SCORE_STRONG_OUT,
+  28,
+  "launch state config should expose conservative default strong_out threshold"
+);
+
+const neutralLaunchRows = [
+  makeRow(1, { features: { expected_actual_st: 0.12, expected_actual_st_rank: 3, exhibition_st: 0.12, display_time_delta_vs_left: 0, entry_advantage_score: 0, lap_attack_strength: 0, slit_alert_flag: 0 } }),
+  makeRow(2, { features: { expected_actual_st: 0.121, expected_actual_st_rank: 4, exhibition_st: 0.121, display_time_delta_vs_left: 0, entry_advantage_score: 0, lap_attack_strength: 0, slit_alert_flag: 0 } }),
+  makeRow(3, { features: { expected_actual_st: 0.122, expected_actual_st_rank: 4, exhibition_st: 0.122, display_time_delta_vs_left: 0, entry_advantage_score: 0, lap_attack_strength: 0, slit_alert_flag: 0 } })
+];
+const neutralLaunchStates = classifyLaunchStates(computeLaunchStateScores(neutralLaunchRows));
+assert.equal(
+  neutralLaunchStates.find((row) => row.lane === 2)?.label,
+  "neutral",
+  "small ST differences should remain neutral"
+);
+
+const strongHollowRows = [
+  makeRow(1, { features: { expected_actual_st: 0.1, expected_actual_st_rank: 1, exhibition_st: 0.1 } }),
+  makeRow(2, { features: { expected_actual_st: 0.11, expected_actual_st_rank: 2, exhibition_st: 0.11 } }),
+  makeRow(3, { features: { expected_actual_st: 0.17, expected_actual_st_rank: 6, exhibition_st: 0.17, display_time_delta_vs_left: -0.02 } })
+];
+const strongHollowStates = classifyLaunchStates(computeLaunchStateScores(strongHollowRows));
+assert.ok(
+  ["hollow", "strong_hollow"].includes(strongHollowStates.find((row) => row.lane === 3)?.label),
+  "clearly slower boats should fall into hollow-side states"
+);
+
 const launchStateRows = [
   makeRow(1, {
     features: {
@@ -943,6 +974,14 @@ assert.ok(
   ["hollow", "strong_hollow"].includes(launchStateLabels.find((row) => row.lane === 3)?.label),
   "lane 3 should move into a hollow state when its launch alignment weakens"
 );
+assert.ok(
+  launchStateScores.every((row) => Number.isFinite(Number(row.final_launch_state_score))),
+  "launch state rows should expose final launch-state scores"
+);
+assert.ok(
+  launchStateScores.every((row) => Object.prototype.hasOwnProperty.call(row, "neighbor_margin_component")),
+  "launch state rows should expose weighted component breakdowns"
+);
 
 const intermediateEvents = buildIntermediateDevelopmentEvents({
   launchStateScores,
@@ -957,6 +996,11 @@ assert.ok(
 assert.ok(
   intermediateEvents.weak_wall_on_3 >= 0.35,
   "boat3_hollow should weaken the wall on 3 for development reading"
+);
+assert.equal(
+  intermediateEvents.triggered_flags.boat4_cado_ready,
+  1,
+  "boat4_cado_ready should require 4-out plus 3-weak/hollow context"
 );
 
 const launchScenarioProbabilities = computeRaceScenarioProbabilities({
@@ -1007,10 +1051,15 @@ assert.ok(
   Number(stableScenarioMap.get("boat1_escape") || 0) >= 0.5,
   "boat1_out with inner stability should strengthen the boat1 escape scenario"
 );
+assert.equal(
+  stableLaunchEvents.triggered_flags.inner_stable,
+  1,
+  "inside-stable races should explicitly trigger inner_stable"
+);
 
 const boat3LaunchRows = [
   makeRow(1, { features: { expected_actual_st: 0.11, expected_actual_st_rank: 1, exhibition_st: 0.11 } }),
-  makeRow(2, { features: { expected_actual_st: 0.125, expected_actual_st_rank: 3, exhibition_st: 0.125 } }),
+  makeRow(2, { features: { expected_actual_st: 0.145, expected_actual_st_rank: 5, exhibition_st: 0.145, display_time_delta_vs_left: -0.01 } }),
   makeRow(3, {
     features: {
       expected_actual_st: 0.105,
@@ -1072,6 +1121,11 @@ assert.equal(
   boat3FirstProbs[0]?.lane,
   1,
   "boat3_out should not force a 3-head recommendation when boat1 survival remains strong"
+);
+assert.equal(
+  boat3FeatureBundle.launch_context.intermediate_development_events_json.triggered_flags.boat3_attack_ready,
+  1,
+  "boat3_attack_ready should require both 3-out and 2-weak/hollow context"
 );
 const boat3ConditionalFinish = computeFinishProbsByScenario({
   scenarioProbabilities: boat3FeatureBundle.launch_context.race_scenario_probabilities_json,
