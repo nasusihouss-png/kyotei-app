@@ -133,6 +133,52 @@ function extractAvgStForRow($, $cells) {
   };
 }
 
+function toNullableDebugNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
+  const laneRows = Array.isArray(racers)
+    ? racers
+        .map((racer) => ({
+          lane: Number.isInteger(Number(racer?.lane)) ? Number(racer.lane) : null,
+          lane1stRate_raw: toNullableDebugNumber(racer?.laneFirstRate),
+          lane2renRate_raw: toNullableDebugNumber(racer?.lane2RenRate),
+          lane3renRate_raw: toNullableDebugNumber(racer?.lane3RenRate),
+          lapTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriLapTimeRaw ?? racer?.kyoteiBiyoriLapTime ?? racer?.lapTime),
+          exhibitionST_raw: toNullableDebugNumber(racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt),
+          motor2ren_raw: toNullableDebugNumber(racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate),
+          motor3ren_raw: toNullableDebugNumber(racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate)
+        }))
+        .sort((a, b) => Number(a?.lane || 0) - Number(b?.lane || 0))
+    : [];
+  const byField = (key) =>
+    Object.fromEntries(
+      laneRows
+        .filter((row) => Number.isInteger(row?.lane))
+        .map((row) => [String(row.lane), row?.[key] ?? null])
+    );
+  return {
+    lane_rows: laneRows,
+    lane1stRate_raw: byField("lane1stRate_raw"),
+    lane2renRate_raw: byField("lane2renRate_raw"),
+    lane3renRate_raw: byField("lane3renRate_raw"),
+    lapTime_raw: byField("lapTime_raw"),
+    exhibitionST_raw: byField("exhibitionST_raw"),
+    motor2ren_raw: byField("motor2ren_raw"),
+    motor3ren_raw: byField("motor3ren_raw"),
+    fetch_success: !!kyoteiBiyori?.ok,
+    fallback_reason: kyoteiBiyori?.fallbackReason || kyoteiBiyori?.error || null,
+    extracted_hrefs: kyoteiBiyori?.diagnostics?.extracted_hrefs || {},
+    actual_fetch_paths: Array.isArray(kyoteiBiyori?.diagnostics?.actual_fetch_paths) ? kyoteiBiyori.diagnostics.actual_fetch_paths : [],
+    populated_fields: Array.isArray(kyoteiBiyori?.fieldDiagnostics?.populated_fields) ? kyoteiBiyori.fieldDiagnostics.populated_fields : [],
+    failed_fields: Array.isArray(kyoteiBiyori?.fieldDiagnostics?.failed_fields) ? kyoteiBiyori.fieldDiagnostics.failed_fields : [],
+    kyoteibiyori_fetch_success: !!kyoteiBiyori?.ok,
+    field_sources: kyoteiBiyori?.fieldSources || {}
+  };
+}
+
 function extractFHoldCountFromRow($, $cells) {
   const $stCellPrimary = $cells.filter("td.is-lineH2").eq(0);
   const stLinesPrimary = extractLinesFromCell($, $stCellPrimary);
@@ -581,6 +627,13 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       kyoteiBiyoriMotor3Rate: null
     }));
   }
+  const kyoteiBiyoriDebug = {
+    ...(kyoteiBiyori?.diagnostics || {}),
+    ...buildKyoteiBiyoriDebugPayload({
+      racers: mergedWithKyoteiBiyori,
+      kyoteiBiyori
+    })
+  };
 
   const result = {
     source: {
@@ -596,7 +649,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
         fallback_reason: kyoteiBiyori?.fallbackReason || null,
         table_diagnostics: kyoteiBiyori?.tableDiagnostics || [],
         request_diagnostics: kyoteiBiyori?.diagnostics || {},
-        kyoteibiyori_debug: kyoteiBiyori?.diagnostics || {},
+        kyoteibiyori_debug: kyoteiBiyoriDebug,
         field_sources: kyoteiBiyori?.fieldSources || {},
         field_diagnostics: kyoteiBiyori?.fieldDiagnostics || {
           populated_fields: [],
@@ -622,7 +675,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       waveHeight: beforeinfo.weather.waveHeight
     },
     racers: mergedWithKyoteiBiyori,
-    kyoteibiyori_debug: kyoteiBiyori?.diagnostics || {}
+    kyoteibiyori_debug: kyoteiBiyoriDebug
   };
   setCachedRaceData({ date, venueId, raceNo }, result);
   return result;
