@@ -3585,13 +3585,167 @@ function boostScenarioDistribution(baseRows, boosts) {
   );
 }
 
+function computeMotor2renStrength(features) {
+  return Number(
+    clamp(
+      0,
+      100,
+      toNum(features?.motor2_rate ?? features?.motor_2rate, 0) * 1.15 +
+        toNum(features?.boat2_rate, 0) * 0.22
+    ).toFixed(2)
+  );
+}
+
+function computeLapExhibitionStrength(features) {
+  return Number(
+    clamp(
+      0,
+      100,
+      Math.max(0, 7 - toNum(features?.exhibition_rank, 6)) * 9 +
+        Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 180 +
+        Math.max(0, toNum(features?.lap_attack_strength, 0)) * 4.2 +
+        Math.max(0, 6.86 - toNum(features?.exhibition_time, 6.86)) * 120
+    ).toFixed(2)
+  );
+}
+
+function computeFinishOverrideStrength(features) {
+  const lapExhibitionContribution = computeLapExhibitionStrength(features);
+  const motor2renContribution = computeMotor2renStrength(features);
+  const motor3renContribution = Number(
+    clamp(0, 100, toNum(features?.motor3_rate ?? features?.motor_3rate, 0) * 0.9).toFixed(2)
+  );
+  const recentPlayerContribution = Number(
+    clamp(
+      0,
+      100,
+      toNum(features?.player_recent_3_months_strength, 0) * 7.5 +
+        toNum(features?.player_current_season_strength, 0) * 4.5 +
+        toNum(features?.player_strength_blended, 0) * 4
+    ).toFixed(2)
+  );
+  const exhibitionTimeContribution = Number(
+    clamp(0, 100, Math.max(0, 6.86 - toNum(features?.exhibition_time, 6.86)) * 105).toFixed(2)
+  );
+  const venueFitContribution = Number(
+    clamp(0, 100, toNum(features?.course_fit_score, 0) * 10 + toNum(features?.venue_lane_adjustment, 0) * 8).toFixed(2)
+  );
+  const finalStrength = Number(
+    clamp(
+      0,
+      100,
+      lapExhibitionContribution * 0.34 +
+        motor2renContribution * 0.26 +
+        motor3renContribution * 0.14 +
+        recentPlayerContribution * 0.14 +
+        exhibitionTimeContribution * 0.07 +
+        venueFitContribution * 0.05
+    ).toFixed(2)
+  );
+  return {
+    lap_exhibition_contribution: lapExhibitionContribution,
+    motor_2ren_contribution: motor2renContribution,
+    motor_3ren_contribution: motor3renContribution,
+    recent_player_form_contribution: recentPlayerContribution,
+    exhibition_time_contribution: exhibitionTimeContribution,
+    venue_fit_contribution: venueFitContribution,
+    finish_override_strength: finalStrength
+  };
+}
+
+function applyFinishOverrideStrength(baseFinishProbs, finishOverrideStrengthByLane, lanePriors = {}) {
+  const boat1EscapeProbability = toNum(lanePriors?.boat1_escape_probability, 0);
+  const boat1LaneFirstPrior = toNum(lanePriors?.boat1_lane_first_prior, 0.18);
+  const normalizeWithDetails = (rows) => {
+    const detailMap = new Map(
+      safeArray(rows).map((row) => [toInt(row?.lane, null), row?.finish_override_detail || {}])
+    );
+    return normalizeDistributionRows(rows).map((row) => ({
+      ...row,
+      finish_override_detail: detailMap.get(toInt(row?.lane, null)) || {}
+    }));
+  };
+  const firstRows = normalizeWithDetails(
+    safeArray(baseFinishProbs?.first).map((row) => {
+      const lane = toInt(row?.lane, null);
+      const override = finishOverrideStrengthByLane.get(lane) || {};
+      const overrideStrength = toNum(override?.finish_override_strength, 0);
+      const baseWeight = toNum(row?.weight, 0);
+      const laneOneBlock =
+        lane !== 1 &&
+        lane >= 4 &&
+        boat1EscapeProbability >= 0.48 &&
+        boat1LaneFirstPrior >= 0.18 &&
+        overrideStrength < 74;
+      const adjusted = laneOneBlock
+        ? baseWeight + Math.min(0.012, overrideStrength * 0.00018)
+        : baseWeight + Math.min(0.055, overrideStrength * 0.0007);
+      return {
+        ...row,
+        weight: adjusted,
+        finish_override_detail: {
+          ...(override || {}),
+          first_place_override_applied: Number((adjusted - baseWeight).toFixed(4)),
+          boat1_prior_blocked_outside_head_promotion: laneOneBlock ? 1 : 0
+        }
+      };
+    })
+  );
+  const secondRows = normalizeWithDetails(
+    safeArray(baseFinishProbs?.second).map((row) => {
+      const lane = toInt(row?.lane, null);
+      const override = finishOverrideStrengthByLane.get(lane) || {};
+      const overrideStrength = toNum(override?.finish_override_strength, 0);
+      const baseWeight = toNum(row?.weight, 0);
+      const adjusted = baseWeight + Math.min(0.065, overrideStrength * 0.00082);
+      return {
+        ...row,
+        weight: adjusted,
+        finish_override_detail: {
+          ...(override || {}),
+          second_place_override_applied: Number((adjusted - baseWeight).toFixed(4))
+        }
+      };
+    })
+  );
+  const thirdRows = normalizeWithDetails(
+    safeArray(baseFinishProbs?.third).map((row) => {
+      const lane = toInt(row?.lane, null);
+      const override = finishOverrideStrengthByLane.get(lane) || {};
+      const overrideStrength = toNum(override?.finish_override_strength, 0);
+      const baseWeight = toNum(row?.weight, 0);
+      const adjusted = baseWeight + Math.min(0.04, overrideStrength * 0.00046);
+      return {
+        ...row,
+        weight: adjusted,
+        finish_override_detail: {
+          ...(override || {}),
+          third_place_override_applied: Number((adjusted - baseWeight).toFixed(4))
+        }
+      };
+    })
+  );
+  return {
+    first: firstRows,
+    second: secondRows,
+    third: thirdRows
+  };
+}
+
 function computeFinishProbsByScenario({
   scenarioProbabilities,
   firstPlaceProbability,
   secondPlaceProbability,
   thirdPlaceProbability,
-  boat1EscapeProbability
+  boat1EscapeProbability,
+  rows
 }) {
+  const finishOverrideStrengthByLane = new Map(
+    safeArray(rows).map((row) => {
+      const lane = toInt(row?.racer?.lane, null);
+      return [lane, computeFinishOverrideStrength(row?.features || {})];
+    }).filter(([lane]) => Number.isInteger(lane))
+  );
   const scenarioBoosts = {
     boat1_escape: {
       first: { 1: 0.22, 2: 0.04, 3: 0.03, 4: 0.02 },
@@ -3627,12 +3781,31 @@ function computeFinishProbsByScenario({
   return safeArray(scenarioProbabilities).map((row) => {
     const scenario = String(row?.scenario || "");
     const boosts = scenarioBoosts[scenario] || { first: {}, second: {}, third: {} };
-    return {
-      scenario,
-      probability: toNum(row?.probability, 0),
+    const baseFinishProbs = {
       first: boostScenarioDistribution(firstPlaceProbability, boosts.first),
       second: boostScenarioDistribution(secondPlaceProbability, boosts.second),
       third: boostScenarioDistribution(thirdPlaceProbability, boosts.third)
+    };
+    const adjustedFinishProbs = applyFinishOverrideStrength(
+      baseFinishProbs,
+      finishOverrideStrengthByLane,
+      {
+        boat1_escape_probability: boat1EscapeProbability,
+        boat1_lane_first_prior: toNum(
+          safeArray(firstPlaceProbability).find((entry) => toInt(entry?.lane, null) === 1)?.weight,
+          0
+        )
+      }
+    );
+    return {
+      scenario,
+      probability: toNum(row?.probability, 0),
+      first: adjustedFinishProbs.first,
+      second: adjustedFinishProbs.second,
+      third: adjustedFinishProbs.third,
+      finish_override_strength_json: Object.fromEntries(
+        [...finishOverrideStrengthByLane.entries()].map(([lane, value]) => [String(lane), value])
+      )
     };
   });
 }
@@ -3715,6 +3888,7 @@ function buildPredictionFeatureBundle({
       intermediate_development_events_json: candidateDistributions?.intermediate_development_events_json || {},
       race_scenario_probabilities_json: candidateDistributions?.race_scenario_probabilities_json || [],
       finish_probabilities_by_scenario_json: candidateDistributions?.finish_probabilities_by_scenario_json || [],
+      finish_override_strength_by_lane_json: candidateDistributions?.finish_override_strength_by_lane_json || {},
       scenario_based_order_candidates_json: candidateDistributions?.scenario_based_order_candidates_json || []
     },
     lane_bundle: safeArray(ranking).map((row) => ({
@@ -4647,12 +4821,14 @@ function buildSeparatedCandidateDistributions({
     firstPlaceProbability: roleProbabilityLayers.first_place_probability_json,
     secondPlaceProbability: roleProbabilityLayers.second_place_probability_json,
     thirdPlaceProbability: roleProbabilityLayers.third_place_probability_json,
-    boat1EscapeProbability: roleProbabilityLayers.boat1_escape_probability
+    boat1EscapeProbability: roleProbabilityLayers.boat1_escape_probability,
+    rows
   });
   const scenarioBasedOrderCandidates = combineScenarioAndFinishProbs({
     scenarioProbabilities: raceScenarioProbabilities,
     conditionalFinishProbs: finishProbabilitiesByScenario
   });
+  const finishOverrideStrengthByLane = finishProbabilitiesByScenario[0]?.finish_override_strength_json || {};
 
   return {
     formation_first_place_prior_json: formationFirstPlacePrior,
@@ -4744,6 +4920,7 @@ function buildSeparatedCandidateDistributions({
     intermediate_development_events_json: intermediateDevelopmentEvents,
     race_scenario_probabilities_json: raceScenarioProbabilities,
     finish_probabilities_by_scenario_json: finishProbabilitiesByScenario,
+    finish_override_strength_by_lane_json: finishOverrideStrengthByLane,
     scenario_based_order_candidates_json: scenarioBasedOrderCandidates,
     outside_head_promotion_gate_json: {
       inner_collapse_score: outsideHeadPromotionContext.inner_collapse_score,
@@ -8155,6 +8332,7 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.intermediate_development_events_json = candidateDistributions.intermediate_development_events_json;
     headScenarioBalanceAnalysis.race_scenario_probabilities_json = candidateDistributions.race_scenario_probabilities_json;
     headScenarioBalanceAnalysis.finish_probabilities_by_scenario_json = candidateDistributions.finish_probabilities_by_scenario_json;
+    headScenarioBalanceAnalysis.finish_override_strength_by_lane_json = candidateDistributions.finish_override_strength_by_lane_json;
     headScenarioBalanceAnalysis.scenario_based_order_candidates_json = candidateDistributions.scenario_based_order_candidates_json;
     bet_plan_with_stake.recommended_bets = applySeparatedDistributionBiasToTickets(
       bet_plan_with_stake.recommended_bets,
@@ -13035,6 +13213,10 @@ export const __testHooks = {
   buildBoat3WeakStHeadSuppressionContext,
   getLaunchStateConfig,
   getVenueLaunchMicroCalibration,
+  computeMotor2renStrength,
+  computeLapExhibitionStrength,
+  computeFinishOverrideStrength,
+  applyFinishOverrideStrength,
   computeLaunchStateScores,
   classifyLaunchStates,
   buildIntermediateDevelopmentEvents,

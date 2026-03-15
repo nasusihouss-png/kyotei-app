@@ -9,6 +9,10 @@ const {
   buildBoat3WeakStHeadSuppressionContext,
   getLaunchStateConfig,
   getVenueLaunchMicroCalibration,
+  computeMotor2renStrength,
+  computeLapExhibitionStrength,
+  computeFinishOverrideStrength,
+  applyFinishOverrideStrength,
   computeLaunchStateScores,
   classifyLaunchStates,
   buildIntermediateDevelopmentEvents,
@@ -1334,6 +1338,142 @@ const neutralUpsetRisk = computeUpsetRiskScore({
 assert.ok(
   Math.abs(hollowUpsetRisk - neutralUpsetRisk) <= 4.1,
   "venue upset calibration should remain tightly capped"
+);
+
+const lapStrongFeature = {
+  exhibition_rank: 1,
+  lap_time_delta_vs_front: 0.09,
+  lap_attack_strength: 11,
+  exhibition_time: 6.67,
+  motor2_rate: 52,
+  motor3_rate: 67,
+  player_recent_3_months_strength: 5.8,
+  player_current_season_strength: 5.4,
+  player_strength_blended: 5.7,
+  course_fit_score: 2.1,
+  venue_lane_adjustment: 1.1
+};
+const supportOnlyFeature = {
+  exhibition_rank: 3,
+  lap_time_delta_vs_front: 0.03,
+  lap_attack_strength: 4.8,
+  exhibition_time: 6.75,
+  motor2_rate: 58,
+  motor3_rate: 70,
+  player_recent_3_months_strength: 4.9,
+  player_current_season_strength: 5.0,
+  player_strength_blended: 4.95,
+  course_fit_score: 1.7,
+  venue_lane_adjustment: 0.8
+};
+assert.ok(
+  computeLapExhibitionStrength(lapStrongFeature) > computeLapExhibitionStrength(supportOnlyFeature),
+  "strong lap exhibition should be the highest-impact override input"
+);
+assert.ok(
+  computeMotor2renStrength(supportOnlyFeature) > computeMotor2renStrength({
+    ...supportOnlyFeature,
+    motor2_rate: 41
+  }),
+  "motor 2-ren should materially strengthen top-2 override support"
+);
+
+const outsideOverride = computeFinishOverrideStrength({
+  exhibition_rank: 1,
+  lap_time_delta_vs_front: 0.1,
+  lap_attack_strength: 12,
+  exhibition_time: 6.66,
+  motor2_rate: 60,
+  motor3_rate: 74,
+  player_recent_3_months_strength: 6.1,
+  player_current_season_strength: 5.8,
+  player_strength_blended: 6,
+  course_fit_score: 2,
+  venue_lane_adjustment: 1.5
+});
+const mediumOutsideOverride = computeFinishOverrideStrength({
+  exhibition_rank: 2,
+  lap_time_delta_vs_front: 0.05,
+  lap_attack_strength: 7.5,
+  exhibition_time: 6.72,
+  motor2_rate: 48,
+  motor3_rate: 63,
+  player_recent_3_months_strength: 5.1,
+  player_current_season_strength: 5,
+  player_strength_blended: 5.05,
+  course_fit_score: 1.3,
+  venue_lane_adjustment: 0.9
+});
+const overrideApplied = applyFinishOverrideStrength(
+  {
+    first: [{ lane: 1, weight: 0.28 }, { lane: 5, weight: 0.18 }, { lane: 3, weight: 0.14 }],
+    second: [{ lane: 5, weight: 0.17 }, { lane: 3, weight: 0.16 }, { lane: 2, weight: 0.14 }],
+    third: [{ lane: 5, weight: 0.15 }, { lane: 4, weight: 0.14 }, { lane: 2, weight: 0.13 }]
+  },
+  new Map([
+    [1, computeFinishOverrideStrength({ motor2_rate: 44, motor3_rate: 58, player_strength_blended: 4.8, exhibition_time: 6.74 })],
+    [5, mediumOutsideOverride],
+    [3, computeFinishOverrideStrength({ ...supportOnlyFeature, motor2_rate: 49 })],
+    [2, computeFinishOverrideStrength({ ...supportOnlyFeature, motor2_rate: 54 })],
+    [4, computeFinishOverrideStrength({ ...supportOnlyFeature, motor2_rate: 52 })]
+  ]),
+  {
+    boat1_escape_probability: 0.64,
+    boat1_lane_first_prior: 0.28
+  }
+);
+const firstAfterOverride = new Map(overrideApplied.first.map((row) => [row.lane, row]));
+assert.equal(
+  firstAfterOverride.get(5)?.finish_override_detail?.boat1_prior_blocked_outside_head_promotion,
+  1,
+  "boat 1 prior should still block weak outside-head override even with strong lap/motor strength"
+);
+
+const alignedOutsideOverride = applyFinishOverrideStrength(
+  {
+    first: [{ lane: 1, weight: 0.23 }, { lane: 5, weight: 0.2 }, { lane: 4, weight: 0.16 }],
+    second: [{ lane: 5, weight: 0.18 }, { lane: 4, weight: 0.17 }, { lane: 2, weight: 0.13 }],
+    third: [{ lane: 4, weight: 0.16 }, { lane: 5, weight: 0.15 }, { lane: 2, weight: 0.12 }]
+  },
+  new Map([
+    [1, computeFinishOverrideStrength({ motor2_rate: 43, motor3_rate: 56, player_strength_blended: 4.7, exhibition_time: 6.76 })],
+    [5, outsideOverride],
+    [4, computeFinishOverrideStrength({ ...lapStrongFeature, motor2_rate: 57, motor3_rate: 71 })],
+    [2, computeFinishOverrideStrength({ ...supportOnlyFeature, motor2_rate: 51 })]
+  ]),
+  {
+    boat1_escape_probability: 0.39,
+    boat1_lane_first_prior: 0.23
+  }
+);
+assert.ok(
+  new Map(alignedOutsideOverride.first.map((row) => [row.lane, row])).get(5)?.weight >
+    0.2,
+  "aligned strong lap + motor2ren cases should still allow meaningful outside finish override"
+);
+
+const overrideFinishRows = [
+  makeRow(1, { features: { exhibition_rank: 2, motor2_rate: 45, motor3_rate: 58, exhibition_time: 6.73, player_strength_blended: 5.2 } }),
+  makeRow(3, { features: { ...lapStrongFeature, motor2_rate: 56, motor3_rate: 72 } }),
+  makeRow(4, { features: { ...supportOnlyFeature, motor2_rate: 53, motor3_rate: 68 } })
+];
+const overrideFinish = computeFinishProbsByScenario({
+  scenarioProbabilities: [{ scenario: "boat3_makuri", probability: 0.21 }],
+  firstPlaceProbability: [{ lane: 1, weight: 0.28 }, { lane: 3, weight: 0.16 }, { lane: 4, weight: 0.12 }],
+  secondPlaceProbability: [{ lane: 3, weight: 0.19 }, { lane: 4, weight: 0.16 }, { lane: 2, weight: 0.14 }],
+  thirdPlaceProbability: [{ lane: 4, weight: 0.15 }, { lane: 2, weight: 0.14 }, { lane: 3, weight: 0.13 }],
+  boat1EscapeProbability: 0.51,
+  rows: overrideFinishRows
+});
+const overrideStrengthMap = overrideFinish[0]?.finish_override_strength_json || {};
+assert.ok(
+  Number(overrideStrengthMap["3"]?.lap_exhibition_contribution || 0) >
+    Number(overrideStrengthMap["4"]?.lap_exhibition_contribution || 0),
+  "finish override logging should expose lap exhibition contribution by lane"
+);
+assert.ok(
+  overrideFinish[0].second.some((row) => row.lane === 3 && Number(row?.finish_override_detail?.second_place_override_applied || 0) > 0),
+  "strong lap + motor2ren should improve conditional top-2 finish support"
 );
 
 console.log("boat1-escape-opponent-model tests passed");

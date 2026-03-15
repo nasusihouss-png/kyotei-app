@@ -660,6 +660,8 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.finish_probabilities_by_scenario_json)
             ? context.finish_probabilities_by_scenario_json
             : [],
+        finish_override_strength_by_lane_json:
+          learning?.finish_override_strength_by_lane_json || context?.finish_override_strength_by_lane_json || {},
         scenario_based_order_candidates_json: Array.isArray(learning?.scenario_based_order_candidates_json)
           ? learning.scenario_based_order_candidates_json
           : Array.isArray(context?.scenario_based_order_candidates_json)
