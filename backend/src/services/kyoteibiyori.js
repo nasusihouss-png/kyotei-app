@@ -145,7 +145,13 @@ function buildFieldDiagnostics(byLane, fieldSources = {}) {
   };
 }
 
-function buildSliderUrl({ date, venueId, raceNo, slider }) {
+function buildIndexUrl({ date, venueId, raceNo }) {
+  const hiduke = String(date || "").replace(/-/g, "");
+  const placeNo = String(venueId || "").padStart(2, "0");
+  return `${KYOTEI_BIYORI_BASE}/race_ichiran.php?place_no=${placeNo}&race_no=${Number(raceNo)}&hiduke=${hiduke}`;
+}
+
+function buildFallbackSliderUrl({ date, venueId, raceNo, slider }) {
   const hiduke = String(date || "").replace(/-/g, "");
   const placeNo = String(venueId || "").padStart(2, "0");
   return `${KYOTEI_BIYORI_BASE}/race_shusso.php?place_no=${placeNo}&race_no=${Number(raceNo)}&hiduke=${hiduke}&slider=${slider}`;
@@ -163,7 +169,7 @@ async function fetchText(url, timeoutMs = 12000) {
   return String(response.data || "");
 }
 
-async function fetchOritenJson({ date, venueId, raceNo, timeoutMs = 12000 }) {
+async function fetchOritenJson({ date, venueId, raceNo, refererUrl, timeoutMs = 12000 }) {
   const payload = {
     hiduke: String(date || "").replace(/-/g, ""),
     place_no: String(venueId || "").padStart(2, "0"),
@@ -181,24 +187,45 @@ async function fetchOritenJson({ date, venueId, raceNo, timeoutMs = 12000 }) {
       "X-Requested-With": "XMLHttpRequest",
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
       "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-      Referer: buildSliderUrl({ date, venueId, raceNo, slider: 1 })
+      Referer: refererUrl || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 1 })
     }
   });
 
   return response.data;
 }
 
-function detectLaneText(text) {
-  const normalized = normalizeText(text);
-  const direct = normalized.match(/^(?:艇番|コース|枠)?\s*([1-6])$/);
-  if (direct) return Number(direct[1]);
-  const loose = normalized.match(/([1-6])/);
-  return loose ? Number(loose[1]) : null;
-}
+function extractActualRaceTabLinks(indexHtml, raceNo) {
+  const $ = cheerio.load(indexHtml);
+  const targetRaceNo = Number(raceNo);
+  const result = {
+    raceBlockFound: false,
+    raceRowTitle: null,
+    raceNumberHref: null,
+    laneStatsHref: null,
+    preRaceHref: null
+  };
 
-function detectColumnIndex(headers, patterns) {
-  const idx = headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)));
-  return idx >= 0 ? idx : null;
+  $(".menu_box").each((_, block) => {
+    const $block = $(block);
+    const titleText = normalizeText($block.find("h2.race_ichiran_h2").first().text());
+    const raceMatch = titleText.match(/(\d+)\s*R/i);
+    if (!raceMatch || Number(raceMatch[1]) !== targetRaceNo) return;
+
+    result.raceBlockFound = true;
+    result.raceRowTitle = titleText || null;
+
+    $block.find("a[href]").each((__, link) => {
+      const text = normalizeText($(link).text());
+      const href = $(link).attr("href");
+      if (!href) return;
+      const absoluteHref = new URL(href, KYOTEI_BIYORI_BASE).href;
+      if (/^\d+\s*R$/i.test(text)) result.raceNumberHref = absoluteHref;
+      if (text === "枠別勝率") result.laneStatsHref = absoluteHref;
+      if (text === "直前情報") result.preRaceHref = absoluteHref;
+    });
+  });
+
+  return result;
 }
 
 function extractTableMaps(html) {
@@ -221,6 +248,19 @@ function extractTableMaps(html) {
       };
     })
     .filter((table) => table.headers.length > 0);
+}
+
+function detectLaneText(text) {
+  const normalized = normalizeText(text);
+  const direct = normalized.match(/^(?:艇番|コース|枠)?\s*([1-6])$/);
+  if (direct) return Number(direct[1]);
+  const loose = normalized.match(/([1-6])/);
+  return loose ? Number(loose[1]) : null;
+}
+
+function detectColumnIndex(headers, patterns) {
+  const idx = headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)));
+  return idx >= 0 ? idx : null;
 }
 
 function parseHtmlSupplement(html) {
@@ -493,18 +533,12 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
 
 export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeoutMs = 12000 }) {
   try {
-    const hiduke = String(date || "").replace(/-/g, "");
-    const placeNo = String(venueId || "").padStart(2, "0");
-    const rno = Number(raceNo);
-    const indexUrl = `${KYOTEI_BIYORI_BASE}/race_ichiran.php?place_no=${placeNo}&race_no=${rno}&hiduke=${hiduke}`;
-    const slider1Url = buildSliderUrl({ date, venueId, raceNo, slider: 1 });
-    const slider4Url = buildSliderUrl({ date, venueId, raceNo, slider: 4 });
-
+    const indexUrl = buildIndexUrl({ date, venueId, raceNo });
     const diagnostics = {
       index_url: indexUrl,
-      target_urls: [indexUrl, slider1Url, slider4Url],
+      target_urls: [indexUrl],
+      extracted_hrefs: {},
       actual_fetch_paths: [],
-      lane_stats_source_path: ORITEN_ENDPOINT,
       initial_html: {
         fetched: false,
         has_placeholder: false
@@ -517,9 +551,10 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     const fieldSources = {};
     const tableDiagnostics = [];
     let lastError = null;
+    let indexHtml = "";
 
     try {
-      const indexHtml = await fetchText(indexUrl, timeoutMs);
+      indexHtml = await fetchText(indexUrl, timeoutMs);
       diagnostics.initial_html.fetched = true;
       diagnostics.initial_html.has_placeholder = /データ取得中です|しばらくお待ちください/.test(indexHtml);
       diagnostics.actual_fetch_paths.push("race_ichiran_shell");
@@ -528,19 +563,29 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       diagnostics.initial_html.error = String(error?.message || error);
     }
 
+    const extractedLinks = indexHtml ? extractActualRaceTabLinks(indexHtml, raceNo) : {};
+    diagnostics.extracted_hrefs = extractedLinks;
+
+    const laneStatsUrl =
+      extractedLinks?.laneStatsHref || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 1 });
+    const preRaceUrl =
+      extractedLinks?.preRaceHref || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 4 });
+    diagnostics.target_urls.push(laneStatsUrl, preRaceUrl);
+
     try {
-      const ajaxPayload = await fetchOritenJson({ date, venueId, raceNo, timeoutMs });
+      const ajaxPayload = await fetchOritenJson({
+        date,
+        venueId,
+        raceNo,
+        refererUrl: laneStatsUrl,
+        timeoutMs
+      });
       const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
       mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");
       diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");
       diagnostics.request_payload = {
         endpoint: ORITEN_ENDPOINT,
-        data: {
-          hiduke,
-          place_no: placeNo,
-          race_no: rno,
-          mode: 2
-        }
+        referer: laneStatsUrl
       };
       diagnostics.request_diagnostics = parsedAjax.diagnostics;
     } catch (error) {
@@ -549,8 +594,8 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     }
 
     for (const [label, url] of [
-      ["lane_stats_tab", slider1Url],
-      ["pre_race_tab", slider4Url]
+      ["lane_stats_tab", laneStatsUrl],
+      ["pre_race_tab", preRaceUrl]
     ]) {
       try {
         const html = await fetchText(url, timeoutMs);
@@ -579,15 +624,15 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     }
 
     const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
-    const lapTimeReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("lapTimeRaw"));
     const laneStatsReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("laneFirstRate"));
-    const ok = mergedByLane.size > 0 && (lapTimeReady || laneStatsReady);
+    const lapTimeReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("lapTimeRaw"));
+    const ok = mergedByLane.size > 0 && (laneStatsReady || lapTimeReady);
     const fallbackReason =
       ok
         ? null
         : lastError
           ? String(lastError.message || lastError)
-          : "kyoteibiyori returned no usable lap-time or lane-stat fields";
+          : "kyoteibiyori returned no usable lane-stat or pre-race fields";
 
     return {
       ok,
@@ -615,6 +660,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       fallbackReason: String(error?.message || error),
       diagnostics: {
         target_urls: [],
+        extracted_hrefs: {},
         actual_fetch_paths: [],
         fatal_error: String(error?.message || error)
       },
