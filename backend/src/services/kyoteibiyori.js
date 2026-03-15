@@ -48,6 +48,12 @@ function toNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function toFiniteNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function parseDecimal(value) {
   const text = normalizeDigits(value).replace(/\s+/g, "");
   if (!text) return null;
@@ -78,26 +84,12 @@ function parseFCount(value) {
 
 function parseStartTimingRaw(value) {
   const raw = normalizeSpace(value) || null;
-  if (!raw) {
-    return {
-      raw: null,
-      type: "missing",
-      numeric: null
-    };
-  }
+  if (!raw) return { raw: null, type: "missing", numeric: null };
   const normalized = normalizeDigits(raw).replace(/\s+/g, "").toUpperCase();
-  if (/^F\.?\d+/.test(normalized)) {
-    return { raw, type: "flying", numeric: null };
-  }
-  if (/^L\.?\d+/.test(normalized)) {
-    return { raw, type: "late", numeric: null };
-  }
+  if (/^F\.?\d+/.test(normalized)) return { raw, type: "flying", numeric: null };
+  if (/^L\.?\d+/.test(normalized)) return { raw, type: "late", numeric: null };
   const numeric = parseDecimal(normalized);
-  return {
-    raw,
-    type: numeric === null ? "unknown" : "normal",
-    numeric
-  };
+  return { raw, type: numeric === null ? "unknown" : "normal", numeric };
 }
 
 function parseScaledDecimal(value, divisor = 100) {
@@ -106,16 +98,9 @@ function parseScaledDecimal(value, divisor = 100) {
   return Number((n / divisor).toFixed(2));
 }
 
-function toFiniteNumberOrNull(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
 function normalizeLapTimeForModel(rawLapTime) {
   if (!Number.isFinite(Number(rawLapTime))) return null;
-  const adjusted = Number(rawLapTime) - 29.5;
-  return Number.isFinite(adjusted) ? Number(adjusted.toFixed(2)) : null;
+  return Number((Number(rawLapTime) - 29.5).toFixed(2));
 }
 
 function makeStretchLabel({ mawariashi, chokusen }) {
@@ -128,8 +113,7 @@ function makeStretchLabel({ mawariashi, chokusen }) {
 function computeLapExhibitionScore({ mawariashi, chokusen }) {
   const scores = [mawariashi, chokusen].filter((value) => Number.isFinite(Number(value))).map(Number);
   if (scores.length === 0) return null;
-  const avg = scores.reduce((sum, value) => sum + value, 0) / scores.length;
-  return Number(avg.toFixed(2));
+  return Number((scores.reduce((sum, value) => sum + value, 0) / scores.length).toFixed(2));
 }
 
 function buildFieldDiagnostics(byLane, fieldSources = {}) {
@@ -197,7 +181,7 @@ async function fetchOritenJson({ date, venueId, raceNo, timeoutMs = 12000 }) {
       "X-Requested-With": "XMLHttpRequest",
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
       "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-      Referer: buildSliderUrl({ date, venueId, raceNo, slider: 4 })
+      Referer: buildSliderUrl({ date, venueId, raceNo, slider: 1 })
     }
   });
 
@@ -245,7 +229,7 @@ function parseHtmlSupplement(html) {
   const tableDiagnostics = [];
   const tables = extractTableMaps(html);
 
-  const preRacePatterns = {
+  const patterns = {
     lane: [/^艇番$/i, /^コース$/i, /^枠$/i],
     playerName: [/選手/i, /名前/i],
     fCount: [/^F$/i, /F数/i],
@@ -256,26 +240,26 @@ function parseHtmlSupplement(html) {
     motor2Rate: [/モーター.*2連率/i, /^2連率$/i],
     motor3Rate: [/モーター.*3連率/i, /^3連率$/i],
     laneFirstRate: [/1着率/i],
-    lane2RenRate: [/2連率/i],
-    lane3RenRate: [/3連率/i]
+    lane2RenRate: [/2着率/i, /2連率/i],
+    lane3RenRate: [/3着率/i, /3連率/i]
   };
 
   for (const table of tables) {
-    if (!/(周回タイム|展示ST|モーター|1着率|2連率|3連率|選手|F)/.test(table.text)) continue;
+    if (!/(周回タイム|展示ST|モーター|1着率|2着率|3着率|2連率|3連率|選手|F)/.test(table.text)) continue;
 
     const indexes = {
-      lane: detectColumnIndex(table.headers, preRacePatterns.lane),
-      playerName: detectColumnIndex(table.headers, preRacePatterns.playerName),
-      fCount: detectColumnIndex(table.headers, preRacePatterns.fCount),
-      lapTime: detectColumnIndex(table.headers, preRacePatterns.lapTime),
-      lapExhibition: detectColumnIndex(table.headers, preRacePatterns.lapExhibition),
-      exhibitionSt: detectColumnIndex(table.headers, preRacePatterns.exhibitionSt),
-      exhibitionTime: detectColumnIndex(table.headers, preRacePatterns.exhibitionTime),
-      motor2Rate: detectColumnIndex(table.headers, preRacePatterns.motor2Rate),
-      motor3Rate: detectColumnIndex(table.headers, preRacePatterns.motor3Rate),
-      laneFirstRate: detectColumnIndex(table.headers, preRacePatterns.laneFirstRate),
-      lane2RenRate: detectColumnIndex(table.headers, preRacePatterns.lane2RenRate),
-      lane3RenRate: detectColumnIndex(table.headers, preRacePatterns.lane3RenRate)
+      lane: detectColumnIndex(table.headers, patterns.lane),
+      playerName: detectColumnIndex(table.headers, patterns.playerName),
+      fCount: detectColumnIndex(table.headers, patterns.fCount),
+      lapTime: detectColumnIndex(table.headers, patterns.lapTime),
+      lapExhibition: detectColumnIndex(table.headers, patterns.lapExhibition),
+      exhibitionSt: detectColumnIndex(table.headers, patterns.exhibitionSt),
+      exhibitionTime: detectColumnIndex(table.headers, patterns.exhibitionTime),
+      motor2Rate: detectColumnIndex(table.headers, patterns.motor2Rate),
+      motor3Rate: detectColumnIndex(table.headers, patterns.motor3Rate),
+      laneFirstRate: detectColumnIndex(table.headers, patterns.laneFirstRate),
+      lane2RenRate: detectColumnIndex(table.headers, patterns.lane2RenRate),
+      lane3RenRate: detectColumnIndex(table.headers, patterns.lane3RenRate)
     };
 
     let parsedCount = 0;
@@ -285,7 +269,7 @@ function parseHtmlSupplement(html) {
         .children("td,th")
         .each((__, cell) => {
           values.push(normalizeText(table.$(cell).text()));
-      });
+        });
       if (values.length < 2) return;
 
       const lane =
@@ -311,30 +295,23 @@ function parseHtmlSupplement(html) {
       const lapExLabel = indexes.lapExhibition !== null ? values[indexes.lapExhibition] : null;
       if (lapExLabel) {
         next.stretchFootLabel = lapExLabel;
-        next.lapExhibitionScore = parseDecimal(lapExLabel) ?? null;
+        next.lapExhibitionScore = parseDecimal(lapExLabel);
       }
-      if (next.lapTimeRaw !== null) {
-        next.lapTime = normalizeLapTimeForModel(next.lapTimeRaw);
-      }
+      if (next.lapTimeRaw !== null) next.lapTime = normalizeLapTimeForModel(next.lapTimeRaw);
 
       const merged = { ...current };
       const laneFieldSources = fieldSources[lane] || {};
       for (const [key, value] of Object.entries(next)) {
         if (value === null || value === undefined || value === "") continue;
         merged[key] = value;
-        laneFieldSources[key] = "tab_html";
+        laneFieldSources[key] = "race_shusso_html";
       }
-      if (Object.keys(merged).length > 0) {
-        byLane.set(lane, merged);
-        fieldSources[lane] = laneFieldSources;
-        parsedCount += 1;
-      }
+      byLane.set(lane, merged);
+      fieldSources[lane] = laneFieldSources;
+      parsedCount += 1;
     });
 
-    tableDiagnostics.push({
-      headers: table.headers,
-      parsedCount
-    });
+    tableDiagnostics.push({ headers: table.headers, parsedCount });
   }
 
   return { byLane, fieldSources, tableDiagnostics };
@@ -365,10 +342,10 @@ export function parseKyoteiBiyoriAjaxData(payload) {
     const stretchFootLabel = makeStretchLabel({ mawariashi, chokusen });
     const entryCourse = Number(row?.shinnyuu);
 
-    const courseField = (suffix) => {
-      if (!oriten || !Number.isInteger(lane)) return null;
-      const byCourse = parsePercent(oriten[`shukai_${suffix}_${lane}_ave`]);
-      return byCourse ?? parsePercent(oriten[`shukai_${suffix}_ave`]);
+    const currentCourseField = (baseKey) => {
+      if (!oriten) return null;
+      const direct = parsePercent(oriten[`${baseKey}_${lane}_ave`]);
+      return direct ?? parsePercent(oriten[`${baseKey}_ave`]);
     };
 
     const laneRow = {
@@ -380,38 +357,21 @@ export function parseKyoteiBiyoriAjaxData(payload) {
       exhibitionSt: startParsed.type === "normal" ? startParsed.numeric : null,
       exhibitionTime,
       entryCourse: Number.isInteger(entryCourse) ? entryCourse : null,
-      laneFirstRate: courseField("1_1"),
-      lane2RenRate: courseField("1_2"),
-      lane3RenRate: courseField("1_3")
+      laneFirstRate: currentCourseField("shukai_1_1"),
+      lane2RenRate: currentCourseField("shukai_1_2"),
+      lane3RenRate: currentCourseField("shukai_1_3")
     };
-
-    const sources = {
-      playerName: "request_oriten_kaiseki_custom.chokuzen_list",
-      lapTimeRaw: "request_oriten_kaiseki_custom.chokuzen_list.shukai",
-      lapTime: "request_oriten_kaiseki_custom.chokuzen_list.shukai(normalized)",
-      lapExhibitionScore: "request_oriten_kaiseki_custom.chokuzen_list.mawariashi/chokusen",
-      stretchFootLabel: "request_oriten_kaiseki_custom.chokuzen_list.mawariashi/chokusen",
-      exhibitionSt: "request_oriten_kaiseki_custom.chokuzen_list.start",
-      exhibitionTime: "request_oriten_kaiseki_custom.chokuzen_list.tenji",
-      laneFirstRate: "request_oriten_kaiseki_custom.oriten_ave_list",
-      lane2RenRate: "request_oriten_kaiseki_custom.oriten_ave_list",
-      lane3RenRate: "request_oriten_kaiseki_custom.oriten_ave_list"
-    };
-
-    if (oriten) {
-      const overall1 = parsePercent(oriten?.shukai_1_1_ave);
-      const overall2 = parsePercent(oriten?.shukai_1_2_ave);
-      const overall3 = parsePercent(oriten?.shukai_1_3_ave);
-      if (laneRow.laneFirstRate === null) laneRow.laneFirstRate = overall1;
-      if (laneRow.lane2RenRate === null) laneRow.lane2RenRate = overall2;
-      if (laneRow.lane3RenRate === null) laneRow.lane3RenRate = overall3;
-    }
 
     byLane.set(lane, laneRow);
     fieldSources[lane] = Object.fromEntries(
       Object.entries(laneRow)
         .filter(([, value]) => value !== null && value !== undefined && value !== "")
-        .map(([key]) => [key, sources[key] || "request_oriten_kaiseki_custom"])
+        .map(([key]) => [
+          key,
+          key.startsWith("lane")
+            ? "request_oriten_kaiseki_custom.oriten_ave_list"
+            : "request_oriten_kaiseki_custom.chokuzen_list"
+        ])
     );
   }
 
@@ -421,7 +381,8 @@ export function parseKyoteiBiyoriAjaxData(payload) {
     diagnostics: {
       response_keys: Object.keys(payload || {}),
       chokuzen_count: chokuzenList.length,
-      oriten_player_count: Object.keys(oritenAveList).length
+      oriten_player_count: Object.keys(oritenAveList).length,
+      lane_stats_source: "request_oriten_kaiseki_custom.oriten_ave_list"
     }
   };
 }
@@ -444,7 +405,7 @@ export function parseKyoteiBiyoriPreRaceData(html) {
   const supplement = parseHtmlSupplement(html);
   const byLane = new Map();
   const fieldSources = {};
-  mergeLaneMaps(byLane, supplement.byLane, fieldSources, "tab_html");
+  mergeLaneMaps(byLane, supplement.byLane, fieldSources, "race_shusso_html");
   return {
     byLane,
     fieldSources,
@@ -543,6 +504,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       index_url: indexUrl,
       target_urls: [indexUrl, slider1Url, slider4Url],
       actual_fetch_paths: [],
+      lane_stats_source_path: ORITEN_ENDPOINT,
       initial_html: {
         fetched: false,
         has_placeholder: false
@@ -619,7 +581,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
     const lapTimeReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("lapTimeRaw"));
     const laneStatsReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("laneFirstRate"));
-    const ok = mergedByLane.size > 0 && lapTimeReady && laneStatsReady;
+    const ok = mergedByLane.size > 0 && (lapTimeReady || laneStatsReady);
     const fallbackReason =
       ok
         ? null

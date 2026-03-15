@@ -409,6 +409,12 @@ function formatComparisonValue(value, digits = 2) {
   return num.toFixed(digits);
 }
 
+function toFiniteComparisonNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
 function formatSignedRateDelta(value) {
   if (value === null || value === undefined || value === "") return "-";
   const num = Number(value);
@@ -1278,26 +1284,21 @@ function getPlayerComparisonRows({ prediction, data }) {
         name: row?.name || `Boat ${row?.lane || "-"}`,
         fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
         kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched || 0) === 1,
-        lapTime: Number.isFinite(Number(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time))
-          ? Number(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time)
-          : null,
-        exhibitionSt: Number.isFinite(Number(row?.exhibition_st)) ? Number(row.exhibition_st) : null,
-        exhibitionTime: Number.isFinite(Number(row?.exhibition_time)) ? Number(row.exhibition_time) : null,
-        lapScore: Number.isFinite(Number(row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score))
-          ? Number(row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score)
-          : Number.isFinite(Number(row?.feature_snapshot?.lap_exhibition_score))
-            ? Number(row.feature_snapshot.lap_exhibition_score)
-            : Number.isFinite(Number(row?.feature_snapshot?.lap_attack_strength))
-              ? Number(row.feature_snapshot.lap_attack_strength)
-              : Number.isFinite(Number(row?.feature_snapshot?.lap_time_delta_vs_front))
-                ? Number(row.feature_snapshot.lap_time_delta_vs_front) * 100
-                : null,
+        lapTime: toFiniteComparisonNumber(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time),
+        exhibitionSt: toFiniteComparisonNumber(row?.exhibition_st),
+        exhibitionTime: toFiniteComparisonNumber(row?.exhibition_time),
+        lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score)
+          ?? toFiniteComparisonNumber(row?.feature_snapshot?.lap_exhibition_score)
+          ?? toFiniteComparisonNumber(row?.feature_snapshot?.lap_attack_strength)
+          ?? (toFiniteComparisonNumber(row?.feature_snapshot?.lap_time_delta_vs_front) !== null
+            ? Number(row.feature_snapshot.lap_time_delta_vs_front) * 100
+            : null),
         stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
-        motor2Rate: Number.isFinite(Number(row?.motor_2rate)) ? Number(row.motor_2rate) : null,
-        motor3Rate: Number.isFinite(Number(row?.motor_3rate)) ? Number(row.motor_3rate) : null,
-        laneFirstRate: Number.isFinite(Number(row?.lane_first_rate)) ? Number(row.lane_first_rate) : null,
-        lane2RenRate: Number.isFinite(Number(row?.lane_2ren_rate)) ? Number(row.lane_2ren_rate) : null,
-        lane3RenRate: Number.isFinite(Number(row?.lane_3ren_rate)) ? Number(row.lane_3ren_rate) : null
+        motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
+        motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
+        laneFirstRate: toFiniteComparisonNumber(row?.lane_first_rate),
+        lane2RenRate: toFiniteComparisonNumber(row?.lane_2ren_rate),
+        lane3RenRate: toFiniteComparisonNumber(row?.lane_3ren_rate)
       }))
       .sort((a, b) => a.lane - b.lane);
   }
@@ -1308,24 +1309,16 @@ function getPlayerComparisonRows({ prediction, data }) {
       name: row?.name || `Boat ${row?.lane || "-"}`,
       fCount: row?.fHoldCount === null || row?.fHoldCount === undefined ? null : Number(row.fHoldCount),
       kyoteiBiyoriFetched: Number(row?.kyoteiBiyoriFetched || 0) === 1,
-      lapTime: Number.isFinite(Number(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime))
-        ? Number(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime)
-        : null,
-      exhibitionSt: Number.isFinite(Number(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt))
-        ? Number(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt)
-        : null,
-      exhibitionTime: Number.isFinite(Number(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime))
-        ? Number(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime)
-        : null,
-      lapScore: Number.isFinite(Number(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore))
-        ? Number(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore)
-        : null,
+      lapTime: toFiniteComparisonNumber(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime),
+      exhibitionSt: toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt),
+      exhibitionTime: toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime),
+      lapScore: toFiniteComparisonNumber(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore),
       stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || null,
-      motor2Rate: Number.isFinite(Number(row?.motor2Rate)) ? Number(row.motor2Rate) : null,
-      motor3Rate: Number.isFinite(Number(row?.motor3Rate)) ? Number(row.motor3Rate) : null,
-      laneFirstRate: Number.isFinite(Number(row?.laneFirstRate)) ? Number(row.laneFirstRate) : null,
-      lane2RenRate: Number.isFinite(Number(row?.lane2RenRate)) ? Number(row.lane2RenRate) : null,
-      lane3RenRate: Number.isFinite(Number(row?.lane3RenRate)) ? Number(row.lane3RenRate) : null
+      motor2Rate: toFiniteComparisonNumber(row?.motor2Rate),
+      motor3Rate: toFiniteComparisonNumber(row?.motor3Rate),
+      laneFirstRate: toFiniteComparisonNumber(row?.laneFirstRate),
+      lane2RenRate: toFiniteComparisonNumber(row?.lane2RenRate),
+      lane3RenRate: toFiniteComparisonNumber(row?.lane3RenRate)
     }))
     .sort((a, b) => a.lane - b.lane);
 }
