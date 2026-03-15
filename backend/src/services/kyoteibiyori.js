@@ -145,6 +145,19 @@ function buildFieldDiagnostics(byLane, fieldSources = {}) {
   };
 }
 
+function buildRequiredFieldParseStatus(byLane) {
+  const lanes = [...(byLane instanceof Map ? byLane.entries() : [])];
+  const hasValue = (field) =>
+    lanes.some(([, row]) => row?.[field] !== null && row?.[field] !== undefined && row?.[field] !== "");
+  return {
+    lane1stRate: hasValue("laneFirstRate"),
+    lane2renRate: hasValue("lane2RenRate"),
+    lane3renRate: hasValue("lane3RenRate"),
+    lapTime: hasValue("lapTime") || hasValue("lapTimeRaw"),
+    exhibitionST: hasValue("exhibitionSt")
+  };
+}
+
 function buildIndexUrl({ date, venueId, raceNo }) {
   const hiduke = String(date || "").replace(/-/g, "");
   const placeNo = String(venueId || "").padStart(2, "0");
@@ -535,16 +548,64 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
   try {
     const indexUrl = buildIndexUrl({ date, venueId, raceNo });
     const diagnostics = {
-      index_url: indexUrl,
-      target_urls: [indexUrl],
+      race_list_url: indexUrl,
       extracted_hrefs: {},
       actual_fetch_paths: [],
-      initial_html: {
-        fetched: false,
-        has_placeholder: false
+      fetch_results: {
+        race_ichiran: {
+          url: indexUrl,
+          ok: false,
+          has_placeholder: false,
+          error: null
+        },
+        lane_stats_tab: {
+          url: null,
+          ok: false,
+          error: null
+        },
+        pre_race_tab: {
+          url: null,
+          ok: false,
+          error: null
+        },
+        request_oriten_kaiseki_custom: {
+          endpoint: ORITEN_ENDPOINT,
+          referer: null,
+          ok: false,
+          error: null
+        }
       },
-      tab_pages: [],
-      field_source_summary: {}
+      parse_results: {
+        request_oriten_kaiseki_custom: {
+          ok: false,
+          parsed_lanes: 0,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          diagnostics: {}
+        },
+        lane_stats_tab: {
+          ok: false,
+          parsed_lanes: 0,
+          populated_fields: [],
+          failed_fields: EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          table_diagnostics: []
+        },
+        pre_race_tab: {
+          ok: false,
+          parsed_lanes: 0,
+          populated_fields: [],
+          failed_fields: EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          table_diagnostics: []
+        }
+      },
+      merge_results: {
+        merged_lanes: 0
+      },
+      field_sources: {},
+      field_diagnostics: buildFieldDiagnostics(new Map(), {}),
+      fallback_reason: null,
+      kyoteibiyori_fetch_success: false
     };
 
     const mergedByLane = new Map();
@@ -555,12 +616,12 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
 
     try {
       indexHtml = await fetchText(indexUrl, timeoutMs);
-      diagnostics.initial_html.fetched = true;
-      diagnostics.initial_html.has_placeholder = /データ取得中です|しばらくお待ちください/.test(indexHtml);
+      diagnostics.fetch_results.race_ichiran.ok = true;
+      diagnostics.fetch_results.race_ichiran.has_placeholder = /データ取得中です|しばらくお待ちください/.test(indexHtml);
       diagnostics.actual_fetch_paths.push("race_ichiran_shell");
     } catch (error) {
       lastError = error;
-      diagnostics.initial_html.error = String(error?.message || error);
+      diagnostics.fetch_results.race_ichiran.error = String(error?.message || error);
     }
 
     const extractedLinks = indexHtml ? extractActualRaceTabLinks(indexHtml, raceNo) : {};
@@ -570,7 +631,8 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       extractedLinks?.laneStatsHref || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 1 });
     const preRaceUrl =
       extractedLinks?.preRaceHref || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 4 });
-    diagnostics.target_urls.push(laneStatsUrl, preRaceUrl);
+    diagnostics.fetch_results.lane_stats_tab.url = laneStatsUrl;
+    diagnostics.fetch_results.pre_race_tab.url = preRaceUrl;
 
     try {
       const ajaxPayload = await fetchOritenJson({
@@ -582,15 +644,18 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       });
       const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
       mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");
+      diagnostics.fetch_results.request_oriten_kaiseki_custom.ok = true;
+      diagnostics.fetch_results.request_oriten_kaiseki_custom.referer = laneStatsUrl;
       diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");
-      diagnostics.request_payload = {
-        endpoint: ORITEN_ENDPOINT,
-        referer: laneStatsUrl
+      diagnostics.parse_results.request_oriten_kaiseki_custom = {
+        ok: parsedAjax.byLane.size > 0,
+        parsed_lanes: parsedAjax.byLane.size,
+        required_fields: buildRequiredFieldParseStatus(parsedAjax.byLane),
+        diagnostics: parsedAjax.diagnostics
       };
-      diagnostics.request_diagnostics = parsedAjax.diagnostics;
     } catch (error) {
       lastError = error;
-      diagnostics.request_error = String(error?.message || error);
+      diagnostics.fetch_results.request_oriten_kaiseki_custom.error = String(error?.message || error);
     }
 
     for (const [label, url] of [
@@ -603,24 +668,29 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
         mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);
         tableDiagnostics.push(...(parsed.tableDiagnostics || []));
         diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);
-        diagnostics.tab_pages.push({
+        diagnostics.fetch_results[label] = {
+          ...(diagnostics.fetch_results[label] || {}),
           url,
-          label,
+          ok: true,
+          error: null
+        };
+        diagnostics.parse_results[label] = {
+          ok: parsed.byLane.size > 0,
           parsed_lanes: parsed.byLane.size,
-          populated_fields: parsed.fieldDiagnostics?.populated_fields || []
-        });
+          populated_fields: parsed.fieldDiagnostics?.populated_fields || [],
+          failed_fields: parsed.fieldDiagnostics?.failed_fields || EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(parsed.byLane),
+          table_diagnostics: parsed.tableDiagnostics || []
+        };
       } catch (error) {
         lastError = error;
-        diagnostics.tab_pages.push({
+        diagnostics.fetch_results[label] = {
+          ...(diagnostics.fetch_results[label] || {}),
           url,
-          label,
+          ok: false,
           error: String(error?.message || error)
-        });
+        };
       }
-    }
-
-    for (const [lane, sources] of Object.entries(fieldSources)) {
-      diagnostics.field_source_summary[lane] = sources;
     }
 
     const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
@@ -633,11 +703,16 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
         : lastError
           ? String(lastError.message || lastError)
           : "kyoteibiyori returned no usable lane-stat or pre-race fields";
+    diagnostics.merge_results.merged_lanes = mergedByLane.size;
+    diagnostics.field_sources = fieldSources;
+    diagnostics.field_diagnostics = fieldDiagnostics;
+    diagnostics.fallback_reason = fallbackReason;
+    diagnostics.kyoteibiyori_fetch_success = ok;
 
     return {
       ok,
       url: indexUrl,
-      triedUrls: diagnostics.target_urls,
+      triedUrls: [indexUrl, laneStatsUrl, preRaceUrl],
       byLane: mergedByLane,
       tableDiagnostics,
       fieldDiagnostics,
@@ -648,6 +723,66 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       error: ok ? null : fallbackReason
     };
   } catch (error) {
+    const emptyDiagnostics = {
+      race_list_url: null,
+      extracted_hrefs: {},
+      actual_fetch_paths: [],
+      fetch_results: {
+        race_ichiran: {
+          url: null,
+          ok: false,
+          has_placeholder: false,
+          error: null
+        },
+        lane_stats_tab: {
+          url: null,
+          ok: false,
+          error: null
+        },
+        pre_race_tab: {
+          url: null,
+          ok: false,
+          error: null
+        },
+        request_oriten_kaiseki_custom: {
+          endpoint: ORITEN_ENDPOINT,
+          referer: null,
+          ok: false,
+          error: null
+        }
+      },
+      parse_results: {
+        request_oriten_kaiseki_custom: {
+          ok: false,
+          parsed_lanes: 0,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          diagnostics: {}
+        },
+        lane_stats_tab: {
+          ok: false,
+          parsed_lanes: 0,
+          populated_fields: [],
+          failed_fields: EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          table_diagnostics: []
+        },
+        pre_race_tab: {
+          ok: false,
+          parsed_lanes: 0,
+          populated_fields: [],
+          failed_fields: EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          table_diagnostics: []
+        }
+      },
+      merge_results: {
+        merged_lanes: 0
+      },
+      field_sources: {},
+      field_diagnostics: buildFieldDiagnostics(new Map(), {}),
+      fallback_reason: String(error?.message || error),
+      kyoteibiyori_fetch_success: false
+    };
     return {
       ok: false,
       url: null,
@@ -659,9 +794,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       fallbackUsed: true,
       fallbackReason: String(error?.message || error),
       diagnostics: {
-        target_urls: [],
-        extracted_hrefs: {},
-        actual_fetch_paths: [],
+        ...emptyDiagnostics,
         fatal_error: String(error?.message || error)
       },
       error: String(error?.message || error)

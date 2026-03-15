@@ -596,6 +596,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
         fallback_reason: kyoteiBiyori?.fallbackReason || null,
         table_diagnostics: kyoteiBiyori?.tableDiagnostics || [],
         request_diagnostics: kyoteiBiyori?.diagnostics || {},
+        kyoteibiyori_debug: kyoteiBiyori?.diagnostics || {},
         field_sources: kyoteiBiyori?.fieldSources || {},
         field_diagnostics: kyoteiBiyori?.fieldDiagnostics || {
           populated_fields: [],
@@ -620,7 +621,8 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       windDirection: beforeinfo.weather.windDirection,
       waveHeight: beforeinfo.weather.waveHeight
     },
-    racers: mergedWithKyoteiBiyori
+    racers: mergedWithKyoteiBiyori,
+    kyoteibiyori_debug: kyoteiBiyori?.diagnostics || {}
   };
   setCachedRaceData({ date, venueId, raceNo }, result);
   return result;

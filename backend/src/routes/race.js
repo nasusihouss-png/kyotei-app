@@ -10158,6 +10158,11 @@ raceRouter.get("/race", async (req, res, next) => {
       source: data.source || {},
       race: data.race,
       racers: data.racers,
+      kyoteibiyori_debug:
+        data?.kyoteibiyori_debug ||
+        data?.source?.kyotei_biyori?.kyoteibiyori_debug ||
+        data?.source?.kyotei_biyori?.request_diagnostics ||
+        {},
       raceId,
       manualLapEvaluation,
       manualLapImpact,

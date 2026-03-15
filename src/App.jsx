@@ -409,10 +409,50 @@ function formatComparisonValue(value, digits = 2) {
   return num.toFixed(digits);
 }
 
+function safePrettyJson(value) {
+  try {
+    return JSON.stringify(value ?? {}, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
 function toFiniteComparisonNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
+  const debug =
+    data?.kyoteibiyori_debug ||
+    data?.source?.kyotei_biyori?.kyoteibiyori_debug ||
+    data?.source?.kyotei_biyori?.request_diagnostics ||
+    {};
+  const fieldDiagnostics =
+    debug?.field_diagnostics ||
+    data?.source?.kyotei_biyori?.field_diagnostics || {
+      populated_fields: [],
+      failed_fields: [],
+      per_lane: []
+    };
+  return {
+    extracted_hrefs: debug?.extracted_hrefs || {},
+    actual_fetch_paths: Array.isArray(debug?.actual_fetch_paths) ? debug.actual_fetch_paths : [],
+    fallback_reason: debug?.fallback_reason || data?.source?.kyotei_biyori?.fallback_reason || null,
+    populated_fields: Array.isArray(fieldDiagnostics?.populated_fields) ? fieldDiagnostics.populated_fields : [],
+    failed_fields: Array.isArray(fieldDiagnostics?.failed_fields) ? fieldDiagnostics.failed_fields : [],
+    backend_fetch_results: debug?.fetch_results || {},
+    backend_parse_results: debug?.parse_results || {},
+    rendered_rows: (Array.isArray(playerComparisonRows) ? playerComparisonRows : []).map((row) => ({
+      lane: row?.lane ?? null,
+      lane1stRate: Number.isFinite(Number(row?.laneFirstRate)),
+      lane2renRate: Number.isFinite(Number(row?.lane2RenRate)),
+      lane3renRate: Number.isFinite(Number(row?.lane3RenRate)),
+      lapTime: Number.isFinite(Number(row?.lapTime)),
+      exhibitionST: Number.isFinite(Number(row?.exhibitionSt))
+    }))
+  };
 }
 
 function formatSignedRateDelta(value) {
@@ -2166,6 +2206,10 @@ export default function App() {
     lane2RenRate: buildTopMetricLaneSet(playerComparisonRows, "lane2RenRate", "desc"),
     lane3RenRate: buildTopMetricLaneSet(playerComparisonRows, "lane3RenRate", "desc")
   }), [playerComparisonRows]);
+  const kyoteiBiyoriFrontendDebug = useMemo(
+    () => buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }),
+    [data, playerComparisonRows]
+  );
 
   const currentRaceKey = useMemo(
     () =>
@@ -3454,6 +3498,131 @@ export default function App() {
                         Supplemental kyoteibiyori data unavailable. Base race data is still loaded.
                       </p>
                     ) : null}
+                    <details style={{ marginTop: 12 }}>
+                      <summary>kyoteibiyori debug</summary>
+                      <div className="history-grid" style={{ marginTop: 8 }}>
+                        <div>
+                          race_ichiran href:
+                          {" "}
+                          {kyoteiBiyoriFrontendDebug.extracted_hrefs?.raceNumberHref || "-"}
+                        </div>
+                        <div>
+                          枠別勝率 href:
+                          {" "}
+                          {kyoteiBiyoriFrontendDebug.extracted_hrefs?.laneStatsHref || "-"}
+                        </div>
+                        <div>
+                          直前情報 href:
+                          {" "}
+                          {kyoteiBiyoriFrontendDebug.extracted_hrefs?.preRaceHref || "-"}
+                        </div>
+                        <div>
+                          fetch paths:
+                          {" "}
+                          {kyoteiBiyoriFrontendDebug.actual_fetch_paths.length
+                            ? kyoteiBiyoriFrontendDebug.actual_fetch_paths.join(", ")
+                            : "-"}
+                        </div>
+                        <div>
+                          populated fields:
+                          {" "}
+                          {kyoteiBiyoriFrontendDebug.populated_fields.length
+                            ? kyoteiBiyoriFrontendDebug.populated_fields.join(", ")
+                            : "-"}
+                        </div>
+                        <div>
+                          failed fields:
+                          {" "}
+                          {kyoteiBiyoriFrontendDebug.failed_fields.length
+                            ? kyoteiBiyoriFrontendDebug.failed_fields.join(", ")
+                            : "-"}
+                        </div>
+                        <div>
+                          fallback reason:
+                          {" "}
+                          {kyoteiBiyoriFrontendDebug.fallback_reason || "-"}
+                        </div>
+                      </div>
+                      <div className="table-wrap" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Step</th>
+                              <th>Status</th>
+                              <th>lane1stRate</th>
+                              <th>lane2renRate</th>
+                              <th>lane3renRate</th>
+                              <th>lapTime</th>
+                              <th>exhibitionST</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(kyoteiBiyoriFrontendDebug.backend_parse_results).map(([key, value]) => (
+                              <tr key={`kyotei-debug-parse-${key}`}>
+                                <td>{key}</td>
+                                <td>{value?.ok ? "ok" : "failed"}</td>
+                                <td>{value?.required_fields?.lane1stRate ? "yes" : "no"}</td>
+                                <td>{value?.required_fields?.lane2renRate ? "yes" : "no"}</td>
+                                <td>{value?.required_fields?.lane3renRate ? "yes" : "no"}</td>
+                                <td>{value?.required_fields?.lapTime ? "yes" : "no"}</td>
+                                <td>{value?.required_fields?.exhibitionST ? "yes" : "no"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="table-wrap" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Fetch</th>
+                              <th>Status</th>
+                              <th>Path / URL</th>
+                              <th>Error</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(kyoteiBiyoriFrontendDebug.backend_fetch_results).map(([key, value]) => (
+                              <tr key={`kyotei-debug-fetch-${key}`}>
+                                <td>{key}</td>
+                                <td>{value?.ok ? "ok" : "failed"}</td>
+                                <td>{value?.url || value?.endpoint || "-"}</td>
+                                <td>{value?.error || "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="table-wrap" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Rendered lane</th>
+                              <th>lane1stRate</th>
+                              <th>lane2renRate</th>
+                              <th>lane3renRate</th>
+                              <th>lapTime</th>
+                              <th>exhibitionST</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {kyoteiBiyoriFrontendDebug.rendered_rows.map((row) => (
+                              <tr key={`kyotei-debug-render-${row.lane}`}>
+                                <td>{row.lane ?? "-"}</td>
+                                <td>{row.lane1stRate ? "yes" : "no"}</td>
+                                <td>{row.lane2renRate ? "yes" : "no"}</td>
+                                <td>{row.lane3renRate ? "yes" : "no"}</td>
+                                <td>{row.lapTime ? "yes" : "no"}</td>
+                                <td>{row.exhibitionST ? "yes" : "no"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <pre style={{ marginTop: 10, whiteSpace: "pre-wrap", fontSize: 12 }}>
+                        {safePrettyJson(data?.kyoteibiyori_debug || data?.source?.kyotei_biyori?.kyoteibiyori_debug || {})}
+                      </pre>
+                    </details>
                   </section>
                 ) : null}
 
