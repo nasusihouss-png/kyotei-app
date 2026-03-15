@@ -156,6 +156,17 @@ assert.ok(
     typeof insideDistributions.f_holder_role_penalty_summary_json === "object",
   "candidate distributions should expose role-based F-holder penalty summary"
 );
+assert.equal(
+  insideDistributions.matched_dictionary_scenarios_json[0]?.scenario_name,
+  "逃げ（鉄板）",
+  "stable 1-escape races should map to an A-rank boat1 escape dictionary scenario first"
+);
+assert.ok(
+  !insideDistributions.matched_dictionary_scenarios_json
+    .slice(0, 3)
+    .some((row) => ["C", "D"].includes(String(row?.priority_rank || "").toUpperCase()) && Number(row?.activated) === 1),
+  "stable 1-escape races should not strongly activate hole-oriented C/D dictionary scenarios"
+);
 
 const lane3AttackRows = [
   ...insideRows.slice(0, 2),
@@ -183,6 +194,12 @@ assert.equal(lane3Distributions.boat1_second_place_distribution_json[0].lane, 3,
 assert.ok(
   lane3Distributions.attack_scenario_probability_json.some((row) => row.scenario === "boat3_makuri"),
   "attack scenario probabilities should expose lane 3 makuri as attack context"
+);
+assert.ok(
+  lane3Distributions.matched_dictionary_scenarios_json.some(
+    (row) => row.scenario_name === "逃げ（3攻め残り）" && Number(row.activated) === 1
+  ),
+  "lane 3 attack races should map to the residual boat1 escape dictionary prior without forcing 3-head"
 );
 
 const lane4PressureRows = [
@@ -212,6 +229,12 @@ assert.ok(
 assert.ok(
   laneOrder(lane4Distributions.first_place_probability_json, 3).includes(1),
   "lane 4 pressure should still leave boat 1 alive in first-place probabilities"
+);
+assert.ok(
+  lane4Distributions.matched_dictionary_scenarios_json.some(
+    (row) => row.scenario_name === "逃げ（4カド警戒）" && Number(row.activated) === 1
+  ),
+  "lane 4 pressure should map to the 4-cado warning dictionary scenario"
 );
 
 const laneAwareStartRows = [
@@ -514,6 +537,12 @@ assert.ok(
   outsideLeadOnlyDistributions.attack_scenario_probability_json.length > 0,
   "outside_lead should still contribute to attack scenario probability"
 );
+assert.ok(
+  outsideLeadOnlyDistributions.matched_dictionary_scenarios_json
+    .filter((row) => [5, 6].includes(Number(row?.winning_boat)) && Number(row?.activated) === 1)
+    .length === 0,
+  "5/6 dictionary scenarios should remain inactive in ordinary stable races"
+);
 const outsideLeadOnlyEvidenceTable = buildEvidenceBiasTable({
   featureBundle: buildPredictionFeatureBundle({
     ranking: outsideLeadOnlyRows,
@@ -625,6 +654,10 @@ const strongOuterEvidenceTable = buildEvidenceBiasTable({
 assert.ok(
   strongOuterEvidenceTable.boat_summary["5"].independent_evidence_count >= 3,
   "broad independent group support should be counted once per group and confirm strong outer setups"
+);
+assert.ok(
+  strongOuterDistributions.dictionary_cd_scenarios_activated === 1,
+  "high-chaos outer setups should be able to activate C/D dictionary priors"
 );
 
 const chaosFeatureBundle = buildPredictionFeatureBundle({
@@ -882,6 +915,10 @@ assert.ok(
 assert.ok(
   topRecommendedTickets.every((row, idx, arr) => idx === 0 || arr[idx - 1].estimated_hit_rate >= row.estimated_hit_rate),
   "top recommended tickets should be sorted by estimated hit rate descending"
+);
+assert.ok(
+  insideDistributions.dictionary_representative_ticket_priors_json[0]?.representative_tickets?.length > 0,
+  "dictionary priors should seed ticket skeletons without replacing the dynamic ticket model"
 );
 
 const upsetRiskScore = computeUpsetRiskScore({

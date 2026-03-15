@@ -669,6 +669,32 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.scenario_based_order_candidates_json)
             ? context.scenario_based_order_candidates_json
             : [],
+        matched_dictionary_scenarios_json: Array.isArray(learning?.matched_dictionary_scenarios_json)
+          ? learning.matched_dictionary_scenarios_json
+          : Array.isArray(context?.matched_dictionary_scenarios_json)
+            ? context.matched_dictionary_scenarios_json
+            : [],
+        dictionary_scenario_match_scores_json: Array.isArray(learning?.dictionary_scenario_match_scores_json)
+          ? learning.dictionary_scenario_match_scores_json
+          : Array.isArray(context?.dictionary_scenario_match_scores_json)
+            ? context.dictionary_scenario_match_scores_json
+            : [],
+        dictionary_prior_adjustment_json:
+          learning?.dictionary_prior_adjustment_json || context?.dictionary_prior_adjustment_json || {},
+        dictionary_condition_flags_json: Array.isArray(learning?.dictionary_condition_flags_json)
+          ? learning.dictionary_condition_flags_json
+          : Array.isArray(context?.dictionary_condition_flags_json)
+            ? context.dictionary_condition_flags_json
+            : [],
+        dictionary_representative_ticket_priors_json: Array.isArray(learning?.dictionary_representative_ticket_priors_json)
+          ? learning.dictionary_representative_ticket_priors_json
+          : Array.isArray(context?.dictionary_representative_ticket_priors_json)
+            ? context.dictionary_representative_ticket_priors_json
+            : [],
+        dictionary_cd_scenarios_activated: toNum(
+          learning?.dictionary_cd_scenarios_activated ?? context?.dictionary_cd_scenarios_activated,
+          0
+        ),
         top_recommended_tickets_snapshot: Array.isArray(learning?.top_recommended_tickets_snapshot)
           ? learning.top_recommended_tickets_snapshot
           : Array.isArray(context?.top_recommended_tickets_snapshot)

@@ -1189,6 +1189,26 @@ function buildPredictionViewModel({
   const savedTopRecommendedTickets = Array.isArray(prediction?.top_recommended_tickets_snapshot)
     ? prediction.top_recommended_tickets_snapshot.filter((row) => String(row?.ticket_type || "trifecta") === "trifecta")
     : [];
+  const snapshotContext =
+    prediction?.snapshot_context && typeof prediction.snapshot_context === "object"
+      ? prediction.snapshot_context
+      : {};
+  const matchedDictionaryScenarios = Array.isArray(prediction?.matched_dictionary_scenarios_json)
+    ? prediction.matched_dictionary_scenarios_json
+    : Array.isArray(snapshotContext?.matched_dictionary_scenarios_json)
+      ? snapshotContext.matched_dictionary_scenarios_json
+      : [];
+  const dictionaryPriorAdjustment =
+    prediction?.dictionary_prior_adjustment_json && typeof prediction.dictionary_prior_adjustment_json === "object"
+      ? prediction.dictionary_prior_adjustment_json
+      : snapshotContext?.dictionary_prior_adjustment_json && typeof snapshotContext.dictionary_prior_adjustment_json === "object"
+        ? snapshotContext.dictionary_prior_adjustment_json
+        : {};
+  const dictionaryConditionFlags = Array.isArray(prediction?.dictionary_condition_flags_json)
+    ? prediction.dictionary_condition_flags_json
+    : Array.isArray(snapshotContext?.dictionary_condition_flags_json)
+      ? snapshotContext.dictionary_condition_flags_json
+      : [];
   return {
     raceTitle: `${race.venueName || venueName} ${race.raceNo || "-"}R`,
     raceSubtitle: race.raceName || race.date || date,
@@ -1230,7 +1250,10 @@ function buildPredictionViewModel({
         ? prediction.player_stat_windows_used_json
         : [],
       boat3WeakStHeadSuppressed: Number(prediction?.boat3_weak_st_head_suppressed || 0) === 1,
-      boat3WeakStHeadSuppression: prediction?.boat3_weak_st_head_suppression_json || {}
+      boat3WeakStHeadSuppression: prediction?.boat3_weak_st_head_suppression_json || {},
+      matchedDictionaryScenarios,
+      dictionaryPriorAdjustment,
+      dictionaryConditionFlags
     }
   };
 }
@@ -3487,6 +3510,9 @@ export default function App() {
                       {predictionViewModel.predictionMeta.playerStatWindowPolicy ? (
                         <span className="chip chip-quality">recent 3m + current season only</span>
                       ) : null}
+                      {predictionViewModel.predictionMeta.matchedDictionaryScenarios.length > 0 ? (
+                        <span className="chip chip-scenario">dictionary prior active</span>
+                      ) : null}
                     </div>
                   ) : null}
                 </section>
@@ -4341,6 +4367,46 @@ export default function App() {
                       </div>
                     </div>
                     <p className="muted strategy-line">{scenarioSuggestions.summary || "-"}</p>
+                  </article>
+                  )}
+
+                  {showInternalBetBreakdown && predictionViewModel.predictionMeta.matchedDictionaryScenarios.length > 0 && (
+                  <article className="card">
+                    <h2>開発辞書 prior</h2>
+                    <div className="kv-list">
+                      <div className="kv-row">
+                        <span>activated</span>
+                        <strong>{Array.isArray(predictionViewModel.predictionMeta.dictionaryPriorAdjustment?.activated_scenario_names)
+                          ? predictionViewModel.predictionMeta.dictionaryPriorAdjustment.activated_scenario_names.slice(0, 3).join(", ")
+                          : "-"}</strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>priority ranks</span>
+                        <strong>{Array.isArray(predictionViewModel.predictionMeta.dictionaryPriorAdjustment?.activated_priority_ranks)
+                          ? predictionViewModel.predictionMeta.dictionaryPriorAdjustment.activated_priority_ranks.join(", ")
+                          : "-"}</strong>
+                      </div>
+                    </div>
+                    <div className="list-stack">
+                      {predictionViewModel.predictionMeta.matchedDictionaryScenarios.slice(0, 5).map((row) => (
+                        <div className="list-row" key={`dict-${row.scenario_name}`}>
+                          <span className={`ticket-type ${getTicketTypeClass(String(row.priority_rank || "").toUpperCase() === "A" ? "main" : String(row.priority_rank || "").toUpperCase() === "B" ? "counter" : "backup")}`}>
+                            {row.priority_rank}
+                          </span>
+                          <strong>{row.scenario_name}</strong>
+                          <span>{formatMaybeNumber(row.match_score, 1)}</span>
+                          <span>{Number(row.activated) === 1 ? "active" : "watch"}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="chips-wrap">
+                      {predictionViewModel.predictionMeta.dictionaryConditionFlags.slice(0, 4).flatMap((row) => (
+                        [
+                          ...(Array.isArray(row?.success_conditions_satisfied) ? row.success_conditions_satisfied.slice(0, 2) : []),
+                          ...(Array.isArray(row?.rejection_conditions_triggered) ? row.rejection_conditions_triggered.slice(0, 1).map((tag) => `reject:${tag}`) : [])
+                        ].map((tag) => <span className="chip chip-scenario" key={`dict-flag-${row.scenario_name}-${tag}`}>{tag}</span>)
+                      ))}
+                    </div>
                   </article>
                   )}
                 </section>

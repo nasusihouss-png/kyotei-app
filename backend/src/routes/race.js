@@ -3681,6 +3681,703 @@ function computeRaceScenarioProbabilities({
   return normalized.sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0));
 }
 
+const PDF_SCENARIO_PRIOR_DICTIONARY = [
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "逃げ（鉄板）",
+    priority_rank: "A",
+    entry_shape: "stable_inside",
+    representative_tickets: ["1-2-34", "1-3-24"],
+    backup_tickets: ["1-2-5", "1-3-5"],
+    key_exhibition_signals: ["inner_stable", "boat1_out", "boat1_escape_strong"],
+    success_conditions: ["boat1_escape_strong", "inner_stable"],
+    rejection_conditions: ["inner_collapse_strong", "chaos_high"],
+    wall_or_cado_notes: "1と2の内壁が維持される形を優先",
+    venue_notes: "イン有利水面で少し強化",
+    memo: "安定イン逃げの基準シナリオ"
+  },
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "逃げ（軽技）",
+    priority_rank: "B",
+    entry_shape: "inside_light_attack",
+    representative_tickets: ["1-2-34", "1-3-24"],
+    backup_tickets: ["1-4-23"],
+    key_exhibition_signals: ["boat1_escape_mid", "inner_stable"],
+    success_conditions: ["boat1_escape_mid"],
+    rejection_conditions: ["inner_collapse_strong", "boat4_cado_ready_high"],
+    wall_or_cado_notes: "軽い攻めを受けても1残り優先",
+    venue_notes: "",
+    memo: "逃げ主体だが相手筆頭が揺れる時の基本"
+  },
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "逃げ（3攻め残り）",
+    priority_rank: "A",
+    entry_shape: "3_attack_residual",
+    representative_tickets: ["1-3-24", "1-3-45"],
+    backup_tickets: ["1-2-3", "1-4-3"],
+    key_exhibition_signals: ["boat3_attack_ready", "boat1_escape_mid"],
+    success_conditions: ["boat3_attack_ready", "boat1_escape_mid"],
+    rejection_conditions: ["boat3_head_clear", "inner_collapse_strong"],
+    wall_or_cado_notes: "3の攻めを受けても1残りを前提",
+    venue_notes: "",
+    memo: "3攻めを頭固定ではなく1残りに読む"
+  },
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "逃げ（4カド警戒）",
+    priority_rank: "A",
+    entry_shape: "4_cado_warning",
+    representative_tickets: ["1-4-23", "1-3-4"],
+    backup_tickets: ["1-2-4"],
+    key_exhibition_signals: ["boat4_cado_ready", "boat1_escape_mid"],
+    success_conditions: ["boat4_cado_ready", "boat1_escape_mid"],
+    rejection_conditions: ["boat4_head_clear", "inner_collapse_strong"],
+    wall_or_cado_notes: "4カドを受けて相手4を上げる",
+    venue_notes: "",
+    memo: "4の圧は相手強化として扱う"
+  },
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "逃げ（カド連動）",
+    priority_rank: "B",
+    entry_shape: "cado_linked",
+    representative_tickets: ["1-4-23", "1-2-4"],
+    backup_tickets: ["1-3-4"],
+    key_exhibition_signals: ["boat4_cado_ready", "weak_wall_on_3"],
+    success_conditions: ["boat4_cado_ready"],
+    rejection_conditions: ["chaos_high", "outer_mix_ready_high"],
+    wall_or_cado_notes: "3の壁弱化を伴う4連動",
+    venue_notes: "",
+    memo: "4を2,3着寄りに使う"
+  },
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "逃げ（奇数スジ）",
+    priority_rank: "B",
+    entry_shape: "suji_inside",
+    representative_tickets: ["1-3-25", "1-2-35"],
+    backup_tickets: ["1-3-4"],
+    key_exhibition_signals: ["boat1_escape_mid", "suji_preferred"],
+    success_conditions: ["boat1_escape_mid", "suji_preferred"],
+    rejection_conditions: ["inner_collapse_strong"],
+    wall_or_cado_notes: "1頭時のスジ相手を優先",
+    venue_notes: "",
+    memo: "スジは補助的に使用"
+  },
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "逃げ（外枠3着拾い）",
+    priority_rank: "C",
+    entry_shape: "outer_third_pickup",
+    representative_tickets: ["1-2-5", "1-3-5", "1-2-6"],
+    backup_tickets: ["1-4-5"],
+    key_exhibition_signals: ["outer_mix_ready", "boat1_escape_mid"],
+    success_conditions: ["boat1_escape_mid", "outer_mix_ready"],
+    rejection_conditions: ["boat5_head_clear", "boat6_head_clear"],
+    wall_or_cado_notes: "外の圧は3着拾い中心",
+    venue_notes: "",
+    memo: "外枠は頭ではなく3着優先"
+  },
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "展開拾い",
+    priority_rank: "C",
+    entry_shape: "development_pickup",
+    representative_tickets: ["1-3-45", "1-4-35"],
+    backup_tickets: ["1-2-45"],
+    key_exhibition_signals: ["boat3_attack_ready", "boat4_cado_ready", "outer_mix_ready"],
+    success_conditions: ["boat1_escape_mid"],
+    rejection_conditions: ["boat1_escape_strong"],
+    wall_or_cado_notes: "展開差し残りの拾い",
+    venue_notes: "",
+    memo: "安定レースでは主役化しない"
+  },
+  {
+    winning_boat: 1,
+    development_category: "boat1_escape",
+    scenario_name: "超・展開拾い",
+    priority_rank: "D",
+    entry_shape: "super_development_pickup",
+    representative_tickets: ["1-5-46", "1-6-45"],
+    backup_tickets: ["1-4-56"],
+    key_exhibition_signals: ["outer_mix_ready", "chaos_high"],
+    success_conditions: ["outer_mix_ready", "chaos_high", "upset_high"],
+    rejection_conditions: ["boat1_escape_strong", "inner_stable"],
+    wall_or_cado_notes: "大きく崩れた時だけ外を拾う",
+    venue_notes: "",
+    memo: "大穴専用"
+  },
+  {
+    winning_boat: 2,
+    development_category: "boat2",
+    scenario_name: "差し",
+    priority_rank: "A",
+    entry_shape: "2_sashi",
+    representative_tickets: ["2-1-34", "2-3-14"],
+    backup_tickets: ["2-1-5"],
+    key_exhibition_signals: ["boat2_out", "boat1_hollow"],
+    success_conditions: ["boat2_sashi_high"],
+    rejection_conditions: ["inner_stable", "boat1_escape_strong"],
+    wall_or_cado_notes: "2差しが決まる形",
+    venue_notes: "",
+    memo: "2頭の本線"
+  },
+  {
+    winning_boat: 2,
+    development_category: "boat2",
+    scenario_name: "捲り",
+    priority_rank: "C",
+    entry_shape: "2_makuri",
+    representative_tickets: ["2-3-14", "2-1-34"],
+    backup_tickets: ["2-4-13"],
+    key_exhibition_signals: ["boat2_out", "weak_wall_on_2"],
+    success_conditions: ["boat2_sashi_high", "boat1_hollow"],
+    rejection_conditions: ["inner_stable"],
+    wall_or_cado_notes: "2が壁を消してまくる形",
+    venue_notes: "",
+    memo: "差しより条件厳しめ"
+  },
+  {
+    winning_boat: 2,
+    development_category: "boat2",
+    scenario_name: "ジカ捲り穴",
+    priority_rank: "D",
+    entry_shape: "2_direct_makuri_hole",
+    representative_tickets: ["2-4-13", "2-5-13"],
+    backup_tickets: ["2-3-45"],
+    key_exhibition_signals: ["boat2_out", "chaos_high"],
+    success_conditions: ["boat1_hollow", "chaos_high", "upset_high"],
+    rejection_conditions: ["boat1_escape_strong"],
+    wall_or_cado_notes: "大穴限定",
+    venue_notes: "",
+    memo: "通常は出さない"
+  },
+  {
+    winning_boat: 2,
+    development_category: "boat2",
+    scenario_name: "中凹み連動",
+    priority_rank: "B",
+    entry_shape: "middle_collapse",
+    representative_tickets: ["2-1-34", "2-3-14"],
+    backup_tickets: ["2-4-13"],
+    key_exhibition_signals: ["weak_wall_on_2", "inner_collapse"],
+    success_conditions: ["weak_wall_on_2"],
+    rejection_conditions: ["inner_stable"],
+    wall_or_cado_notes: "内壁緩み連動",
+    venue_notes: "",
+    memo: "2差し系の補助"
+  },
+  {
+    winning_boat: 2,
+    development_category: "boat2",
+    scenario_name: "内枠崩壊",
+    priority_rank: "C",
+    entry_shape: "inner_breakdown",
+    representative_tickets: ["2-4-13", "2-5-13"],
+    backup_tickets: ["2-3-45"],
+    key_exhibition_signals: ["inner_collapse", "chaos_high"],
+    success_conditions: ["inner_collapse", "boat1_hollow"],
+    rejection_conditions: ["boat1_escape_strong"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "崩壊時だけ"
+  },
+  {
+    winning_boat: 3,
+    development_category: "boat3",
+    scenario_name: "捲り",
+    priority_rank: "B",
+    entry_shape: "3_makuri",
+    representative_tickets: ["3-1-24", "3-2-14"],
+    backup_tickets: ["1-3-24"],
+    key_exhibition_signals: ["boat3_attack_ready", "weak_wall_on_2"],
+    success_conditions: ["boat3_attack_high"],
+    rejection_conditions: ["boat3_weak_st_suppressed", "inner_stable"],
+    wall_or_cado_notes: "3攻め本体",
+    venue_notes: "",
+    memo: "3攻めでも1残りと分離して扱う"
+  },
+  {
+    winning_boat: 3,
+    development_category: "boat3",
+    scenario_name: "捲り差し",
+    priority_rank: "B",
+    entry_shape: "3_makuri_sashi",
+    representative_tickets: ["3-1-24", "1-3-24"],
+    backup_tickets: ["3-2-14"],
+    key_exhibition_signals: ["boat3_attack_ready", "boat1_hollow"],
+    success_conditions: ["boat3_makuri_sashi_high"],
+    rejection_conditions: ["boat3_weak_st_suppressed"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "差し寄りでも1残り余地を残す"
+  },
+  {
+    winning_boat: 3,
+    development_category: "boat3",
+    scenario_name: "捲り連動",
+    priority_rank: "C",
+    entry_shape: "3_linked_attack",
+    representative_tickets: ["1-3-24", "3-1-24"],
+    backup_tickets: ["1-4-3"],
+    key_exhibition_signals: ["boat3_attack_ready"],
+    success_conditions: ["boat3_attack_ready"],
+    rejection_conditions: ["inner_stable", "boat3_weak_st_suppressed"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "3攻め残り用"
+  },
+  {
+    winning_boat: 3,
+    development_category: "boat3",
+    scenario_name: "4飛ばし",
+    priority_rank: "C",
+    entry_shape: "3_beats_4",
+    representative_tickets: ["1-3-2", "3-1-2"],
+    backup_tickets: ["1-3-4"],
+    key_exhibition_signals: ["boat3_attack_ready", "boat4_hollow"],
+    success_conditions: ["boat3_attack_ready"],
+    rejection_conditions: ["boat4_cado_ready_high"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "4を消して3残し"
+  },
+  {
+    winning_boat: 3,
+    development_category: "boat3",
+    scenario_name: "周回りマーク差し",
+    priority_rank: "D",
+    entry_shape: "3_lap_mark",
+    representative_tickets: ["3-4-15", "1-3-45"],
+    backup_tickets: ["3-1-45"],
+    key_exhibition_signals: ["lap_override_high", "chaos_high"],
+    success_conditions: ["boat3_attack_ready", "lap_override_high", "upset_high"],
+    rejection_conditions: ["boat3_weak_st_suppressed"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "周回り型の穴"
+  },
+  {
+    winning_boat: 4,
+    development_category: "boat4",
+    scenario_name: "捲り（カド）",
+    priority_rank: "B",
+    entry_shape: "4_cado",
+    representative_tickets: ["4-1-23", "4-2-13"],
+    backup_tickets: ["1-4-23"],
+    key_exhibition_signals: ["boat4_cado_ready", "weak_wall_on_3"],
+    success_conditions: ["boat4_cado_high"],
+    rejection_conditions: ["inner_stable"],
+    wall_or_cado_notes: "4カド本体",
+    venue_notes: "",
+    memo: "4頭は条件成立時のみ"
+  },
+  {
+    winning_boat: 4,
+    development_category: "boat4",
+    scenario_name: "捲り差し",
+    priority_rank: "B",
+    entry_shape: "4_cado_sashi",
+    representative_tickets: ["4-1-23", "1-4-23"],
+    backup_tickets: ["4-2-13"],
+    key_exhibition_signals: ["boat4_cado_ready", "boat3_hollow"],
+    success_conditions: ["boat4_cado_high"],
+    rejection_conditions: ["inner_stable"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "4の差し残り/頭両睨み"
+  },
+  {
+    winning_boat: 4,
+    development_category: "boat4",
+    scenario_name: "捲り差し穴",
+    priority_rank: "D",
+    entry_shape: "4_cado_hole",
+    representative_tickets: ["4-5-12", "4-1-56"],
+    backup_tickets: ["1-4-56"],
+    key_exhibition_signals: ["boat4_cado_ready", "chaos_high"],
+    success_conditions: ["boat4_cado_high", "upset_high", "inner_collapse_strong"],
+    rejection_conditions: ["boat1_escape_strong"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "大穴限定"
+  },
+  {
+    winning_boat: 4,
+    development_category: "boat4",
+    scenario_name: "間割り穴",
+    priority_rank: "D",
+    entry_shape: "4_gap_hole",
+    representative_tickets: ["4-2-13", "4-1-23"],
+    backup_tickets: ["1-4-23"],
+    key_exhibition_signals: ["boat4_cado_ready", "weak_wall_on_3", "chaos_high"],
+    success_conditions: ["boat4_cado_high", "chaos_high"],
+    rejection_conditions: ["inner_stable"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "間が開く時だけ"
+  },
+  {
+    winning_boat: 4,
+    development_category: "boat4",
+    scenario_name: "イン残りカド捲り",
+    priority_rank: "A",
+    entry_shape: "1_residual_4_attack",
+    representative_tickets: ["1-4-23", "1-3-4"],
+    backup_tickets: ["4-1-23"],
+    key_exhibition_signals: ["boat4_cado_ready", "boat1_escape_mid"],
+    success_conditions: ["boat4_cado_ready", "boat1_escape_mid"],
+    rejection_conditions: ["inner_collapse_strong"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "4攻めでも1残り優先"
+  },
+  {
+    winning_boat: 5,
+    development_category: "boat5",
+    scenario_name: "展開／差し",
+    priority_rank: "C",
+    entry_shape: "5_development_sashi",
+    representative_tickets: ["5-1-23", "1-5-23"],
+    backup_tickets: ["1-3-5"],
+    key_exhibition_signals: ["outer_mix_ready", "inner_collapse"],
+    success_conditions: ["outer_mix_ready", "upset_high"],
+    rejection_conditions: ["boat5_head_blocked", "boat1_escape_strong"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "5は展開依存"
+  },
+  {
+    winning_boat: 5,
+    development_category: "boat5",
+    scenario_name: "マーク差し",
+    priority_rank: "D",
+    entry_shape: "5_mark_sashi",
+    representative_tickets: ["5-4-12", "1-5-46"],
+    backup_tickets: ["5-1-46"],
+    key_exhibition_signals: ["outer_mix_ready", "chaos_high"],
+    success_conditions: ["outer_mix_ready", "upset_high", "inner_collapse_strong"],
+    rejection_conditions: ["boat5_head_blocked"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "大穴専用"
+  },
+  {
+    winning_boat: 5,
+    development_category: "boat5",
+    scenario_name: "カド展開逆転",
+    priority_rank: "D",
+    entry_shape: "5_reverse_outer",
+    representative_tickets: ["5-1-46", "5-4-16"],
+    backup_tickets: ["1-5-46"],
+    key_exhibition_signals: ["outer_mix_ready", "boat4_cado_ready"],
+    success_conditions: ["outer_mix_ready", "chaos_high", "upset_high"],
+    rejection_conditions: ["boat5_head_blocked", "boat1_escape_strong"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "通常は出さない"
+  },
+  {
+    winning_boat: 6,
+    development_category: "boat6",
+    scenario_name: "大外一閃",
+    priority_rank: "D",
+    entry_shape: "6_outer_flash",
+    representative_tickets: ["6-1-45", "6-4-15"],
+    backup_tickets: ["1-6-45"],
+    key_exhibition_signals: ["outer_mix_ready", "chaos_high"],
+    success_conditions: ["outer_mix_ready", "upset_high", "inner_collapse_strong"],
+    rejection_conditions: ["boat6_head_blocked", "boat1_escape_strong"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "大穴専用"
+  },
+  {
+    winning_boat: 6,
+    development_category: "boat6",
+    scenario_name: "3着固定",
+    priority_rank: "C",
+    entry_shape: "6_third_anchor",
+    representative_tickets: ["1-2-6", "1-3-6", "4-1-6"],
+    backup_tickets: ["2-1-6"],
+    key_exhibition_signals: ["outer_mix_ready"],
+    success_conditions: ["outer_mix_ready"],
+    rejection_conditions: ["boat6_head_blocked"],
+    wall_or_cado_notes: "",
+    venue_notes: "",
+    memo: "6は3着固定寄りで扱う"
+  }
+];
+
+function getScenarioPriorityBaseWeight(rank) {
+  switch (String(rank || "").toUpperCase()) {
+    case "A": return 1;
+    case "B": return 0.72;
+    case "C": return 0.42;
+    case "D": return 0.18;
+    default: return 0.3;
+  }
+}
+
+function expandDictionaryTicketPattern(pattern) {
+  const value = String(pattern || "").trim();
+  if (!/^\d-\d-\d+$/.test(value.replace(/[^\d-]/g, "")) && value.split("-").length !== 3) return [];
+  const parts = value.split("-");
+  if (parts.length !== 3) return [];
+  const heads = parts[0].split("").map((v) => toInt(v, null)).filter(Number.isInteger);
+  const seconds = parts[1].split("").map((v) => toInt(v, null)).filter(Number.isInteger);
+  const thirds = parts[2].split("").map((v) => toInt(v, null)).filter(Number.isInteger);
+  const combos = [];
+  for (const head of heads) {
+    for (const second of seconds) {
+      for (const third of thirds) {
+        if (new Set([head, second, third]).size !== 3) continue;
+        combos.push(`${head}-${second}-${third}`);
+      }
+    }
+  }
+  return [...new Set(combos)];
+}
+
+function buildScenarioDictionaryContext({
+  rows,
+  race,
+  escapePatternAnalysis,
+  attackScenarioAnalysis,
+  headScenarioBalanceAnalysis,
+  candidateDistributions
+}) {
+  const firstMap = new Map(
+    safeArray(candidateDistributions?.first_place_probability_json || candidateDistributions?.first_place_distribution_json)
+      .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
+  );
+  const finishOverrideMap = new Map(
+    Object.entries(candidateDistributions?.finish_override_strength_by_lane_json || {})
+      .map(([lane, value]) => [toInt(lane, null), value])
+      .filter(([lane]) => Number.isInteger(lane))
+  );
+  const eventFlags = candidateDistributions?.intermediate_development_events_json?.triggered_flags || {};
+  const scenarioProbabilities = safeArray(candidateDistributions?.race_scenario_probabilities_json);
+  const scenarioMap = new Map(scenarioProbabilities.map((row) => [String(row?.scenario || ""), toNum(row?.probability, 0)]));
+  const attackType = String(attackScenarioAnalysis?.attack_scenario_type || "");
+  const chaosRisk = toNum(headScenarioBalanceAnalysis?.chaos_risk_score, 0);
+  const upsetRiskProxy =
+    toNum(candidateDistributions?.outside_head_promotion_gate_json?.inner_collapse_score, 0) * 0.42 +
+    toNum(candidateDistributions?.intermediate_development_events_json?.outer_mix_ready, 0) * 0.26 +
+    Math.max(0, 0.42 - toNum(candidateDistributions?.boat1_escape_probability, 0)) * 100 * 0.18 +
+    (attackType === "outside_lead" ? 8 : 0);
+  const signalTags = new Set();
+  const formationPattern = String(escapePatternAnalysis?.formation_pattern || "");
+  if (formationPattern) signalTags.add(`formation:${formationPattern}`);
+  if (formationPattern === "outside_lead") signalTags.add("outside_lead");
+  if (mainHeadLaneFromMap(firstMap) === 1) signalTags.add("boat1_head");
+  if (toNum(candidateDistributions?.boat1_escape_probability, 0) >= 0.42) signalTags.add("boat1_escape_strong");
+  if (toNum(candidateDistributions?.boat1_escape_probability, 0) >= 0.3) signalTags.add("boat1_escape_mid");
+  if (toInt(eventFlags?.inner_stable, 0) === 1) signalTags.add("inner_stable");
+  if (toInt(eventFlags?.inner_collapse, 0) === 1 || toNum(candidateDistributions?.outside_head_promotion_gate_json?.inner_collapse_score, 0) >= 58) {
+    signalTags.add("inner_collapse_strong");
+  }
+  if (toInt(eventFlags?.boat3_attack_ready, 0) === 1) signalTags.add("boat3_attack_ready");
+  if (toInt(eventFlags?.boat4_cado_ready, 0) === 1) signalTags.add("boat4_cado_ready");
+  if (toInt(eventFlags?.outer_mix_ready, 0) === 1) signalTags.add("outer_mix_ready");
+  if (attackType.includes("three") && toNum(attackScenarioAnalysis?.attack_scenario_score, 0) >= 60) signalTags.add("boat3_attack_ready");
+  if (attackType.includes("four_cado") && toNum(attackScenarioAnalysis?.attack_scenario_score, 0) >= 60) signalTags.add("boat4_cado_ready");
+  if (toNum(candidateDistributions?.intermediate_development_events_json?.boat4_cado_ready, 0) >= 56) signalTags.add("boat4_cado_ready_high");
+  if (toNum(candidateDistributions?.intermediate_development_events_json?.outer_mix_ready, 0) >= 58) signalTags.add("outer_mix_ready_high");
+  if (toNum(scenarioMap.get("boat2_sashi"), 0) >= 0.2) signalTags.add("boat2_sashi_high");
+  if (toNum(scenarioMap.get("boat3_makuri"), 0) >= 0.2) signalTags.add("boat3_attack_high");
+  if (toNum(scenarioMap.get("boat3_makuri_sashi"), 0) >= 0.18) signalTags.add("boat3_makuri_sashi_high");
+  if (toNum(scenarioMap.get("boat4_cado_attack"), 0) >= 0.2) signalTags.add("boat4_cado_high");
+  if (chaosRisk >= 70 || upsetRiskProxy >= 64) signalTags.add("chaos_high");
+  if (upsetRiskProxy >= 72) signalTags.add("upset_high");
+  if (toInt(candidateDistributions?.boat3_weak_st_head_suppressed, 0) === 1) signalTags.add("boat3_weak_st_suppressed");
+  if (toInt(candidateDistributions?.partner_search_bias_json?.suji_used, 0) === 1) signalTags.add("suji_preferred");
+  if (toNum(finishOverrideMap.get(3)?.finish_override_strength, 0) >= 68) signalTags.add("lap_override_high");
+  const outsideGateByLane = candidateDistributions?.outside_head_promotion_gate_json?.by_lane || {};
+  if (toInt(outsideGateByLane?.["5"]?.blocked_by_gate, 0) === 1) signalTags.add("boat5_head_blocked");
+  if (toInt(outsideGateByLane?.["6"]?.blocked_by_gate, 0) === 1) signalTags.add("boat6_head_blocked");
+  if (toNum(firstMap.get(3), 0) >= 0.3) signalTags.add("boat3_head_clear");
+  if (toNum(firstMap.get(4), 0) >= 0.27) signalTags.add("boat4_head_clear");
+  if (toNum(firstMap.get(5), 0) >= 0.16) signalTags.add("boat5_head_clear");
+  if (toNum(firstMap.get(6), 0) >= 0.14) signalTags.add("boat6_head_clear");
+  return {
+    race,
+    rows,
+    formation_pattern: formationPattern,
+    attack_scenario_type: attackType,
+    boat1_escape_probability: toNum(candidateDistributions?.boat1_escape_probability, 0),
+    scenario_probabilities: scenarioMap,
+    first_place_map: firstMap,
+    signal_tags: signalTags,
+    upset_risk_proxy: Number(upsetRiskProxy.toFixed(2)),
+    chaos_risk_score: chaosRisk
+  };
+}
+
+function mainHeadLaneFromMap(firstMap) {
+  let bestLane = null;
+  let bestWeight = -Infinity;
+  for (const [lane, weight] of firstMap.entries()) {
+    if (toNum(weight, 0) > bestWeight) {
+      bestLane = lane;
+      bestWeight = toNum(weight, 0);
+    }
+  }
+  return bestLane;
+}
+
+function computeScenarioDictionaryMatchScore(entry, context) {
+  const signalTags = context?.signal_tags || new Set();
+  const successConditions = safeArray(entry?.success_conditions);
+  const rejectionConditions = safeArray(entry?.rejection_conditions);
+  const satisfied = successConditions.filter((condition) => signalTags.has(condition));
+  const rejected = rejectionConditions.filter((condition) => signalTags.has(condition));
+  const baseWeight = getScenarioPriorityBaseWeight(entry?.priority_rank);
+  let score = 22 * baseWeight;
+  score += satisfied.length * 16;
+  score -= rejected.length * 20;
+  if (toInt(entry?.winning_boat, null) === 1 && signalTags.has("boat1_head")) score += 9;
+  if (toInt(entry?.winning_boat, null) === 3 && signalTags.has("boat3_attack_ready")) score += 7;
+  if (toInt(entry?.winning_boat, null) === 4 && signalTags.has("boat4_cado_ready")) score += 7;
+  if ([5, 6].includes(toInt(entry?.winning_boat, null)) && !signalTags.has("upset_high")) score -= 18;
+  if (String(entry?.development_category || "") === "boat1_escape" && signalTags.has("boat1_escape_strong")) score += 11;
+  if (safeArray(entry?.key_exhibition_signals).some((condition) => signalTags.has(condition))) score += 6;
+  if (String(context?.formation_pattern || "") && String(entry?.entry_shape || "").includes(context.formation_pattern)) score += 5;
+  if (String(context?.attack_scenario_type || "").includes("four_cado") && String(entry?.scenario_name || "").includes("4")) score += 4;
+  if (String(context?.attack_scenario_type || "").includes("three") && String(entry?.scenario_name || "").includes("3")) score += 4;
+  const activated = rejected.length === 0 && (satisfied.length > 0 || baseWeight >= 0.72);
+  const conditionalOnly =
+    String(entry?.priority_rank || "").toUpperCase() === "C" ||
+    String(entry?.priority_rank || "").toUpperCase() === "D";
+  return {
+    ...entry,
+    success_conditions_satisfied: satisfied,
+    rejection_conditions_triggered: rejected,
+    match_score: Number(clamp(0, 100, score).toFixed(2)),
+    activated: activated ? 1 : 0,
+    conditional_only: conditionalOnly ? 1 : 0
+  };
+}
+
+function matchScenarioDictionaryEntries(args) {
+  return PDF_SCENARIO_PRIOR_DICTIONARY
+    .map((entry) => computeScenarioDictionaryMatchScore(entry, args))
+    .sort((a, b) => toNum(b?.match_score, 0) - toNum(a?.match_score, 0));
+}
+
+function getDictionaryScenarioKey(entry) {
+  const boat = toInt(entry?.winning_boat, null);
+  const name = String(entry?.scenario_name || "");
+  if (boat === 1) return "boat1_escape";
+  if (boat === 2) return "boat2_sashi";
+  if (boat === 3) return name.includes("差し") ? "boat3_makuri_sashi" : "boat3_makuri";
+  if (boat === 4) return "boat4_cado_attack";
+  if (boat === 5 || boat === 6) return "chaos_outer_mix";
+  return null;
+}
+
+function applyScenarioDictionaryPriors({ scenarioProbabilities, matchedDictionaryScenarios }) {
+  const rows = safeArray(scenarioProbabilities);
+  const deltas = new Map();
+  for (const entry of safeArray(matchedDictionaryScenarios)) {
+    if (toInt(entry?.activated, 0) !== 1) continue;
+    if (toInt(entry?.conditional_only, 0) === 1 && toNum(entry?.match_score, 0) < 62) continue;
+    const scenarioKey = getDictionaryScenarioKey(entry);
+    if (!scenarioKey) continue;
+    const rank = String(entry?.priority_rank || "").toUpperCase();
+    const cap = rank === "A" ? 0.045 : rank === "B" ? 0.03 : rank === "C" ? 0.018 : 0.012;
+    const addition = Math.min(cap, toNum(entry?.match_score, 0) / 2000);
+    deltas.set(scenarioKey, toNum(deltas.get(scenarioKey), 0) + addition);
+  }
+  const adjusted = normalizeDistributionRows(
+    rows.map((row) => ({
+      lane: ({ boat1_escape: 1, boat2_sashi: 2, boat3_makuri: 3, boat3_makuri_sashi: 3, boat4_cado_attack: 4, chaos_outer_mix: 5 })[
+        String(row?.scenario || "")
+      ],
+      role: row?.scenario || null,
+      weight: toNum(row?.probability, 0) + toNum(deltas.get(String(row?.scenario || "")), 0)
+    }))
+  ).map((row) => {
+    const original = rows.find((candidate) => String(candidate?.scenario || "") === String(row?.role || ""));
+    return {
+      scenario: row.role,
+      probability: row.weight,
+      pre_adjustment_probability: toNum(original?.probability, 0),
+      dictionary_adjustment_delta: Number((toNum(row.weight, 0) - toNum(original?.probability, 0)).toFixed(4)),
+      dictionary_adjustment_sources: safeArray(matchedDictionaryScenarios)
+        .filter((entry) => getDictionaryScenarioKey(entry) === row.role && toInt(entry?.activated, 0) === 1)
+        .map((entry) => ({
+          scenario_name: entry.scenario_name,
+          priority_rank: entry.priority_rank,
+          match_score: entry.match_score
+        })),
+      venue_adjustment_delta: toNum(original?.venue_adjustment_delta, 0),
+      venue_calibration_used: original?.venue_calibration_used || null
+    };
+  });
+  return adjusted.sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0));
+}
+
+function applyDictionaryPriorsToOrderCandidates({ orderCandidates, matchedDictionaryScenarios, maxSeedProbability = 0.11 }) {
+  const bucket = new Map(
+    safeArray(orderCandidates).map((row) => [normalizeCombo(row?.combo), { ...row, combo: normalizeCombo(row?.combo) }]).filter(([combo]) => combo)
+  );
+  const activatedNames = [];
+  for (const entry of safeArray(matchedDictionaryScenarios).slice(0, 8)) {
+    if (toInt(entry?.activated, 0) !== 1) continue;
+    if (toInt(entry?.conditional_only, 0) === 1 && toNum(entry?.match_score, 0) < 62) continue;
+    activatedNames.push(entry.scenario_name);
+    const repBoost = Math.min(0.075, toNum(entry?.match_score, 0) / 1400);
+    const backupBoost = Math.min(0.04, toNum(entry?.match_score, 0) / 2200);
+    for (const combo of safeArray(entry?.representative_tickets).flatMap(expandDictionaryTicketPattern)) {
+      const existing = bucket.get(combo);
+      const probability = existing
+        ? Number((toNum(existing?.probability, 0) + repBoost).toFixed(4))
+        : Number(Math.min(maxSeedProbability, repBoost).toFixed(4));
+      bucket.set(combo, {
+        combo,
+        probability,
+        reason_tags: [...new Set([...
+          safeArray(existing?.reason_tags),
+          "SCENARIO_DICTIONARY_PRIOR",
+          `DICT:${entry.scenario_name}`
+        ])]
+      });
+    }
+    for (const combo of safeArray(entry?.backup_tickets).flatMap(expandDictionaryTicketPattern)) {
+      const existing = bucket.get(combo);
+      const probability = existing
+        ? Number((toNum(existing?.probability, 0) + backupBoost).toFixed(4))
+        : Number(Math.min(maxSeedProbability * 0.7, backupBoost).toFixed(4));
+      bucket.set(combo, {
+        combo,
+        probability,
+        reason_tags: [...new Set([...
+          safeArray(existing?.reason_tags),
+          "SCENARIO_DICTIONARY_BACKUP",
+          `DICT:${entry.scenario_name}`
+        ])]
+      });
+    }
+  }
+  return {
+    order_candidates: [...bucket.values()]
+      .sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0))
+      .slice(0, 18),
+    activated_scenario_names: activatedNames
+  };
+}
+
 function boostScenarioDistribution(baseRows, boosts) {
   return normalizeDistributionRows(
     safeArray(baseRows).map((row) => ({
@@ -3995,7 +4692,13 @@ function buildPredictionFeatureBundle({
       race_scenario_probabilities_json: candidateDistributions?.race_scenario_probabilities_json || [],
       finish_probabilities_by_scenario_json: candidateDistributions?.finish_probabilities_by_scenario_json || [],
       finish_override_strength_by_lane_json: candidateDistributions?.finish_override_strength_by_lane_json || {},
-      scenario_based_order_candidates_json: candidateDistributions?.scenario_based_order_candidates_json || []
+      scenario_based_order_candidates_json: candidateDistributions?.scenario_based_order_candidates_json || [],
+      matched_dictionary_scenarios_json: candidateDistributions?.matched_dictionary_scenarios_json || [],
+      dictionary_scenario_match_scores_json: candidateDistributions?.dictionary_scenario_match_scores_json || [],
+      dictionary_prior_adjustment_json: candidateDistributions?.dictionary_prior_adjustment_json || {},
+      dictionary_condition_flags_json: candidateDistributions?.dictionary_condition_flags_json || [],
+      dictionary_representative_ticket_priors_json: candidateDistributions?.dictionary_representative_ticket_priors_json || [],
+      dictionary_cd_scenarios_activated: toInt(candidateDistributions?.dictionary_cd_scenarios_activated, 0)
     },
     lane_bundle: safeArray(ranking).map((row) => ({
       lane: toInt(row?.racer?.lane, null),
@@ -4936,18 +5639,53 @@ function buildSeparatedCandidateDistributions({
     headScenarioBalanceAnalysis,
     venueCalibration: launchVenueCalibration
   });
-  const finishProbabilitiesByScenario = computeFinishProbsByScenario({
+  const scenarioDictionaryContext = buildScenarioDictionaryContext({
+    rows,
+    race,
+    escapePatternAnalysis,
+    attackScenarioAnalysis,
+    headScenarioBalanceAnalysis,
+    candidateDistributions: {
+      ...roleProbabilityLayers,
+      launch_state_scores_json: launchStateScores,
+      launch_state_labels_json: launchStateLabels,
+      intermediate_development_events_json: intermediateDevelopmentEvents,
+      race_scenario_probabilities_json: raceScenarioProbabilities,
+      outside_head_promotion_gate_json: {
+        inner_collapse_score: outsideHeadPromotionContext.inner_collapse_score,
+        boat1_escape_probability_proxy: outsideHeadPromotionContext.boat1_escape_probability_proxy,
+        by_lane: Object.fromEntries(
+          [...outsideHeadPromotionContext.by_lane.entries()].map(([lane, value]) => [String(lane), value])
+        )
+      },
+      boat3_weak_st_head_suppressed: toInt(boat3WeakStHeadSuppression?.applied, 0),
+      partner_search_bias_json: {
+        suji_used: toInt(boat1EscapeOpponentModel?.suji_used, 0)
+      }
+    }
+  });
+  const matchedDictionaryScenarios = matchScenarioDictionaryEntries(scenarioDictionaryContext);
+  const dictionaryAdjustedScenarioProbabilities = applyScenarioDictionaryPriors({
     scenarioProbabilities: raceScenarioProbabilities,
+    matchedDictionaryScenarios
+  });
+  const finishProbabilitiesByScenario = computeFinishProbsByScenario({
+    scenarioProbabilities: dictionaryAdjustedScenarioProbabilities,
     firstPlaceProbability: roleProbabilityLayers.first_place_probability_json,
     secondPlaceProbability: roleProbabilityLayers.second_place_probability_json,
     thirdPlaceProbability: roleProbabilityLayers.third_place_probability_json,
     boat1EscapeProbability: roleProbabilityLayers.boat1_escape_probability,
     rows
   });
-  const scenarioBasedOrderCandidates = combineScenarioAndFinishProbs({
-    scenarioProbabilities: raceScenarioProbabilities,
+  const rawScenarioBasedOrderCandidates = combineScenarioAndFinishProbs({
+    scenarioProbabilities: dictionaryAdjustedScenarioProbabilities,
     conditionalFinishProbs: finishProbabilitiesByScenario
   });
+  const dictionaryAdjustedOrderCandidates = applyDictionaryPriorsToOrderCandidates({
+    orderCandidates: rawScenarioBasedOrderCandidates,
+    matchedDictionaryScenarios
+  });
+  const scenarioBasedOrderCandidates = dictionaryAdjustedOrderCandidates.order_candidates;
   const finishOverrideStrengthByLane = finishProbabilitiesByScenario[0]?.finish_override_strength_json || {};
 
   return {
@@ -5039,10 +5777,46 @@ function buildSeparatedCandidateDistributions({
     launch_state_scores_json: launchStateScores,
     launch_state_labels_json: launchStateLabels,
     intermediate_development_events_json: intermediateDevelopmentEvents,
-    race_scenario_probabilities_json: raceScenarioProbabilities,
+    race_scenario_probabilities_json: dictionaryAdjustedScenarioProbabilities,
     finish_probabilities_by_scenario_json: finishProbabilitiesByScenario,
     finish_override_strength_by_lane_json: finishOverrideStrengthByLane,
     scenario_based_order_candidates_json: scenarioBasedOrderCandidates,
+    matched_dictionary_scenarios_json: matchedDictionaryScenarios.slice(0, 8),
+    dictionary_scenario_match_scores_json: matchedDictionaryScenarios.map((entry) => ({
+      scenario_name: entry.scenario_name,
+      development_category: entry.development_category,
+      priority_rank: entry.priority_rank,
+      match_score: entry.match_score
+    })),
+    dictionary_prior_adjustment_json: {
+      activated_scenario_names: dictionaryAdjustedOrderCandidates.activated_scenario_names,
+      activated_priority_ranks: [...new Set(
+        matchedDictionaryScenarios
+          .filter((entry) => toInt(entry?.activated, 0) === 1)
+          .map((entry) => entry.priority_rank)
+      )],
+      representative_ticket_seed_count: matchedDictionaryScenarios
+        .slice(0, 8)
+        .reduce((sum, entry) => sum + safeArray(entry?.representative_tickets).flatMap(expandDictionaryTicketPattern).length, 0),
+      backup_ticket_seed_count: matchedDictionaryScenarios
+        .slice(0, 8)
+        .reduce((sum, entry) => sum + safeArray(entry?.backup_tickets).flatMap(expandDictionaryTicketPattern).length, 0)
+    },
+    dictionary_condition_flags_json: matchedDictionaryScenarios.slice(0, 8).map((entry) => ({
+      scenario_name: entry.scenario_name,
+      success_conditions_satisfied: entry.success_conditions_satisfied,
+      rejection_conditions_triggered: entry.rejection_conditions_triggered,
+      activated: entry.activated
+    })),
+    dictionary_representative_ticket_priors_json: matchedDictionaryScenarios.slice(0, 5).map((entry) => ({
+      scenario_name: entry.scenario_name,
+      priority_rank: entry.priority_rank,
+      representative_tickets: safeArray(entry?.representative_tickets).flatMap(expandDictionaryTicketPattern).slice(0, 8),
+      backup_tickets: safeArray(entry?.backup_tickets).flatMap(expandDictionaryTicketPattern).slice(0, 8)
+    })),
+    dictionary_cd_scenarios_activated: matchedDictionaryScenarios.some(
+      (entry) => ["C", "D"].includes(String(entry?.priority_rank || "").toUpperCase()) && toInt(entry?.activated, 0) === 1
+    ) ? 1 : 0,
     outside_head_promotion_gate_json: {
       inner_collapse_score: outsideHeadPromotionContext.inner_collapse_score,
       boat1_escape_probability_proxy: outsideHeadPromotionContext.boat1_escape_probability_proxy,
@@ -8455,6 +9229,12 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.finish_probabilities_by_scenario_json = candidateDistributions.finish_probabilities_by_scenario_json;
     headScenarioBalanceAnalysis.finish_override_strength_by_lane_json = candidateDistributions.finish_override_strength_by_lane_json;
     headScenarioBalanceAnalysis.scenario_based_order_candidates_json = candidateDistributions.scenario_based_order_candidates_json;
+    headScenarioBalanceAnalysis.matched_dictionary_scenarios_json = candidateDistributions.matched_dictionary_scenarios_json;
+    headScenarioBalanceAnalysis.dictionary_scenario_match_scores_json = candidateDistributions.dictionary_scenario_match_scores_json;
+    headScenarioBalanceAnalysis.dictionary_prior_adjustment_json = candidateDistributions.dictionary_prior_adjustment_json;
+    headScenarioBalanceAnalysis.dictionary_condition_flags_json = candidateDistributions.dictionary_condition_flags_json;
+    headScenarioBalanceAnalysis.dictionary_representative_ticket_priors_json = candidateDistributions.dictionary_representative_ticket_priors_json;
+    headScenarioBalanceAnalysis.dictionary_cd_scenarios_activated = candidateDistributions.dictionary_cd_scenarios_activated;
     bet_plan_with_stake.recommended_bets = applySeparatedDistributionBiasToTickets(
       bet_plan_with_stake.recommended_bets,
       candidateDistributions
@@ -8824,6 +9604,21 @@ raceRouter.get("/race", async (req, res, next) => {
         player_stat_confidence: toNullableNum(racer?.playerStatConfidence),
         windows: racer?.playerStatWindowsUsed || null
       })),
+      launch_state_thresholds_used_json: headScenarioBalanceAnalysis.launch_state_thresholds_used_json || {},
+      launch_venue_calibration_json: headScenarioBalanceAnalysis.launch_venue_calibration_json || {},
+      launch_state_scores_json: headScenarioBalanceAnalysis.launch_state_scores_json || [],
+      launch_state_labels_json: headScenarioBalanceAnalysis.launch_state_labels_json || [],
+      intermediate_development_events_json: headScenarioBalanceAnalysis.intermediate_development_events_json || {},
+      race_scenario_probabilities_json: headScenarioBalanceAnalysis.race_scenario_probabilities_json || [],
+      finish_probabilities_by_scenario_json: headScenarioBalanceAnalysis.finish_probabilities_by_scenario_json || [],
+      finish_override_strength_by_lane_json: headScenarioBalanceAnalysis.finish_override_strength_by_lane_json || {},
+      scenario_based_order_candidates_json: headScenarioBalanceAnalysis.scenario_based_order_candidates_json || [],
+      matched_dictionary_scenarios_json: headScenarioBalanceAnalysis.matched_dictionary_scenarios_json || [],
+      dictionary_scenario_match_scores_json: headScenarioBalanceAnalysis.dictionary_scenario_match_scores_json || [],
+      dictionary_prior_adjustment_json: headScenarioBalanceAnalysis.dictionary_prior_adjustment_json || {},
+      dictionary_condition_flags_json: headScenarioBalanceAnalysis.dictionary_condition_flags_json || [],
+      dictionary_representative_ticket_priors_json: headScenarioBalanceAnalysis.dictionary_representative_ticket_priors_json || [],
+      dictionary_cd_scenarios_activated: toInt(headScenarioBalanceAnalysis.dictionary_cd_scenarios_activated, 0),
       confirmed_first_place_probability_json: confirmedRoleProbabilities.confirmed_first_place_probability_json,
       confirmed_second_place_probability_json: confirmedRoleProbabilities.confirmed_second_place_probability_json,
       confirmed_third_place_probability_json: confirmedRoleProbabilities.confirmed_third_place_probability_json,
