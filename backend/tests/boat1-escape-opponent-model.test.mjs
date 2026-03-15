@@ -340,6 +340,160 @@ assert.ok(
   "role-based backup urasuji should stay compact"
 );
 
+const outsideLeadOnlyRows = [
+  makeRow(1, { features: { exhibition_rank: 2, motor_total_score: 10.1, expected_actual_st_rank: 2 } }),
+  makeRow(2, { features: { exhibition_rank: 4, motor_total_score: 8.6, expected_actual_st_rank: 4 } }),
+  makeRow(3, { features: { exhibition_rank: 4, motor_total_score: 8.8, expected_actual_st_rank: 4, lap_attack_strength: 6.2 } }),
+  makeRow(4, { features: { exhibition_rank: 3, motor_total_score: 9.1, expected_actual_st_rank: 3, entry_advantage_score: 6 } }),
+  makeRow(5, { features: { exhibition_rank: 2, entry_advantage_score: 6.5 } }),
+  makeRow(6, { features: { exhibition_rank: 2, entry_advantage_score: 6.8 } })
+];
+const outsideLeadOnlyEscape = {
+  escape_pattern_applied: false,
+  formation_pattern: "outside_lead",
+  escape_second_place_bias_json: {}
+};
+const outsideLeadOnlyHeadScenario = {
+  head_distribution_json: [
+    { lane: 1, weight: 0.42 },
+    { lane: 4, weight: 0.2 },
+    { lane: 5, weight: 0.15 },
+    { lane: 6, weight: 0.12 },
+    { lane: 3, weight: 0.07 },
+    { lane: 2, weight: 0.04 }
+  ],
+  second_distribution_json: [
+    { lane: 4, weight: 0.24 },
+    { lane: 5, weight: 0.19 },
+    { lane: 3, weight: 0.18 },
+    { lane: 6, weight: 0.17 },
+    { lane: 2, weight: 0.12 }
+  ],
+  main_head_lane: 1,
+  attack_head_lane: 4,
+  survival_residual_score: 36
+};
+const outsideLeadOnlyAttack = {
+  attack_scenario_applied: 1,
+  attack_scenario_type: "outside_lead",
+  attack_scenario_score: 71
+};
+const outsideLeadOnlyDistributions = buildSeparatedCandidateDistributions({
+  ranking: outsideLeadOnlyRows,
+  tickets: [],
+  headScenarioBalanceAnalysis: outsideLeadOnlyHeadScenario,
+  escapePatternAnalysis: outsideLeadOnlyEscape,
+  attackScenarioAnalysis: outsideLeadOnlyAttack,
+  learningWeights,
+  race
+});
+assert.ok(
+  !laneOrder(outsideLeadOnlyDistributions.first_place_probability_json, 2).includes(5) &&
+    !laneOrder(outsideLeadOnlyDistributions.first_place_probability_json, 2).includes(6),
+  "outside_lead alone should not create 5/6 main first-place candidates"
+);
+assert.ok(
+  outsideLeadOnlyDistributions.attack_scenario_probability_json.length > 0,
+  "outside_lead should still contribute to attack scenario probability"
+);
+
+const strongOuterRows = [
+  makeRow(1, { features: { exhibition_rank: 5, motor_total_score: 7.8, expected_actual_st_rank: 5, f_hold_caution_penalty: 1.8 } }),
+  makeRow(2, { features: { exhibition_rank: 5, motor_total_score: 7.9, expected_actual_st_rank: 5, f_hold_caution_penalty: 1.4 } }),
+  makeRow(3, { features: { exhibition_rank: 2, motor_total_score: 9.9, expected_actual_st_rank: 2, lap_attack_strength: 9.2, slit_alert_flag: 1 } }),
+  makeRow(4, { features: { exhibition_rank: 1, motor_total_score: 10.4, expected_actual_st_rank: 1, lap_attack_strength: 10.1, slit_alert_flag: 1, entry_advantage_score: 10 } }),
+  makeRow(5, { features: { exhibition_rank: 1, motor_total_score: 10.9, motor_trend_score: 3.1, expected_actual_st_rank: 1, lap_attack_flag: 1, lap_attack_strength: 12.4, avg_st_rank_delta_vs_left: 1.4, slit_alert_flag: 1, entry_advantage_score: 8.5, course_fit_score: 2.1, outer_head_support_score: 84 } }),
+  makeRow(6, { features: { exhibition_rank: 2, motor_total_score: 10.2, motor_trend_score: 2.9, expected_actual_st_rank: 2, lap_attack_flag: 1, lap_attack_strength: 10.8, avg_st_rank_delta_vs_left: 1.2, slit_alert_flag: 1, entry_advantage_score: 7.4, course_fit_score: 1.8, outer_head_support_score: 80 } })
+];
+const strongOuterHeadScenario = {
+  head_distribution_json: [
+    { lane: 4, weight: 0.28 },
+    { lane: 5, weight: 0.24 },
+    { lane: 1, weight: 0.2 },
+    { lane: 6, weight: 0.14 },
+    { lane: 3, weight: 0.1 },
+    { lane: 2, weight: 0.04 }
+  ],
+  second_distribution_json: [
+    { lane: 5, weight: 0.25 },
+    { lane: 4, weight: 0.24 },
+    { lane: 6, weight: 0.19 },
+    { lane: 3, weight: 0.18 },
+    { lane: 1, weight: 0.14 }
+  ],
+  main_head_lane: 4,
+  attack_head_lane: 5,
+  survival_residual_score: 14
+};
+const strongOuterAttack = {
+  attack_scenario_applied: 1,
+  attack_scenario_type: "outside_lead",
+  attack_scenario_score: 86,
+  four_cado_makuri_score: 78
+};
+const strongOuterDistributions = buildSeparatedCandidateDistributions({
+  ranking: strongOuterRows,
+  tickets: [],
+  headScenarioBalanceAnalysis: strongOuterHeadScenario,
+  escapePatternAnalysis: outsideLeadOnlyEscape,
+  attackScenarioAnalysis: strongOuterAttack,
+  learningWeights,
+  race
+});
+assert.ok(
+  strongOuterDistributions.outside_head_promotion_gate_json.by_lane["5"].evidence_count >= 4,
+  "strong outer setup should accumulate multiple evidence categories"
+);
+assert.equal(
+  strongOuterDistributions.outside_head_promotion_gate_json.by_lane["5"].allowed_as_main_head,
+  1,
+  "genuine outer setup with strong inner collapse should allow lane 5 main-head consideration"
+);
+
+const chaosFeatureBundle = buildPredictionFeatureBundle({
+  ranking: strongOuterRows,
+  race,
+  entryMeta: { predicted_entry_order: [1, 2, 3, 4, 5, 6], actual_entry_order: [1, 2, 3, 4, 5, 6], entry_changed: true },
+  learningWeights,
+  escapePatternAnalysis: outsideLeadOnlyEscape,
+  attackScenarioAnalysis: strongOuterAttack,
+  headScenarioBalanceAnalysis: {
+    ...strongOuterHeadScenario,
+    chaos_risk_score: 88,
+    head_confidence: 48,
+    outer_head_guard_applied: 1
+  },
+  candidateDistributions: strongOuterDistributions
+});
+const chaosFinishOrderCandidates = composeFinishOrderCandidates({
+  featureBundle: chaosFeatureBundle,
+  firstProbs: computeFirstPlaceProbabilities(chaosFeatureBundle),
+  secondProbs: computeSecondPlaceProbabilities(
+    chaosFeatureBundle,
+    computeBoat1EscapeProbability(chaosFeatureBundle),
+    computeAttackScenarioProbabilities(chaosFeatureBundle),
+    computeFirstPlaceProbabilities(chaosFeatureBundle)
+  ),
+  thirdProbs: computeThirdPlaceProbabilities(
+    chaosFeatureBundle,
+    computeFirstPlaceProbabilities(chaosFeatureBundle),
+    computeSecondPlaceProbabilities(
+      chaosFeatureBundle,
+      computeBoat1EscapeProbability(chaosFeatureBundle),
+      computeAttackScenarioProbabilities(chaosFeatureBundle),
+      computeFirstPlaceProbabilities(chaosFeatureBundle)
+    ),
+    computeAttackScenarioProbabilities(chaosFeatureBundle),
+    computeSurvivalProbabilities(chaosFeatureBundle)
+  ),
+  attackProbs: computeAttackScenarioProbabilities(chaosFeatureBundle),
+  survivalProbs: computeSurvivalProbabilities(chaosFeatureBundle)
+});
+assert.ok(
+  chaosFinishOrderCandidates.every((row) => !row.combo.startsWith("5-") && !row.combo.startsWith("6-")),
+  "chaos / low-head-confidence races should not output aggressive 5/6-head main candidates"
+);
+
 const messyRows = [
   makeRow(1, { features: { exhibition_st: null, exhibition_time: null, f_hold_caution_penalty: 2.8 } }),
   makeRow(2, { features: { exhibition_st: null, exhibition_time: null, lap_attack_strength: 8, slit_alert_flag: 1, f_hold_caution_penalty: 2.4 } }),

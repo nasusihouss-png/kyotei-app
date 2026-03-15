@@ -1974,7 +1974,13 @@ function buildRoleProbabilityLayers({
     { scenario: "boat3_makuri_sashi", raw: toNum(attackScenarioAnalysis?.three_makuri_sashi_score, 0) },
     { scenario: "boat4_cado_attack", raw: Math.max(toNum(attackScenarioAnalysis?.four_cado_makuri_score, 0), toNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score, 0)) },
     { scenario: "boat4_cado_makuri", raw: toNum(attackScenarioAnalysis?.four_cado_makuri_score, 0) },
-    { scenario: "boat4_cado_makuri_sashi", raw: toNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score, 0) }
+    { scenario: "boat4_cado_makuri_sashi", raw: toNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score, 0) },
+    {
+      scenario: "outside_lead",
+      raw: String(attackScenarioAnalysis?.attack_scenario_type || "") === "outside_lead"
+        ? Math.max(1, toNum(attackScenarioAnalysis?.attack_scenario_score, 0))
+        : 0
+    }
   ];
   if (attackScenarioEntries.every((row) => row.raw <= 0) && toInt(attackScenarioAnalysis?.attack_scenario_applied, 0) === 1) {
     const fallbackScenarioMap = {
@@ -2156,6 +2162,8 @@ function composeFinishOrderCandidates({
 }) {
   const partnerBias = featureBundle?.role_layers?.partner_search_bias_json || {};
   const boat1Bias = featureBundle?.role_layers?.boat1_partner_bias_json || {};
+  const outsideHeadGate = featureBundle?.role_layers?.outside_head_promotion_gate_json || {};
+  const outsideHeadGateByLane = outsideHeadGate?.by_lane || {};
   const mainHeadLane = toInt(featureBundle?.role_layers?.role_probability_summary_json?.main_head_lane, null)
     ?? topDistributionLane(firstProbs);
   const attackWeightMap = new Map();
@@ -2178,6 +2186,18 @@ function composeFinishOrderCandidates({
         if (lanes.some((lane) => !Number.isInteger(lane))) continue;
         if (new Set(lanes).size !== 3) continue;
         const [headLane, secondLane, thirdLane] = lanes;
+        const outsideGate = outsideHeadGateByLane[String(headLane)] || null;
+        const chaosRisk = toNum(featureBundle?.head_context?.chaos_risk_score, 0);
+        const lowHeadConfidence = toNum(featureBundle?.head_context?.head_confidence, 0) > 0
+          ? toNum(featureBundle?.head_context?.head_confidence, 0) < 60
+          : toNum(featureBundle?.head_context?.head_distribution_json?.[0]?.weight, 0) < 0.38;
+        if ((headLane === 5 || headLane === 6) && outsideGate?.blocked_by_gate) continue;
+        if ((headLane === 5 || headLane === 6) && outsideGate?.allowed_as_counter_only && !safeArray(firstProbs).slice(0, 2).some((row) => toInt(row?.lane, null) === headLane)) {
+          continue;
+        }
+        if ((headLane === 5 || headLane === 6) && (chaosRisk >= 76 || lowHeadConfidence)) {
+          continue;
+        }
         const sujiBias =
           headLane === 1 && toInt(partnerBias?.suji_used, 0) === 1 && (secondLane === 2 || secondLane === 3)
             ? (secondLane === 2 ? 0.03 : 0.024)
@@ -2188,6 +2208,14 @@ function composeFinishOrderCandidates({
             : 0;
         const outerHeadPenalty =
           headLane === 5 ? 0.045 : headLane === 6 ? 0.06 : 0;
+        const outsideGatePenalty =
+          headLane === 5 || headLane === 6
+            ? outsideGate?.allowed_as_main_head
+              ? 0
+              : outsideGate?.allowed_as_counter_only
+                ? 0.02
+                : 0.08
+            : 0;
         const boat1PriorityBonus =
           headLane === 1 && computeBoat1EscapeProbability(featureBundle) >= 0.34
             ? 0.04
@@ -2206,6 +2234,7 @@ function composeFinishOrderCandidates({
           boat1PriorityBonus +
           attackSecondOnlyBias +
           attackThirdOnlyBias -
+          outsideGatePenalty -
           outerHeadPenalty;
         const combo = `${headLane}-${secondLane}-${thirdLane}`;
         const existing = bucket.get(combo);
@@ -2219,6 +2248,9 @@ function composeFinishOrderCandidates({
               urasujiBias > 0 ? "URASUJI_BACKUP_USED" : null,
               attackSecondOnlyBias > 0 ? "ATTACK_CHANGED_SECOND_ONLY" : null,
               attackThirdOnlyBias > 0 ? "ATTACK_CHANGED_THIRD_ONLY" : null
+              ,
+              outsideGate?.blocked_by_gate ? "OUTSIDE_HEAD_BLOCKED" : null,
+              outsideGate?.allowed_as_counter_only ? "OUTSIDE_HEAD_COUNTER_ONLY" : null
             ].filter(Boolean)
           });
         }
@@ -2407,15 +2439,40 @@ function buildSeparatedCandidateDistributions({
         attackScenarioAnalysis
       })
     : null;
+  const outsideHeadPromotionContext = buildOutsideHeadPromotionContext({
+    rows,
+    race,
+    learningWeights,
+    escapePatternAnalysis,
+    attackScenarioAnalysis,
+    headScenarioBalanceAnalysis
+  });
   const boat1EscapePartnerVersion = "boat1_escape_partner_v2";
 
-  const firstPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
+  let firstPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
+    const outsideLeadRoleBoost =
+      String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead"
+        ? lane === 4 ? 2.1 : lane === 5 ? 1.2 : lane === 6 ? 1.0 : 0
+        : 0;
+    const outsideGate = outsideHeadPromotionContext.by_lane.get(lane) || null;
     const outerHeadPenalty = lane === 5
       ? 12 + venueOuterSuppressionAdj * 1.7 + (mainHeadLane === 1 ? 4.5 : 0)
       : lane === 6
         ? 20 + venueOuterSuppressionAdj * 1.9 + (mainHeadLane === 1 ? 6.5 : 0)
+        : 0;
+    const outsideGatePenalty =
+      lane === 5 || lane === 6
+        ? outsideGate?.blocked_by_gate
+          ? 22
+          : outsideGate?.allowed_as_counter_only
+            ? 11
+            : 0
+        : 0;
+    const boat1StrengthPenalty =
+      (lane === 5 || lane === 6) && outsideGate?.blocked_by_boat1_escape
+        ? 10
         : 0;
     const firstPlaceScore =
       toNum(row?.score, 0) * 0.56 +
@@ -2427,18 +2484,35 @@ function buildSeparatedCandidateDistributions({
         toNum(f?.lap_attack_strength, 0) * (0.34 + venueLapWeightAdj * 0.2) +
         toNum(f?.motor_total_score, 0) * 1.15 +
         Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.8 -
+      outsideGatePenalty -
+      boat1StrengthPenalty -
       outerHeadPenalty -
       toNum(f?.f_hold_caution_penalty, 0) * (4.5 + venueFHoldAdj * 0.6) +
         (lane === 1 ? toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0) * 0.22 : 0) +
         (attackHeadLane && lane === attackHeadLane ? toNum(attackScenarioAnalysis?.attack_scenario_score, 0) * 0.08 : 0) +
+        outsideLeadRoleBoost +
         formationLearnedAdj * 0.5 +
         venueLearnedAdj * 0.4;
     return { lane, role: lane === mainHeadLane ? "main" : lane === 1 ? "survival" : "counter", weight: firstPlaceScore };
+  }));
+  firstPlaceDistribution = normalizeDistributionRows(firstPlaceDistribution.map((row) => {
+    const lane = toInt(row?.lane, null);
+    const outsideGate = outsideHeadPromotionContext.by_lane.get(lane) || null;
+    if (!outsideGate) return row;
+    return {
+      ...row,
+      weight: Math.min(toNum(row?.weight, 0), toNum(outsideGate?.first_place_cap_weight, 1))
+    };
   }));
 
   const secondPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
+    const outsideLeadRoleBoost =
+      String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead"
+        ? lane === 4 ? 5.8 : lane === 5 ? 4.4 : lane === 6 ? 3.8 : 0
+        : 0;
+    const outsideGate = outsideHeadPromotionContext.by_lane.get(lane) || null;
     const escapePartnerBias =
       mainHeadLane === 1 && escapePatternAnalysis?.escape_pattern_applied
         ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, lane) * 2.5
@@ -2462,6 +2536,8 @@ function buildSeparatedCandidateDistributions({
       Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.1 +
       Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 16 +
       toNum(f?.slit_alert_flag, 0) * 4 -
+      (outsideGate?.blocked_by_gate ? 1.8 : 0) +
+      outsideLeadRoleBoost -
       outerPartnerPenalty -
       toNum(f?.f_hold_caution_penalty, 0) * (3.8 + venueFHoldAdj * 0.55);
     return { lane, role: lane === 2 || lane === 3 ? "primary_partner" : "partner", weight: partnerWeight };
@@ -2478,6 +2554,11 @@ function buildSeparatedCandidateDistributions({
   const thirdPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
+    const outsideLeadRoleBoost =
+      String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead"
+        ? lane === 4 ? 3.8 : lane === 5 ? 3.2 : lane === 6 ? 2.6 : 0
+        : 0;
+    const outsideGate = outsideHeadPromotionContext.by_lane.get(lane) || null;
     const insideResidualBias = lane === 2 ? 5.4 : lane === 3 ? 4.8 : lane === 4 ? 3.2 : lane === 1 ? 2.4 : 0;
     const outerThirdPenalty = lane === 5 ? 2.4 + venueOuterSuppressionAdj * 0.75 : lane === 6 ? 3.8 + venueOuterSuppressionAdj * 0.75 : 0;
     const thirdWeight =
@@ -2490,6 +2571,8 @@ function buildSeparatedCandidateDistributions({
       toNum(f?.lap_attack_strength, 0) * (0.16 + venueLapWeightAdj * 0.08) +
       toNum(f?.motor_total_score, 0) * 0.72 +
       Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 10 -
+      (outsideGate?.blocked_by_gate ? 1.1 : 0) +
+      outsideLeadRoleBoost -
       outerThirdPenalty -
       toNum(f?.f_hold_caution_penalty, 0) * (2.4 + venueFHoldAdj * 0.4);
     return { lane, role: "third", weight: thirdWeight };
@@ -2530,6 +2613,7 @@ function buildSeparatedCandidateDistributions({
                 Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 18 +
                 Math.max(0, toNum(f?.avg_st_rank_delta_vs_left, 0)) * 2.4 +
                 toNum(f?.slit_alert_flag, 0) * 4.5 +
+                (String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead" && lane >= 4 ? (lane === 4 ? 4.5 : lane === 5 ? 3.4 : 2.8) : 0) +
                 stabilityBias -
                 (lane === 5 ? 8.5 + venueOuterSuppressionAdj * 1.1 : lane === 6 ? 12.5 + venueOuterSuppressionAdj * 1.3 : 0) -
                 Math.min(4.8, toNum(f?.f_hold_caution_penalty, 0) * (1.7 + venueFHoldAdj * 0.22));
@@ -2561,6 +2645,7 @@ function buildSeparatedCandidateDistributions({
                 Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 10 +
                 Math.max(0, toNum(f?.avg_st_rank_delta_vs_left, 0)) * 1.2 +
                 toNum(f?.entry_advantage_score, 0) * 0.35 -
+                (String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead" && lane >= 4 ? (lane === 4 ? 2.8 : lane === 5 ? 2.2 : 1.8) : 0) -
                 (lane === 5 ? 3.5 + venueOuterSuppressionAdj * 0.7 : lane === 6 ? 5.4 + venueOuterSuppressionAdj * 0.9 : 0) -
                 Math.min(3.6, toNum(f?.f_hold_caution_penalty, 0) * (1.15 + venueFHoldAdj * 0.16));
               return { lane, role: lane <= 4 ? "boat1_third_primary" : "boat1_third_secondary", weight: thirdPlaceScore };
@@ -2666,7 +2751,10 @@ function buildSeparatedCandidateDistributions({
       boat1_stayed_head_reason_tags: safeArray(boat1EscapeOpponentModel?.boat1_stayed_head_reason_tags),
       venue_partner_adjustment: venuePartnerAdj,
       venue_third_adjustment: venueThirdResidualAdj,
-      outer_head_suppression_adjustment: venueOuterSuppressionAdj
+      outer_head_suppression_adjustment: venueOuterSuppressionAdj,
+      outside_head_promotion_by_lane: Object.fromEntries(
+        [...outsideHeadPromotionContext.by_lane.entries()].map(([lane, value]) => [String(lane), value])
+      )
     },
     boat1_partner_reason_tags: [...new Set(boat1PartnerReasonTags)],
     partner_search_lap_bias_json: {
@@ -2705,10 +2793,23 @@ function buildSeparatedCandidateDistributions({
       third_place_distribution_top: effectiveThirdPlaceDistribution.slice(0, 4),
       boat1_second_place_distribution_top: boat1SecondPlaceDistribution.slice(0, 4),
       boat1_third_place_distribution_top: boat1ThirdPlaceDistribution.slice(0, 4)
+      ,
+      outside_head_promotion_context: {
+        inner_collapse_score: outsideHeadPromotionContext.inner_collapse_score,
+        boat1_escape_probability_proxy: outsideHeadPromotionContext.boat1_escape_probability_proxy
+      }
     },
     boat1_partner_model_applied: mainHeadLane === 1 ? 1 : 0,
     boat1_escape_partner_version: boat1EscapePartnerVersion,
     hit_rate_focus_applied: 1,
+    outside_head_promotion_gate_json: {
+      inner_collapse_score: outsideHeadPromotionContext.inner_collapse_score,
+      boat1_escape_probability_proxy: outsideHeadPromotionContext.boat1_escape_probability_proxy,
+      role_contribution: outsideHeadPromotionContext.role_contribution,
+      by_lane: Object.fromEntries(
+        [...outsideHeadPromotionContext.by_lane.entries()].map(([lane, value]) => [String(lane), value])
+      )
+    },
     ...roleProbabilityLayers,
     scoring_family_components_json: {
       first_place: {
@@ -2765,6 +2866,7 @@ function applySeparatedDistributionBiasToTickets(tickets, candidateDistributions
     safeArray(candidateDistributions?.survival_probability_json)
       .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
   );
+  const outsideHeadGateByLane = candidateDistributions?.outside_head_promotion_gate_json?.by_lane || {};
   const boat1PartnerApplied = toInt(candidateDistributions?.boat1_partner_search_applied, 0) === 1;
   const boat1EscapeProbability = toNum(candidateDistributions?.boat1_escape_probability, 0);
   return [...rows]
@@ -2778,6 +2880,7 @@ function applySeparatedDistributionBiasToTickets(tickets, candidateDistributions
       const secondBias = toNum(secondSourceMap.get(secondLane), 0) * 0.026;
       const thirdBias = toNum(thirdSourceMap.get(thirdLane), 0) * 0.015;
       const survivalBias = (toNum(survivalMap.get(secondLane), 0) + toNum(survivalMap.get(thirdLane), 0)) * 0.008;
+      const outsideHeadGate = outsideHeadGateByLane[String(headLane)] || null;
       const boat1PartnerBonus =
         boat1PartnerApplied && headLane === 1 && (secondLane === 2 || secondLane === 3 || secondLane === 4)
           ? (secondLane === 2 ? 0.012 : secondLane === 3 ? 0.0105 : 0.0088)
@@ -2787,7 +2890,15 @@ function applySeparatedDistributionBiasToTickets(tickets, candidateDistributions
           ? clamp(0, 0.02, boat1EscapeProbability * 0.018)
           : 0;
       const outerHeadPenalty = headLane === 5 ? 0.005 : headLane === 6 ? 0.009 : 0;
-      const totalBias = Number((firstBias + secondBias + thirdBias + survivalBias + boat1PartnerBonus + boat1EscapeBonus - outerHeadPenalty).toFixed(4));
+      const outsideGatePenalty =
+        headLane === 5 || headLane === 6
+          ? outsideHeadGate?.blocked_by_gate
+            ? 0.03
+            : outsideHeadGate?.allowed_as_counter_only
+              ? 0.012
+              : 0
+          : 0;
+      const totalBias = Number((firstBias + secondBias + thirdBias + survivalBias + boat1PartnerBonus + boat1EscapeBonus - outerHeadPenalty - outsideGatePenalty).toFixed(4));
       return {
         ...row,
         prob: Number((toNum(row?.prob, 0) + totalBias).toFixed(4)),
@@ -2906,6 +3017,165 @@ function computePreAttackOuterEvidenceScore(row, escapePatternAnalysis) {
       : 0;
   const fHoldPenalty = toNum(f?.f_hold_caution_penalty, 0) * 10;
   return clamp(0, 100, exhibitionSupport + motorSupport + startSupport + formationSupport - fHoldPenalty);
+}
+
+function buildInnerCollapseScore({
+  rows,
+  headScenarioBalanceAnalysis,
+  escapePatternAnalysis,
+  attackScenarioAnalysis
+}) {
+  const lane1 = safeArray(rows).find((row) => toInt(row?.racer?.lane, null) === 1) || null;
+  const lane2 = safeArray(rows).find((row) => toInt(row?.racer?.lane, null) === 2) || null;
+  const lane3 = safeArray(rows).find((row) => toInt(row?.racer?.lane, null) === 3) || null;
+  const lane4 = safeArray(rows).find((row) => toInt(row?.racer?.lane, null) === 4) || null;
+  const boat1HeadWeight = toNum(
+    safeArray(headScenarioBalanceAnalysis?.head_distribution_json).find((row) => toInt(row?.lane, null) === 1)?.weight,
+    0
+  );
+  const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const lane1Feature = lane1?.features || {};
+  const lane2Feature = lane2?.features || {};
+  const lane3Feature = lane3?.features || {};
+  const lane4Feature = lane4?.features || {};
+  const lowBoat1EscapeSignal =
+    Math.max(0, 0.46 - boat1HeadWeight) * 110 +
+    Math.max(0, 34 - survivalResidualScore) * 0.9 +
+    Math.max(0, toNum(lane1Feature?.expected_actual_st_rank ?? lane1Feature?.st_rank, 6) - 2) * 8 +
+    Math.max(0, 9.2 - toNum(lane1Feature?.motor_total_score, 0)) * 2.2;
+  const weakBoat2WallSignal =
+    Math.max(0, toNum(lane2Feature?.expected_actual_st_rank ?? lane2Feature?.st_rank, 6) - 3) * 8 +
+    Math.max(0, 8.8 - toNum(lane2Feature?.motor_total_score, 0)) * 2.1 +
+    toNum(lane2Feature?.f_hold_caution_penalty, 0) * 6;
+  const innerPoorExhibitionSignal =
+    Math.max(0, toNum(lane1Feature?.exhibition_rank, 6) - 2) * 6 +
+    Math.max(0, toNum(lane2Feature?.exhibition_rank, 6) - 3) * 4 +
+    Math.max(0, toNum(lane3Feature?.exhibition_rank, 6) - 4) * 3;
+  const attackPressureSignal =
+    Math.max(
+      toNum(lane3Feature?.lap_attack_strength, 0),
+      toNum(lane4Feature?.lap_attack_strength, 0),
+      toNum(attackScenarioAnalysis?.three_makuri_score, 0),
+      toNum(attackScenarioAnalysis?.three_makuri_sashi_score, 0),
+      toNum(attackScenarioAnalysis?.four_cado_makuri_score, 0),
+      toNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score, 0)
+    ) * 0.9;
+  const outsideLeadShapeBoost = String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead" ? 10 : 0;
+  return Number(
+    clamp(
+      0,
+      100,
+      lowBoat1EscapeSignal +
+        weakBoat2WallSignal +
+        innerPoorExhibitionSignal +
+        attackPressureSignal +
+        outsideLeadShapeBoost
+    ).toFixed(2)
+  );
+}
+
+function buildOutsideHeadPromotionContext({
+  rows,
+  race,
+  learningWeights,
+  escapePatternAnalysis,
+  attackScenarioAnalysis,
+  headScenarioBalanceAnalysis
+}) {
+  const innerCollapseScore = buildInnerCollapseScore({
+    rows,
+    headScenarioBalanceAnalysis,
+    escapePatternAnalysis,
+    attackScenarioAnalysis
+  });
+  const boat1EscapeProbabilityProxy = clamp(
+    0,
+    1,
+    toNum(
+      safeArray(headScenarioBalanceAnalysis?.head_distribution_json).find((row) => toInt(row?.lane, null) === 1)?.weight,
+      0
+    ) * 0.72 + Math.min(0.2, toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0) * 0.0044)
+  );
+  const scenarioLearningAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "scenario_type",
+    String(escapePatternAnalysis?.formation_pattern || ""),
+    "recommendation_score_adjustment"
+  );
+  const venueOuterSuppressionAdj = getSegmentCorrectionValue(
+    learningWeights,
+    "venue",
+    toInt(race?.venueId, null),
+    "outer_head_suppression_adjustment"
+  );
+  const byLane = new Map();
+  for (const row of safeArray(rows)) {
+    const lane = toInt(row?.racer?.lane, null);
+    if (lane !== 5 && lane !== 6) continue;
+    const f = row?.features || {};
+    const matchedCategories = [];
+    if (
+      ["outside_lead", "dash_lead", "two_three_delayed"].includes(String(escapePatternAnalysis?.formation_pattern || "")) &&
+      (toNum(f?.entry_advantage_score, 0) >= 4 || toNum(f?.course_fit_score, 0) >= 1.2)
+    ) {
+      matchedCategories.push("entry_shape_advantage");
+    }
+    if (
+      toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6) <= 2 &&
+      (toNum(f?.avg_st_rank_delta_vs_left, 0) >= 1 || toNum(f?.slit_alert_flag, 0) === 1)
+    ) {
+      matchedCategories.push("clear_exhibition_st_advantage");
+    }
+    if (
+      toNum(f?.lap_attack_strength, 0) >= 8 ||
+      (toNum(f?.lap_time_delta_vs_front, 0) >= 0.055 && toNum(f?.exhibition_rank, 6) <= 2)
+    ) {
+      matchedCategories.push("lap_exhibition_advantage");
+    }
+    if (toNum(f?.motor_total_score, 0) >= 10 || toNum(f?.motor_trend_score, 0) >= 2.8) {
+      matchedCategories.push("strong_motor");
+    }
+    if (venueOuterSuppressionAdj <= -0.5 || scenarioLearningAdj >= 1.2) {
+      matchedCategories.push("venue_tendency_match");
+    }
+    if (innerCollapseScore >= 58) {
+      matchedCategories.push("inner_collapse_evidence");
+    }
+    if (scenarioLearningAdj >= 1.6 || toNum(f?.outer_head_support_score, 0) >= 78) {
+      matchedCategories.push("learning_correction_match");
+    }
+
+    const evidenceCount = matchedCategories.length;
+    const strongInnerCollapse = innerCollapseScore >= 62;
+    const blockedByBoat1Strength = boat1EscapeProbabilityProxy >= 0.52 && (!strongInnerCollapse || evidenceCount < 4);
+    const allowedAsMainHead = evidenceCount >= 4 && strongInnerCollapse && !blockedByBoat1Strength;
+    const counterOnly = !allowedAsMainHead && evidenceCount >= 3;
+    const blocked = !allowedAsMainHead && !counterOnly;
+    const firstPlaceCapWeight = allowedAsMainHead ? 0.26 : counterOnly ? (lane === 5 ? 0.13 : 0.11) : (lane === 5 ? 0.075 : 0.06);
+    byLane.set(lane, {
+      lane,
+      matched_evidence_categories: matchedCategories,
+      evidence_count: evidenceCount,
+      inner_collapse_score: innerCollapseScore,
+      strong_inner_collapse: strongInnerCollapse ? 1 : 0,
+      blocked_by_gate: blocked ? 1 : 0,
+      allowed_as_counter_only: counterOnly ? 1 : 0,
+      allowed_as_main_head: allowedAsMainHead ? 1 : 0,
+      blocked_by_boat1_escape: blockedByBoat1Strength ? 1 : 0,
+      first_place_cap_weight: firstPlaceCapWeight
+    });
+  }
+  return {
+    inner_collapse_score: innerCollapseScore,
+    boat1_escape_probability_proxy: Number(boat1EscapeProbabilityProxy.toFixed(4)),
+    role_contribution: {
+      attack: 1,
+      first: 0.24,
+      second: 0.62,
+      third: 0.44
+    },
+    by_lane: byLane
+  };
 }
 
 function applyHitRateFocusToRanking(ranking, escapePatternAnalysis) {
@@ -6226,6 +6496,7 @@ raceRouter.get("/race", async (req, res, next) => {
       role_probability_summary_json: headScenarioBalanceAnalysis.role_probability_summary_json || {},
       role_probability_version: headScenarioBalanceAnalysis.role_probability_version || null,
       role_based_order_candidates_json: roleBasedOrderCandidates,
+      outside_head_promotion_gate_json: candidateDistributions.outside_head_promotion_gate_json || {},
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_bias_json: headScenarioBalanceAnalysis.boat1_partner_bias_json,
@@ -6397,6 +6668,7 @@ raceRouter.get("/race", async (req, res, next) => {
       role_probability_summary_json: snapshotContext.role_probability_summary_json,
       role_probability_version: snapshotContext.role_probability_version,
       role_based_order_candidates_json: snapshotContext.role_based_order_candidates_json,
+      outside_head_promotion_gate_json: snapshotContext.outside_head_promotion_gate_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       boat1_partner_bias_json: snapshotContext.boat1_partner_bias_json,
@@ -6527,6 +6799,7 @@ raceRouter.get("/race", async (req, res, next) => {
       role_probability_summary_json: snapshotContext.role_probability_summary_json,
       role_probability_version: snapshotContext.role_probability_version,
       role_based_order_candidates_json: snapshotContext.role_based_order_candidates_json,
+      outside_head_promotion_gate_json: snapshotContext.outside_head_promotion_gate_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       boat1_partner_bias_json: snapshotContext.boat1_partner_bias_json,
@@ -6726,7 +6999,8 @@ raceRouter.get("/race", async (req, res, next) => {
         survival_candidates: explicitSurvivalProbabilities,
         boat1_escape_probability: explicitBoat1EscapeProbability,
         attack_scenario_probabilities: explicitAttackScenarioProbabilities,
-        finish_order_candidates: roleBasedOrderCandidates
+        finish_order_candidates: roleBasedOrderCandidates,
+        outside_head_promotion_gate: candidateDistributions.outside_head_promotion_gate_json || {}
       },
       boat1HeadSection: {
         boat1_head_bets_snapshot: boat1HeadSnapshot.items,

@@ -610,6 +610,8 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.role_based_order_candidates_json)
             ? context.role_based_order_candidates_json
             : [],
+        outside_head_promotion_gate_json:
+          learning?.outside_head_promotion_gate_json || context?.outside_head_promotion_gate_json || {},
         partner_search_bias_json:
           learning?.partner_search_bias_json || context?.partner_search_bias_json || {},
         boat1_partner_search_bias_json:
