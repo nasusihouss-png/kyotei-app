@@ -402,6 +402,13 @@ function formatMaybeNumber(value, digits = 2) {
   return num.toFixed(digits);
 }
 
+function formatComparisonValue(value, digits = 2) {
+  if (value === null || value === undefined || value === "") return "--";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "--";
+  return num.toFixed(digits);
+}
+
 function formatSignedRateDelta(value) {
   if (value === null || value === undefined || value === "") return "-";
   const num = Number(value);
@@ -1269,7 +1276,7 @@ function getPlayerComparisonRows({ prediction, data }) {
       .map((row) => ({
         lane: Number(row?.lane || 0),
         name: row?.name || `Boat ${row?.lane || "-"}`,
-        fCount: Number(row?.f_hold_count || 0),
+        fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
         kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched || 0) === 1,
         lapTime: Number.isFinite(Number(row?.kyoteibiyori_lap_time ?? row?.lap_time))
           ? Number(row?.kyoteibiyori_lap_time ?? row?.lap_time)
@@ -1299,7 +1306,7 @@ function getPlayerComparisonRows({ prediction, data }) {
     .map((row) => ({
       lane: Number(row?.lane || 0),
       name: row?.name || `Boat ${row?.lane || "-"}`,
-      fCount: Number(row?.fHoldCount || 0),
+      fCount: row?.fHoldCount === null || row?.fHoldCount === undefined ? null : Number(row.fHoldCount),
       kyoteiBiyoriFetched: Number(row?.kyoteiBiyoriFetched || 0) === 1,
       lapTime: Number.isFinite(Number(row?.kyoteiBiyoriLapTime ?? row?.lapTime))
         ? Number(row?.kyoteiBiyoriLapTime ?? row?.lapTime)
@@ -3374,15 +3381,25 @@ export default function App() {
               <section className="card empty-state">レースを取得すると予想ダッシュボードを表示します。</section>
             ) : (
               <>
+                <section className="card summary-card premium-topline-card">
+                  <div className="metric-grid compact">
+                    <div className="metric-item">
+                      <span>Date</span>
+                      <strong>{race.date || date}</strong>
+                    </div>
+                    <div className="metric-item">
+                      <span>Race Name</span>
+                      <strong>{race.raceName || `${venueName} ${race.raceNo ?? raceNo}R`}</strong>
+                    </div>
+                  </div>
+                </section>
+
                 {playerComparisonRows.length > 0 ? (
                   <section className="card summary-card premium-player-panel">
                     <div className="premium-card-head">
                       <div>
                         <p className="eyebrow">Race Comparison</p>
                         <h2>Player / Boat Comparison</h2>
-                      </div>
-                      <div className="hero-status-stack">
-                        <span className="hero-subtle">{data?.source?.kyotei_biyori?.ok ? "kyoteibiyori linked" : "fallback mode"}</span>
                       </div>
                     </div>
                     <div className="table-wrap premium-player-table-wrap">
@@ -3417,20 +3434,20 @@ export default function App() {
                                 </div>
                               </td>
                               <td>
-                                <span className={`f-count-badge ${row.fCount > 0 ? "has-f" : ""}`}>F{row.fCount}</span>
+                                <span className={`f-count-badge ${Number(row.fCount) > 0 ? "has-f" : ""}`}>F{row.fCount ?? "--"}</span>
                               </td>
-                              <td className={playerMetricLeaders.lapTime.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.lapTime, 2)}</td>
-                              <td className={playerMetricLeaders.exhibitionSt.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.exhibitionSt, 2)}</td>
-                              <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.exhibitionTime, 2)}</td>
+                              <td className={playerMetricLeaders.lapTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lapTime, 2)}</td>
+                              <td className={playerMetricLeaders.exhibitionSt.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionSt, 2)}</td>
+                              <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionTime, 2)}</td>
                               <td className={playerMetricLeaders.lapScore.has(row.lane) ? "metric-hot" : ""}>
-                                {Number.isFinite(Number(row.lapScore)) ? formatMaybeNumber(row.lapScore, 1) : "-"}
+                                {Number.isFinite(Number(row.lapScore)) ? formatComparisonValue(row.lapScore, 1) : "--"}
                                 {row.stretchFootLabel ? <div className="muted small-inline">{row.stretchFootLabel}</div> : null}
                               </td>
-                              <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.motor2Rate, 2)}</td>
-                              <td className={playerMetricLeaders.motor3Rate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.motor3Rate, 2)}</td>
-                              <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.laneFirstRate, 2)}</td>
-                              <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.lane2RenRate, 2)}</td>
-                              <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.lane3RenRate, 2)}</td>
+                              <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor2Rate, 2)}</td>
+                              <td className={playerMetricLeaders.motor3Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor3Rate, 2)}</td>
+                              <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.laneFirstRate, 2)}</td>
+                              <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane2RenRate, 2)}</td>
+                              <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane3RenRate, 2)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -3442,16 +3459,31 @@ export default function App() {
                   </section>
                 ) : null}
 
-                <section className={`card premium-hero ${getRiskClass(raceRisk.recommendation)} ${predictionViewModel.semanticStyles.recommendationTone || ""}`}>
+                <section className="card summary-card premium-start-top-card">
+                  <div className="premium-card-head">
+                    <div>
+                      <p className="eyebrow">Pre-race</p>
+                      <h2>Start Exhibition</h2>
+                    </div>
+                  </div>
+                  <StartExhibitionDisplay startDisplay={startDisplay} />
+                  <p className="muted strategy-line">
+                    {data?.source?.kyotei_biyori?.ok
+                      ? "official pre-race + kyoteibiyori merged"
+                      : sourceMeta?.cache?.fallback === "db_snapshot"
+                        ? "official fetch unavailable; using saved snapshot"
+                        : sourceMeta?.cache?.hit
+                          ? "official pre-race from backend cache"
+                          : "official pre-race info"}
+                  </p>
+                </section>
+
+                <section className={`card premium-hero ${predictionViewModel.semanticStyles.recommendationTone || ""}`}>
                   <div className="premium-hero-top">
                     <div>
                       <p className="eyebrow">Decision First</p>
                       <h2>{predictionViewModel.raceTitle}</h2>
                       <p className="muted strategy-line">{predictionViewModel.raceSubtitle}</p>
-                    </div>
-                    <div className="hero-status-stack">
-                      <span className={`status-pill ${predictionViewModel.summary.status.className}`}>{predictionViewModel.summary.status.label}</span>
-                      <span className="hero-subtle">top summary</span>
                     </div>
                   </div>
                   <div className="hero-metrics-grid">
@@ -3459,11 +3491,6 @@ export default function App() {
                       <span>Head Confidence</span>
                       <strong>{formatMaybeNumber(predictionViewModel.summary.headConfidence.value, 1)}%</strong>
                       <small>{predictionViewModel.summary.headConfidence.label} / {predictionViewModel.summary.headConfidence.meaning}</small>
-                    </article>
-                    <article className="hero-metric">
-                      <span>Recommendation</span>
-                      <strong>{formatMaybeNumber(predictionViewModel.summary.recommendationStrength.value, 1)}%</strong>
-                      <small>{predictionViewModel.summary.recommendationStrength.label} / {predictionViewModel.summary.recommendationStrength.meaning}</small>
                     </article>
                     <article className="hero-metric">
                       <span>Opponent Stability</span>
@@ -3511,72 +3538,9 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                  {!isRecommendedRace ? (
-                    <p className="muted strategy-line premium-muted-note">
-                      This race is shown in watch / reference mode, so ticket emphasis is intentionally softened.
-                    </p>
-                  ) : null}
                 </section>
-
-                {predictionViewModel.upsetAlert?.shown ? (
-                  <section className={`card upset-alert-card ${predictionViewModel.semanticStyles.upsetTone || ""}`}>
-                    <div className="premium-card-head">
-                      <div>
-                        <p className="eyebrow">Conditional Alert</p>
-                        <h2>Upset Alert</h2>
-                      </div>
-                      <div className="hero-status-stack">
-                        <span className={`status-pill ${predictionViewModel.upsetAlert.level === "大穴警戒" ? "risk-skip" : "risk-small"}`}>
-                          {predictionViewModel.upsetAlert.level}
-                        </span>
-                        <span className="hero-subtle">risk {formatMaybeNumber(predictionViewModel.upsetAlert.score, 1)}</span>
-                      </div>
-                    </div>
-                    <div className="upset-alert-grid">
-                      <div className="hero-role-block">
-                        <span className="hero-role-label">Likely upset scenario</span>
-                        <div className="hero-role-row"><span>scenario</span><strong>{predictionViewModel.upsetAlert.scenario || "-"}</strong></div>
-                        <div className="hero-role-row"><span>warning boats</span><strong><LanePills lanes={predictionViewModel.upsetAlert.warningBoats || []} /></strong></div>
-                        <div className="hero-role-row"><span>usage</span><strong>{predictionViewModel.upsetAlert.referenceOnly ? "reference only" : "weak support only"}</strong></div>
-                      </div>
-                      <div className="hero-role-block">
-                        <span className="hero-role-label">Top reasons</span>
-                        <div className="premium-interpretation-list">
-                          {(predictionViewModel.upsetAlert.reasons || []).map((line, idx) => (
-                            <p key={`upset-reason-${idx}`} className="muted strategy-line">{line}</p>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="hero-role-block">
-                        <span className="hero-role-label">Reference tickets</span>
-                        <div className="ticket-stack">
-                          {(predictionViewModel.upsetAlert.referenceTickets || []).map((bet, idx) => (
-                            <div key={`upset-ticket-${bet.combo}-${idx}`} className="premium-ticket-row watch">
-                              <div className="ticket-mainline">
-                                <strong><ComboBadge combo={bet.combo} /></strong>
-                                <span className="ticket-prob">p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                              </div>
-                            </div>
-                          ))}
-                          {(!predictionViewModel.upsetAlert.referenceTickets || predictionViewModel.upsetAlert.referenceTickets.length === 0) ? (
-                            <p className="muted">No separate upset reference tickets justified.</p>
-                          ) : null}
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-                ) : null}
 
                 <div className="prediction-summary-grid premium-layout">
-                <section className="card summary-card">
-                  <h2>レース情報</h2>
-                  <div className="metric-grid compact">
-                    <div className="metric-item"><span>会場 / レース</span><strong>{race.venueId ?? venueId} {venueName} {race.raceNo ?? raceNo}R</strong></div>
-                    <div className="metric-item"><span>レース名</span><strong>{race.raceName || "-"}</strong></div>
-                    <div className="metric-item"><span>日付</span><strong>{race.date || date}</strong></div>
-                  </div>
-                </section>
-
                 {adminMode ? (
                   <section className="card">
                     <h2>手動周回展示評価（管理用）</h2>
@@ -3625,62 +3589,6 @@ export default function App() {
                   </section>
                 ) : null}
 
-                <section className={`card recommendation summary-card premium-decision-card ${getRiskClass(raceRisk.recommendation)}`}>
-                  <h2>Decision Snapshot</h2>
-                  <div className="recommend-grid">
-                    <div><span>参加可否</span><strong className={`status-pill ${participationClass}`}>{participationLabel}</strong></div>
-                    <div>
-                      <span>Main head</span>
-                      <strong><LanePills lanes={predictionViewModel.summary.structure.mainHead ? [predictionViewModel.summary.structure.mainHead] : []} /></strong>
-                    </div>
-                    <div>
-                      <span>Main second</span>
-                      <strong><LanePills lanes={predictionViewModel.summary.structure.mainSecond ? [predictionViewModel.summary.structure.mainSecond] : []} /></strong>
-                    </div>
-                    <div>
-                      <span>Head Confidence</span>
-                      <strong>
-                        {formatMaybeNumber(confidenceScores?.head_fixed_confidence_pct, 1)}%
-                        {" "}
-                        <span className={`status-pill ${getConfidenceBandClass(confidenceScores?.head_fixed_band)}`}>
-                          {getConfidenceBandLabel(confidenceScores?.head_fixed_band)}
-                        </span>
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Recommendation</span>
-                      <strong>
-                        {formatMaybeNumber(confidenceScores?.recommended_bet_confidence_pct, 1)}%
-                        {" "}
-                        <span className={`status-pill ${getConfidenceBandClass(confidenceScores?.recommended_bet_band)}`}>
-                          {getConfidenceBandLabel(confidenceScores?.recommended_bet_band)}
-                        </span>
-                      </strong>
-                    </div>
-                    <div><span>Third survivors</span><strong><LanePills lanes={predictionViewModel.summary.structure.thirdSurvivors || []} /></strong></div>
-                    <div><span>formation</span><strong>{formationPatternLabel}</strong></div>
-                    {attackScenarioLabel ? <div><span>attack only</span><strong>{attackScenarioLabel}</strong></div> : null}
-                  </div>
-                  {!isRecommendedRace ? (
-                    <p className="muted strategy-line">このレースは見送り判定です。ベット追加は無効化されています。</p>
-                  ) : null}
-                  {(defaultReasonTags.length > 0 || predictionQualityLabels.length > 0) ? (
-                    <div className="chips-wrap">
-                      {defaultReasonTags.map((tag) => <span className="chip" key={`pd-tag-${tag}`}>{tag}</span>)}
-                      {predictionQualityLabels.map((tag) => <span className="chip" key={`pd-quality-${tag}`}>{tag}</span>)}
-                      {predictionViewModel.predictionMeta.boat3WeakStHeadSuppressed ? (
-                        <span className="chip chip-warning">3-head weak ST suppressed</span>
-                      ) : null}
-                      {predictionViewModel.predictionMeta.playerStatWindowPolicy ? (
-                        <span className="chip chip-quality">recent 3m + current season only</span>
-                      ) : null}
-                      {predictionViewModel.predictionMeta.matchedDictionaryScenarios.length > 0 ? (
-                        <span className="chip chip-scenario">dictionary prior active</span>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </section>
-
                 <article className={`card summary-card premium-ticket-card top-ranked-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
                   <h2>Top Recommended Tickets</h2>
                   <div className="summary-inline-meta">
@@ -3705,7 +3613,7 @@ export default function App() {
                     ))}
                   </div>
                   {!isRecommendedRace ? (
-                    <p className="muted strategy-line">Reference-level ordering only. Recommendation state still takes priority.</p>
+                    <p className="muted strategy-line">Low-confidence race. Treat this order as reference only.</p>
                   ) : null}
                 </article>
 
@@ -3904,6 +3812,12 @@ export default function App() {
                       <div className="kv-row"><span>予測進入順</span><strong><LanePills lanes={predictedEntryOrder} /></strong></div>
                       <div className="kv-row"><span>実進入順</span><strong><LanePills lanes={actualEntryOrder} /></strong></div>
                       <div className="kv-row"><span>attack scenario</span><strong>{attackScenarioLabel || "-"}</strong></div>
+                    </div>
+                    <div className="kv-list" style={{ marginTop: 10 }}>
+                      <div className="kv-row"><span>kyoteibiyori fetch</span><strong>{data?.source?.kyotei_biyori?.ok ? "success" : "fallback"}</strong></div>
+                      <div className="kv-row"><span>populated fields</span><strong>{(data?.source?.kyotei_biyori?.field_diagnostics?.populated_fields || []).join(", ") || "--"}</strong></div>
+                      <div className="kv-row"><span>failed fields</span><strong>{(data?.source?.kyotei_biyori?.field_diagnostics?.failed_fields || []).join(", ") || "--"}</strong></div>
+                      <div className="kv-row"><span>fallback reason</span><strong>{data?.source?.kyotei_biyori?.fallback_reason || "--"}</strong></div>
                     </div>
                     <div className="table-wrap" style={{ marginTop: 10 }}>
                       <table>

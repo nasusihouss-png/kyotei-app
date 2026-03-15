@@ -566,8 +566,15 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       kyotei_biyori: {
         ok: !!kyoteiBiyori?.ok,
         url: kyoteiBiyori?.url || null,
+        tried_urls: Array.isArray(kyoteiBiyori?.triedUrls) ? kyoteiBiyori.triedUrls : [],
         fallback_used: !!kyoteiBiyori?.fallbackUsed,
+        fallback_reason: kyoteiBiyori?.fallbackReason || null,
         table_diagnostics: kyoteiBiyori?.tableDiagnostics || [],
+        field_diagnostics: kyoteiBiyori?.fieldDiagnostics || {
+          populated_fields: [],
+          failed_fields: [],
+          per_lane: []
+        },
         error: kyoteiBiyori?.error || null
       },
       start_display_source: "official_pre_race_info",
