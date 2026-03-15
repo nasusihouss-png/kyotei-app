@@ -634,6 +634,13 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.player_stat_windows_used_json)
             ? context.player_stat_windows_used_json
             : [],
+        top_recommended_tickets_snapshot: Array.isArray(learning?.top_recommended_tickets_snapshot)
+          ? learning.top_recommended_tickets_snapshot
+          : Array.isArray(context?.top_recommended_tickets_snapshot)
+            ? context.top_recommended_tickets_snapshot
+            : [],
+        upset_alert_snapshot:
+          learning?.upset_alert_snapshot || context?.upset_alert_snapshot || {},
         confirmed_first_place_probability_json: Array.isArray(learning?.confirmed_first_place_probability_json)
           ? learning.confirmed_first_place_probability_json
           : Array.isArray(context?.confirmed_first_place_probability_json)

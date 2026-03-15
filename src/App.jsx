@@ -100,8 +100,11 @@ async function fetchRaceData(date, venueId, raceNo) {
   url.searchParams.set("raceNo", String(raceNo));
 
   const response = await fetch(url.toString());
-  if (!response.ok) throw new Error("Failed to fetch race data");
-  return response.json();
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body?.message || `Failed to fetch race data (${response.status})`);
+  }
+  return body;
 }
 
 async function fetchRankingsData(date, mode = "hit_rate") {
@@ -111,8 +114,14 @@ async function fetchRankingsData(date, mode = "hit_rate") {
   return fetchJsonWithTimeout(url.toString(), { timeoutMs: 30000 });
 }
 
-async function fetchStatsData() {
-  const response = await fetch(`${API_BASE}/stats`);
+async function fetchStatsData(filters = {}) {
+  const url = new URL(`${API_BASE}/stats`);
+  Object.entries(filters || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "" || value === "all") return;
+    if (Number.isFinite(Number(value)) && Number(value) === 0) return;
+    url.searchParams.set(key, String(value));
+  });
+  const response = await fetch(url.toString());
   if (!response.ok) throw new Error("Failed to fetch stats");
   return response.json();
 }
@@ -243,6 +252,14 @@ async function fetchLearningLatestData() {
   const response = await fetch(`${API_BASE}/learning/latest?auto=0`);
   if (!response.ok) throw new Error("Failed to fetch learning latest");
   return response.json();
+}
+
+function sortEvaluationSegments(rows = []) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const countDiff = Number(b?.verified_race_count ?? 0) - Number(a?.verified_race_count ?? 0);
+    if (countDiff !== 0) return countDiff;
+    return Number(b?.trifecta_hit_rate ?? 0) - Number(a?.trifecta_hit_rate ?? 0);
+  });
 }
 
 async function runLearningBatchApi({ apply = true, dryRun = false } = {}) {
@@ -740,6 +757,549 @@ function getPredictionQualityLabels(participationDecision, prediction) {
   return labels;
 }
 
+function getScoreBand(value, thresholds = { high: 72, medium: 55 }) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return { label: "Unknown", tone: "muted", meaning: "insufficient data" };
+  if (n >= thresholds.high) return { label: "High", tone: "good", meaning: "stable / readable" };
+  if (n >= thresholds.medium) return { label: "Medium", tone: "mid", meaning: "usable with caution" };
+  return { label: "Low", tone: "bad", meaning: "messy / fragile" };
+}
+
+function topLaneFromList(list = [], fallback = null) {
+  const lane = Array.isArray(list) ? Number(list[0]) : NaN;
+  return Number.isFinite(lane) ? lane : fallback;
+}
+
+function compactTicketRows(rows = [], limit = 6) {
+  return (Array.isArray(rows) ? rows : []).slice(0, limit);
+}
+
+function normalizeProbValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n > 1.0001) return n / 100;
+  return n;
+}
+
+function normalizeDistributionRowsForUi(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      lane: Number(row?.lane ?? row?.boat ?? row?.course),
+      weight: normalizeProbValue(row?.weight ?? row?.score ?? row?.probability)
+    }))
+    .filter((row) => Number.isFinite(row.lane) && row.lane >= 1 && row.lane <= 6 && row.weight > 0)
+    .sort((a, b) => b.weight - a.weight);
+}
+
+function topLaneFromDistributionRows(rows = []) {
+  return normalizeDistributionRowsForUi(rows)[0]?.lane ?? null;
+}
+
+function distributionSpreadScore(rows = [], take = 3) {
+  const normalized = normalizeDistributionRowsForUi(rows);
+  if (!normalized.length) return 0;
+  const top = normalized[0]?.weight || 0;
+  const others = normalized.slice(1, take).reduce((acc, row) => acc + row.weight, 0);
+  return Number((Math.max(0, top - others) * 100).toFixed(2));
+}
+
+function computeUpsetRiskScore({
+  confidenceScores,
+  participationDecision,
+  prediction,
+  roleCandidates,
+  raceStructure,
+  attackScenarioLabel,
+  boat1EscapeProbability,
+  evidenceBoatSummaryRows,
+  formationPatternLabel
+}) {
+  const scoreSource =
+    participationDecision?.participation_score_components && typeof participationDecision.participation_score_components === "object"
+      ? participationDecision.participation_score_components
+      : prediction?.participation_score_components && typeof prediction.participation_score_components === "object"
+        ? prediction.participation_score_components
+        : {};
+  const headConfidence = Number(confidenceScores?.head_fixed_confidence_pct ?? confidenceScores?.head_confidence_calibrated ?? 0);
+  const recommendationConfidence = Number(confidenceScores?.recommended_bet_confidence_pct ?? confidenceScores?.bet_confidence_calibrated ?? 0);
+  const chaosRisk = Math.max(
+    Number(raceStructure?.chaos_risk_score ?? 0),
+    Math.max(0, 100 - Number(scoreSource?.race_stability_score ?? 0))
+  );
+  const partnerNoise = Math.max(0, 100 - Number(scoreSource?.partner_clarity_score ?? 0));
+  const qualityPenalty = Number(scoreSource?.quality_gate_applied ?? 0) === 1 ? 12 : 0;
+  const attackRows = normalizeDistributionRowsForUi(roleCandidates?.attack_scenario_probabilities || []);
+  const attackPressure = Math.min(24, (attackRows[0]?.weight || 0) * 40);
+  const firstRows = normalizeDistributionRowsForUi(
+    roleCandidates?.first_place_candidates ||
+    prediction?.confirmed_first_place_probability_json ||
+    prediction?.first_place_probability_json
+  );
+  const secondRows = normalizeDistributionRowsForUi(
+    roleCandidates?.second_place_candidates ||
+    prediction?.confirmed_second_place_probability_json ||
+    prediction?.second_place_probability_json
+  );
+  const thirdRows = normalizeDistributionRowsForUi(
+    roleCandidates?.third_place_candidates ||
+    prediction?.confirmed_third_place_probability_json ||
+    prediction?.third_place_probability_json
+  );
+  const outsideGate = roleCandidates?.outside_head_promotion_gate || prediction?.outside_head_promotion_gate_json || {};
+  const gateByLane = outsideGate?.by_lane && typeof outsideGate.by_lane === "object" ? outsideGate.by_lane : {};
+  const outsideEvidence = [5, 6].reduce((acc, lane) => {
+    const row = gateByLane?.[lane] || gateByLane?.[String(lane)] || {};
+    return Math.max(acc, Number(row?.matched_evidence_categories_count ?? 0));
+  }, 0);
+  const innerCollapseScore = Number(
+    outsideGate?.inner_collapse_score ??
+    outsideGate?.outside_head_promotion_context?.inner_collapse_score ??
+    0
+  );
+  const broadOuterSupport = evidenceBoatSummaryRows.some((row) =>
+    (row?.lane === 5 || row?.lane === 6) &&
+    Number(row?.independent_evidence_count || 0) >= 3 &&
+    Number(row?.head_support_score || 0) > 0.18
+  );
+  const contradiction =
+    attackScenarioLabel &&
+    topLaneFromDistributionRows(firstRows) &&
+    String(attackScenarioLabel).toLowerCase().includes(String(topLaneFromDistributionRows(firstRows))) === false
+      ? 8
+      : 0;
+  const outsideLeadPressure = String(formationPatternLabel || "").toLowerCase() === "outside_lead" ? 8 : 0;
+  const rawScore =
+    chaosRisk * 0.28 +
+    partnerNoise * 0.22 +
+    Math.max(0, 70 - headConfidence) * 0.18 +
+    Math.max(0, 62 - recommendationConfidence) * 0.1 +
+    Math.max(0, 0.62 - normalizeProbValue(boat1EscapeProbability)) * 100 * 0.16 +
+    Math.max(0, 14 - distributionSpreadScore(firstRows, 2)) * 0.8 +
+    Math.max(0, 12 - distributionSpreadScore(secondRows, 2)) * 0.55 +
+    Math.max(0, 10 - distributionSpreadScore(thirdRows, 3)) * 0.35 +
+    attackPressure +
+    outsideEvidence * 2.6 +
+    innerCollapseScore * 0.22 +
+    qualityPenalty +
+    contradiction +
+    outsideLeadPressure +
+    (broadOuterSupport ? 8 : 0);
+  return Math.max(0, Math.min(100, Number(rawScore.toFixed(2))));
+}
+
+function shouldShowUpsetAlert({
+  upsetRiskScore,
+  confidenceScores,
+  boat1EscapeProbability,
+  participationDecision
+}) {
+  const headConfidence = Number(confidenceScores?.head_fixed_confidence_pct ?? confidenceScores?.head_confidence_calibrated ?? 0);
+  const recommendationState = String(participationDecision?.decision || "").toLowerCase();
+  if (upsetRiskScore >= 78) return true;
+  if (upsetRiskScore < 62) return false;
+  if (headConfidence >= 84 && normalizeProbValue(boat1EscapeProbability) >= 0.72 && recommendationState === "recommended") {
+    return false;
+  }
+  return true;
+}
+
+function buildUpsetAlert({
+  upsetRiskScore,
+  showUpsetAlert,
+  attackScenarioLabel,
+  formationPatternLabel,
+  roleCandidates,
+  prediction,
+  isRecommendedRace,
+  backupUrasujiBets,
+  finalRecommendedBets,
+  evidenceBoatSummaryRows
+}) {
+  if (!showUpsetAlert) {
+    return {
+      shown: false,
+      level: null,
+      reasons: [],
+      warningBoats: [],
+      scenario: null,
+      referenceTickets: [],
+      referenceOnly: false
+    };
+  }
+  const level = upsetRiskScore >= 78 ? "大穴警戒" : "穴注意";
+  const firstRows = normalizeDistributionRowsForUi(
+    roleCandidates?.first_place_candidates ||
+    prediction?.confirmed_first_place_probability_json ||
+    prediction?.first_place_probability_json
+  );
+  const secondRows = normalizeDistributionRowsForUi(
+    roleCandidates?.second_place_candidates ||
+    prediction?.confirmed_second_place_probability_json ||
+    prediction?.second_place_probability_json
+  );
+  const outsideGate = roleCandidates?.outside_head_promotion_gate || prediction?.outside_head_promotion_gate_json || {};
+  const gateByLane = outsideGate?.by_lane && typeof outsideGate.by_lane === "object" ? outsideGate.by_lane : {};
+  const warningBoats = Array.from(new Set([
+    ...firstRows.filter((row) => row.lane >= 4 && row.weight >= 0.1).map((row) => row.lane),
+    ...secondRows.filter((row) => row.lane >= 4 && row.weight >= 0.12).map((row) => row.lane),
+    ...evidenceBoatSummaryRows
+      .filter((row) => Number(row?.independent_evidence_count || 0) >= 2 && row.lane >= 4)
+      .map((row) => row.lane)
+  ])).slice(0, 4);
+  const reasonPool = [];
+  if (String(formationPatternLabel || "").toLowerCase() === "outside_lead") reasonPool.push("outside-lead shape is active");
+  if (attackScenarioLabel) reasonPool.push(`attack scenario pressure: ${attackScenarioLabel}`);
+  if ((outsideGate?.inner_collapse_score ?? 0) >= 58) reasonPool.push("inner collapse evidence is elevated");
+  if (warningBoats.some((lane) => {
+    const gate = gateByLane?.[lane] || gateByLane?.[String(lane)] || {};
+    return Number(gate?.matched_evidence_categories_count || 0) >= 3;
+  })) reasonPool.push("multiple outside evidence groups are aligned");
+  if (firstRows.length > 1 && (firstRows[0].weight - firstRows[1].weight) <= 0.08) reasonPool.push("first-place edge is narrow");
+  if (secondRows.length > 2 && secondRows[2].weight >= 0.12) reasonPool.push("opponent order remains wide");
+  const referenceTickets = compactTicketRows(
+    backupUrasujiBets.length > 0 ? backupUrasujiBets : finalRecommendedBets.filter((bet) => {
+      const firstLane = Number(String(bet?.combo || "").split("-")[0]);
+      return firstLane >= 4;
+    }),
+    isRecommendedRace ? 3 : 2
+  );
+  return {
+    shown: true,
+    level,
+    reasons: reasonPool.slice(0, 3),
+    warningBoats,
+    scenario: attackScenarioLabel || formationPatternLabel || "mixed upset pressure",
+    referenceTickets,
+    referenceOnly: !isRecommendedRace || level === "大穴警戒",
+    score: upsetRiskScore
+  };
+}
+
+function buildSemanticCardStyles({ isRecommendedRace, upsetLevel }) {
+  return {
+    recommendationTone: isRecommendedRace ? "tone-recommended" : "tone-reference",
+    upsetTone: upsetLevel === "大穴警戒" ? "tone-upset-high" : upsetLevel ? "tone-upset-mid" : ""
+  };
+}
+
+function buildTicketDisplayGroups({
+  finalRecommendedBets,
+  exactaBets,
+  backupUrasujiBets,
+  boat1HeadBets,
+  isRecommendedRace
+}) {
+  const mainTrifecta = compactTicketRows(finalRecommendedBets, isRecommendedRace ? 6 : 4);
+  const exactaCover = compactTicketRows(exactaBets, isRecommendedRace ? 4 : 2);
+  const backupUrasuji = compactTicketRows(backupUrasujiBets, 4);
+  const watchOnlyReferences = !isRecommendedRace ? compactTicketRows(boat1HeadBets, 4) : [];
+  return {
+    mainTrifecta,
+    exactaCover,
+    backupUrasuji,
+    watchOnlyReferences
+  };
+}
+
+function estimateTicketHitRate(ticket, ticketType, tier) {
+  const directProb = normalizeProbValue(ticket?.prob ?? ticket?.estimated_hit_rate);
+  if (directProb > 0) return Number(directProb.toFixed(4));
+  if (ticketType === "exacta") {
+    const head = Number(ticket?.exacta_head_score ?? 0);
+    const partner = Number(ticket?.exacta_partner_score ?? 0);
+    const derived = Math.max(0, Math.min(1, (head * 0.58 + partner * 0.42) / 100));
+    return Number(derived.toFixed(4));
+  }
+  const boat1Head = Number(ticket?.boat1_head_score ?? 0);
+  const generic = boat1Head > 0 ? Math.max(0, Math.min(1, boat1Head / 100)) : 0;
+  const tierBoost = tier === "main" ? 0.02 : tier === "cover" ? 0.01 : 0;
+  return Number(Math.max(0, Math.min(1, generic + tierBoost)).toFixed(4));
+}
+
+function collectAllTicketCandidates({ finalRecommendedBets, exactaBets, backupUrasujiBets }) {
+  const tierRank = { main: 3, cover: 2, backup: 1 };
+  const makeRow = (ticket, ticketType, tier) => ({
+    ticket_type: ticketType,
+    ticket: ticket?.combo || "",
+    estimated_hit_rate: estimateTicketHitRate(ticket, ticketType, tier),
+    recommendation_tier: tier,
+    recommendation_tier_rank: tierRank[tier] || 0,
+    reason_tags: Array.isArray(ticket?.explanation_tags)
+      ? ticket.explanation_tags
+      : Array.isArray(ticket?.exacta_reason_tags)
+        ? ticket.exacta_reason_tags
+        : Array.isArray(ticket?.trap_flags)
+          ? ticket.trap_flags
+          : [],
+    source_row: ticket
+  });
+  return [
+    ...(Array.isArray(finalRecommendedBets) ? finalRecommendedBets : []).map((ticket) => makeRow(ticket, "trifecta", "main")),
+    ...(Array.isArray(exactaBets) ? exactaBets : []).map((ticket) => makeRow(ticket, "exacta", "cover")),
+    ...(Array.isArray(backupUrasujiBets) ? backupUrasujiBets : []).map((ticket) => makeRow(ticket, "trifecta", "backup"))
+  ].filter((row) => row.ticket);
+}
+
+function rankTicketCandidatesByHitRate(rows = []) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const hitDiff = Number(b?.estimated_hit_rate ?? 0) - Number(a?.estimated_hit_rate ?? 0);
+    if (Math.abs(hitDiff) > 0.0005) return hitDiff;
+    const tierDiff = Number(b?.recommendation_tier_rank ?? 0) - Number(a?.recommendation_tier_rank ?? 0);
+    if (tierDiff !== 0) return tierDiff;
+    if (a?.ticket_type !== b?.ticket_type) {
+      return a?.ticket_type === "exacta" ? -1 : 1;
+    }
+    return String(a?.ticket || "").localeCompare(String(b?.ticket || ""));
+  });
+}
+
+function buildTopRecommendedTickets({ finalRecommendedBets, exactaBets, backupUrasujiBets, maxItems = 10 }) {
+  const allCandidates = collectAllTicketCandidates({
+    finalRecommendedBets,
+    exactaBets,
+    backupUrasujiBets
+  });
+  const deduped = new Map();
+  for (const row of allCandidates) {
+    const key = `${row.ticket_type}:${row.ticket}`;
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, row);
+      continue;
+    }
+    const preferred = rankTicketCandidatesByHitRate([existing, row])[0];
+    deduped.set(key, preferred);
+  }
+  return rankTicketCandidatesByHitRate([...deduped.values()])
+    .slice(0, Math.max(1, Math.min(10, Number(maxItems) || 10)))
+    .map((row, idx) => ({
+      ...row,
+      rank: idx + 1
+    }));
+}
+
+function buildBiasPanelPayload({
+  evidenceInterpretation,
+  evidenceConfirmationFlags,
+  evidenceBoatSummaryRows
+}) {
+  const strongestBoats = compactTicketRows(
+    evidenceBoatSummaryRows
+      .slice()
+      .sort((a, b) => (Number(b?.independent_evidence_count || 0) - Number(a?.independent_evidence_count || 0))),
+    3
+  );
+  return {
+    interpretation: compactTicketRows(evidenceInterpretation, 3),
+    mainHead: evidenceConfirmationFlags?.main_head_candidate || null,
+    mainSecond: evidenceConfirmationFlags?.main_second_candidate || null,
+    counterSecond: evidenceConfirmationFlags?.counter_second_candidate || null,
+    thirdSurvivors: Array.isArray(evidenceConfirmationFlags?.third_place_survivors)
+      ? evidenceConfirmationFlags.third_place_survivors
+      : [],
+    strongestBoats
+  };
+}
+
+function buildSummaryHeaderPayload({
+  participationLabel,
+  participationClass,
+  confidenceScores,
+  participationDecision,
+  prediction,
+  roleCandidates,
+  evidenceConfirmationFlags,
+  top3,
+  attackScenarioLabel,
+  boat1EscapeProbability
+}) {
+  const scoreSource =
+    participationDecision?.participation_score_components && typeof participationDecision.participation_score_components === "object"
+      ? participationDecision.participation_score_components
+      : prediction?.participation_score_components && typeof prediction.participation_score_components === "object"
+        ? prediction.participation_score_components
+        : {};
+  const mainHead = evidenceConfirmationFlags?.main_head_candidate || topLaneFromList(roleCandidates?.head_candidates, top3?.[0] || null);
+  const mainSecond = evidenceConfirmationFlags?.main_second_candidate || topLaneFromList(roleCandidates?.second_candidates, top3?.[1] || null);
+  const thirdSurvivors = Array.isArray(evidenceConfirmationFlags?.third_place_survivors) && evidenceConfirmationFlags.third_place_survivors.length
+    ? evidenceConfirmationFlags.third_place_survivors
+    : compactTicketRows(roleCandidates?.third_candidates || [], 3);
+  const headBand = getConfidenceBandLabel(confidenceScores?.head_fixed_band);
+  const betBand = getConfidenceBandLabel(confidenceScores?.recommended_bet_band);
+  const partnerBand = getScoreBand(scoreSource?.partner_clarity_score, { high: 68, medium: 54 });
+  const riskBand = getScoreBand(100 - Number(scoreSource?.race_stability_score || 0), { high: 55, medium: 35 });
+  return {
+    status: {
+      label: participationLabel,
+      className: participationClass
+    },
+    headConfidence: {
+      value: Number(confidenceScores?.head_fixed_confidence_pct ?? confidenceScores?.head_confidence_calibrated ?? 0),
+      label: headBand,
+      meaning: headBand === "High" ? "head stable" : headBand === "Medium" ? "head readable" : "head caution"
+    },
+    recommendationStrength: {
+      value: Number(confidenceScores?.recommended_bet_confidence_pct ?? confidenceScores?.bet_confidence_calibrated ?? 0),
+      label: betBand,
+      meaning: betBand === "High" ? "tickets actionable" : betBand === "Medium" ? "bet selective" : "reference only"
+    },
+    opponentStability: {
+      value: Number(scoreSource?.partner_clarity_score ?? 0),
+      label: partnerBand.label,
+      meaning: partnerBand.meaning
+    },
+    chaosRisk: {
+      value: Math.max(0, 100 - Number(scoreSource?.race_stability_score ?? 0)),
+      label: riskBand.label,
+      meaning: riskBand.label === "Low" ? "race stable" : riskBand.label === "Medium" ? "mixed structure" : "chaos caution"
+    },
+    boat1EscapeProbability,
+    structure: {
+      mainHead,
+      mainSecond,
+      thirdSurvivors,
+      attackScenarioLabel
+    }
+  };
+}
+
+function buildPredictionViewModel({
+  race,
+  venueName,
+  date,
+  participationLabel,
+  participationClass,
+  confidenceScores,
+  participationDecision,
+  prediction,
+  roleCandidates,
+  evidenceConfirmationFlags,
+  top3,
+  attackScenarioLabel,
+  finalRecommendedBets,
+  exactaBets,
+  backupUrasujiBets,
+  boat1HeadBets,
+  isRecommendedRace,
+  evidenceInterpretation,
+  evidenceBoatSummaryRows,
+  boat1EscapeProbability
+}) {
+  const savedTopRecommendedTickets = Array.isArray(prediction?.top_recommended_tickets_snapshot)
+    ? prediction.top_recommended_tickets_snapshot
+    : [];
+  return {
+    raceTitle: `${race.venueName || venueName} ${race.raceNo || "-"}R`,
+    raceSubtitle: race.raceName || race.date || date,
+    summary: buildSummaryHeaderPayload({
+      participationLabel,
+      participationClass,
+      confidenceScores,
+      participationDecision,
+      prediction,
+      roleCandidates,
+      evidenceConfirmationFlags,
+      top3,
+      attackScenarioLabel,
+      boat1EscapeProbability
+    }),
+    tickets: buildTicketDisplayGroups({
+      finalRecommendedBets,
+      exactaBets,
+      backupUrasujiBets,
+      boat1HeadBets,
+      isRecommendedRace
+    }),
+    topRecommendedTickets: savedTopRecommendedTickets.length > 0
+      ? savedTopRecommendedTickets
+      : buildTopRecommendedTickets({
+          finalRecommendedBets,
+          exactaBets,
+          backupUrasujiBets,
+          maxItems: 10
+        }),
+    biasPanel: buildBiasPanelPayload({
+      evidenceInterpretation,
+      evidenceConfirmationFlags,
+      evidenceBoatSummaryRows
+    }),
+    predictionMeta: {
+      playerStatWindowPolicy: prediction?.player_stat_window_policy_json || null,
+      playerStatWindowsUsed: Array.isArray(prediction?.player_stat_windows_used_json)
+        ? prediction.player_stat_windows_used_json
+        : [],
+      boat3WeakStHeadSuppressed: Number(prediction?.boat3_weak_st_head_suppressed || 0) === 1,
+      boat3WeakStHeadSuppression: prediction?.boat3_weak_st_head_suppression_json || {}
+    }
+  };
+}
+
+function buildPremiumPredictionViewModel(args) {
+  const base = buildPredictionViewModel(args);
+  const upsetRiskScore = computeUpsetRiskScore(args);
+  const showUpsetAlert = shouldShowUpsetAlert({
+    upsetRiskScore,
+    confidenceScores: args.confidenceScores,
+    boat1EscapeProbability: args.boat1EscapeProbability,
+    participationDecision: args.participationDecision
+  });
+  const upsetAlert =
+    args.prediction?.upset_alert_snapshot && typeof args.prediction.upset_alert_snapshot === "object"
+      ? {
+          shown: Boolean(args.prediction.upset_alert_snapshot?.shown),
+          level: args.prediction.upset_alert_snapshot?.level || null,
+          reasons: Array.isArray(args.prediction.upset_alert_snapshot?.reasons)
+            ? args.prediction.upset_alert_snapshot.reasons
+            : [],
+          warningBoats: Array.isArray(args.prediction.upset_alert_snapshot?.warning_boats)
+            ? args.prediction.upset_alert_snapshot.warning_boats
+            : [],
+          scenario: args.prediction.upset_alert_snapshot?.likely_scenario || null,
+          referenceTickets: Array.isArray(args.prediction.upset_alert_snapshot?.reference_tickets)
+            ? args.prediction.upset_alert_snapshot.reference_tickets
+            : [],
+          referenceOnly: Boolean(args.prediction.upset_alert_snapshot?.reference_only),
+          score: Number(args.prediction.upset_alert_snapshot?.score ?? upsetRiskScore)
+        }
+      : buildUpsetAlert({
+          upsetRiskScore,
+          showUpsetAlert,
+          attackScenarioLabel: args.attackScenarioLabel,
+          formationPatternLabel: args.formationPatternLabel,
+          roleCandidates: args.roleCandidates,
+          prediction: args.prediction,
+          isRecommendedRace: args.isRecommendedRace,
+          backupUrasujiBets: args.backupUrasujiBets,
+          finalRecommendedBets: args.finalRecommendedBets,
+          evidenceBoatSummaryRows: args.evidenceBoatSummaryRows
+        });
+  return {
+    ...base,
+    upsetAlert,
+    semanticStyles: buildSemanticCardStyles({
+      isRecommendedRace: args.isRecommendedRace,
+      upsetLevel: upsetAlert.level
+    })
+  };
+}
+
+const EVIDENCE_GROUP_LABELS = {
+  motor: "Motor",
+  lane_course_fit: "Lane/Course Fit",
+  exhibition: "Exhibition",
+  risk: "Risk",
+  formation_scenario: "Formation/Scenario",
+  learning: "Learning"
+};
+
+function getEvidenceBiasTable(data, prediction) {
+  const direct = data?.evidenceBiasTable;
+  if (direct && typeof direct === "object") return direct;
+  const snapshot = prediction?.evidence_bias_table_json;
+  if (snapshot && typeof snapshot === "object") return snapshot;
+  return {};
+}
+
 function formatHistoryRaceTitle(row) {
   const venue = String(row?.venue_name || row?.venue_id || row?.race_id || "Race").trim();
   const raceNo = Number(row?.race_no);
@@ -990,6 +1550,17 @@ export default function App() {
 
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
+  const [evaluationFilters, setEvaluationFilters] = useState({
+    venue: "all",
+    date_from: "",
+    date_to: "",
+    recommendation_level: "all",
+    formation_pattern: "all",
+    only_participated: false,
+    only_recommended: false,
+    only_boat1_escape_predicted: false,
+    only_outside_head_cases: false
+  });
   const [analytics, setAnalytics] = useState(null);
   const [selfLearning, setSelfLearning] = useState(null);
   const [learningLatest, setLearningLatest] = useState(null);
@@ -1067,6 +1638,15 @@ export default function App() {
   const [manualLapMemo, setManualLapMemo] = useState("");
   const [manualLapSaving, setManualLapSaving] = useState(false);
   const [manualLapNotice, setManualLapNotice] = useState("");
+  const [recentRaceSelections, setRecentRaceSelections] = useState(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("kyoteiapp_recent_races") || "[]");
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
 
   const laneButtons = useMemo(
     () => [
@@ -1127,6 +1707,7 @@ export default function App() {
   const partnerSelection = data?.partnerSelection || {};
   const partnerPrecision = data?.partnerPrecision || {};
   const roleCandidates = data?.roleCandidates || {};
+  const evidenceBiasTable = getEvidenceBiasTable(data, prediction);
   const raceStructure = data?.raceStructure || {};
   const venueBias = data?.venueBias || {};
   const wallEvaluation = data?.wallEvaluation || {};
@@ -1222,12 +1803,49 @@ export default function App() {
     : Array.isArray(prediction?.exacta_reason_tags)
       ? prediction.exacta_reason_tags
       : [];
+  const backupUrasujiSection = data?.backupUrasujiSection || prediction?.backupUrasujiSection || {};
+  const backupUrasujiBets = Array.isArray(backupUrasujiSection?.backup_urasuji_recommendations_snapshot)
+    ? backupUrasujiSection.backup_urasuji_recommendations_snapshot
+    : Array.isArray(prediction?.backup_urasuji_recommendations_snapshot)
+      ? prediction.backup_urasuji_recommendations_snapshot
+      : [];
+  const backupUrasujiShown =
+    Number(backupUrasujiSection?.backup_urasuji_section_shown ?? prediction?.backup_urasuji_section_shown ?? 0) === 1 &&
+    backupUrasujiBets.length > 0;
+  const backupUrasujiReasonTags = Array.isArray(backupUrasujiSection?.backup_urasuji_reason_tags)
+    ? backupUrasujiSection.backup_urasuji_reason_tags
+    : Array.isArray(prediction?.backup_urasuji_reason_tags)
+      ? prediction.backup_urasuji_reason_tags
+      : [];
+  const evidenceGroupRankings = evidenceBiasTable?.per_group_rankings && typeof evidenceBiasTable.per_group_rankings === "object"
+    ? evidenceBiasTable.per_group_rankings
+    : {};
+  const evidenceBoatSummary = evidenceBiasTable?.boat_summary && typeof evidenceBiasTable.boat_summary === "object"
+    ? evidenceBiasTable.boat_summary
+    : {};
+  const evidenceInterpretation = Array.isArray(evidenceBiasTable?.interpretation)
+    ? evidenceBiasTable.interpretation
+    : [];
+  const evidenceConfirmationFlags = evidenceBiasTable?.confirmation_flags && typeof evidenceBiasTable.confirmation_flags === "object"
+    ? evidenceBiasTable.confirmation_flags
+    : {};
+  const evidenceBoatSummaryRows = Object.entries(evidenceBoatSummary)
+    .map(([lane, summary]) => ({
+      lane: Number(lane),
+      ...summary
+    }))
+    .sort((a, b) => Number(b?.head_support_score || 0) - Number(a?.head_support_score || 0));
   const defaultReasonTags = [
     ...(Array.isArray(participationDecision?.reason_tags) ? participationDecision.reason_tags : []),
     ...(Array.isArray(explainability?.race_tags) ? explainability.race_tags : [])
   ].filter(Boolean).slice(0, 6);
   const predictionQualityLabels = getPredictionQualityLabels(participationDecision, prediction);
   const skipReasonCodes = Array.isArray(raceRisk?.skip_reason_codes) ? raceRisk.skip_reason_codes : [];
+  const boat1EscapeProbability = Number(
+    roleCandidates?.boat1_escape_probability ??
+    prediction?.boat1_escape_probability ??
+    0
+  );
 
   const racersByLane = useMemo(() => {
     const map = new Map();
@@ -1364,6 +1982,70 @@ export default function App() {
     () => laneInsightRows.filter((row) => Number(row?.f_hold_bias_applied) === 1),
     [laneInsightRows]
   );
+  const quickVenueOptions = useMemo(
+    () => [5, 4, 22, 24, 2].map((id) => VENUES.find((v) => v.id === id)).filter(Boolean),
+    []
+  );
+  const predictionViewModel = useMemo(
+    () => buildPremiumPredictionViewModel({
+      race,
+      venueName,
+      date,
+      participationLabel,
+      participationClass,
+      confidenceScores,
+      participationDecision,
+      prediction,
+      roleCandidates,
+      evidenceConfirmationFlags,
+      top3,
+      attackScenarioLabel,
+      finalRecommendedBets,
+      exactaBets,
+      backupUrasujiBets,
+      boat1HeadBets,
+      isRecommendedRace,
+      evidenceInterpretation,
+      evidenceBoatSummaryRows,
+      boat1EscapeProbability,
+      formationPatternLabel,
+      raceStructure
+    }),
+    [
+      race,
+      venueName,
+      date,
+      participationLabel,
+      participationClass,
+      confidenceScores,
+      participationDecision,
+      prediction,
+      roleCandidates,
+      evidenceConfirmationFlags,
+      top3,
+      attackScenarioLabel,
+      finalRecommendedBets,
+      exactaBets,
+      backupUrasujiBets,
+      boat1HeadBets,
+      isRecommendedRace,
+      evidenceInterpretation,
+      evidenceBoatSummaryRows,
+      boat1EscapeProbability,
+      formationPatternLabel,
+      raceStructure
+    ]
+  );
+  const similarHistoryRows = useMemo(() => {
+    if (!Array.isArray(history) || history.length === 0) return [];
+    return history
+      .filter((row) => {
+        const sameVenue = String(row?.venue_name || row?.venue_id || "") === String(race.venueName || venueName || "");
+        const sameFormation = String(row?.formation_pattern || "") === String(formationPatternLabel || "");
+        return sameVenue || sameFormation;
+      })
+      .slice(0, 6);
+  }, [history, race.venueName, venueName, formationPatternLabel]);
 
   const currentRaceKey = useMemo(
     () =>
@@ -1469,6 +2151,14 @@ export default function App() {
     ).sort((a, b) => a.localeCompare(b));
     return values;
   }, [history]);
+  const evaluationFilterOptions = useMemo(() => {
+    return stats?.evaluation?.filter_options || {
+      venues: [],
+      formation_patterns: [],
+      recommendation_levels: ["recommended", "caution", "not_recommended"],
+      attack_scenarios: []
+    };
+  }, [stats]);
   const builderCombo = useMemo(() => {
     const lanes = [builderSlots.first, builderSlots.second, builderSlots.third];
     if (lanes.some((v) => !Number.isInteger(v))) return "";
@@ -1487,7 +2177,13 @@ export default function App() {
     setPerfError("");
     try {
       const [statsData, analyticsData, historyData, learningData, startEntryData, learningLatestData] = await Promise.all([
-        fetchStatsData(),
+        fetchStatsData({
+          ...evaluationFilters,
+          only_participated: evaluationFilters.only_participated ? 1 : 0,
+          only_recommended: evaluationFilters.only_recommended ? 1 : 0,
+          only_boat1_escape_predicted: evaluationFilters.only_boat1_escape_predicted ? 1 : 0,
+          only_outside_head_cases: evaluationFilters.only_outside_head_cases ? 1 : 0
+        }),
         fetchAnalyticsData(date),
         fetchHistoryData({ includeInvalidated: adminMode }),
         fetchSelfLearningData(),
@@ -1532,6 +2228,14 @@ export default function App() {
   }, [screen]);
 
   useEffect(() => {
+    if (screen === "predict" && data && history.length === 0) {
+      fetchHistoryData({ includeInvalidated: adminMode })
+        .then((historyData) => setHistory(Array.isArray(historyData?.items) ? historyData.items : []))
+        .catch(() => {});
+    }
+  }, [screen, data, history.length, adminMode]);
+
+  useEffect(() => {
     if (screen === "journal") {
       loadJournal();
     }
@@ -1550,10 +2254,37 @@ export default function App() {
   }, [verificationNotice]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("kyoteiapp_recent_races", JSON.stringify(recentRaceSelections.slice(0, 8)));
+  }, [recentRaceSelections]);
+
+  useEffect(() => {
     if (!learningRunNotice) return;
     const t = setTimeout(() => setLearningRunNotice(""), 2800);
     return () => clearTimeout(t);
   }, [learningRunNotice]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (screen !== "predict") return;
+      if (!(e.altKey && !e.ctrlKey && !e.metaKey)) return;
+      const k = String(e.key || "").toLowerCase();
+      if (k === "enter") {
+        e.preventDefault();
+        if (!loading) {
+          onFetch();
+        }
+      } else if (k === "arrowright") {
+        e.preventDefault();
+        setRaceNo((prev) => Math.min(12, Number(prev || 1) + 1));
+      } else if (k === "arrowleft") {
+        e.preventDefault();
+        setRaceNo((prev) => Math.max(1, Number(prev || 1) - 1));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [screen, loading, date, venueId, raceNo]);
 
   const onFetch = async () => {
     setLoading(true);
@@ -1566,6 +2297,18 @@ export default function App() {
       setManualLapMemo(result?.manualLapEvaluation?.race_memo || "");
       setManualLapNotice("");
       setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
+      setRecentRaceSelections((prev) => {
+        const next = [
+          {
+            date,
+            venueId,
+            venueName: VENUES.find((v) => v.id === Number(venueId))?.name || String(venueId),
+            raceNo
+          },
+          ...prev.filter((row) => !(String(row?.date) === String(date) && Number(row?.venueId) === Number(venueId) && Number(row?.raceNo) === Number(raceNo)))
+        ];
+        return next.slice(0, 8);
+      });
     } catch (e) {
       setError(e.message || "Failed to fetch race data");
     } finally {
@@ -2471,6 +3214,37 @@ export default function App() {
                 <label><span>レース</span><select value={raceNo} onChange={(e) => setRaceNo(Number(e.target.value))}>{Array.from({ length: 12 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}R</option>)}</select></label>
                 <button className="fetch-btn" onClick={onFetch} disabled={loading}>{loading ? "取得中..." : "予想を取得"}</button>
               </div>
+              <div className="predict-quickbar">
+                <div className="quick-chip-group">
+                  <span className="quick-label">Quick Venue</span>
+                  {quickVenueOptions.map((venue) => (
+                    <button
+                      key={`quick-venue-${venue.id}`}
+                      className={`quick-chip ${Number(venueId) === Number(venue.id) ? "active" : ""}`}
+                      onClick={() => setVenueId(Number(venue.id))}
+                    >
+                      {venue.name}
+                    </button>
+                  ))}
+                </div>
+                <div className="quick-chip-group">
+                  <span className="quick-label">Recent</span>
+                  {recentRaceSelections.slice(0, 5).map((row, idx) => (
+                    <button
+                      key={`recent-race-${idx}-${row.date}-${row.venueId}-${row.raceNo}`}
+                      className="quick-chip"
+                      onClick={() => {
+                        setDate(row.date || localDateKey());
+                        setVenueId(Number(row.venueId || 1));
+                        setRaceNo(Number(row.raceNo || 1));
+                      }}
+                    >
+                      {row.venueName} {row.raceNo}R
+                    </button>
+                  ))}
+                  <span className="quick-shortcut">Alt+Enter fetch / Alt+←→ race</span>
+                </div>
+              </div>
             </section>
 
             {error && <div className="error-banner">{error}</div>}
@@ -2480,7 +3254,132 @@ export default function App() {
               <section className="card empty-state">レースを取得すると予想ダッシュボードを表示します。</section>
             ) : (
               <>
-                <div className="prediction-summary-grid">
+                <section className={`card premium-hero ${getRiskClass(raceRisk.recommendation)} ${predictionViewModel.semanticStyles.recommendationTone || ""}`}>
+                  <div className="premium-hero-top">
+                    <div>
+                      <p className="eyebrow">Decision First</p>
+                      <h2>{predictionViewModel.raceTitle}</h2>
+                      <p className="muted strategy-line">{predictionViewModel.raceSubtitle}</p>
+                    </div>
+                    <div className="hero-status-stack">
+                      <span className={`status-pill ${predictionViewModel.summary.status.className}`}>{predictionViewModel.summary.status.label}</span>
+                      <span className="hero-subtle">top summary</span>
+                    </div>
+                  </div>
+                  <div className="hero-metrics-grid">
+                    <article className="hero-metric">
+                      <span>Head Confidence</span>
+                      <strong>{formatMaybeNumber(predictionViewModel.summary.headConfidence.value, 1)}%</strong>
+                      <small>{predictionViewModel.summary.headConfidence.label} / {predictionViewModel.summary.headConfidence.meaning}</small>
+                    </article>
+                    <article className="hero-metric">
+                      <span>Recommendation</span>
+                      <strong>{formatMaybeNumber(predictionViewModel.summary.recommendationStrength.value, 1)}%</strong>
+                      <small>{predictionViewModel.summary.recommendationStrength.label} / {predictionViewModel.summary.recommendationStrength.meaning}</small>
+                    </article>
+                    <article className="hero-metric">
+                      <span>Opponent Stability</span>
+                      <strong>{formatMaybeNumber(predictionViewModel.summary.opponentStability.value, 1)}</strong>
+                      <small>{predictionViewModel.summary.opponentStability.label} / {predictionViewModel.summary.opponentStability.meaning}</small>
+                    </article>
+                    <article className="hero-metric">
+                      <span>Chaos Risk</span>
+                      <strong>{formatMaybeNumber(predictionViewModel.summary.chaosRisk.value, 1)}</strong>
+                      <small>{predictionViewModel.summary.chaosRisk.label} / {predictionViewModel.summary.chaosRisk.meaning}</small>
+                    </article>
+                    <article className="hero-metric">
+                      <span>Main Head</span>
+                      <strong><LanePills lanes={predictionViewModel.summary.structure.mainHead ? [predictionViewModel.summary.structure.mainHead] : []} /></strong>
+                      <small>boat1 escape {formatMaybeNumber(predictionViewModel.summary.boat1EscapeProbability * 100, 1)}%</small>
+                    </article>
+                    <article className="hero-metric">
+                      <span>Main 2nd / 3rd</span>
+                      <strong><LanePills lanes={[
+                        predictionViewModel.summary.structure.mainSecond,
+                        ...(predictionViewModel.summary.structure.thirdSurvivors || [])
+                      ].filter(Boolean)} /></strong>
+                      <small>finish order summary</small>
+                    </article>
+                  </div>
+                  <div className="hero-support-grid">
+                    <div className="hero-role-block">
+                      <span className="hero-role-label">Final Finish Prediction</span>
+                      <div className="hero-role-row"><span>1st</span><strong><LanePills lanes={predictionViewModel.summary.structure.mainHead ? [predictionViewModel.summary.structure.mainHead] : []} /></strong></div>
+                      <div className="hero-role-row"><span>2nd</span><strong><LanePills lanes={predictionViewModel.summary.structure.mainSecond ? [predictionViewModel.summary.structure.mainSecond] : []} /></strong></div>
+                      <div className="hero-role-row"><span>3rd survivors</span><strong><LanePills lanes={predictionViewModel.summary.structure.thirdSurvivors || []} /></strong></div>
+                    </div>
+                    <div className="hero-role-block attack-block">
+                      <span className="hero-role-label">Attack Scenario</span>
+                      <div className="hero-role-row"><span>attack</span><strong>{predictionViewModel.summary.structure.attackScenarioLabel || "-"}</strong></div>
+                      <div className="hero-role-row"><span>formation</span><strong>{formationPatternLabel}</strong></div>
+                      <div className="hero-role-row"><span>policy</span><strong>attacker != head by default</strong></div>
+                    </div>
+                    <div className="hero-role-block">
+                      <span className="hero-role-label">Decision Notes</span>
+                      <div className="chips-wrap">
+                        {defaultReasonTags.map((tag) => <span className="chip chip-status" key={`pd-tag-${tag}`}>{tag}</span>)}
+                        {predictionQualityLabels.map((tag) => <span className="chip chip-quality" key={`pd-quality-${tag}`}>{tag}</span>)}
+                        {skipReasonCodes.slice(0, 3).map((tag) => <span className="chip chip-warning" key={`pd-skip-${tag}`}>{tag}</span>)}
+                      </div>
+                    </div>
+                  </div>
+                  {!isRecommendedRace ? (
+                    <p className="muted strategy-line premium-muted-note">
+                      This race is shown in watch / reference mode, so ticket emphasis is intentionally softened.
+                    </p>
+                  ) : null}
+                </section>
+
+                {predictionViewModel.upsetAlert?.shown ? (
+                  <section className={`card upset-alert-card ${predictionViewModel.semanticStyles.upsetTone || ""}`}>
+                    <div className="premium-card-head">
+                      <div>
+                        <p className="eyebrow">Conditional Alert</p>
+                        <h2>Upset Alert</h2>
+                      </div>
+                      <div className="hero-status-stack">
+                        <span className={`status-pill ${predictionViewModel.upsetAlert.level === "大穴警戒" ? "risk-skip" : "risk-small"}`}>
+                          {predictionViewModel.upsetAlert.level}
+                        </span>
+                        <span className="hero-subtle">risk {formatMaybeNumber(predictionViewModel.upsetAlert.score, 1)}</span>
+                      </div>
+                    </div>
+                    <div className="upset-alert-grid">
+                      <div className="hero-role-block">
+                        <span className="hero-role-label">Likely upset scenario</span>
+                        <div className="hero-role-row"><span>scenario</span><strong>{predictionViewModel.upsetAlert.scenario || "-"}</strong></div>
+                        <div className="hero-role-row"><span>warning boats</span><strong><LanePills lanes={predictionViewModel.upsetAlert.warningBoats || []} /></strong></div>
+                        <div className="hero-role-row"><span>usage</span><strong>{predictionViewModel.upsetAlert.referenceOnly ? "reference only" : "weak support only"}</strong></div>
+                      </div>
+                      <div className="hero-role-block">
+                        <span className="hero-role-label">Top reasons</span>
+                        <div className="premium-interpretation-list">
+                          {(predictionViewModel.upsetAlert.reasons || []).map((line, idx) => (
+                            <p key={`upset-reason-${idx}`} className="muted strategy-line">{line}</p>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="hero-role-block">
+                        <span className="hero-role-label">Reference tickets</span>
+                        <div className="ticket-stack">
+                          {(predictionViewModel.upsetAlert.referenceTickets || []).map((bet, idx) => (
+                            <div key={`upset-ticket-${bet.combo}-${idx}`} className="premium-ticket-row watch">
+                              <div className="ticket-mainline">
+                                <strong><ComboBadge combo={bet.combo} /></strong>
+                                <span className="ticket-prob">p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                              </div>
+                            </div>
+                          ))}
+                          {(!predictionViewModel.upsetAlert.referenceTickets || predictionViewModel.upsetAlert.referenceTickets.length === 0) ? (
+                            <p className="muted">No separate upset reference tickets justified.</p>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                ) : null}
+
+                <div className="prediction-summary-grid premium-layout">
                 <section className="card summary-card">
                   <h2>レース情報</h2>
                   <div className="metric-grid compact">
@@ -2538,12 +3437,20 @@ export default function App() {
                   </section>
                 ) : null}
 
-                <section className={`card recommendation summary-card ${getRiskClass(raceRisk.recommendation)}`}>
-                  <h2>総合推奨</h2>
+                <section className={`card recommendation summary-card premium-decision-card ${getRiskClass(raceRisk.recommendation)}`}>
+                  <h2>Decision Snapshot</h2>
                   <div className="recommend-grid">
                     <div><span>参加可否</span><strong className={`status-pill ${participationClass}`}>{participationLabel}</strong></div>
                     <div>
-                      <span>頭固定信頼度</span>
+                      <span>Main head</span>
+                      <strong><LanePills lanes={predictionViewModel.summary.structure.mainHead ? [predictionViewModel.summary.structure.mainHead] : []} /></strong>
+                    </div>
+                    <div>
+                      <span>Main second</span>
+                      <strong><LanePills lanes={predictionViewModel.summary.structure.mainSecond ? [predictionViewModel.summary.structure.mainSecond] : []} /></strong>
+                    </div>
+                    <div>
+                      <span>Head Confidence</span>
                       <strong>
                         {formatMaybeNumber(confidenceScores?.head_fixed_confidence_pct, 1)}%
                         {" "}
@@ -2553,7 +3460,7 @@ export default function App() {
                       </strong>
                     </div>
                     <div>
-                      <span>推奨買い目信頼度</span>
+                      <span>Recommendation</span>
                       <strong>
                         {formatMaybeNumber(confidenceScores?.recommended_bet_confidence_pct, 1)}%
                         {" "}
@@ -2562,35 +3469,67 @@ export default function App() {
                         </span>
                       </strong>
                     </div>
-                    <div><span>展開パターン</span><strong>{data.racePattern || "-"}</strong></div>
+                    <div><span>Third survivors</span><strong><LanePills lanes={predictionViewModel.summary.structure.thirdSurvivors || []} /></strong></div>
                     <div><span>formation</span><strong>{formationPatternLabel}</strong></div>
-                    {attackScenarioLabel ? <div><span>attack</span><strong>{attackScenarioLabel}</strong></div> : null}
+                    {attackScenarioLabel ? <div><span>attack only</span><strong>{attackScenarioLabel}</strong></div> : null}
                   </div>
                   {!isRecommendedRace ? (
                     <p className="muted strategy-line">このレースは見送り判定です。ベット追加は無効化されています。</p>
                   ) : null}
-                  {defaultReasonTags.length > 0 ? (
+                  {(defaultReasonTags.length > 0 || predictionQualityLabels.length > 0) ? (
                     <div className="chips-wrap">
                       {defaultReasonTags.map((tag) => <span className="chip" key={`pd-tag-${tag}`}>{tag}</span>)}
-                    </div>
-                  ) : null}
-                  {predictionQualityLabels.length > 0 ? (
-                    <div className="chips-wrap">
                       {predictionQualityLabels.map((tag) => <span className="chip" key={`pd-quality-${tag}`}>{tag}</span>)}
+                      {predictionViewModel.predictionMeta.boat3WeakStHeadSuppressed ? (
+                        <span className="chip chip-warning">3-head weak ST suppressed</span>
+                      ) : null}
+                      {predictionViewModel.predictionMeta.playerStatWindowPolicy ? (
+                        <span className="chip chip-quality">recent 3m + current season only</span>
+                      ) : null}
                     </div>
                   ) : null}
                 </section>
 
-                <article className="card summary-card">
-                  <h2>最終推奨買い目</h2>
+                <article className={`card summary-card premium-ticket-card top-ranked-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                  <h2>Top Recommended Tickets</h2>
                   <div className="summary-inline-meta">
-                    <span>{finalRecommendedBets.length}件</span>
+                    <span>{predictionViewModel.topRecommendedTickets.length} / 10</span>
+                    <span>sorted by estimated hit rate</span>
+                  </div>
+                  <div className="ticket-stack compact-list">
+                    {predictionViewModel.topRecommendedTickets.map((row) => (
+                      <div key={`top-ticket-${row.ticket_type}-${row.ticket}`} className="premium-ticket-row primary">
+                        <div className="ticket-mainline">
+                          <span className="rank-pill">#{row.rank}</span>
+                          <span className={`ticket-type ticket-type-inline ${row.ticket_type === "exacta" ? "ttype-main" : "ttype-backup"}`}>
+                            {row.ticket_type === "exacta" ? "2連単" : "3連単"}
+                          </span>
+                          <strong><ComboBadge combo={row.ticket} /></strong>
+                        </div>
+                        <div className="ticket-meta">
+                          <span className={`ticket-type ${getTicketTypeClass(row.recommendation_tier === "cover" ? "backup" : row.recommendation_tier)}`}>
+                            {row.recommendation_tier}
+                          </span>
+                          <span>hit {formatMaybeNumber(row.estimated_hit_rate * 100, 1)}%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {!isRecommendedRace ? (
+                    <p className="muted strategy-line">Reference-level ordering only. Recommendation state still takes priority.</p>
+                  ) : null}
+                </article>
+
+                <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                  <h2>Main Trifecta</h2>
+                  <div className="summary-inline-meta">
+                    <span>{predictionViewModel.tickets.mainTrifecta.length}件</span>
                     <span>{attackScenarioLabel || formationPatternLabel || data.racePattern || "-"}</span>
                   </div>
                   <div className="list-stack compact-list">
-                    {finalRecommendedBets.map((bet, idx) => (
+                    {predictionViewModel.tickets.mainTrifecta.map((bet, idx) => (
                       <div key={`${bet.combo}-${idx}`} className="list-stack">
-                        <div className="list-row list-row-actions">
+                        <div className="list-row list-row-actions premium-ticket-row primary">
                           <strong><ComboBadge combo={bet.combo} /></strong>
                           <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
                           <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
@@ -2605,8 +3544,8 @@ export default function App() {
                 </article>
 
                 {boat1HeadSectionShown ? (
-                  <article className="card summary-card">
-                    <h2>1号艇が頭になる場合の予想</h2>
+                  <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                    <h2>Boat 1 Head Predictions</h2>
                     <div className="summary-inline-meta">
                       <span>{boat1HeadBets.length}件</span>
                       <span>
@@ -2619,13 +3558,13 @@ export default function App() {
                     </div>
                     {boat1HeadReasonTags.length > 0 ? (
                       <div className="chips-wrap" style={{ marginBottom: 8 }}>
-                        {boat1HeadReasonTags.map((tag) => <span className="chip" key={`b1-tag-${tag}`}>{tag}</span>)}
+                        {boat1HeadReasonTags.map((tag) => <span className="chip chip-quality" key={`b1-tag-${tag}`}>{tag}</span>)}
                       </div>
                     ) : null}
                     <div className="list-stack compact-list">
-                      {boat1HeadBets.map((bet, idx) => (
+                      {compactTicketRows(boat1HeadBets, 6).map((bet, idx) => (
                         <div key={`b1-${bet.combo}-${idx}`} className="list-stack">
-                          <div className="list-row list-row-actions">
+                          <div className="list-row list-row-actions premium-ticket-row support">
                             <strong><ComboBadge combo={bet.combo} /></strong>
                             <span>p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
                             <span>score {formatMaybeNumber(bet?.boat1_head_score, 1)}</span>
@@ -2646,27 +3585,103 @@ export default function App() {
                 ) : null}
 
                 {exactaSectionShown ? (
-                  <article className="card summary-card">
-                    <h2>二連単本線カバー</h2>
+                  <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                    <h2>Exacta Cover</h2>
                     <div className="summary-inline-meta">
-                      <span>{exactaBets.length}件</span>
+                      <span>{predictionViewModel.tickets.exactaCover.length}件</span>
                       <span>head {formatMaybeNumber(exactaHeadScore, 1)} / partner {formatMaybeNumber(exactaPartnerScore, 1)}</span>
                     </div>
                     {exactaReasonTags.length > 0 ? (
                       <div className="chips-wrap" style={{ marginBottom: 8 }}>
-                        {exactaReasonTags.map((tag) => <span className="chip" key={`exacta-tag-${tag}`}>{tag}</span>)}
+                        {exactaReasonTags.map((tag) => <span className="chip chip-scenario" key={`exacta-tag-${tag}`}>{tag}</span>)}
                       </div>
                     ) : null}
                     <div className="list-stack compact-list">
-                      {exactaBets.map((bet, idx) => (
+                      {predictionViewModel.tickets.exactaCover.map((bet, idx) => (
                         <div key={`exacta-${bet.combo}-${idx}`} className="list-stack">
-                          <div className="list-row list-row-actions">
+                          <div className="list-row list-row-actions premium-ticket-row support">
                             <strong><ComboBadge combo={bet.combo} /></strong>
                             <span>p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
                             <span>head {formatMaybeNumber(bet?.exacta_head_score, 1)}</span>
                             <span>partner {formatMaybeNumber(bet?.exacta_partner_score, 1)}</span>
                             <span>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</span>
                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ) : null}
+
+                {backupUrasujiShown ? (
+                  <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                    <h2>Backup / Urasuji</h2>
+                    <div className="summary-inline-meta">
+                      <span>{predictionViewModel.tickets.backupUrasuji.length}件</span>
+                      <span>backup only when justified</span>
+                    </div>
+                    {backupUrasujiReasonTags.length > 0 ? (
+                      <div className="chips-wrap" style={{ marginBottom: 8 }}>
+                        {backupUrasujiReasonTags.slice(0, 4).map((tag) => <span className="chip chip-warning" key={`backup-tag-${tag}`}>{tag}</span>)}
+                      </div>
+                    ) : null}
+                    <div className="list-stack compact-list">
+                      {predictionViewModel.tickets.backupUrasuji.map((bet, idx) => (
+                        <div key={`backup-${bet.combo}-${idx}`} className="list-stack">
+                          <div className="list-row list-row-actions premium-ticket-row backup">
+                            <strong><ComboBadge combo={bet.combo} /></strong>
+                            <span>p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                            <span>{bet?.ticket_type ? getTicketTypeLabel(bet.ticket_type) : "backup"}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ) : null}
+
+                {Object.keys(evidenceGroupRankings).length > 0 ? (
+                  <article className="card summary-card premium-bias-card">
+                    <h2>Premium Evidence Bias</h2>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>Main head candidate</span><strong><LanePills lanes={predictionViewModel.biasPanel.mainHead ? [predictionViewModel.biasPanel.mainHead] : []} /></strong></div>
+                      <div className="kv-row"><span>Main second candidate</span><strong><LanePills lanes={predictionViewModel.biasPanel.mainSecond ? [predictionViewModel.biasPanel.mainSecond] : []} /></strong></div>
+                      <div className="kv-row"><span>Counter second</span><strong><LanePills lanes={predictionViewModel.biasPanel.counterSecond ? [predictionViewModel.biasPanel.counterSecond] : []} /></strong></div>
+                      <div className="kv-row"><span>Third survivors</span><strong><LanePills lanes={predictionViewModel.biasPanel.thirdSurvivors || []} /></strong></div>
+                    </div>
+                    <div className="bias-support-grid">
+                      {predictionViewModel.biasPanel.strongestBoats.map((row) => (
+                        <div key={`bias-summary-${row.lane}`} className="bias-support-card">
+                          <div className="bias-support-head">
+                            <LanePills lanes={[row.lane]} />
+                            <span>{row.independent_evidence_count ?? 0} groups</span>
+                          </div>
+                          <div className="bias-score-row"><span>1st</span><strong>{formatMaybeNumber(row.head_support_score, 2)}</strong></div>
+                          <div className="bias-score-row"><span>2nd</span><strong>{formatMaybeNumber(row.second_support_score, 2)}</strong></div>
+                          <div className="bias-score-row"><span>3rd</span><strong>{formatMaybeNumber(row.third_support_score, 2)}</strong></div>
+                        </div>
+                      ))}
+                    </div>
+                    {predictionViewModel.biasPanel.interpretation.length > 0 ? (
+                      <div className="premium-interpretation-list">
+                        {predictionViewModel.biasPanel.interpretation.map((line, idx) => (
+                          <p key={`bias-interpret-${idx}`} className="muted strategy-line">{line}</p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </article>
+                ) : null}
+
+                {similarHistoryRows.length > 0 ? (
+                  <article className="card summary-card premium-compare-card">
+                    <h2>Recent Similar Verified</h2>
+                    <div className="list-stack compact-list">
+                      {similarHistoryRows.map((row) => (
+                        <div key={`similar-${row.race_id}-${row.prediction_snapshot_id || "x"}`} className="premium-compare-row">
+                          <div>
+                            <strong>{formatHistoryRaceTitle(row)}</strong>
+                            <small>{row?.formation_pattern || "-"} / {row?.verification_status || "-"}</small>
+                          </div>
+                          <div><span className={getVerifyStatusBadgeClass(row?.verification_status)}>{getVerifyStatusLabel(row?.verification_status)}</span></div>
+                          <div><strong>{row?.confirmed_result || "-"}</strong></div>
                         </div>
                       ))}
                     </div>
@@ -2996,6 +4011,87 @@ export default function App() {
                     </div>
                     <p className="muted strategy-line">{roleCandidates.summary || "-"}</p>
                   </article>
+
+                  {Object.keys(evidenceGroupRankings).length > 0 ? (
+                    <article className="card analysis-card">
+                      <h2>Evidence Bias Table</h2>
+                      <div className="kv-list">
+                        <div className="kv-row"><span>main head</span><strong><LanePills lanes={evidenceConfirmationFlags?.main_head_candidate ? [evidenceConfirmationFlags.main_head_candidate] : []} /></strong></div>
+                        <div className="kv-row"><span>main 2nd</span><strong><LanePills lanes={evidenceConfirmationFlags?.main_second_candidate ? [evidenceConfirmationFlags.main_second_candidate] : []} /></strong></div>
+                        <div className="kv-row"><span>counter 2nd</span><strong><LanePills lanes={evidenceConfirmationFlags?.counter_second_candidate ? [evidenceConfirmationFlags.counter_second_candidate] : []} /></strong></div>
+                        <div className="kv-row"><span>3rd survivors</span><strong><LanePills lanes={Array.isArray(evidenceConfirmationFlags?.third_place_survivors) ? evidenceConfirmationFlags.third_place_survivors : []} /></strong></div>
+                      </div>
+                      {evidenceInterpretation.length > 0 ? (
+                        <div className="list-stack" style={{ marginTop: 8 }}>
+                          {evidenceInterpretation.map((line, idx) => (
+                            <p key={`evidence-line-${idx}`} className="muted strategy-line">{line}</p>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="table-wrap" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Group</th>
+                              <th>Top boats</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(evidenceGroupRankings).map(([groupKey, rows]) => (
+                              <tr key={`evidence-group-${groupKey}`}>
+                                <td>{EVIDENCE_GROUP_LABELS[groupKey] || groupKey}</td>
+                                <td>
+                                  <div className="chips-wrap">
+                                    {(Array.isArray(rows) ? rows : []).map((row) => (
+                                      <span className="chip" key={`evidence-group-${groupKey}-${row?.lane}`}>
+                                        {row?.lane}
+                                        {" "}
+                                        H{formatMaybeNumber(row?.head, 2)}
+                                        {" / "}
+                                        2{formatMaybeNumber(row?.second, 2)}
+                                        {" / "}
+                                        3{formatMaybeNumber(row?.third, 2)}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="table-wrap" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Boat</th>
+                              <th>Head</th>
+                              <th>2nd</th>
+                              <th>3rd</th>
+                              <th>Risk</th>
+                              <th>Independent</th>
+                              <th>Groups</th>
+                              <th>Warnings</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {evidenceBoatSummaryRows.map((row) => (
+                              <tr key={`evidence-boat-${row.lane}`}>
+                                <td><LanePills lanes={[row.lane]} /></td>
+                                <td>{formatMaybeNumber(row.head_support_score, 3)}</td>
+                                <td>{formatMaybeNumber(row.second_support_score, 3)}</td>
+                                <td>{formatMaybeNumber(row.third_support_score, 3)}</td>
+                                <td>{formatMaybeNumber(row.risk_penalty, 3)}</td>
+                                <td>{row.independent_evidence_count ?? "-"}</td>
+                                <td>{Array.isArray(row.strongest_groups) ? row.strongest_groups.map((group) => EVIDENCE_GROUP_LABELS[group] || group).join(", ") : "-"}</td>
+                                <td>{Array.isArray(row.warnings) && row.warnings.length ? row.warnings.join(", ") : "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </article>
+                  ) : null}
 
                   <article className="card analysis-card">
                     <h2>相手精度</h2>
@@ -3445,11 +4541,96 @@ export default function App() {
 
             <section className="card">
               <h2>バックテスト / 評価</h2>
+              <div className="filter-row" style={{ marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
+                <label>
+                  <span>会場</span>
+                  <select
+                    value={evaluationFilters.venue}
+                    onChange={(e) => setEvaluationFilters((prev) => ({ ...prev, venue: e.target.value }))}
+                  >
+                    <option value="all">全会場</option>
+                    {(evaluationFilterOptions.venues || []).map((value) => (
+                      <option key={`eval-venue-${value}`} value={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>期間From</span>
+                  <input
+                    type="date"
+                    value={evaluationFilters.date_from}
+                    onChange={(e) => setEvaluationFilters((prev) => ({ ...prev, date_from: e.target.value }))}
+                  />
+                </label>
+                <label>
+                  <span>期間To</span>
+                  <input
+                    type="date"
+                    value={evaluationFilters.date_to}
+                    onChange={(e) => setEvaluationFilters((prev) => ({ ...prev, date_to: e.target.value }))}
+                  />
+                </label>
+                <label>
+                  <span>推奨レベル</span>
+                  <select
+                    value={evaluationFilters.recommendation_level}
+                    onChange={(e) => setEvaluationFilters((prev) => ({ ...prev, recommendation_level: e.target.value }))}
+                  >
+                    <option value="all">全レベル</option>
+                    <option value="recommended">Recommended</option>
+                    <option value="caution">Caution</option>
+                    <option value="not_recommended">Not Recommended</option>
+                  </select>
+                </label>
+                <label>
+                  <span>隊形</span>
+                  <select
+                    value={evaluationFilters.formation_pattern}
+                    onChange={(e) => setEvaluationFilters((prev) => ({ ...prev, formation_pattern: e.target.value }))}
+                  >
+                    <option value="all">全隊形</option>
+                    {(evaluationFilterOptions.formation_patterns || []).map((value) => (
+                      <option key={`eval-formation-${value}`} value={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="filter-row" style={{ marginBottom: 10, flexWrap: "wrap", gap: 16 }}>
+                {[
+                  ["only_participated", "Participated only"],
+                  ["only_recommended", "Recommended only"],
+                  ["only_boat1_escape_predicted", "Boat1 escape only"],
+                  ["only_outside_head_cases", "Outside-head cases only"]
+                ].map(([key, label]) => (
+                  <label key={key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!evaluationFilters[key]}
+                      onChange={(e) => setEvaluationFilters((prev) => ({ ...prev, [key]: e.target.checked }))}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+                <button className="fetch-btn secondary" onClick={() => setEvaluationFilters({
+                  venue: "all",
+                  date_from: "",
+                  date_to: "",
+                  recommendation_level: "all",
+                  formation_pattern: "all",
+                  only_participated: false,
+                  only_recommended: false,
+                  only_boat1_escape_predicted: false,
+                  only_outside_head_cases: false
+                })}>
+                  フィルタ解除
+                </button>
+              </div>
               <div className="stats-grid">
                 <article className="card stat-card">
                   <span>検証済みレース</span>
                   <strong>{stats?.evaluation?.overall?.verified_race_count ?? 0}</strong>
                   <small>run_id {stats?.evaluation?.evaluation_run_id ?? "-"}</small>
+                  <small>表示 {stats?.evaluation?.filtered_race_count ?? 0} / 全体 {stats?.evaluation?.total_available_race_count ?? 0}</small>
                 </article>
                 <article className="card stat-card">
                   <span>3連単的中率</span>
@@ -3476,6 +4657,38 @@ export default function App() {
                   <strong>{formatSignedRateDelta(stats?.evaluation?.recent_trend?.trifecta_hit_rate_delta)}</strong>
                   <small>2連単 {formatSignedRateDelta(stats?.evaluation?.recent_trend?.exacta_hit_rate_delta)}</small>
                   <small>頭 {formatSignedRateDelta(stats?.evaluation?.recent_trend?.head_hit_rate_delta)}</small>
+                </article>
+              </div>
+              <div className="stats-grid" style={{ marginTop: 10 }}>
+                <article className="card stat-card">
+                  <span>Boat1逃げ的中率</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.boat1_escape_hit_rate, 2)}%</strong>
+                  <small>予測 {stats?.evaluation?.overall?.boat1_escape_prediction_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>Boat1相手精度</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.boat1_escape_opponent_hit_rate, 2)}%</strong>
+                  <small>完全一致 {stats?.evaluation?.overall?.boat1_escape_opponent_hit_count ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>Participate Hit</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.participation_hit_rate, 2)}%</strong>
+                  <small>件数 {stats?.evaluation?.overall?.participated_races ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>Recommended Hit</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.recommended_only_hit_rate, 2)}%</strong>
+                  <small>Caution {formatMaybeNumber(stats?.evaluation?.overall?.caution_only_hit_rate, 2)}%</small>
+                </article>
+                <article className="card stat-card">
+                  <span>Skip妥当性</span>
+                  <strong>{formatMaybeNumber(stats?.evaluation?.overall?.skip_correctness_rate, 2)}%</strong>
+                  <small>Skip {stats?.evaluation?.overall?.skipped_races ?? 0}</small>
+                </article>
+                <article className="card stat-card">
+                  <span>質ゲート適用</span>
+                  <strong>{stats?.evaluation?.overall?.quality_gate_applied_count ?? 0}</strong>
+                  <small>Hit {formatMaybeNumber(stats?.evaluation?.overall?.quality_gate_hit_rate, 2)}%</small>
                 </article>
               </div>
               <p className="muted strategy-line" style={{ marginTop: 8 }}>
@@ -3512,6 +4725,81 @@ export default function App() {
 
               <details style={{ marginTop: 10 }}>
                 <summary>評価の詳細</summary>
+                <div className="stats-grid" style={{ marginTop: 10 }}>
+                  <article className="card stat-card">
+                    <span>5頭回数</span>
+                    <strong>{stats?.evaluation?.outside_head_monitoring?.boat5_main_head_count ?? 0}</strong>
+                    <small>頭的中 {formatMaybeNumber(stats?.evaluation?.outside_head_monitoring?.boat5_main_head_first_hit_rate, 2)}%</small>
+                  </article>
+                  <article className="card stat-card">
+                    <span>6頭回数</span>
+                    <strong>{stats?.evaluation?.outside_head_monitoring?.boat6_main_head_count ?? 0}</strong>
+                    <small>頭的中 {formatMaybeNumber(stats?.evaluation?.outside_head_monitoring?.boat6_main_head_first_hit_rate, 2)}%</small>
+                  </article>
+                  <article className="card stat-card">
+                    <span>外頭推奨回数</span>
+                    <strong>{stats?.evaluation?.outside_head_monitoring?.outside_head_recommendation_count ?? 0}</strong>
+                    <small>外2/3残り {formatMaybeNumber(stats?.evaluation?.outside_head_monitoring?.outside_second_third_survival_rate, 2)}%</small>
+                  </article>
+                  <article className="card stat-card">
+                    <span>Boat1逃げ診断</span>
+                    <strong>{stats?.evaluation?.boat1_escape_diagnostics?.boat1_escape_prediction_count ?? 0}</strong>
+                    <small>相手精度 {formatMaybeNumber(stats?.evaluation?.boat1_escape_diagnostics?.boat1_escape_opponent_hit_rate, 2)}%</small>
+                  </article>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Miss Category</th>
+                        <th>件数</th>
+                        <th>率</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(stats?.evaluation?.miss_categories || []).map((row) => (
+                        <tr key={`eval-miss-${row.category}`}>
+                          <td>{row.category}</td>
+                          <td>{row.count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.rate, 2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Confidence Bin</th>
+                        <th>件数</th>
+                        <th>3連単</th>
+                        <th>平均確信度</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(stats?.evaluation?.confidence_calibration?.bet_confidence_bins || []).map((row) => (
+                        <tr key={`eval-bet-bin-${row.bucket}`}>
+                          <td>Bet {row.bucket}</td>
+                          <td>{row.race_count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber((row.average_confidence ?? 0) * 100, 1)}%</td>
+                        </tr>
+                      ))}
+                      {(stats?.evaluation?.confidence_calibration?.head_confidence_bins || []).map((row) => (
+                        <tr key={`eval-head-bin-${row.bucket}`}>
+                          <td>Head {row.bucket}</td>
+                          <td>{row.race_count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber((row.average_confidence ?? 0) * 100, 1)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
                 <div className="table-wrap" style={{ marginTop: 10 }}>
                   <table>
                     <thead>
@@ -3581,6 +4869,103 @@ export default function App() {
                           <td>{formatMaybeNumber(row.trifecta_hit_rate, 2)}%</td>
                           <td>{formatMaybeNumber(row.exacta_hit_rate, 2)}%</td>
                           <td>{formatMaybeNumber(row.head_hit_rate, 2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Attack Scenario</th>
+                        <th>件数</th>
+                        <th>3連単</th>
+                        <th>2着</th>
+                        <th>参加Hit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortEvaluationSegments(stats?.evaluation?.segmented_tables?.attack_scenario).slice(0, 8).map((row) => (
+                        <tr key={`eval-attack-${row.segment_key}`}>
+                          <td>{row.segment_key}</td>
+                          <td>{row.verified_race_count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.trifecta_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.second_place_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.participation_hit_rate, 2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Recommendation Level</th>
+                        <th>件数</th>
+                        <th>3連単</th>
+                        <th>2連単</th>
+                        <th>参加Hit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortEvaluationSegments(stats?.evaluation?.segmented_tables?.recommendation_level).map((row) => (
+                        <tr key={`eval-rec-${row.segment_key}`}>
+                          <td>{row.segment_key}</td>
+                          <td>{row.verified_race_count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.trifecta_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.exacta_hit_rate, 2)}%</td>
+                          <td>{formatMaybeNumber(row.participation_hit_rate, 2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Outside Monitor</th>
+                        <th>件数</th>
+                        <th>率</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        ["outside_lead_overpromotion_count", "outside_lead overpromotion", stats?.evaluation?.outside_head_monitoring?.outside_lead_overpromotion_count],
+                        ["chaos_or_not_recommended_outside_head_count", "chaos/not_recommended with outside head", stats?.evaluation?.outside_head_monitoring?.chaos_or_not_recommended_outside_head_count]
+                      ].map(([key, label, value]) => (
+                        <tr key={`eval-outside-${key}`}>
+                          <td>{label}</td>
+                          <td>{value ?? 0}</td>
+                          <td>-</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Boat1 Family</th>
+                        <th>予測</th>
+                        <th>捕捉</th>
+                        <th>率</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(stats?.evaluation?.boat1_escape_diagnostics?.family_capture_rows || []).map((row) => (
+                        <tr key={`eval-boat1fam-${row.family}`}>
+                          <td>{row.family}</td>
+                          <td>{row.prediction_count ?? 0}</td>
+                          <td>{row.captured_count ?? 0}</td>
+                          <td>{formatMaybeNumber(row.capture_rate, 2)}%</td>
                         </tr>
                       ))}
                     </tbody>
@@ -4076,13 +5461,14 @@ export default function App() {
                     const verificationKey = getVerificationHistoryKey(h.race_id, h.prediction_snapshot_id);
                     const isEditingResult = editingResultKey === verificationKey;
                     const verificationSummaryData = h?.verification?.summary || {};
-                    const currentVerifyStatus =
-                      verificationRunStatusByRace[verificationKey] || h.verification_status || "PENDING_RESULT";
-                    const verifyReason =
-                      verificationReasonByRace[verificationKey] ||
-                      h.verification_reason ||
-                      h?.verification?.summary?.warning ||
-                      "";
+                    const transientVerifyStatus = verificationRunStatusByRace[verificationKey];
+                    const transientVerifyReason = verificationReasonByRace[verificationKey];
+                    const currentVerifyStatus = verifyingRaceId === verificationKey
+                      ? (transientVerifyStatus || h.verification_status || "PENDING_RESULT")
+                      : (h.verification_status || transientVerifyStatus || "PENDING_RESULT");
+                    const verifyReason = verifyingRaceId === verificationKey
+                      ? (transientVerifyReason || h.verification_reason || h?.verification?.summary?.warning || "")
+                      : (h.verification_reason || h?.verification?.summary?.warning || transientVerifyReason || "");
                     const compactMissTags = getResultMissPatternTags(h);
                     return (
                     <div key={h.history_id || `${h.race_id}-${h.prediction_snapshot_id || h.snapshot_created_at || ""}`} className="history-item compact-history">

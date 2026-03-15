@@ -7,6 +7,10 @@ const {
   buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
   buildBoat3WeakStHeadSuppressionContext,
+  buildTopRecommendedTickets,
+  computeUpsetRiskScore,
+  shouldShowUpsetAlert,
+  buildUpsetAlert,
   computeBoat1EscapeProbability,
   computeAttackScenarioProbabilities,
   computeFirstPlaceProbabilities,
@@ -773,5 +777,93 @@ assert.ok(
     playerHistoryProfile.current_season_start === "2026-01-01",
   "player stat profile should expose the exact recent and current-season date windows"
 );
+
+const topRecommendedTickets = buildTopRecommendedTickets({
+  finalRecommendedBets: [
+    { combo: "1-2-3", prob: 0.19 },
+    { combo: "1-3-2", prob: 0.16 }
+  ],
+  exactaBets: [
+    { combo: "1-2", prob: 0.19, exacta_head_score: 78, exacta_partner_score: 72 },
+    { combo: "1-3", prob: 0.14, exacta_head_score: 72, exacta_partner_score: 68 }
+  ],
+  backupUrasujiBets: [
+    { combo: "3-1-4", prob: 0.08 }
+  ],
+  maxItems: 10
+});
+assert.equal(topRecommendedTickets.length, 5, "top recommended tickets should unify trifecta, exacta, and backup rows");
+assert.equal(topRecommendedTickets[0].ticket, "1-2-3", "main trifecta should stay ahead of cover tickets when hit rate is tied");
+assert.equal(topRecommendedTickets[1].ticket, "1-2", "exacta should rank just behind stronger main tickets when hit rate is tied");
+assert.ok(
+  topRecommendedTickets.every((row, idx, arr) => idx === 0 || arr[idx - 1].estimated_hit_rate >= row.estimated_hit_rate),
+  "top recommended tickets should be sorted by estimated hit rate descending"
+);
+
+const upsetRiskScore = computeUpsetRiskScore({
+  confidenceScores: {
+    head_fixed_confidence_pct: 58,
+    recommended_bet_confidence_pct: 54
+  },
+  participationDecision: {
+    decision: "watch",
+    participation_score_components: {
+      race_stability_score: 38,
+      prediction_readability_score: 42,
+      partner_clarity_score: 36,
+      quality_gate_applied: 1
+    }
+  },
+  roleProbabilityLayers: {
+    boat1_escape_probability: 0.41,
+    first_place_probability_json: [{ lane: 1, weight: 0.33 }, { lane: 3, weight: 0.24 }, { lane: 4, weight: 0.18 }],
+    second_place_probability_json: [{ lane: 3, weight: 0.22 }, { lane: 4, weight: 0.2 }, { lane: 2, weight: 0.18 }],
+    third_place_probability_json: [{ lane: 4, weight: 0.18 }, { lane: 5, weight: 0.17 }, { lane: 2, weight: 0.16 }]
+  },
+  attackScenarioAnalysis: {
+    attack_scenario_label: "4カド捲り注意",
+    attack_scenario_score: 74
+  },
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  outsideHeadPromotionGate: {
+    inner_collapse_score: 64,
+    by_lane: {
+      "5": { matched_evidence_categories: ["entry_shape_advantage", "lap_exhibition_advantage", "strong_motor"] },
+      "6": { matched_evidence_categories: ["clear_exhibition_st_advantage", "learning_correction_match", "inner_collapse_evidence"] }
+    }
+  }
+});
+assert.ok(upsetRiskScore >= 62, "risky messy races should cross the upset-alert threshold");
+assert.equal(
+  shouldShowUpsetAlert({
+    upsetRiskScore,
+    confidenceScores: { head_fixed_confidence_pct: 58 },
+    boat1EscapeProbability: 0.41,
+    participationDecision: { decision: "watch" }
+  }),
+  true,
+  "upset alert should be shown when risk is materially high"
+);
+const upsetAlert = buildUpsetAlert({
+  upsetRiskScore,
+  showUpsetAlert: true,
+  attackScenarioAnalysis: { attack_scenario_label: "4カド捲り注意" },
+  escapePatternAnalysis: { formation_pattern: "outside_lead" },
+  roleProbabilityLayers: {
+    first_place_probability_json: [{ lane: 1, weight: 0.33 }, { lane: 4, weight: 0.22 }, { lane: 5, weight: 0.15 }],
+    second_place_probability_json: [{ lane: 4, weight: 0.23 }, { lane: 5, weight: 0.18 }, { lane: 2, weight: 0.15 }]
+  },
+  outsideHeadPromotionGate: {
+    inner_collapse_score: 64,
+    by_lane: {
+      "5": { matched_evidence_categories: ["entry_shape_advantage", "lap_exhibition_advantage", "strong_motor"] }
+    }
+  },
+  isRecommendedRace: false,
+  backupUrasujiBets: [{ combo: "4-1-5", prob: 0.08 }],
+  finalRecommendedBets: [{ combo: "1-4-5", prob: 0.11 }]
+});
+assert.equal(upsetAlert.shown, true, "upset alert payload should exist for risky races");
+assert.equal(upsetAlert.reference_only, true, "watch/skip races should only expose upset tickets as weak reference");
 
 console.log("boat1-escape-opponent-model tests passed");

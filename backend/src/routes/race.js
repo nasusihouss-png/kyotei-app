@@ -1084,6 +1084,229 @@ function normalizeSavedExactaSnapshotItems(items) {
     .filter(Boolean);
 }
 
+function estimateUnifiedTicketHitRate(ticket, ticketType, tier) {
+  const directProb = toNum(ticket?.prob ?? ticket?.estimated_hit_rate, 0);
+  if (directProb > 0) return Number(clamp(0, 1, directProb).toFixed(4));
+  if (ticketType === "exacta") {
+    const head = toNum(ticket?.exacta_head_score, 0);
+    const partner = toNum(ticket?.exacta_partner_score, 0);
+    return Number(clamp(0, 1, (head * 0.58 + partner * 0.42) / 100).toFixed(4));
+  }
+  const boat1Head = toNum(ticket?.boat1_head_score, 0);
+  const tierBoost = tier === "main" ? 0.02 : tier === "cover" ? 0.01 : 0;
+  return Number(clamp(0, 1, boat1Head / 100 + tierBoost).toFixed(4));
+}
+
+function collectAllTicketCandidates({
+  finalRecommendedBets,
+  exactaBets,
+  backupUrasujiBets
+}) {
+  const tierRank = { main: 3, cover: 2, backup: 1 };
+  const makeRows = (items, ticketType, tier) =>
+    safeArray(items)
+      .map((ticket) => {
+        const combo = ticketType === "exacta"
+          ? normalizeExactaCombo(ticket?.combo ?? ticket)
+          : normalizeCombo(ticket?.combo ?? ticket);
+        if (!combo) return null;
+        return {
+          ticket_type: ticketType,
+          ticket: combo,
+          estimated_hit_rate: estimateUnifiedTicketHitRate(ticket, ticketType, tier),
+          recommendation_tier: tier,
+          recommendation_tier_rank: tierRank[tier] || 0,
+          reason_tags: Array.isArray(ticket?.explanation_tags)
+            ? ticket.explanation_tags
+            : Array.isArray(ticket?.exacta_reason_tags)
+              ? ticket.exacta_reason_tags
+              : Array.isArray(ticket?.trap_flags)
+                ? ticket.trap_flags
+                : [],
+          source_row: ticket
+        };
+      })
+      .filter(Boolean);
+  return [
+    ...makeRows(finalRecommendedBets, "trifecta", "main"),
+    ...makeRows(exactaBets, "exacta", "cover"),
+    ...makeRows(backupUrasujiBets, "trifecta", "backup")
+  ];
+}
+
+function rankTicketCandidatesByHitRate(rows = []) {
+  return [...safeArray(rows)].sort((a, b) => {
+    const hitDiff = toNum(b?.estimated_hit_rate, 0) - toNum(a?.estimated_hit_rate, 0);
+    if (Math.abs(hitDiff) > 0.0005) return hitDiff;
+    const tierDiff = toNum(b?.recommendation_tier_rank, 0) - toNum(a?.recommendation_tier_rank, 0);
+    if (tierDiff !== 0) return tierDiff;
+    if (String(a?.ticket_type || "") !== String(b?.ticket_type || "")) {
+      return String(a?.ticket_type || "") === "exacta" ? -1 : 1;
+    }
+    return String(a?.ticket || "").localeCompare(String(b?.ticket || ""));
+  });
+}
+
+function buildTopRecommendedTickets({
+  finalRecommendedBets,
+  exactaBets,
+  backupUrasujiBets,
+  maxItems = 10
+}) {
+  const deduped = new Map();
+  for (const row of collectAllTicketCandidates({ finalRecommendedBets, exactaBets, backupUrasujiBets })) {
+    const key = `${row.ticket_type}:${row.ticket}`;
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, row);
+      continue;
+    }
+    deduped.set(key, rankTicketCandidatesByHitRate([existing, row])[0]);
+  }
+  return rankTicketCandidatesByHitRate([...deduped.values()])
+    .slice(0, Math.max(1, Math.min(10, toInt(maxItems, 10))))
+    .map((row, idx) => ({
+      rank: idx + 1,
+      ticket_type: row.ticket_type,
+      ticket: row.ticket,
+      estimated_hit_rate: row.estimated_hit_rate,
+      recommendation_tier: row.recommendation_tier,
+      reason_tags: row.reason_tags
+    }));
+}
+
+function computeUpsetRiskScore({
+  confidenceScores,
+  participationDecision,
+  roleProbabilityLayers,
+  attackScenarioAnalysis,
+  headScenarioBalanceAnalysis,
+  outsideHeadPromotionGate
+}) {
+  const scoreSource = participationDecision?.participation_score_components || {};
+  const headConfidence = toNum(
+    confidenceScores?.head_fixed_confidence_pct ?? confidenceScores?.head_confidence_calibrated,
+    0
+  );
+  const recommendationConfidence = toNum(
+    confidenceScores?.recommended_bet_confidence_pct ?? confidenceScores?.bet_confidence_calibrated,
+    0
+  );
+  const firstRows = safeArray(roleProbabilityLayers?.first_place_probability_json);
+  const secondRows = safeArray(roleProbabilityLayers?.second_place_probability_json);
+  const thirdRows = safeArray(roleProbabilityLayers?.third_place_probability_json);
+  const spread = (rows, take) => {
+    const top = toNum(rows[0]?.weight, 0);
+    const others = safeArray(rows).slice(1, take).reduce((sum, row) => sum + toNum(row?.weight, 0), 0);
+    return Math.max(0, top - others) * 100;
+  };
+  const chaosRisk = Math.max(
+    0,
+    100 - toNum(scoreSource?.race_stability_score, 0),
+    100 - toNum(scoreSource?.prediction_readability_score, 0)
+  );
+  const partnerNoise = Math.max(0, 100 - toNum(scoreSource?.partner_clarity_score, 0));
+  const attackPressure = toNum(attackScenarioAnalysis?.attack_scenario_score, 0) * 0.18;
+  const boat1EscapeProbability = toNum(roleProbabilityLayers?.boat1_escape_probability, 0);
+  const innerCollapseScore = toNum(outsideHeadPromotionGate?.inner_collapse_score, 0);
+  const outerEvidence = [5, 6].reduce((acc, lane) => {
+    const row = outsideHeadPromotionGate?.by_lane?.[String(lane)] || outsideHeadPromotionGate?.by_lane?.[lane] || {};
+    return Math.max(acc, safeArray(row?.matched_evidence_categories).length);
+  }, 0);
+  return Number(
+    clamp(
+      0,
+      100,
+      chaosRisk * 0.28 +
+        partnerNoise * 0.22 +
+        Math.max(0, 70 - headConfidence) * 0.18 +
+        Math.max(0, 62 - recommendationConfidence) * 0.1 +
+        Math.max(0, 0.62 - boat1EscapeProbability) * 100 * 0.16 +
+        Math.max(0, 14 - spread(firstRows, 2)) * 0.8 +
+        Math.max(0, 12 - spread(secondRows, 2)) * 0.55 +
+        Math.max(0, 10 - spread(thirdRows, 3)) * 0.35 +
+        attackPressure +
+        outerEvidence * 2.6 +
+        innerCollapseScore * 0.22 +
+        (toInt(scoreSource?.quality_gate_applied, 0) === 1 ? 12 : 0)
+    ).toFixed(2)
+  );
+}
+
+function shouldShowUpsetAlert({
+  upsetRiskScore,
+  confidenceScores,
+  boat1EscapeProbability,
+  participationDecision
+}) {
+  const headConfidence = toNum(
+    confidenceScores?.head_fixed_confidence_pct ?? confidenceScores?.head_confidence_calibrated,
+    0
+  );
+  const recommendationState = String(participationDecision?.decision || "").toLowerCase();
+  if (upsetRiskScore >= 78) return true;
+  if (upsetRiskScore < 62) return false;
+  if (headConfidence >= 84 && boat1EscapeProbability >= 0.72 && recommendationState === "recommended") return false;
+  return true;
+}
+
+function buildUpsetAlert({
+  upsetRiskScore,
+  showUpsetAlert,
+  attackScenarioAnalysis,
+  escapePatternAnalysis,
+  roleProbabilityLayers,
+  outsideHeadPromotionGate,
+  isRecommendedRace,
+  backupUrasujiBets,
+  finalRecommendedBets
+}) {
+  if (!showUpsetAlert) {
+    return {
+      shown: false,
+      level: null,
+      reasons: [],
+      warning_boats: [],
+      likely_scenario: null,
+      reference_tickets: [],
+      reference_only: false,
+      score: upsetRiskScore
+    };
+  }
+  const firstRows = safeArray(roleProbabilityLayers?.first_place_probability_json);
+  const secondRows = safeArray(roleProbabilityLayers?.second_place_probability_json);
+  const gateByLane = outsideHeadPromotionGate?.by_lane || {};
+  const warningBoats = Array.from(new Set([
+    ...firstRows.filter((row) => toInt(row?.lane, null) >= 4 && toNum(row?.weight, 0) >= 0.1).map((row) => toInt(row?.lane, null)),
+    ...secondRows.filter((row) => toInt(row?.lane, null) >= 4 && toNum(row?.weight, 0) >= 0.12).map((row) => toInt(row?.lane, null))
+  ])).slice(0, 4);
+  const reasons = [];
+  if (String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead") reasons.push("outside-lead shape is active");
+  if (attackScenarioAnalysis?.attack_scenario_label) reasons.push(`attack scenario pressure: ${attackScenarioAnalysis.attack_scenario_label}`);
+  if (toNum(outsideHeadPromotionGate?.inner_collapse_score, 0) >= 58) reasons.push("inner collapse evidence is elevated");
+  if (warningBoats.some((lane) => safeArray(gateByLane?.[String(lane)]?.matched_evidence_categories).length >= 3)) {
+    reasons.push("multiple outside evidence groups are aligned");
+  }
+  const reference_tickets = normalizeSavedBetSnapshotItems(
+    safeArray(backupUrasujiBets).length > 0
+      ? backupUrasujiBets
+      : safeArray(finalRecommendedBets).filter((row) => {
+          const firstLane = toInt(String(row?.combo || "").split("-")[0], null);
+          return firstLane >= 4;
+        })
+  ).slice(0, isRecommendedRace ? 3 : 2);
+  return {
+    shown: true,
+    level: upsetRiskScore >= 78 ? "大穴警戒" : "穴注意",
+    reasons: reasons.slice(0, 3),
+    warning_boats: warningBoats,
+    likely_scenario: attackScenarioAnalysis?.attack_scenario_label || escapePatternAnalysis?.formation_pattern || "mixed upset pressure",
+    reference_tickets,
+    reference_only: !isRecommendedRace || upsetRiskScore >= 78,
+    score: upsetRiskScore
+  };
+}
+
 function buildFeatureContributionComponents(row) {
   const f = row?.features || {};
   const exhibitionRank = toNum(f.exhibition_rank, 6);
@@ -7372,6 +7595,36 @@ raceRouter.get("/race", async (req, res, next) => {
       learningWeights,
       race: data?.race || null
     });
+    const topRecommendedTicketsSnapshot = buildTopRecommendedTickets({
+      finalRecommendedBets: finalRecommendedSnapshot.items,
+      exactaBets: exactaSnapshot.items,
+      backupUrasujiBets: backupUrasujiSnapshot.items,
+      maxItems: 10
+    });
+    const upsetRiskScore = computeUpsetRiskScore({
+      confidenceScores,
+      participationDecision,
+      roleProbabilityLayers: candidateDistributions,
+      attackScenarioAnalysis,
+      headScenarioBalanceAnalysis,
+      outsideHeadPromotionGate: candidateDistributions.outside_head_promotion_gate_json
+    });
+    const upsetAlertSnapshot = buildUpsetAlert({
+      upsetRiskScore,
+      showUpsetAlert: shouldShowUpsetAlert({
+        upsetRiskScore,
+        confidenceScores,
+        boat1EscapeProbability: toNum(candidateDistributions?.boat1_escape_probability, 0),
+        participationDecision
+      }),
+      attackScenarioAnalysis,
+      escapePatternAnalysis,
+      roleProbabilityLayers: candidateDistributions,
+      outsideHeadPromotionGate: candidateDistributions.outside_head_promotion_gate_json,
+      isRecommendedRace: String(participationDecision?.decision || "").toLowerCase() === "recommended",
+      backupUrasujiBets: backupUrasujiSnapshot.items,
+      finalRecommendedBets: finalRecommendedSnapshot.items
+    });
     const startDisplay = saveRaceStartDisplaySnapshot({
       raceId,
       racers: data.racers,
@@ -7584,6 +7837,8 @@ raceRouter.get("/race", async (req, res, next) => {
       backup_urasuji_recommendations_snapshot: backupUrasujiSnapshot.items,
       backup_urasuji_section_shown: backupUrasujiSnapshot.shown ? 1 : 0,
       backup_urasuji_reason_tags: backupUrasujiSnapshot.backup_reason_tags,
+      top_recommended_tickets_snapshot: topRecommendedTicketsSnapshot,
+      upset_alert_snapshot: upsetAlertSnapshot,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -7917,6 +8172,8 @@ raceRouter.get("/race", async (req, res, next) => {
       final_recommended_bets_snapshot: finalRecommendedSnapshot.items,
       final_recommended_bets_count: finalRecommendedSnapshot.items.length,
       final_recommended_bets_snapshot_source: finalRecommendedSnapshot.snapshot_source,
+      top_recommended_tickets_snapshot: topRecommendedTicketsSnapshot,
+      upset_alert_snapshot: upsetAlertSnapshot,
       snapshot_context: snapshotContext,
       learning_context: learningContext,
       ai_bets_full_snapshot: {
@@ -12032,6 +12289,10 @@ export const __testHooks = {
   buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
   buildBoat3WeakStHeadSuppressionContext,
+  buildTopRecommendedTickets,
+  computeUpsetRiskScore,
+  shouldShowUpsetAlert,
+  buildUpsetAlert,
   computeBoat1EscapeProbability,
   computeAttackScenarioProbabilities,
   computeFirstPlaceProbabilities,
