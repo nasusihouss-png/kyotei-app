@@ -7,34 +7,70 @@ const LANE_BONUS = {
   6: 1
 };
 
+function clamp(min, max, value) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function buildFetchedSignalScoreBreakdown(f) {
+  const lapTimeContribution = Number(
+    clamp(
+      0,
+      28,
+      Math.max(0, 7 - (f.lap_time_rank ?? 6)) * 3.1 +
+        Math.max(0, (f.lap_time_delta_vs_front ?? 0)) * 95 +
+        Math.max(0, f.lap_attack_strength || 0) * 0.5
+    ).toFixed(2)
+  );
+  const startExhibitionContribution = Number(
+    clamp(
+      0,
+      18,
+      Math.max(0, 7 - (f.st_rank ?? 6)) * 2 +
+        Math.max(0, 7 - (f.expected_actual_st_rank ?? 6)) * 2 +
+        (f.slit_alert_flag ? 2.5 : 0)
+    ).toFixed(2)
+  );
+  const motor2renContribution = Number(
+    clamp(0, 20, (f.motor2_rate || 0) * 0.24 + Math.max(0, 7 - (f.exhibition_rank ?? 6)) * 0.8).toFixed(2)
+  );
+  const motor3renContribution = Number(
+    clamp(0, 12, Number.isFinite(f.motor3_rate) ? f.motor3_rate * 0.12 : 0).toFixed(2)
+  );
+  return {
+    lap_time_contribution: lapTimeContribution,
+    exhibition_st_contribution: startExhibitionContribution,
+    motor_2ren_contribution: motor2renContribution,
+    motor_3ren_contribution: motor3renContribution,
+    total:
+      lapTimeContribution +
+      startExhibitionContribution +
+      motor2renContribution +
+      motor3renContribution
+  };
+}
+
 export function calcRacerScore(f) {
   let score = 0;
   score += LANE_BONUS[f.lane] ?? 0;
   score += f.class_score * 4.0;
   score += f.nationwide_win_rate * 1.8;
   score += f.local_win_rate * 2.2;
-  score += f.motor2_rate * 0.32;
-  score += (f.motor3_rate || 0) * 0.1;
+  score += f.motor2_rate * 0.26;
+  score += (f.motor3_rate || 0) * 0.06;
   score += f.boat2_rate * 0.18;
   score += f.st_inv * 24;
   score += (f.expected_actual_st_inv || 0) * 16;
   score += f.local_minus_nation * 1.2;
 
   // Exhibition bonuses
-  if (f.exhibition_rank === 1) score += 8;
-  else if (f.exhibition_rank === 2) score += 4;
-  if (f.lap_time_rank === 1) score += 10;
-  else if (f.lap_time_rank === 2) score += 5;
-  score += Math.max(0, 7 - (f.exhibition_rank ?? 6)) * 1.6;
-  score += Math.max(0, 7 - (f.lap_time_rank ?? 6)) * 2.4;
-  score += Math.max(0, f.lap_attack_strength || 0) * 0.22;
-  if (f.lap_attack_flag === 1) score += 3.5;
+  if (f.exhibition_rank === 1) score += 7;
+  else if (f.exhibition_rank === 2) score += 3.5;
 
   // Exhibition ST bonus
-  if (f.st_rank === 1) score += 7;
-  else if (f.st_rank === 2) score += 3;
-  if (f.expected_actual_st_rank === 1) score += 4;
-  else if (f.expected_actual_st_rank === 2) score += 2;
+  if (f.st_rank === 1) score += 4;
+  else if (f.st_rank === 2) score += 2;
+  if (f.expected_actual_st_rank === 1) score += 3;
+  else if (f.expected_actual_st_rank === 2) score += 1.5;
 
   // Tilt bonus (+0.5)
   score += f.tilt_bonus || 0;
@@ -63,20 +99,39 @@ export function calcRacerScore(f) {
   score += f.venue_lane_adjustment || 0;
   score -= f.f_hold_caution_penalty || 0;
 
+  const fetchedSignalBreakdown = buildFetchedSignalScoreBreakdown(f);
+  score += fetchedSignalBreakdown.total;
+
   return score;
 }
 
 export function rankRace(racersWithFeatures) {
-  return [...(racersWithFeatures || [])]
-    .map((item) => ({
-      ...item,
-      score: calcRacerScore(item.features)
-    }))
-    .sort((a, b) => b.score - a.score)
+  const ranked = [...(racersWithFeatures || [])]
+    .map((item) => {
+      const fetchedSignalBreakdown = buildFetchedSignalScoreBreakdown(item.features);
+      return {
+        ...item,
+        score: calcRacerScore(item.features),
+        fetchedSignalBreakdown
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+  const signalOnlyRanks = [...ranked]
+    .sort((a, b) => b.fetchedSignalBreakdown.total - a.fetchedSignalBreakdown.total)
+    .map((item, idx) => [item.racer?.lane, idx + 1]);
+  const signalRankMap = new Map(signalOnlyRanks);
+  return ranked
     .map((item, idx) => ({
       rank: idx + 1,
       score: Number(item.score.toFixed(4)),
       racer: item.racer,
-      features: item.features
+      features: {
+        ...item.features,
+        fetched_signal_score_breakdown: {
+          ...item.fetchedSignalBreakdown,
+          signal_only_rank: signalRankMap.get(item.racer?.lane) ?? null,
+          final_rank: idx + 1
+        }
+      }
     }));
 }

@@ -290,11 +290,11 @@ function parseHtmlSupplement(html) {
     lapExhibition: [/周回展示/i, /伸び足/i, /足色/i, /出足/i, /回り足/i],
     exhibitionSt: [/展示ST/i, /^ST$/i],
     exhibitionTime: [/展示タイム/i],
-    motor2Rate: [/モーター.*2連率/i, /^2連率$/i],
-    motor3Rate: [/モーター.*3連率/i, /^3連率$/i],
+    motor2Rate: [/モーター.*2.*(?:率|連)/i, /モーター.*2連対率/i, /^2連率$/i, /^2連対率$/i],
+    motor3Rate: [/モーター.*3.*(?:率|連)/i, /モーター.*3連対率/i, /^3連率$/i, /^3連対率$/i],
     laneFirstRate: [/1着率/i],
-    lane2RenRate: [/2着率/i, /2連率/i],
-    lane3RenRate: [/3着率/i, /3連率/i]
+    lane2RenRate: [/2着率/i, /2連率/i, /2連対率/i],
+    lane3RenRate: [/3着率/i, /3連率/i, /3連対率/i]
   };
 
   for (const table of tables) {
@@ -314,6 +314,13 @@ function parseHtmlSupplement(html) {
       lane2RenRate: detectColumnIndex(table.headers, patterns.lane2RenRate),
       lane3RenRate: detectColumnIndex(table.headers, patterns.lane3RenRate)
     };
+    const motorTableText = `${table.headers.join(" ")} ${table.text}`;
+    if (indexes.motor2Rate === null && indexes.lane2RenRate !== null && /モーター/i.test(motorTableText)) {
+      indexes.motor2Rate = indexes.lane2RenRate;
+    }
+    if (indexes.motor3Rate === null && indexes.lane3RenRate !== null && /モーター/i.test(motorTableText)) {
+      indexes.motor3Rate = indexes.lane3RenRate;
+    }
 
     let parsedCount = 0;
     table.$table.find("tr").slice(1).each((_, tr) => {

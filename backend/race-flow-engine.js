@@ -42,6 +42,18 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   const st2 = 7 - toNum(l2.features?.st_rank, 6);
   const st3 = 7 - toNum(l3.features?.st_rank, 6);
   const st4 = 7 - toNum(l4.features?.st_rank, 6);
+  const expSt1 = 7 - toNum(l1.features?.expected_actual_st_rank, 6);
+  const expSt2 = 7 - toNum(l2.features?.expected_actual_st_rank, 6);
+  const expSt3 = 7 - toNum(l3.features?.expected_actual_st_rank, 6);
+  const expSt4 = 7 - toNum(l4.features?.expected_actual_st_rank, 6);
+  const lap1 = 7 - toNum(l1.features?.lap_time_rank, 6);
+  const lap2 = 7 - toNum(l2.features?.lap_time_rank, 6);
+  const lap3 = 7 - toNum(l3.features?.lap_time_rank, 6);
+  const lap4 = 7 - toNum(l4.features?.lap_time_rank, 6);
+  const motor21 = toNum(l1.features?.motor2_rate, 0);
+  const motor22 = toNum(l2.features?.motor2_rate, 0);
+  const motor23 = toNum(l3.features?.motor2_rate, 0);
+  const motor24 = toNum(l4.features?.motor2_rate, 0);
   const slit2 = toNum(l2.features?.slit_alert_flag, 0);
   const slit3 = toNum(l3.features?.slit_alert_flag, 0);
   const slit4 = toNum(l4.features?.slit_alert_flag, 0);
@@ -61,6 +73,10 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     slit3 ? Math.min(0.24, 0.09 + slitDelta3 * 0.5) : 0,
     slit4 ? Math.min(0.24, 0.09 + slitDelta4 * 0.5) : 0
   ];
+  const launchEdge1 = st1 * 0.9 + expSt1 * 1.05;
+  const launchEdge2 = st2 * 0.95 + expSt2 * 1.1 + slitBoost2 * 18;
+  const launchEdge3 = st3 * 0.95 + expSt3 * 1.12 + slitBoost34[0] * 18;
+  const launchEdge4 = st4 * 0.92 + expSt4 * 1.08 + slitBoost34[1] * 18;
 
   const nigeIdx = toNum(raceIndexes?.nige_index, 50);
   const sashiIdx = toNum(raceIndexes?.sashi_index, 50);
@@ -76,7 +92,9 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   let nigeLogit =
     nigeIdx * 0.06 +
     (s1 - (s2 + s3) * 0.5) * 0.045 +
-    (e1 + st1) * 0.16 -
+    (e1 + launchEdge1) * 0.17 -
+    Math.max(0, launchEdge2 - launchEdge1) * 0.045 -
+    Math.max(0, launchEdge3 - launchEdge1) * 0.03 -
     (chaosIdx - 50) * 0.03 +
     toNum(p1.nige_style_score, 50) * 0.006 +
     toNum(p1.start_stability_score, 50) * 0.005;
@@ -85,8 +103,9 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   let sashiLogit =
     sashiIdx * 0.06 +
     (s2 - s1) * 0.035 +
-    (e2 + st2) * 0.15 +
-    Math.max(0, (st2 + e2) - (st1 + e1)) * 0.08 +
+    (e2 + launchEdge2) * 0.16 +
+    Math.max(0, (launchEdge2 + e2) - (launchEdge1 + e1)) * 0.095 +
+    Math.max(0, motor22 - motor21) * 0.003 +
     toNum(p2.sashi_style_score, 50) * 0.006 +
     toNum(p2.start_attack_score, 50) * 0.004 +
     slitBoost2;
@@ -95,8 +114,10 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   let makuriLogit =
     makuriIdx * 0.06 +
     (Math.max(s3, s4) - Math.max(s1, s2)) * 0.03 +
-    (e3 + st3) * 0.13 +
-    (e4 + st4) * 0.07 +
+    (e3 + launchEdge3) * 0.14 +
+    (e4 + launchEdge4) * 0.085 +
+    Math.max(lap3, lap4) * 0.05 +
+    Math.max(motor23, motor24) * 0.002 +
     (toNum(p3.makuri_style_score, 50) + toNum(p4.makuri_style_score, 50)) * 0.003 +
     Math.max(...slitBoost34);
   makuriLogit -= Math.max(
@@ -107,7 +128,8 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   let makurizashiLogit =
     makurizashiIdx * 0.06 +
     ((s3 + s4) * 0.5 - s1) * 0.028 +
-    ((e3 + st3 + e4 + st4) * 0.5) * 0.12 +
+    ((e3 + launchEdge3 + e4 + launchEdge4) * 0.5) * 0.13 +
+    ((lap3 + lap4) * 0.5) * 0.04 +
     (toNum(p3.start_attack_score, 50) + toNum(p4.start_attack_score, 50)) * 0.0025 +
     (slitBoost34[0] * 0.7 + slitBoost34[1] * 0.7);
   makurizashiLogit -=
@@ -145,6 +167,21 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     chaos_prob: Number(toNum(chaos, 0).toFixed(4)),
     flow_confidence: Number(flow_confidence.toFixed(4)),
     slit_alert_lanes: [slit2 ? 2 : null, slit3 ? 3 : null, slit4 ? 4 : null].filter(Boolean),
-    f_hold_caution_lanes: [fHold1 ? 1 : null, fHold2 ? 2 : null, fHold3 ? 3 : null, fHold4 ? 4 : null].filter(Boolean)
+    f_hold_caution_lanes: [fHold1 ? 1 : null, fHold2 ? 2 : null, fHold3 ? 3 : null, fHold4 ? 4 : null].filter(Boolean),
+    start_signal_debug: {
+      by_lane: {
+        1: { launch_edge: Number(launchEdge1.toFixed(2)), exhibition_rank_signal: e1, st_rank_signal: st1, expected_actual_st_signal: expSt1, lap_rank_signal: lap1, motor2_signal: motor21 },
+        2: { launch_edge: Number(launchEdge2.toFixed(2)), exhibition_rank_signal: e2, st_rank_signal: st2, expected_actual_st_signal: expSt2, lap_rank_signal: lap2, motor2_signal: motor22 },
+        3: { launch_edge: Number(launchEdge3.toFixed(2)), exhibition_rank_signal: e3, st_rank_signal: st3, expected_actual_st_signal: expSt3, lap_rank_signal: lap3, motor2_signal: motor23 },
+        4: { launch_edge: Number(launchEdge4.toFixed(2)), exhibition_rank_signal: e4, st_rank_signal: st4, expected_actual_st_signal: expSt4, lap_rank_signal: lap4, motor2_signal: motor24 }
+      },
+      scenario_driver_scores: {
+        boat1_escape: Number(nigeLogit.toFixed(3)),
+        boat2_sashi: Number(sashiLogit.toFixed(3)),
+        boat3_makuri: Number((makuriLogit + launchEdge3 * 0.03).toFixed(3)),
+        boat3_makuri_sashi: Number((makurizashiLogit + launchEdge3 * 0.02).toFixed(3)),
+        boat4_cado_attack: Number((makuriLogit + launchEdge4 * 0.04).toFixed(3))
+      }
+    }
   };
 }

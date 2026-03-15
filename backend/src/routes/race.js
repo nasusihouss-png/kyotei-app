@@ -4424,8 +4424,9 @@ function computeFinishOverrideStrength(features) {
       0,
       100,
       Math.max(0, 7 - toNum(features?.lap_time_rank, 6)) * 12 +
-        Math.max(0, 6.9 - toNum(features?.lap_time, 6.9)) * 170 +
-        Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 220
+        Math.max(0, 6.9 - toNum(features?.lap_time, 6.9)) * 195 +
+        Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 255 +
+        Math.max(0, toNum(features?.lap_attack_strength, 0)) * 2.8
     ).toFixed(2)
   );
   const lapExhibitionContribution = computeLapExhibitionStrength(features);
@@ -4450,24 +4451,53 @@ function computeFinishOverrideStrength(features) {
       0,
       100,
       Math.max(0, 7 - toNum(features?.st_rank, 6)) * 10 +
-        Math.max(0, 0.18 - toNum(features?.exhibition_st, 0.18)) * 220
+        Math.max(0, 7 - toNum(features?.expected_actual_st_rank, 6)) * 11 +
+        Math.max(0, 0.18 - toNum(features?.exhibition_st, 0.18)) * 260
     ).toFixed(2)
   );
   const venueFitContribution = Number(
     clamp(0, 100, toNum(features?.course_fit_score, 0) * 10 + toNum(features?.venue_lane_adjustment, 0) * 8).toFixed(2)
   );
-  const finalStrength = Number(
+  const firstPlaceStrength = Number(
     clamp(
       0,
       100,
-      lapTimeContribution * 0.24 +
-        lapExhibitionContribution * 0.22 +
-        motor2renContribution * 0.26 +
-        motor3renContribution * 0.14 +
-        recentPlayerContribution * 0.14 +
+      lapTimeContribution * 0.31 +
+        lapExhibitionContribution * 0.18 +
+        motor2renContribution * 0.23 +
+        motor3renContribution * 0.08 +
+        recentPlayerContribution * 0.1 +
+        exhibitionTimeContribution * 0.03 +
+        exhibitionStContribution * 0.11 +
+        venueFitContribution * 0.06
+    ).toFixed(2)
+  );
+  const secondPlaceStrength = Number(
+    clamp(
+      0,
+      100,
+      lapTimeContribution * 0.18 +
+        lapExhibitionContribution * 0.14 +
+        motor2renContribution * 0.33 +
+        motor3renContribution * 0.15 +
+        recentPlayerContribution * 0.1 +
+        exhibitionTimeContribution * 0.03 +
+        exhibitionStContribution * 0.05 +
+        venueFitContribution * 0.02
+    ).toFixed(2)
+  );
+  const thirdPlaceStrength = Number(
+    clamp(
+      0,
+      100,
+      lapTimeContribution * 0.12 +
+        lapExhibitionContribution * 0.12 +
+        motor2renContribution * 0.24 +
+        motor3renContribution * 0.24 +
+        recentPlayerContribution * 0.1 +
         exhibitionTimeContribution * 0.04 +
         exhibitionStContribution * 0.04 +
-        venueFitContribution * 0.06
+        venueFitContribution * 0.1
     ).toFixed(2)
   );
   return {
@@ -4479,7 +4509,10 @@ function computeFinishOverrideStrength(features) {
     exhibition_time_contribution: exhibitionTimeContribution,
     exhibition_st_contribution: exhibitionStContribution,
     venue_fit_contribution: venueFitContribution,
-    finish_override_strength: finalStrength
+    finish_override_strength: firstPlaceStrength,
+    first_place_finish_strength: firstPlaceStrength,
+    second_place_finish_strength: secondPlaceStrength,
+    third_place_finish_strength: thirdPlaceStrength
   };
 }
 
@@ -4495,11 +4528,14 @@ function applyFinishOverrideStrength(baseFinishProbs, finishOverrideStrengthByLa
       finish_override_detail: detailMap.get(toInt(row?.lane, null)) || {}
     }));
   };
+  const getTopLane = (rows) => normalizeDistributionRows(rows)[0]?.lane ?? null;
+  const baseFirstLeader = getTopLane(baseFinishProbs?.first);
+  const baseSecondLeader = getTopLane(baseFinishProbs?.second);
   const firstRows = normalizeWithDetails(
     safeArray(baseFinishProbs?.first).map((row) => {
       const lane = toInt(row?.lane, null);
       const override = finishOverrideStrengthByLane.get(lane) || {};
-      const overrideStrength = toNum(override?.finish_override_strength, 0);
+      const overrideStrength = toNum(override?.first_place_finish_strength ?? override?.finish_override_strength, 0);
       const baseWeight = toNum(row?.weight, 0);
       const laneOneBlock =
         lane !== 1 &&
@@ -4525,7 +4561,7 @@ function applyFinishOverrideStrength(baseFinishProbs, finishOverrideStrengthByLa
     safeArray(baseFinishProbs?.second).map((row) => {
       const lane = toInt(row?.lane, null);
       const override = finishOverrideStrengthByLane.get(lane) || {};
-      const overrideStrength = toNum(override?.finish_override_strength, 0);
+      const overrideStrength = toNum(override?.second_place_finish_strength ?? override?.finish_override_strength, 0);
       const baseWeight = toNum(row?.weight, 0);
       const adjusted = baseWeight + Math.min(0.065, overrideStrength * 0.00082);
       return {
@@ -4542,7 +4578,7 @@ function applyFinishOverrideStrength(baseFinishProbs, finishOverrideStrengthByLa
     safeArray(baseFinishProbs?.third).map((row) => {
       const lane = toInt(row?.lane, null);
       const override = finishOverrideStrengthByLane.get(lane) || {};
-      const overrideStrength = toNum(override?.finish_override_strength, 0);
+      const overrideStrength = toNum(override?.third_place_finish_strength ?? override?.finish_override_strength, 0);
       const baseWeight = toNum(row?.weight, 0);
       const adjusted = baseWeight + Math.min(0.04, overrideStrength * 0.00046);
       return {
@@ -4558,7 +4594,14 @@ function applyFinishOverrideStrength(baseFinishProbs, finishOverrideStrengthByLa
   return {
     first: firstRows,
     second: secondRows,
-    third: thirdRows
+    third: thirdRows,
+    diagnostics: {
+      first_place_rank_changed: baseFirstLeader !== getTopLane(firstRows),
+      second_place_rank_changed: baseSecondLeader !== getTopLane(secondRows),
+      boat1_prior_blocked_outside_head_promotion: firstRows.some(
+        (entry) => toNum(entry?.finish_override_detail?.boat1_prior_blocked_outside_head_promotion, 0) === 1
+      )
+    }
   };
 }
 
@@ -4633,6 +4676,7 @@ function computeFinishProbsByScenario({
       first: adjustedFinishProbs.first,
       second: adjustedFinishProbs.second,
       third: adjustedFinishProbs.third,
+      finish_override_diagnostics: adjustedFinishProbs.diagnostics || {},
       finish_override_strength_json: Object.fromEntries(
         [...finishOverrideStrengthByLane.entries()].map(([lane, value]) => [String(lane), value])
       )
@@ -9559,6 +9603,19 @@ raceRouter.get("/race", async (req, res, next) => {
         lane_3ren_rate: toNullableNum(racer?.lane3RenRate)
       };
     });
+    const fetchedSignalDiagnostics = snapshotPlayers.map((row) => ({
+      lane: toInt(row?.lane, null),
+      lap_time_contribution: toNullableNum(row?.feature_snapshot?.fetched_signal_score_breakdown?.lap_time_contribution),
+      exhibition_st_contribution: toNullableNum(row?.feature_snapshot?.fetched_signal_score_breakdown?.exhibition_st_contribution),
+      motor_2ren_contribution: toNullableNum(row?.feature_snapshot?.fetched_signal_score_breakdown?.motor_2ren_contribution),
+      motor_3ren_contribution: toNullableNum(row?.feature_snapshot?.fetched_signal_score_breakdown?.motor_3ren_contribution),
+      signal_only_rank: toInt(row?.feature_snapshot?.fetched_signal_score_breakdown?.signal_only_rank, null),
+      final_rank: toInt(row?.feature_snapshot?.fetched_signal_score_breakdown?.final_rank, null),
+      changed_first_place_ranking:
+        toInt(row?.feature_snapshot?.fetched_signal_score_breakdown?.signal_only_rank, null) !==
+        toInt(row?.feature_snapshot?.fetched_signal_score_breakdown?.final_rank, null),
+      changed_second_place_ranking: false
+    }));
     const snapshotContext = {
       race_key: raceId,
       race_date: data?.race?.date || null,
@@ -9573,6 +9630,7 @@ raceRouter.get("/race", async (req, res, next) => {
       wave_height: toNullableNum(data?.race?.waveHeight),
       players: snapshotPlayers,
       player_summary: snapshotPlayers,
+      fetched_signal_diagnostics: fetchedSignalDiagnostics,
       kyoteibiyori_fetch_status_json: data?.source?.kyotei_biyori || {},
       entry: {
         predicted_entry_order: entryMeta.predicted_entry_order,
@@ -10271,6 +10329,8 @@ raceRouter.get("/race", async (req, res, next) => {
       valueDetection,
       marketTrap,
       raceFlow,
+      fetchedSignalDiagnostics,
+      finishProbabilitiesByScenario,
       startDisplay: startDisplay || null,
       startDisplayDebug: Array.isArray(startDisplay?.start_display_debug)
         ? startDisplay.start_display_debug
