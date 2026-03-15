@@ -470,11 +470,19 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
     motor3ren_raw: debug?.motor3ren_raw || {},
     rendered_rows: (Array.isArray(playerComparisonRows) ? playerComparisonRows : []).map((row) => ({
       lane: row?.lane ?? null,
+      lane1stRate_raw: row?.laneFirstRate ?? null,
+      lane2renRate_raw: row?.lane2RenRate ?? null,
+      lane3renRate_raw: row?.lane3RenRate ?? null,
+      motor3ren_raw: row?.motor3Rate ?? null,
       lane1stRate: Number.isFinite(Number(row?.laneFirstRate)),
       lane2renRate: Number.isFinite(Number(row?.lane2RenRate)),
       lane3renRate: Number.isFinite(Number(row?.lane3RenRate)),
       lapTime: Number.isFinite(Number(row?.lapTime)),
-      exhibitionST: Number.isFinite(Number(row?.exhibitionSt))
+      exhibitionST: Number.isFinite(Number(row?.exhibitionSt)),
+      display_lane1stRate: formatComparisonValue(row?.laneFirstRate, 2),
+      display_lane2renRate: formatComparisonValue(row?.lane2RenRate, 2),
+      display_lane3renRate: formatComparisonValue(row?.lane3RenRate, 2),
+      display_motor3ren: formatComparisonValue(row?.motor3Rate, 2)
     }))
   };
 }
@@ -1341,48 +1349,71 @@ function getPlayerComparisonRows({ prediction, data }) {
       ? prediction.snapshot_context
       : {};
   const snapshotPlayers = Array.isArray(snapshotContext?.players) ? snapshotContext.players : [];
-  if (snapshotPlayers.length > 0) {
-    return snapshotPlayers
-      .map((row) => ({
-        lane: Number(row?.lane || 0),
-        name: row?.name || `Boat ${row?.lane || "-"}`,
-        fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
-        kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched || 0) === 1,
-        lapTime: toFiniteComparisonNumber(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time),
-        exhibitionSt: toFiniteComparisonNumber(row?.exhibition_st),
-        exhibitionTime: toFiniteComparisonNumber(row?.exhibition_time),
-        lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score)
-          ?? toFiniteComparisonNumber(row?.feature_snapshot?.lap_exhibition_score)
-          ?? toFiniteComparisonNumber(row?.feature_snapshot?.lap_attack_strength)
-          ?? (toFiniteComparisonNumber(row?.feature_snapshot?.lap_time_delta_vs_front) !== null
-            ? Number(row.feature_snapshot.lap_time_delta_vs_front) * 100
-            : null),
-        stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
-        motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
-        motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
-        laneFirstRate: toFiniteComparisonNumber(row?.lane_first_rate),
-        lane2RenRate: toFiniteComparisonNumber(row?.lane_2ren_rate),
-        lane3RenRate: toFiniteComparisonNumber(row?.lane_3ren_rate)
-      }))
+  const snapshotByLane = new Map(
+    snapshotPlayers
+      .map((row) => [Number(row?.lane || 0), row])
+      .filter(([lane]) => Number.isInteger(lane) && lane > 0)
+  );
+  const racers = Array.isArray(data?.racers) ? data.racers : [];
+  if (racers.length > 0) {
+    return racers
+      .map((row) => {
+        const lane = Number(row?.lane || 0);
+        const snapshotRow = snapshotByLane.get(lane) || {};
+        const liveLapTime = toFiniteComparisonNumber(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime);
+        const liveExhibitionSt = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt);
+        const liveExhibitionTime = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime);
+        const liveLapScore = toFiniteComparisonNumber(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore);
+        const liveMotor2Rate = toFiniteComparisonNumber(row?.kyoteiBiyoriMotor2Rate ?? row?.motor2Rate);
+        const liveMotor3Rate = toFiniteComparisonNumber(row?.kyoteiBiyoriMotor3Rate ?? row?.motor3Rate);
+        const liveLane1stRate = toFiniteComparisonNumber(row?.laneFirstRate);
+        const liveLane2RenRate = toFiniteComparisonNumber(row?.lane2RenRate);
+        const liveLane3RenRate = toFiniteComparisonNumber(row?.lane3RenRate);
+        const snapshotLapScore = toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_lap_exhibition_score ?? snapshotRow?.lap_exhibition_score)
+          ?? toFiniteComparisonNumber(snapshotRow?.feature_snapshot?.lap_exhibition_score)
+          ?? toFiniteComparisonNumber(snapshotRow?.feature_snapshot?.lap_attack_strength)
+          ?? (toFiniteComparisonNumber(snapshotRow?.feature_snapshot?.lap_time_delta_vs_front) !== null
+            ? Number(snapshotRow.feature_snapshot.lap_time_delta_vs_front) * 100
+            : null);
+        return {
+          lane,
+          name: row?.name || snapshotRow?.name || `Boat ${lane || "-"}`,
+          fCount: row?.fHoldCount === null || row?.fHoldCount === undefined
+            ? (snapshotRow?.f_hold_count === null || snapshotRow?.f_hold_count === undefined ? null : Number(snapshotRow.f_hold_count))
+            : Number(row.fHoldCount),
+          kyoteiBiyoriFetched:
+            Number(row?.kyoteiBiyoriFetched) === 1 ||
+            Number(snapshotRow?.kyoteibiyori_fetched) === 1,
+          lapTime: liveLapTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_lap_time_raw ?? snapshotRow?.kyoteibiyori_lap_time ?? snapshotRow?.lap_time),
+          exhibitionSt: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_st ?? snapshotRow?.exhibition_st),
+          exhibitionTime: liveExhibitionTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_time ?? snapshotRow?.exhibition_time),
+          lapScore: liveLapScore ?? snapshotLapScore,
+          stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || snapshotRow?.kyoteibiyori_stretch_foot_label || snapshotRow?.stretch_foot_label || null,
+          motor2Rate: liveMotor2Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_2rate),
+          motor3Rate: liveMotor3Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_3rate),
+          laneFirstRate: liveLane1stRate ?? toFiniteComparisonNumber(snapshotRow?.lane_first_rate),
+          lane2RenRate: liveLane2RenRate ?? toFiniteComparisonNumber(snapshotRow?.lane_2ren_rate),
+          lane3RenRate: liveLane3RenRate ?? toFiniteComparisonNumber(snapshotRow?.lane_3ren_rate)
+        };
+      })
       .sort((a, b) => a.lane - b.lane);
   }
-  const racers = Array.isArray(data?.racers) ? data.racers : [];
-  return racers
+  return snapshotPlayers
     .map((row) => ({
       lane: Number(row?.lane || 0),
       name: row?.name || `Boat ${row?.lane || "-"}`,
-      fCount: row?.fHoldCount === null || row?.fHoldCount === undefined ? null : Number(row.fHoldCount),
-      kyoteiBiyoriFetched: Number(row?.kyoteiBiyoriFetched || 0) === 1,
-      lapTime: toFiniteComparisonNumber(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime),
-      exhibitionSt: toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt),
-      exhibitionTime: toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime),
-      lapScore: toFiniteComparisonNumber(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore),
-      stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || null,
-      motor2Rate: toFiniteComparisonNumber(row?.motor2Rate),
-      motor3Rate: toFiniteComparisonNumber(row?.motor3Rate),
-      laneFirstRate: toFiniteComparisonNumber(row?.laneFirstRate),
-      lane2RenRate: toFiniteComparisonNumber(row?.lane2RenRate),
-      lane3RenRate: toFiniteComparisonNumber(row?.lane3RenRate)
+      fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
+      kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched) === 1,
+      lapTime: toFiniteComparisonNumber(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time),
+      exhibitionSt: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_st ?? row?.exhibition_st),
+      exhibitionTime: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_time ?? row?.exhibition_time),
+      lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
+      stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
+      motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
+      motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
+      laneFirstRate: toFiniteComparisonNumber(row?.lane_first_rate),
+      lane2RenRate: toFiniteComparisonNumber(row?.lane_2ren_rate),
+      lane3RenRate: toFiniteComparisonNumber(row?.lane_3ren_rate)
     }))
     .sort((a, b) => a.lane - b.lane);
 }
@@ -3669,22 +3700,28 @@ export default function App() {
                           <thead>
                             <tr>
                               <th>Rendered lane</th>
-                              <th>lane1stRate</th>
-                              <th>lane2renRate</th>
-                              <th>lane3renRate</th>
-                              <th>lapTime</th>
-                              <th>exhibitionST</th>
+                              <th>lane1st raw</th>
+                              <th>lane1st display</th>
+                              <th>lane2ren raw</th>
+                              <th>lane2ren display</th>
+                              <th>lane3ren raw</th>
+                              <th>lane3ren display</th>
+                              <th>motor3ren raw</th>
+                              <th>motor3ren display</th>
                             </tr>
                           </thead>
                           <tbody>
                             {kyoteiBiyoriFrontendDebug.rendered_rows.map((row) => (
                               <tr key={`kyotei-debug-render-${row.lane}`}>
                                 <td>{row.lane ?? "-"}</td>
-                                <td>{row.lane1stRate ? "yes" : "no"}</td>
-                                <td>{row.lane2renRate ? "yes" : "no"}</td>
-                                <td>{row.lane3renRate ? "yes" : "no"}</td>
-                                <td>{row.lapTime ? "yes" : "no"}</td>
-                                <td>{row.exhibitionST ? "yes" : "no"}</td>
+                                <td><code>{formatDebugRawValue(row.lane1stRate_raw)}</code></td>
+                                <td>{row.display_lane1stRate}</td>
+                                <td><code>{formatDebugRawValue(row.lane2renRate_raw)}</code></td>
+                                <td>{row.display_lane2renRate}</td>
+                                <td><code>{formatDebugRawValue(row.lane3renRate_raw)}</code></td>
+                                <td>{row.display_lane3renRate}</td>
+                                <td><code>{formatDebugRawValue(row.motor3ren_raw)}</code></td>
+                                <td>{row.display_motor3ren}</td>
                               </tr>
                             ))}
                           </tbody>
