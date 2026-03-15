@@ -627,6 +627,13 @@ export function buildVerifiedLearningRows() {
             : [],
         evidence_bias_table_json:
           learning?.evidence_bias_table_json || context?.evidence_bias_table_json || {},
+        player_stat_window_policy_json:
+          learning?.player_stat_window_policy_json || context?.player_stat_window_policy_json || {},
+        player_stat_windows_used_json: Array.isArray(learning?.player_stat_windows_used_json)
+          ? learning.player_stat_windows_used_json
+          : Array.isArray(context?.player_stat_windows_used_json)
+            ? context.player_stat_windows_used_json
+            : [],
         confirmed_first_place_probability_json: Array.isArray(learning?.confirmed_first_place_probability_json)
           ? learning.confirmed_first_place_probability_json
           : Array.isArray(context?.confirmed_first_place_probability_json)
@@ -688,6 +695,12 @@ export function buildVerifiedLearningRows() {
           learning?.candidate_balance_adjustment_json || context?.candidate_balance_adjustment_json || {},
         scoring_family_components_json:
           learning?.scoring_family_components_json || context?.scoring_family_components_json || {},
+        boat3_weak_st_head_suppression_json:
+          learning?.boat3_weak_st_head_suppression_json || context?.boat3_weak_st_head_suppression_json || {},
+        boat3_weak_st_head_suppressed: toNum(
+          learning?.boat3_weak_st_head_suppressed ?? context?.boat3_weak_st_head_suppressed,
+          0
+        ),
         confidence_version:
           learning?.confidence_version ||
           context?.confidence_version ||

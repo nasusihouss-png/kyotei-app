@@ -3,8 +3,10 @@ import { __testHooks } from "../src/routes/race.js";
 
 const {
   buildSeparatedCandidateDistributions,
+  buildPlayerStatProfileFromHistory,
   buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
+  buildBoat3WeakStHeadSuppressionContext,
   computeBoat1EscapeProbability,
   computeAttackScenarioProbabilities,
   computeFirstPlaceProbabilities,
@@ -691,6 +693,85 @@ assert.equal(
   messyDecision.decision,
   "not_recommended",
   "messy low-quality races should degrade to Skip/Not Recommended instead of Participate"
+);
+
+const weakStLane3Rows = [
+  makeRow(1, { features: { exhibition_rank: 1, expected_actual_st: 0.12, expected_actual_st_rank: 1, motor_total_score: 10.4 } }),
+  makeRow(2, { features: { exhibition_rank: 2, expected_actual_st: 0.13, expected_actual_st_rank: 2, motor_total_score: 9.7 } }),
+  makeRow(3, {
+    features: {
+      exhibition_rank: 4,
+      expected_actual_st: 0.18,
+      expected_actual_st_rank: 5,
+      st_rank: 5,
+      motor_total_score: 8.9,
+      lap_attack_strength: 4.2,
+      slit_alert_flag: 0,
+      entry_advantage_score: 2
+    }
+  }),
+  makeRow(4),
+  makeRow(5),
+  makeRow(6)
+];
+const weakStSuppression = buildBoat3WeakStHeadSuppressionContext({
+  rows: weakStLane3Rows,
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  attackScenarioAnalysis: noAttack,
+  outsideHeadPromotionContext: {
+    inner_collapse_score: 32,
+    by_lane: new Map()
+  }
+});
+assert.equal(
+  weakStSuppression.applied,
+  1,
+  "boat 3 weak-ST suppression should trigger when lane 3 is clearly slower than lanes 1 and 2 in a stable inside race"
+);
+const weakStDistributions = buildSeparatedCandidateDistributions({
+  ranking: weakStLane3Rows,
+  tickets: [],
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  escapePatternAnalysis: insideEscape,
+  attackScenarioAnalysis: noAttack,
+  learningWeights,
+  race
+});
+assert.equal(
+  weakStDistributions.boat3_weak_st_head_suppressed,
+  1,
+  "candidate distributions should log boat 3 weak-ST head suppression"
+);
+assert.ok(
+  laneOrder(weakStDistributions.first_place_probability_json, 2)[0] === 1 &&
+    !laneOrder(weakStDistributions.first_place_probability_json, 2).includes(3),
+  "lane 3 should not stay near the top of first-place probabilities when weak-ST suppression applies"
+);
+
+const playerHistoryProfile = buildPlayerStatProfileFromHistory({
+  raceDate: "2026-03-15",
+  historyRows: [
+    { race_date: "2026-03-01", start_lane: 1, finish_1: 1, finish_2: 2, finish_3: 3 },
+    { race_date: "2026-02-20", start_lane: 1, finish_1: 2, finish_2: 1, finish_3: 3 },
+    { race_date: "2026-01-14", start_lane: 1, finish_1: 1, finish_2: 3, finish_3: 2 },
+    { race_date: "2025-12-10", start_lane: 1, finish_1: 3, finish_2: 1, finish_3: 2 },
+    { race_date: "2025-08-10", start_lane: 1, finish_1: 1, finish_2: 2, finish_3: 3 }
+  ]
+});
+assert.equal(
+  playerHistoryProfile.recent_3_months_sample_size,
+  3,
+  "recent player window should only count races from the last 3 months"
+);
+assert.equal(
+  playerHistoryProfile.current_season_sample_size,
+  3,
+  "current season player window should only count races from the current season"
+);
+assert.ok(
+  playerHistoryProfile.recent_3_months_start === "2025-12-15" &&
+    playerHistoryProfile.current_season_start === "2026-01-01",
+  "player stat profile should expose the exact recent and current-season date windows"
 );
 
 console.log("boat1-escape-opponent-model tests passed");

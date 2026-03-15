@@ -10,6 +10,11 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function toNullableNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function buildAscendingRanks(valuesByLane) {
   const valid = valuesByLane
     .filter((v) => Number.isFinite(v.value))
@@ -51,6 +56,11 @@ export function buildFeatures(racer) {
   const wind_speed_raw = racer?.windSpeed;
   const wind_speed =
     Number.isFinite(Number(wind_speed_raw)) ? Number(wind_speed_raw) : 0;
+  const course1_win_rate = toNullableNumber(racer?.course1WinRate ?? racer?.course1_win_rate);
+  const course1_2rate = toNullableNumber(racer?.course1_2rate ?? racer?.course1_2Rate);
+  const course2_2rate = toNullableNumber(racer?.course2_2rate ?? racer?.course2_2Rate);
+  const course3_3rate = toNullableNumber(racer?.course3_3rate ?? racer?.course3_3Rate);
+  const course4_3rate = toNullableNumber(racer?.course4_3rate ?? racer?.course4_3Rate);
   const course_change = entry_course && lane ? (entry_course !== lane ? 1 : 0) : 0;
   const tilt_bonus = tilt === 0.5 ? 2 : 0;
 
@@ -73,11 +83,20 @@ export function buildFeatures(racer) {
     entry_course,
     tilt,
     wind_speed,
-    course1_win_rate: null,
-    course1_2rate: null,
-    course2_2rate: null,
-    course3_3rate: null,
-    course4_3rate: null,
+    official_nationwide_win_rate: toNullableNumber(racer?.officialNationwideWinRate ?? racer?.nationwideWinRate),
+    official_local_win_rate: toNullableNumber(racer?.officialLocalWinRate ?? racer?.localWinRate),
+    player_recent_3_months_strength: toNullableNumber(racer?.playerRecent3MonthsStrength),
+    player_current_season_strength: toNullableNumber(racer?.playerCurrentSeasonStrength),
+    player_strength_blended: toNullableNumber(racer?.playerStrengthBlended),
+    player_stat_confidence: toNullableNumber(racer?.playerStatConfidence),
+    recent_3_months_sample_size: toNumber(racer?.recent3MonthsSampleSize, 0),
+    current_season_sample_size: toNumber(racer?.currentSeasonSampleSize, 0),
+    player_stat_fallback_used: toNumber(racer?.playerStatFallbackUsed, 0),
+    course1_win_rate,
+    course1_2rate,
+    course2_2rate,
+    course3_3rate,
+    course4_3rate,
     course_fit_score: 0,
     motor_base_score: 0,
     motor_exhibition_score: 0,

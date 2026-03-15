@@ -2279,6 +2279,321 @@ function buildBoat1EscapeOpponentModel({
   };
 }
 
+const PLAYER_STAT_WINDOW_POLICY = {
+  recent_3_months_weight: 0.65,
+  current_season_weight: 0.35,
+  recent_3_months_small_sample_threshold: 12,
+  recent_3_months_tiny_sample_threshold: 6
+};
+
+function parseDateOnlyUtc(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const parsed = new Date(`${text}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatDateOnlyUtc(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+function shiftDateByMonthsUtc(dateText, deltaMonths = 0) {
+  const base = parseDateOnlyUtc(dateText);
+  if (!base) return null;
+  const shifted = new Date(base.getTime());
+  shifted.setUTCMonth(shifted.getUTCMonth() + deltaMonths);
+  return formatDateOnlyUtc(shifted);
+}
+
+function buildWindowPerformanceStats(rows) {
+  const items = safeArray(rows);
+  const laneBuckets = new Map();
+  const stats = {
+    starts: items.length,
+    win_count: 0,
+    top2_count: 0,
+    top3_count: 0
+  };
+  for (const row of items) {
+    const startLane = toInt(row?.start_lane, null);
+    const finish1 = toInt(row?.finish_1, null);
+    const finish2 = toInt(row?.finish_2, null);
+    const finish3 = toInt(row?.finish_3, null);
+    if (finish1 === startLane) stats.win_count += 1;
+    if (finish1 === startLane || finish2 === startLane) stats.top2_count += 1;
+    if (finish1 === startLane || finish2 === startLane || finish3 === startLane) stats.top3_count += 1;
+    if (!Number.isInteger(startLane)) continue;
+    if (!laneBuckets.has(startLane)) {
+      laneBuckets.set(startLane, { starts: 0, win_count: 0, top2_count: 0, top3_count: 0 });
+    }
+    const laneStats = laneBuckets.get(startLane);
+    laneStats.starts += 1;
+    if (finish1 === startLane) laneStats.win_count += 1;
+    if (finish1 === startLane || finish2 === startLane) laneStats.top2_count += 1;
+    if (finish1 === startLane || finish2 === startLane || finish3 === startLane) laneStats.top3_count += 1;
+  }
+
+  const toRate = (count, starts) => Number((starts > 0 ? (count / starts) * 100 : 0).toFixed(2));
+  const lane_stats = Object.fromEntries(
+    [...laneBuckets.entries()].map(([lane, laneStats]) => [
+      String(lane),
+      {
+        sample_size: laneStats.starts,
+        first_rate: toRate(laneStats.win_count, laneStats.starts),
+        top2_rate: toRate(laneStats.top2_count, laneStats.starts),
+        top3_rate: toRate(laneStats.top3_count, laneStats.starts)
+      }
+    ])
+  );
+
+  return {
+    sample_size: stats.starts,
+    first_rate: toRate(stats.win_count, stats.starts),
+    top2_rate: toRate(stats.top2_count, stats.starts),
+    top3_rate: toRate(stats.top3_count, stats.starts),
+    lane_stats
+  };
+}
+
+function derivePlayerStrengthFromRates(windowStats) {
+  if (!windowStats || toNum(windowStats?.sample_size, 0) <= 0) return null;
+  return Number(
+    clamp(
+      0,
+      10,
+      toNum(windowStats?.first_rate, 0) * 0.12 +
+        toNum(windowStats?.top2_rate, 0) * 0.05 +
+        toNum(windowStats?.top3_rate, 0) * 0.02
+    ).toFixed(3)
+  );
+}
+
+function computePlayerWindowBlendWeights(recentSampleSize, seasonSampleSize) {
+  if (recentSampleSize <= 0 && seasonSampleSize <= 0) {
+    return {
+      recent_weight: 0,
+      current_season_weight: 0
+    };
+  }
+  if (recentSampleSize <= 0) {
+    return {
+      recent_weight: 0,
+      current_season_weight: 1
+    };
+  }
+  if (seasonSampleSize <= 0) {
+    return {
+      recent_weight: 1,
+      current_season_weight: 0
+    };
+  }
+  if (recentSampleSize < PLAYER_STAT_WINDOW_POLICY.recent_3_months_tiny_sample_threshold) {
+    return {
+      recent_weight: 0.35,
+      current_season_weight: 0.65
+    };
+  }
+  if (recentSampleSize < PLAYER_STAT_WINDOW_POLICY.recent_3_months_small_sample_threshold) {
+    return {
+      recent_weight: 0.5,
+      current_season_weight: 0.5
+    };
+  }
+  return {
+    recent_weight: PLAYER_STAT_WINDOW_POLICY.recent_3_months_weight,
+    current_season_weight: PLAYER_STAT_WINDOW_POLICY.current_season_weight
+  };
+}
+
+function blendWeightedValues(recentValue, seasonValue, recentWeight, seasonWeight) {
+  const recent = Number.isFinite(Number(recentValue)) ? Number(recentValue) : null;
+  const season = Number.isFinite(Number(seasonValue)) ? Number(seasonValue) : null;
+  if (recent === null && season === null) return null;
+  if (recent !== null && season === null) return recent;
+  if (recent === null && season !== null) return season;
+  const totalWeight = recentWeight + seasonWeight || 1;
+  return Number((((recent * recentWeight) + (season * seasonWeight)) / totalWeight).toFixed(3));
+}
+
+function buildPlayerStatProfileFromHistory({ historyRows, raceDate }) {
+  const raceDateText = String(raceDate || "").trim();
+  const currentSeasonStart = /^\d{4}-/.test(raceDateText) ? `${raceDateText.slice(0, 4)}-01-01` : null;
+  const recentStart = shiftDateByMonthsUtc(raceDateText, -3);
+  const priorRows = safeArray(historyRows)
+    .filter((row) => String(row?.race_date || "") < raceDateText)
+    .sort((a, b) => String(b?.race_date || "").localeCompare(String(a?.race_date || "")));
+  const recentRows = recentStart ? priorRows.filter((row) => String(row?.race_date || "") >= recentStart) : [];
+  const seasonRows = currentSeasonStart ? priorRows.filter((row) => String(row?.race_date || "") >= currentSeasonStart) : [];
+  const recentStats = buildWindowPerformanceStats(recentRows);
+  const seasonStats = buildWindowPerformanceStats(seasonRows);
+  const weights = computePlayerWindowBlendWeights(
+    toNum(recentStats?.sample_size, 0),
+    toNum(seasonStats?.sample_size, 0)
+  );
+  const recentStrength = derivePlayerStrengthFromRates(recentStats);
+  const seasonStrength = derivePlayerStrengthFromRates(seasonStats);
+  const blendedStrength = blendWeightedValues(
+    recentStrength,
+    seasonStrength,
+    toNum(weights?.recent_weight, 0),
+    toNum(weights?.current_season_weight, 0)
+  );
+  const laneStatsByLane = {};
+  for (let lane = 1; lane <= 6; lane += 1) {
+    const recentLane = recentStats?.lane_stats?.[String(lane)] || null;
+    const seasonLane = seasonStats?.lane_stats?.[String(lane)] || null;
+    const sampleSize = Math.max(
+      toNum(recentLane?.sample_size, 0),
+      toNum(seasonLane?.sample_size, 0)
+    );
+    laneStatsByLane[String(lane)] = {
+      sample_size: sampleSize,
+      first_rate: blendWeightedValues(
+        recentLane?.first_rate,
+        seasonLane?.first_rate,
+        toNum(weights?.recent_weight, 0),
+        toNum(weights?.current_season_weight, 0)
+      ),
+      top2_rate: blendWeightedValues(
+        recentLane?.top2_rate,
+        seasonLane?.top2_rate,
+        toNum(weights?.recent_weight, 0),
+        toNum(weights?.current_season_weight, 0)
+      ),
+      top3_rate: blendWeightedValues(
+        recentLane?.top3_rate,
+        seasonLane?.top3_rate,
+        toNum(weights?.recent_weight, 0),
+        toNum(weights?.current_season_weight, 0)
+      )
+    };
+  }
+
+  return {
+    recent_3_months_start: recentStart,
+    current_season_start: currentSeasonStart,
+    recent_3_months_sample_size: toNum(recentStats?.sample_size, 0),
+    current_season_sample_size: toNum(seasonStats?.sample_size, 0),
+    recent_3_months_strength: recentStrength,
+    current_season_strength: seasonStrength,
+    blended_strength: blendedStrength,
+    blend_weights: weights,
+    player_stat_confidence: Number(
+      clamp(
+        0.22,
+        1,
+        0.32 +
+          Math.min(0.48, toNum(recentStats?.sample_size, 0) * 0.035) +
+          Math.min(0.2, toNum(seasonStats?.sample_size, 0) * 0.012)
+      ).toFixed(3)
+    ),
+    lane_stats_by_lane: laneStatsByLane
+  };
+}
+
+function loadRecentPlayerStatProfiles({ raceDate, racers }) {
+  const registrationNos = [...new Set(
+    safeArray(racers)
+      .map((row) => toInt(row?.registrationNo ?? row?.registration_no, null))
+      .filter((value) => Number.isInteger(value) && value > 0)
+  )];
+  if (registrationNos.length === 0 || !raceDate) return new Map();
+  const placeholders = registrationNos.map(() => "?").join(",");
+  const rows = db.prepare(
+    `
+      SELECT
+        e.registration_no,
+        e.lane AS start_lane,
+        r.race_date,
+        res.finish_1,
+        res.finish_2,
+        res.finish_3
+      FROM entries e
+      INNER JOIN races r ON r.race_id = e.race_id
+      INNER JOIN results res ON res.race_id = e.race_id
+      WHERE e.registration_no IN (${placeholders})
+        AND r.race_date < ?
+        AND res.finish_1 IS NOT NULL
+        AND res.finish_2 IS NOT NULL
+        AND res.finish_3 IS NOT NULL
+      ORDER BY r.race_date DESC
+    `
+  ).all(...registrationNos, raceDate);
+  const rowsByRegistration = new Map();
+  for (const row of safeArray(rows)) {
+    const registrationNo = toInt(row?.registration_no, null);
+    if (!Number.isInteger(registrationNo)) continue;
+    if (!rowsByRegistration.has(registrationNo)) rowsByRegistration.set(registrationNo, []);
+    rowsByRegistration.get(registrationNo).push(row);
+  }
+  return new Map(
+    registrationNos.map((registrationNo) => [
+      registrationNo,
+      buildPlayerStatProfileFromHistory({
+        historyRows: rowsByRegistration.get(registrationNo) || [],
+        raceDate
+      })
+    ])
+  );
+}
+
+function applyRecentPlayerStatProfilesToRacers({ racers, raceDate }) {
+  const playerProfiles = loadRecentPlayerStatProfiles({ raceDate, racers });
+  return safeArray(racers).map((racer) => {
+    const registrationNo = toInt(racer?.registrationNo ?? racer?.registration_no, null);
+    const lane = toInt(racer?.lane, null);
+    const profile = Number.isInteger(registrationNo) ? playerProfiles.get(registrationNo) || null : null;
+    const officialNationwide = toNullableNum(racer?.nationwideWinRate);
+    const officialLocal = toNullableNum(racer?.localWinRate);
+    const fallbackStrength = Number(
+      clamp(
+        0,
+        10,
+        ((toNum(officialNationwide, 0) + toNum(officialLocal, toNum(officialNationwide, 0))) * 0.5) * 0.72
+      ).toFixed(3)
+    );
+    const currentSeasonStrength = toNum(profile?.current_season_strength, null);
+    const blendedStrength = toNum(profile?.blended_strength, null);
+    const effectiveNationwide = Number.isFinite(currentSeasonStrength) ? currentSeasonStrength : fallbackStrength;
+    const effectiveLocal = Number.isFinite(blendedStrength) ? blendedStrength : effectiveNationwide;
+    const laneStats = profile?.lane_stats_by_lane?.[String(lane)] || {};
+    return {
+      ...racer,
+      officialNationwideWinRate: officialNationwide,
+      officialLocalWinRate: officialLocal,
+      nationwideWinRate: effectiveNationwide,
+      localWinRate: effectiveLocal,
+      playerRecent3MonthsStrength: toNullableNum(profile?.recent_3_months_strength),
+      playerCurrentSeasonStrength: toNullableNum(profile?.current_season_strength),
+      playerStrengthBlended: toNullableNum(profile?.blended_strength),
+      playerStatConfidence: toNullableNum(profile?.player_stat_confidence),
+      recent3MonthsSampleSize: toInt(profile?.recent_3_months_sample_size, 0),
+      currentSeasonSampleSize: toInt(profile?.current_season_sample_size, 0),
+      playerStatFallbackUsed: Number.isFinite(blendedStrength) || Number.isFinite(currentSeasonStrength) ? 0 : 1,
+      playerStatWindowsUsed: {
+        recent_3_months: {
+          start_date: profile?.recent_3_months_start || null,
+          end_date: raceDate || null,
+          sample_size: toInt(profile?.recent_3_months_sample_size, 0)
+        },
+        current_season: {
+          start_date: profile?.current_season_start || null,
+          end_date: raceDate || null,
+          sample_size: toInt(profile?.current_season_sample_size, 0)
+        },
+        blend_weights: profile?.blend_weights || computePlayerWindowBlendWeights(0, 0)
+      },
+      course1WinRate: lane === 1 ? toNullableNum(laneStats?.first_rate) : null,
+      course1_2rate: lane === 1 ? toNullableNum(laneStats?.top2_rate) : null,
+      course2_2rate: lane === 2 ? toNullableNum(laneStats?.top2_rate) : null,
+      course3_3rate: lane === 3 ? toNullableNum(laneStats?.top3_rate) : null,
+      course4_3rate: lane === 4 ? toNullableNum(laneStats?.top3_rate) : null,
+      laneRecentSampleSize: toInt(laneStats?.sample_size, 0)
+    };
+  });
+}
+
 function buildRoleProbabilityLayers({
   rows,
   candidateDistributions,
@@ -2404,6 +2719,92 @@ function buildRoleProbabilityLayers({
       attack_affects_third_only: toInt(candidateDistributions?.partner_search_bias_json?.attack_moved_third_only_lane, 0) > 0 ? 1 : 0
     },
     role_probability_version: "role_probability_v1"
+  };
+}
+
+function buildBoat3WeakStHeadSuppressionContext({
+  rows,
+  headScenarioBalanceAnalysis,
+  attackScenarioAnalysis,
+  outsideHeadPromotionContext
+}) {
+  const laneRows = new Map(
+    safeArray(rows)
+      .map((row) => [toInt(row?.racer?.lane, null), row])
+      .filter(([lane]) => Number.isInteger(lane))
+  );
+  const lane1 = laneRows.get(1) || null;
+  const lane2 = laneRows.get(2) || null;
+  const lane3 = laneRows.get(3) || null;
+  const lane1Features = lane1?.features || {};
+  const lane2Features = lane2?.features || {};
+  const lane3Features = lane3?.features || {};
+  const st1 = toNum(lane1Features?.expected_actual_st ?? lane1?.racer?.exhibitionSt ?? lane1Features?.avg_st, null);
+  const st2 = toNum(lane2Features?.expected_actual_st ?? lane2?.racer?.exhibitionSt ?? lane2Features?.avg_st, null);
+  const st3 = toNum(lane3Features?.expected_actual_st ?? lane3?.racer?.exhibitionSt ?? lane3Features?.avg_st, null);
+  const stGapVs1 = Number.isFinite(st3) && Number.isFinite(st1) ? Number((st3 - st1).toFixed(3)) : null;
+  const stGapVs2 = Number.isFinite(st3) && Number.isFinite(st2) ? Number((st3 - st2).toFixed(3)) : null;
+  const boat1HeadWeight = toNum(
+    safeArray(headScenarioBalanceAnalysis?.head_distribution_json).find((row) => toInt(row?.lane, null) === 1)?.weight,
+    0
+  );
+  const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const insideStable =
+    boat1HeadWeight >= 0.45 &&
+    survivalResidualScore >= 36 &&
+    toNum(outsideHeadPromotionContext?.inner_collapse_score, 0) < 55 &&
+    toNum(lane1Features?.expected_actual_st_rank ?? lane1Features?.st_rank, 6) <= 3 &&
+    toNum(lane2Features?.expected_actual_st_rank ?? lane2Features?.st_rank, 6) <= 3;
+  const weakStVsInside =
+    Number.isFinite(stGapVs1) &&
+    Number.isFinite(stGapVs2) &&
+    stGapVs1 >= 0.025 &&
+    stGapVs2 >= 0.02 &&
+    toNum(lane3Features?.expected_actual_st_rank ?? lane3Features?.st_rank, 6) >=
+      Math.max(
+        toNum(lane1Features?.expected_actual_st_rank ?? lane1Features?.st_rank, 6),
+        toNum(lane2Features?.expected_actual_st_rank ?? lane2Features?.st_rank, 6)
+      ) + 2;
+  const matchedSignals = [];
+  if (toNum(lane3Features?.motor_total_score, 0) >= 10) matchedSignals.push("strong_motor");
+  if (toNum(lane3Features?.exhibition_rank, 6) <= 2) matchedSignals.push("strong_exhibition");
+  if (toNum(lane3Features?.lap_attack_strength, 0) >= 8 || toNum(lane3Features?.lap_time_delta_vs_front, 0) >= 0.055) {
+    matchedSignals.push("lap_attack");
+  }
+  if (toNum(lane3Features?.slit_alert_flag, 0) === 1 || toNum(lane3Features?.display_time_delta_vs_left, 0) >= 0.055) {
+    matchedSignals.push("slit_or_left_advantage");
+  }
+  if (toNum(lane3Features?.entry_advantage_score, 0) >= 8) matchedSignals.push("entry_shape");
+  if (
+    ["three_makuri", "three_makuri_sashi"].includes(String(attackScenarioAnalysis?.attack_scenario_type || "")) &&
+    toNum(attackScenarioAnalysis?.attack_scenario_score, 0) >= 65
+  ) {
+    matchedSignals.push("scenario_attack");
+  }
+  const applied = insideStable && weakStVsInside && matchedSignals.length < 3;
+  const penaltyScore = applied
+    ? Number(clamp(0, 24, 11 + toNum(stGapVs1, 0) * 120 + toNum(stGapVs2, 0) * 95 + (3 - matchedSignals.length) * 3.2).toFixed(2))
+    : 0;
+  const firstPlaceCapWeight = applied
+    ? matchedSignals.length >= 2
+      ? 0.17
+      : 0.13
+    : 1;
+  return {
+    applied: applied ? 1 : 0,
+    inside_stable: insideStable ? 1 : 0,
+    weak_st_vs_inside: weakStVsInside ? 1 : 0,
+    st_gap_vs_lane1: stGapVs1,
+    st_gap_vs_lane2: stGapVs2,
+    matched_signal_count: matchedSignals.length,
+    matched_signal_tags: matchedSignals,
+    penalty_score: penaltyScore,
+    first_place_cap_weight: firstPlaceCapWeight,
+    reason_tags: applied
+      ? ["BOAT3_WEAK_ST_HEAD_SUPPRESSED", "INSIDE_STABLE", "ATTACK_NOT_FINISH_OVERRIDE", ...matchedSignals]
+      : matchedSignals.length >= 3
+        ? ["BOAT3_RECOVERY_EVIDENCE_SUFFICIENT", ...matchedSignals]
+        : []
   };
 }
 
@@ -3013,6 +3414,12 @@ function buildSeparatedCandidateDistributions({
     attackScenarioAnalysis,
     headScenarioBalanceAnalysis
   });
+  const boat3WeakStHeadSuppression = buildBoat3WeakStHeadSuppressionContext({
+    rows,
+    headScenarioBalanceAnalysis,
+    attackScenarioAnalysis,
+    outsideHeadPromotionContext
+  });
   const boat1EscapePartnerVersion = "boat1_escape_partner_v2";
 
   let firstPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
@@ -3056,14 +3463,24 @@ function buildSeparatedCandidateDistributions({
       toNum(f?.f_hold_caution_penalty, 0) * (4.5 + venueFHoldAdj * 0.6) +
         (lane === 1 ? toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0) * 0.22 : 0) +
         (attackHeadLane && lane === attackHeadLane ? toNum(attackScenarioAnalysis?.attack_scenario_score, 0) * 0.08 : 0) +
-        outsideLeadRoleBoost +
+      outsideLeadRoleBoost +
         formationLearnedAdj * 0.5 +
-        venueLearnedAdj * 0.4;
+        venueLearnedAdj * 0.4 -
+        (lane === 3 ? toNum(boat3WeakStHeadSuppression?.penalty_score, 0) : 0);
     return { lane, role: lane === mainHeadLane ? "main" : lane === 1 ? "survival" : "counter", weight: firstPlaceScore };
   }));
   firstPlaceDistribution = normalizeDistributionRows(firstPlaceDistribution.map((row) => {
     const lane = toInt(row?.lane, null);
     const outsideGate = outsideHeadPromotionContext.by_lane.get(lane) || null;
+    if (lane === 3 && toInt(boat3WeakStHeadSuppression?.applied, 0) === 1) {
+      return {
+        ...row,
+        weight: Math.min(
+          toNum(row?.weight, 0),
+          toNum(boat3WeakStHeadSuppression?.first_place_cap_weight, 1)
+        )
+      };
+    }
     if (!outsideGate) return row;
     return {
       ...row,
@@ -3363,7 +3780,8 @@ function buildSeparatedCandidateDistributions({
       outside_head_promotion_context: {
         inner_collapse_score: outsideHeadPromotionContext.inner_collapse_score,
         boat1_escape_probability_proxy: outsideHeadPromotionContext.boat1_escape_probability_proxy
-      }
+      },
+      boat3_head_suppression: boat3WeakStHeadSuppression
     },
     boat1_partner_model_applied: mainHeadLane === 1 ? 1 : 0,
     boat1_escape_partner_version: boat1EscapePartnerVersion,
@@ -3376,6 +3794,8 @@ function buildSeparatedCandidateDistributions({
         [...outsideHeadPromotionContext.by_lane.entries()].map(([lane, value]) => [String(lane), value])
       )
     },
+    boat3_weak_st_head_suppression_json: boat3WeakStHeadSuppression,
+    boat3_weak_st_head_suppressed: toInt(boat3WeakStHeadSuppression?.applied, 0),
     ...roleProbabilityLayers,
     scoring_family_components_json: {
       first_place: {
@@ -6110,6 +6530,14 @@ raceRouter.get("/race", async (req, res, next) => {
     const raceId = saveRace(data);
     const manualLapEvaluation = getManualLapEvaluation(raceId);
     const entryMeta = buildEntryOrderMeta(data.racers);
+    const racersWithRecentPlayerStats = applyRecentPlayerStatProfilesToRacers({
+      racers: data.racers,
+      raceDate: data?.race?.date || null
+    });
+    data = {
+      ...data,
+      racers: racersWithRecentPlayerStats
+    };
     const baseFeatures = applyMotorPerformanceFeatures(
       applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
     );
@@ -6759,6 +7187,8 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.role_probability_version = candidateDistributions.role_probability_version;
     headScenarioBalanceAnalysis.scoring_family_components_json = candidateDistributions.scoring_family_components_json;
     headScenarioBalanceAnalysis.rebalance_version = candidateDistributions.rebalance_version;
+    headScenarioBalanceAnalysis.boat3_weak_st_head_suppression_json = candidateDistributions.boat3_weak_st_head_suppression_json;
+    headScenarioBalanceAnalysis.boat3_weak_st_head_suppressed = candidateDistributions.boat3_weak_st_head_suppressed;
     bet_plan_with_stake.recommended_bets = applySeparatedDistributionBiasToTickets(
       bet_plan_with_stake.recommended_bets,
       candidateDistributions
@@ -6992,6 +7422,17 @@ raceRouter.get("/race", async (req, res, next) => {
         avg_st: toNullableNum(racer?.avgSt),
         nationwide_win_rate: toNullableNum(racer?.nationwideWinRate),
         local_win_rate: toNullableNum(racer?.localWinRate),
+        official_nationwide_win_rate: toNullableNum(racer?.officialNationwideWinRate),
+        official_local_win_rate: toNullableNum(racer?.officialLocalWinRate),
+        player_recent_3_months_strength: toNullableNum(racer?.playerRecent3MonthsStrength),
+        player_current_season_strength: toNullableNum(racer?.playerCurrentSeasonStrength),
+        player_strength_blended: toNullableNum(racer?.playerStrengthBlended),
+        player_stat_confidence: toNullableNum(racer?.playerStatConfidence),
+        recent_3_months_sample_size: toInt(racer?.recent3MonthsSampleSize, 0),
+        current_season_sample_size: toInt(racer?.currentSeasonSampleSize, 0),
+        player_stat_fallback_used: toInt(racer?.playerStatFallbackUsed, 0),
+        player_stat_windows_used: racer?.playerStatWindowsUsed || null,
+        lane_recent_sample_size: toInt(racer?.laneRecentSampleSize, 0),
         motor_no: toInt(racer?.motorNo, null),
         motor_2rate: toNullableNum(racer?.motor2Rate),
         boat_no: toInt(racer?.boatNo, null),
@@ -7078,6 +7519,15 @@ raceRouter.get("/race", async (req, res, next) => {
       role_probability_version: headScenarioBalanceAnalysis.role_probability_version || null,
       role_based_order_candidates_json: roleBasedOrderCandidates,
       evidence_bias_table_json: evidenceBiasTable,
+      player_stat_window_policy_json: PLAYER_STAT_WINDOW_POLICY,
+      player_stat_windows_used_json: safeArray(data?.racers).map((racer) => ({
+        lane: toInt(racer?.lane, null),
+        registration_no: toInt(racer?.registrationNo, null),
+        recent_3_months_sample_size: toInt(racer?.recent3MonthsSampleSize, 0),
+        current_season_sample_size: toInt(racer?.currentSeasonSampleSize, 0),
+        player_stat_confidence: toNullableNum(racer?.playerStatConfidence),
+        windows: racer?.playerStatWindowsUsed || null
+      })),
       confirmed_first_place_probability_json: confirmedRoleProbabilities.confirmed_first_place_probability_json,
       confirmed_second_place_probability_json: confirmedRoleProbabilities.confirmed_second_place_probability_json,
       confirmed_third_place_probability_json: confirmedRoleProbabilities.confirmed_third_place_probability_json,
@@ -7098,6 +7548,8 @@ raceRouter.get("/race", async (req, res, next) => {
       aggressive_adjustment_json: headScenarioBalanceAnalysis.aggressive_adjustment_json,
       scoring_family_components_json: headScenarioBalanceAnalysis.scoring_family_components_json,
       rebalance_version: headScenarioBalanceAnalysis.rebalance_version,
+      boat3_weak_st_head_suppression_json: headScenarioBalanceAnalysis.boat3_weak_st_head_suppression_json || {},
+      boat3_weak_st_head_suppressed: toInt(headScenarioBalanceAnalysis.boat3_weak_st_head_suppressed, 0),
       inner_course_bias_applied: ranking.some((row) => toInt(row?.features?.inner_course_bias_applied, 0) === 1) ? 1 : 0,
       stronger_inner_bias_applied: toInt(headScenarioBalanceAnalysis.stronger_inner_bias_applied, 0),
       outer_head_guard_applied: toInt(headScenarioBalanceAnalysis.outer_head_guard_applied, 0),
@@ -11576,8 +12028,10 @@ raceRouter.get("/prediction-feature-logs", async (req, res, next) => {
 
 export const __testHooks = {
   buildSeparatedCandidateDistributions,
+  buildPlayerStatProfileFromHistory,
   buildPredictionFeatureBundle,
   buildRoleProbabilityLayers,
+  buildBoat3WeakStHeadSuppressionContext,
   computeBoat1EscapeProbability,
   computeAttackScenarioProbabilities,
   computeFirstPlaceProbabilities,
