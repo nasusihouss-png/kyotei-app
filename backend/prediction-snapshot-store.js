@@ -545,26 +545,66 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.first_place_distribution_json)
             ? context.first_place_distribution_json
             : [],
+        first_place_probability_json: Array.isArray(learning?.first_place_probability_json)
+          ? learning.first_place_probability_json
+          : Array.isArray(context?.first_place_probability_json)
+            ? context.first_place_probability_json
+            : [],
         second_place_distribution_json: Array.isArray(learning?.second_place_distribution_json)
           ? learning.second_place_distribution_json
           : Array.isArray(context?.second_place_distribution_json)
             ? context.second_place_distribution_json
+            : [],
+        second_place_probability_json: Array.isArray(learning?.second_place_probability_json)
+          ? learning.second_place_probability_json
+          : Array.isArray(context?.second_place_probability_json)
+            ? context.second_place_probability_json
             : [],
         third_place_distribution_json: Array.isArray(learning?.third_place_distribution_json)
           ? learning.third_place_distribution_json
           : Array.isArray(context?.third_place_distribution_json)
             ? context.third_place_distribution_json
             : [],
+        third_place_probability_json: Array.isArray(learning?.third_place_probability_json)
+          ? learning.third_place_probability_json
+          : Array.isArray(context?.third_place_probability_json)
+            ? context.third_place_probability_json
+            : [],
         boat1_second_place_distribution_json: Array.isArray(learning?.boat1_second_place_distribution_json)
           ? learning.boat1_second_place_distribution_json
           : Array.isArray(context?.boat1_second_place_distribution_json)
             ? context.boat1_second_place_distribution_json
+            : [],
+        boat1_second_place_probability_json: Array.isArray(learning?.boat1_second_place_probability_json)
+          ? learning.boat1_second_place_probability_json
+          : Array.isArray(context?.boat1_second_place_probability_json)
+            ? context.boat1_second_place_probability_json
             : [],
         boat1_third_place_distribution_json: Array.isArray(learning?.boat1_third_place_distribution_json)
           ? learning.boat1_third_place_distribution_json
           : Array.isArray(context?.boat1_third_place_distribution_json)
             ? context.boat1_third_place_distribution_json
             : [],
+        boat1_third_place_probability_json: Array.isArray(learning?.boat1_third_place_probability_json)
+          ? learning.boat1_third_place_probability_json
+          : Array.isArray(context?.boat1_third_place_probability_json)
+            ? context.boat1_third_place_probability_json
+            : [],
+        survival_probability_json: Array.isArray(learning?.survival_probability_json)
+          ? learning.survival_probability_json
+          : Array.isArray(context?.survival_probability_json)
+            ? context.survival_probability_json
+            : [],
+        boat1_escape_probability: toNum(learning?.boat1_escape_probability ?? context?.boat1_escape_probability, null),
+        attack_scenario_probability_json: Array.isArray(learning?.attack_scenario_probability_json)
+          ? learning.attack_scenario_probability_json
+          : Array.isArray(context?.attack_scenario_probability_json)
+            ? context.attack_scenario_probability_json
+            : [],
+        role_probability_summary_json:
+          learning?.role_probability_summary_json || context?.role_probability_summary_json || {},
+        role_probability_version:
+          learning?.role_probability_version || context?.role_probability_version || null,
         partner_search_bias_json:
           learning?.partner_search_bias_json || context?.partner_search_bias_json || {},
         boat1_partner_search_bias_json:
@@ -654,6 +694,20 @@ export function buildVerifiedLearningRows() {
             ? context.exacta_reason_tags
             : [],
         exacta_section_shown: toNum(learning?.exacta_section_shown ?? context?.exacta_section_shown, 0),
+        backup_urasuji_recommendations_snapshot: Array.isArray(learning?.backup_urasuji_recommendations_snapshot)
+          ? learning.backup_urasuji_recommendations_snapshot
+          : Array.isArray(context?.backup_urasuji_recommendations_snapshot)
+            ? context.backup_urasuji_recommendations_snapshot
+            : [],
+        backup_urasuji_section_shown: toNum(
+          learning?.backup_urasuji_section_shown ?? context?.backup_urasuji_section_shown,
+          0
+        ),
+        backup_urasuji_reason_tags: Array.isArray(learning?.backup_urasuji_reason_tags)
+          ? learning.backup_urasuji_reason_tags
+          : Array.isArray(context?.backup_urasuji_reason_tags)
+            ? context.backup_urasuji_reason_tags
+            : [],
         predicted_entry_order: Array.isArray(context?.entry?.predicted_entry_order) ? context.entry.predicted_entry_order : [],
         actual_entry_order: Array.isArray(context?.entry?.actual_entry_order) ? context.entry.actual_entry_order : [],
         start_display_st: context?.entry?.start_exhibition_st || {},

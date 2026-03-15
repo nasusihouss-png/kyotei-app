@@ -1911,6 +1911,187 @@ function buildBoat1EscapeOpponentModel({
   };
 }
 
+function buildRoleProbabilityLayers({
+  rows,
+  candidateDistributions,
+  headScenarioBalanceAnalysis,
+  escapePatternAnalysis,
+  attackScenarioAnalysis
+}) {
+  const firstPlaceProbability = normalizeDistributionRows(
+    safeArray(candidateDistributions?.first_place_distribution_json).length > 0
+      ? candidateDistributions.first_place_distribution_json
+      : safeArray(headScenarioBalanceAnalysis?.head_distribution_json)
+  );
+  const secondPlaceProbability = normalizeDistributionRows(
+    safeArray(candidateDistributions?.second_place_distribution_json)
+  );
+  const thirdPlaceProbability = normalizeDistributionRows(
+    safeArray(candidateDistributions?.third_place_distribution_json)
+  );
+  const boat1SecondPlaceProbability = normalizeDistributionRows(
+    safeArray(candidateDistributions?.boat1_second_place_distribution_json)
+  );
+  const boat1ThirdPlaceProbability = normalizeDistributionRows(
+    safeArray(candidateDistributions?.boat1_third_place_distribution_json)
+  );
+  const firstMap = new Map(firstPlaceProbability.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const secondMap = new Map(secondPlaceProbability.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const thirdMap = new Map(thirdPlaceProbability.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const boat1SecondMap = new Map(boat1SecondPlaceProbability.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const boat1ThirdMap = new Map(boat1ThirdPlaceProbability.map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
+  const escapePatternApplied = !!escapePatternAnalysis?.escape_pattern_applied;
+  const mainHeadLane = toInt(headScenarioBalanceAnalysis?.main_head_lane, null) ?? topDistributionLane(firstPlaceProbability);
+  const attackHeadLane = getAttackScenarioHeadLane(attackScenarioAnalysis?.attack_scenario_type || null);
+  const attackScenarioEntries = [
+    { scenario: "boat2_sashi", raw: toNum(attackScenarioAnalysis?.two_sashi_score, 0) },
+    { scenario: "boat3_makuri", raw: toNum(attackScenarioAnalysis?.three_makuri_score, 0) },
+    { scenario: "boat3_makuri_sashi", raw: toNum(attackScenarioAnalysis?.three_makuri_sashi_score, 0) },
+    { scenario: "boat4_cado_attack", raw: Math.max(toNum(attackScenarioAnalysis?.four_cado_makuri_score, 0), toNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score, 0)) },
+    { scenario: "boat4_cado_makuri", raw: toNum(attackScenarioAnalysis?.four_cado_makuri_score, 0) },
+    { scenario: "boat4_cado_makuri_sashi", raw: toNum(attackScenarioAnalysis?.four_cado_makuri_sashi_score, 0) }
+  ];
+  if (attackScenarioEntries.every((row) => row.raw <= 0) && toInt(attackScenarioAnalysis?.attack_scenario_applied, 0) === 1) {
+    const fallbackScenarioMap = {
+      two_sashi: "boat2_sashi",
+      three_makuri: "boat3_makuri",
+      three_makuri_sashi: "boat3_makuri_sashi",
+      four_cado_makuri: "boat4_cado_makuri",
+      four_cado_makuri_sashi: "boat4_cado_makuri_sashi"
+    };
+    const fallbackScenario = fallbackScenarioMap[String(attackScenarioAnalysis?.attack_scenario_type || "")] || null;
+    if (fallbackScenario) {
+      const fallbackIndex = attackScenarioEntries.findIndex((row) => row.scenario === fallbackScenario);
+      if (fallbackIndex >= 0) {
+        attackScenarioEntries[fallbackIndex] = {
+          ...attackScenarioEntries[fallbackIndex],
+          raw: Math.max(1, toNum(attackScenarioAnalysis?.attack_scenario_score, 0))
+        };
+      }
+    }
+  }
+  const attackTotal = attackScenarioEntries.reduce((sum, row) => sum + Math.max(0, row.raw), 0) || 1;
+  const attackScenarioProbability = attackScenarioEntries
+    .filter((row) => row.raw > 0)
+    .map((row) => ({
+      scenario: row.scenario,
+      probability: Number((Math.max(0, row.raw) / attackTotal).toFixed(4))
+    }))
+    .sort((a, b) => b.probability - a.probability);
+  const topAttackProbability = toNum(attackScenarioProbability[0]?.probability, 0);
+  const boat1EscapeProbability = Number(clamp(
+    0,
+    1,
+    toNum(firstMap.get(1), 0) * 0.72 +
+      (escapePatternApplied ? 0.14 : 0) +
+      Math.min(0.18, survivalResidualScore * 0.0046) -
+      ((attackHeadLane && attackHeadLane !== 1) ? topAttackProbability * 0.09 : 0)
+  ).toFixed(4));
+
+  const survivalProbability = normalizeDistributionRows(
+    safeArray(rows).map((row) => {
+      const lane = toInt(row?.racer?.lane, null);
+      if (!Number.isInteger(lane)) return null;
+      const secondProb = toNum((lane === 1 ? null : boat1SecondMap.get(lane)) ?? secondMap.get(lane), 0);
+      const thirdProb = toNum((lane === 1 ? null : boat1ThirdMap.get(lane)) ?? thirdMap.get(lane), 0);
+      const insideRemainBias = lane === 1 ? survivalResidualScore * 0.18 : lane === 2 ? 0.12 : lane === 3 ? 0.1 : lane === 4 ? 0.08 : lane === 5 ? 0.01 : 0;
+      return {
+        lane,
+        role: lane === 1 ? "boat1_survival" : lane <= 4 ? "remain" : "outer_remain",
+        weight: secondProb * 0.34 + thirdProb * 0.54 + insideRemainBias
+      };
+    }).filter(Boolean)
+  );
+
+  return {
+    first_place_probability_json: firstPlaceProbability,
+    second_place_probability_json: secondPlaceProbability,
+    third_place_probability_json: thirdPlaceProbability,
+    boat1_second_place_probability_json: boat1SecondPlaceProbability,
+    boat1_third_place_probability_json: boat1ThirdPlaceProbability,
+    survival_probability_json: survivalProbability,
+    boat1_escape_probability: boat1EscapeProbability,
+    attack_scenario_probability_json: attackScenarioProbability,
+    role_probability_summary_json: {
+      main_head_lane: mainHeadLane,
+      boat1_escape_probability: boat1EscapeProbability,
+      first_place_concentration: Number(
+        firstPlaceProbability.slice(0, 2).reduce((sum, row) => sum + toNum(row?.weight, 0), 0).toFixed(4)
+      ),
+      second_place_concentration: Number(
+        secondPlaceProbability.slice(0, 2).reduce((sum, row) => sum + toNum(row?.weight, 0), 0).toFixed(4)
+      ),
+      third_place_concentration: Number(
+        thirdPlaceProbability.slice(0, 3).reduce((sum, row) => sum + toNum(row?.weight, 0), 0).toFixed(4)
+      ),
+      attack_affects_first_only: attackHeadLane && attackHeadLane !== 1 && toNum(firstMap.get(attackHeadLane), 0) > 0.24 ? 1 : 0,
+      attack_affects_second_only: toInt(candidateDistributions?.partner_search_bias_json?.attack_moved_second_only_lane, 0) > 0 ? 1 : 0,
+      attack_affects_third_only: toInt(candidateDistributions?.partner_search_bias_json?.attack_moved_third_only_lane, 0) > 0 ? 1 : 0
+    },
+    role_probability_version: "role_probability_v1"
+  };
+}
+
+function buildBackupUrasujiRecommendationsSnapshot({
+  recommendedBets,
+  optimizedTickets,
+  candidateDistributions
+}) {
+  const sourceRows = [
+    ...safeArray(optimizedTickets),
+    ...safeArray(recommendedBets)
+  ];
+  if (!sourceRows.length) {
+    return {
+      shown: false,
+      items: [],
+      backup_reason_tags: []
+    };
+  }
+  const roleSummary = candidateDistributions?.role_probability_summary_json || {};
+  const partnerBias = candidateDistributions?.boat1_partner_bias_json || {};
+  const useUrasuji = toInt(partnerBias?.urasuji_used, 0) === 1 || toInt(candidateDistributions?.partner_search_bias_json?.urasuji_used, 0) === 1;
+  const attackThirdOnlyLane = toInt(partnerBias?.attack_shape_third_only_lane, null);
+  const attackSecondOnlyLane = toInt(partnerBias?.attack_shape_second_only_lane, null);
+  const mainHeadLane = toInt(roleSummary?.main_head_lane, null);
+  if (!useUrasuji || mainHeadLane !== 1) {
+    return {
+      shown: false,
+      items: [],
+      backup_reason_tags: []
+    };
+  }
+
+  const backupItems = sourceRows
+    .map((row) => {
+      const combo = normalizeCombo(row?.combo);
+      const lanes = combo ? combo.split("-").map((value) => toInt(value, null)).filter(Number.isInteger) : [];
+      const [headLane, secondLane, thirdLane] = lanes;
+      if (headLane !== 1 || lanes.length !== 3) return null;
+      const followsAttackLane =
+        (Number.isInteger(attackSecondOnlyLane) && (secondLane === attackSecondOnlyLane + 1 || thirdLane === attackSecondOnlyLane + 1)) ||
+        (Number.isInteger(attackThirdOnlyLane) && (secondLane === attackThirdOnlyLane + 1 || thirdLane === attackThirdOnlyLane + 1));
+      if (!followsAttackLane) return null;
+      return {
+        combo,
+        prob: Number(toNum(row?.prob, 0).toFixed(4)),
+        recommended_bet: toNum(row?.recommended_bet ?? row?.bet, 100),
+        ticket_type: row?.ticket_type || "backup",
+        backup_reason_tags: ["URASUJI_BACKUP", "BOAT1_ESCAPE_BACKUP"]
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => toNum(b?.prob, 0) - toNum(a?.prob, 0))
+    .slice(0, 2);
+
+  return {
+    shown: backupItems.length > 0,
+    items: backupItems,
+    backup_reason_tags: backupItems.length > 0 ? ["URASUJI_BACKUP", "BOAT1_ESCAPE_BACKUP"] : []
+  };
+}
+
 function buildSeparatedCandidateDistributions({
   ranking,
   tickets,
@@ -2194,6 +2375,23 @@ function buildSeparatedCandidateDistributions({
     boat1PartnerReasonTags.push(...safeArray(boat1EscapeOpponentModel?.reason_tags));
     boat1PartnerReasonTags.push(...safeArray(boat1EscapeOpponentModel?.boat1_stayed_head_reason_tags));
   }
+  const roleProbabilityLayers = buildRoleProbabilityLayers({
+    rows,
+    candidateDistributions: {
+      first_place_distribution_json: firstPlaceDistribution,
+      second_place_distribution_json: effectiveSecondPlaceDistribution,
+      third_place_distribution_json: effectiveThirdPlaceDistribution,
+      boat1_second_place_distribution_json: boat1SecondPlaceDistribution,
+      boat1_third_place_distribution_json: boat1ThirdPlaceDistribution,
+      partner_search_bias_json: {
+        attack_moved_second_only_lane: boat1EscapeOpponentModel?.attack_moved_second_only_lane ?? null,
+        attack_moved_third_only_lane: boat1EscapeOpponentModel?.attack_moved_third_only_lane ?? null
+      }
+    },
+    headScenarioBalanceAnalysis,
+    escapePatternAnalysis,
+    attackScenarioAnalysis
+  });
 
   return {
     formation_first_place_prior_json: formationFirstPlacePrior,
@@ -2269,6 +2467,7 @@ function buildSeparatedCandidateDistributions({
     boat1_partner_model_applied: mainHeadLane === 1 ? 1 : 0,
     boat1_escape_partner_version: boat1EscapePartnerVersion,
     hit_rate_focus_applied: 1,
+    ...roleProbabilityLayers,
     scoring_family_components_json: {
       first_place: {
         formation_prior_weight: 42,
@@ -2300,12 +2499,32 @@ function buildSeparatedCandidateDistributions({
 function applySeparatedDistributionBiasToTickets(tickets, candidateDistributions) {
   const rows = Array.isArray(tickets) ? tickets : [];
   if (!rows.length) return rows;
-  const firstMap = new Map(safeArray(candidateDistributions?.first_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
-  const secondMap = new Map(safeArray(candidateDistributions?.second_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
-  const thirdMap = new Map(safeArray(candidateDistributions?.third_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
-  const boat1SecondMap = new Map(safeArray(candidateDistributions?.boat1_second_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
-  const boat1ThirdMap = new Map(safeArray(candidateDistributions?.boat1_third_place_distribution_json).map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)]));
+  const firstMap = new Map(
+    safeArray(candidateDistributions?.first_place_probability_json || candidateDistributions?.first_place_distribution_json)
+      .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
+  );
+  const secondMap = new Map(
+    safeArray(candidateDistributions?.second_place_probability_json || candidateDistributions?.second_place_distribution_json)
+      .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
+  );
+  const thirdMap = new Map(
+    safeArray(candidateDistributions?.third_place_probability_json || candidateDistributions?.third_place_distribution_json)
+      .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
+  );
+  const boat1SecondMap = new Map(
+    safeArray(candidateDistributions?.boat1_second_place_probability_json || candidateDistributions?.boat1_second_place_distribution_json)
+      .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
+  );
+  const boat1ThirdMap = new Map(
+    safeArray(candidateDistributions?.boat1_third_place_probability_json || candidateDistributions?.boat1_third_place_distribution_json)
+      .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
+  );
+  const survivalMap = new Map(
+    safeArray(candidateDistributions?.survival_probability_json)
+      .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
+  );
   const boat1PartnerApplied = toInt(candidateDistributions?.boat1_partner_search_applied, 0) === 1;
+  const boat1EscapeProbability = toNum(candidateDistributions?.boat1_escape_probability, 0);
   return [...rows]
     .map((row) => {
       const combo = normalizeCombo(row?.combo);
@@ -2316,12 +2535,17 @@ function applySeparatedDistributionBiasToTickets(tickets, candidateDistributions
       const thirdSourceMap = boat1PartnerApplied && headLane === 1 && boat1ThirdMap.size > 0 ? boat1ThirdMap : thirdMap;
       const secondBias = toNum(secondSourceMap.get(secondLane), 0) * 0.026;
       const thirdBias = toNum(thirdSourceMap.get(thirdLane), 0) * 0.015;
+      const survivalBias = (toNum(survivalMap.get(secondLane), 0) + toNum(survivalMap.get(thirdLane), 0)) * 0.008;
       const boat1PartnerBonus =
         boat1PartnerApplied && headLane === 1 && (secondLane === 2 || secondLane === 3 || secondLane === 4)
           ? (secondLane === 2 ? 0.012 : secondLane === 3 ? 0.0105 : 0.0088)
           : 0;
+      const boat1EscapeBonus =
+        headLane === 1 && boat1EscapeProbability > 0
+          ? clamp(0, 0.02, boat1EscapeProbability * 0.018)
+          : 0;
       const outerHeadPenalty = headLane === 5 ? 0.005 : headLane === 6 ? 0.009 : 0;
-      const totalBias = Number((firstBias + secondBias + thirdBias + boat1PartnerBonus - outerHeadPenalty).toFixed(4));
+      const totalBias = Number((firstBias + secondBias + thirdBias + survivalBias + boat1PartnerBonus + boat1EscapeBonus - outerHeadPenalty).toFixed(4));
       return {
         ...row,
         prob: Number((toNum(row?.prob, 0) + totalBias).toFixed(4)),
@@ -3600,6 +3824,7 @@ function buildExactaCoverageSnapshot({
   finalRecommendedSnapshot,
   boat1HeadSnapshot,
   headScenarioBalanceAnalysis,
+  roleProbabilityLayers,
   escapePatternAnalysis,
   attackScenarioAnalysis,
   learningWeights,
@@ -3611,19 +3836,28 @@ function buildExactaCoverageSnapshot({
   const attackScenarioScore = toNum(attackScenarioAnalysis?.attack_scenario_score, 0);
   const survivalResidualScore = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
   const boat1PriorityModeApplied = toNum(headScenarioBalanceAnalysis?.boat1_priority_mode_applied, 0) === 1;
-  const secondDistribution = Array.isArray(headScenarioBalanceAnalysis?.second_place_distribution_json) &&
-    headScenarioBalanceAnalysis.second_place_distribution_json.length > 0
-    ? headScenarioBalanceAnalysis.second_place_distribution_json
+  const secondDistribution = Array.isArray(roleProbabilityLayers?.second_place_probability_json) &&
+    roleProbabilityLayers.second_place_probability_json.length > 0
+    ? roleProbabilityLayers.second_place_probability_json
+    : Array.isArray(headScenarioBalanceAnalysis?.second_place_distribution_json) &&
+      headScenarioBalanceAnalysis.second_place_distribution_json.length > 0
+      ? headScenarioBalanceAnalysis.second_place_distribution_json
     : Array.isArray(headScenarioBalanceAnalysis?.second_distribution_json)
       ? headScenarioBalanceAnalysis.second_distribution_json
       : [];
-  const firstDistribution = Array.isArray(headScenarioBalanceAnalysis?.first_place_distribution_json) &&
-    headScenarioBalanceAnalysis.first_place_distribution_json.length > 0
-    ? headScenarioBalanceAnalysis.first_place_distribution_json
+  const firstDistribution = Array.isArray(roleProbabilityLayers?.first_place_probability_json) &&
+    roleProbabilityLayers.first_place_probability_json.length > 0
+    ? roleProbabilityLayers.first_place_probability_json
+    : Array.isArray(headScenarioBalanceAnalysis?.first_place_distribution_json) &&
+      headScenarioBalanceAnalysis.first_place_distribution_json.length > 0
+      ? headScenarioBalanceAnalysis.first_place_distribution_json
     : [];
-  const boat1SecondDistribution = Array.isArray(headScenarioBalanceAnalysis?.boat1_second_place_distribution_json) &&
-    headScenarioBalanceAnalysis.boat1_second_place_distribution_json.length > 0
-    ? headScenarioBalanceAnalysis.boat1_second_place_distribution_json
+  const boat1SecondDistribution = Array.isArray(roleProbabilityLayers?.boat1_second_place_probability_json) &&
+    roleProbabilityLayers.boat1_second_place_probability_json.length > 0
+    ? roleProbabilityLayers.boat1_second_place_probability_json
+    : Array.isArray(headScenarioBalanceAnalysis?.boat1_second_place_distribution_json) &&
+      headScenarioBalanceAnalysis.boat1_second_place_distribution_json.length > 0
+      ? headScenarioBalanceAnalysis.boat1_second_place_distribution_json
     : [];
   const secondDistributionMap = new Map(
     secondDistribution
@@ -3645,7 +3879,9 @@ function buildExactaCoverageSnapshot({
       .map((row) => [toInt(row?.lane, null), toNum(row?.weight, 0)])
       .filter(([lane]) => Number.isInteger(lane))
   );
-  const mainHeadLane = toInt(headScenarioBalanceAnalysis?.main_head_lane, null) ?? topDistributionLane(headDistribution);
+  const mainHeadLane = toInt(roleProbabilityLayers?.role_probability_summary_json?.main_head_lane, null)
+    ?? toInt(headScenarioBalanceAnalysis?.main_head_lane, null)
+    ?? topDistributionLane(headDistribution);
   const boat1HeadLikely = mainHeadLane === 1;
   const boat1SecondConcentration = boat1SecondDistribution
     .slice(0, 2)
@@ -3767,7 +4003,9 @@ function buildExactaCoverageSnapshot({
     const laneAttackBias = attackScenarioApplied && getAttackScenarioHeadLane(attackScenarioType) === lane
       ? attackScenarioScore * 0.24
       : 0;
-    const survivalBias = lane === 1 ? survivalResidualScore * 0.54 : lane === 2 ? survivalResidualScore * 0.12 : lane === 3 ? survivalResidualScore * 0.08 : 0;
+      const survivalBias = lane === 1
+        ? Math.max(survivalResidualScore * 0.54, toNum(roleProbabilityLayers?.boat1_escape_probability, 0) * 22)
+        : lane === 2 ? survivalResidualScore * 0.12 : lane === 3 ? survivalResidualScore * 0.08 : 0;
     const fHoldPenalty = toNum(features?.f_hold_caution_penalty, 0) * (16 + venueFHoldAdj * 0.7);
     const outerHeadPenalty = lane === 5 ? 11 + venueOuterSuppressionAdj * 1.5 : lane === 6 ? 18 + venueOuterSuppressionAdj * 1.7 : 0;
     const score =
@@ -3989,6 +4227,7 @@ function buildQualityGateScores({
   raceStructure,
   escapePatternAnalysis,
   headScenarioBalanceAnalysis,
+  roleProbabilityLayers,
   exactaSnapshot,
   learningWeights,
   race
@@ -4030,9 +4269,18 @@ function buildQualityGateScores({
       missingPenalty
   );
 
-  const headConcentration = distributionConcentration(headScenarioBalanceAnalysis?.head_distribution_json, 2);
-  const secondConcentration = distributionConcentration(headScenarioBalanceAnalysis?.second_place_distribution_json, 2);
-  const thirdConcentration = distributionConcentration(headScenarioBalanceAnalysis?.third_place_distribution_json, 2);
+  const headConcentration = distributionConcentration(
+    roleProbabilityLayers?.first_place_probability_json || headScenarioBalanceAnalysis?.head_distribution_json,
+    2
+  );
+  const secondConcentration = distributionConcentration(
+    roleProbabilityLayers?.second_place_probability_json || headScenarioBalanceAnalysis?.second_place_distribution_json,
+    2
+  );
+  const thirdConcentration = distributionConcentration(
+    roleProbabilityLayers?.third_place_probability_json || headScenarioBalanceAnalysis?.third_place_distribution_json,
+    2
+  );
   const survivalResidual = toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0);
   const attackMargin = Math.abs(toNum(headScenarioBalanceAnalysis?.attack_dominance_margin, 0));
   const outerGuardPenalty = toNum(headScenarioBalanceAnalysis?.outer_head_guard_applied, 0) === 1 ? 8 : 0;
@@ -4063,8 +4311,12 @@ function buildQualityGateScores({
       venueUncertainty
   );
 
-  const boat1SecondDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_second_place_distribution_json);
-  const boat1ThirdDistribution = safeArray(headScenarioBalanceAnalysis?.boat1_third_place_distribution_json);
+  const boat1SecondDistribution = safeArray(
+    roleProbabilityLayers?.boat1_second_place_probability_json || headScenarioBalanceAnalysis?.boat1_second_place_distribution_json
+  );
+  const boat1ThirdDistribution = safeArray(
+    roleProbabilityLayers?.boat1_third_place_probability_json || headScenarioBalanceAnalysis?.boat1_third_place_distribution_json
+  );
   const boat1SecondFocus = distributionConcentration(
     boat1SecondDistribution.length ? boat1SecondDistribution : headScenarioBalanceAnalysis?.second_place_distribution_json,
     3
@@ -4124,6 +4376,7 @@ function buildParticipationDecision({
   escapePatternAnalysis,
   attackScenarioAnalysis,
   headScenarioBalanceAnalysis = null,
+  roleProbabilityLayers = null,
   ranking = [],
   racers = [],
   exactaSnapshot = null,
@@ -4202,6 +4455,7 @@ function buildParticipationDecision({
     raceStructure,
     escapePatternAnalysis,
     headScenarioBalanceAnalysis,
+    roleProbabilityLayers,
     exactaSnapshot,
     learningWeights,
     race
@@ -5415,6 +5669,16 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.inside_baseline_priority_applied = candidateDistributions.inside_baseline_priority_applied;
     headScenarioBalanceAnalysis.candidate_balance_adjustment_json = candidateDistributions.candidate_balance_adjustment_json;
     headScenarioBalanceAnalysis.hit_rate_focus_applied = candidateDistributions.hit_rate_focus_applied;
+    headScenarioBalanceAnalysis.first_place_probability_json = candidateDistributions.first_place_probability_json;
+    headScenarioBalanceAnalysis.second_place_probability_json = candidateDistributions.second_place_probability_json;
+    headScenarioBalanceAnalysis.third_place_probability_json = candidateDistributions.third_place_probability_json;
+    headScenarioBalanceAnalysis.boat1_second_place_probability_json = candidateDistributions.boat1_second_place_probability_json;
+    headScenarioBalanceAnalysis.boat1_third_place_probability_json = candidateDistributions.boat1_third_place_probability_json;
+    headScenarioBalanceAnalysis.survival_probability_json = candidateDistributions.survival_probability_json;
+    headScenarioBalanceAnalysis.boat1_escape_probability = candidateDistributions.boat1_escape_probability;
+    headScenarioBalanceAnalysis.attack_scenario_probability_json = candidateDistributions.attack_scenario_probability_json;
+    headScenarioBalanceAnalysis.role_probability_summary_json = candidateDistributions.role_probability_summary_json;
+    headScenarioBalanceAnalysis.role_probability_version = candidateDistributions.role_probability_version;
     headScenarioBalanceAnalysis.scoring_family_components_json = candidateDistributions.scoring_family_components_json;
     headScenarioBalanceAnalysis.rebalance_version = candidateDistributions.rebalance_version;
     bet_plan_with_stake.recommended_bets = applySeparatedDistributionBiasToTickets(
@@ -5500,10 +5764,16 @@ raceRouter.get("/race", async (req, res, next) => {
       finalRecommendedSnapshot,
       boat1HeadSnapshot,
       headScenarioBalanceAnalysis,
+      roleProbabilityLayers: candidateDistributions,
       escapePatternAnalysis,
       attackScenarioAnalysis,
       learningWeights,
       race: data?.race || null
+    });
+    const backupUrasujiSnapshot = buildBackupUrasujiRecommendationsSnapshot({
+      recommendedBets: bet_plan_with_stake?.recommended_bets,
+      optimizedTickets: ticketOptimizationWithStake?.optimized_tickets,
+      candidateDistributions
     });
     const participationDecision = buildParticipationDecision({
       raceDecision,
@@ -5516,6 +5786,7 @@ raceRouter.get("/race", async (req, res, next) => {
       escapePatternAnalysis,
       attackScenarioAnalysis,
       headScenarioBalanceAnalysis,
+      roleProbabilityLayers: candidateDistributions,
       ranking,
       racers: data?.racers || [],
       exactaSnapshot,
@@ -5639,13 +5910,23 @@ raceRouter.get("/race", async (req, res, next) => {
       survival_scenario_type: headScenarioBalanceAnalysis.survival_scenario_type,
       formation_first_place_prior_json: headScenarioBalanceAnalysis.formation_first_place_prior_json,
       first_place_distribution_json: headScenarioBalanceAnalysis.first_place_distribution_json,
+      first_place_probability_json: headScenarioBalanceAnalysis.first_place_probability_json,
       head_distribution_json: headScenarioBalanceAnalysis.head_distribution_json,
       baseline_head_distribution_json: headScenarioBalanceAnalysis.baseline_head_distribution_json,
       second_distribution_json: headScenarioBalanceAnalysis.second_distribution_json,
       second_place_distribution_json: headScenarioBalanceAnalysis.second_place_distribution_json,
+      second_place_probability_json: headScenarioBalanceAnalysis.second_place_probability_json,
       third_place_distribution_json: headScenarioBalanceAnalysis.third_place_distribution_json,
+      third_place_probability_json: headScenarioBalanceAnalysis.third_place_probability_json,
       boat1_second_place_distribution_json: headScenarioBalanceAnalysis.boat1_second_place_distribution_json,
+      boat1_second_place_probability_json: headScenarioBalanceAnalysis.boat1_second_place_probability_json,
       boat1_third_place_distribution_json: headScenarioBalanceAnalysis.boat1_third_place_distribution_json,
+      boat1_third_place_probability_json: headScenarioBalanceAnalysis.boat1_third_place_probability_json,
+      survival_probability_json: headScenarioBalanceAnalysis.survival_probability_json,
+      boat1_escape_probability: toNullableNum(headScenarioBalanceAnalysis.boat1_escape_probability),
+      attack_scenario_probability_json: headScenarioBalanceAnalysis.attack_scenario_probability_json || [],
+      role_probability_summary_json: headScenarioBalanceAnalysis.role_probability_summary_json || {},
+      role_probability_version: headScenarioBalanceAnalysis.role_probability_version || null,
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_bias_json: headScenarioBalanceAnalysis.boat1_partner_bias_json,
@@ -5690,6 +5971,9 @@ raceRouter.get("/race", async (req, res, next) => {
       exacta_partner_score: exactaSnapshot.exacta_partner_score,
       exacta_reason_tags: exactaSnapshot.exacta_reason_tags,
       exacta_section_shown: exactaSnapshot.shown ? 1 : 0,
+      backup_urasuji_recommendations_snapshot: backupUrasujiSnapshot.items,
+      backup_urasuji_section_shown: backupUrasujiSnapshot.shown ? 1 : 0,
+      backup_urasuji_reason_tags: backupUrasujiSnapshot.backup_reason_tags,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -5793,13 +6077,23 @@ raceRouter.get("/race", async (req, res, next) => {
       survival_scenario_type: snapshotContext.survival_scenario_type,
       formation_first_place_prior_json: snapshotContext.formation_first_place_prior_json,
       first_place_distribution_json: snapshotContext.first_place_distribution_json,
+      first_place_probability_json: snapshotContext.first_place_probability_json,
       head_distribution_json: snapshotContext.head_distribution_json,
       baseline_head_distribution_json: snapshotContext.baseline_head_distribution_json,
       second_distribution_json: snapshotContext.second_distribution_json,
       second_place_distribution_json: snapshotContext.second_place_distribution_json,
+      second_place_probability_json: snapshotContext.second_place_probability_json,
       third_place_distribution_json: snapshotContext.third_place_distribution_json,
+      third_place_probability_json: snapshotContext.third_place_probability_json,
       boat1_second_place_distribution_json: snapshotContext.boat1_second_place_distribution_json,
+      boat1_second_place_probability_json: snapshotContext.boat1_second_place_probability_json,
       boat1_third_place_distribution_json: snapshotContext.boat1_third_place_distribution_json,
+      boat1_third_place_probability_json: snapshotContext.boat1_third_place_probability_json,
+      survival_probability_json: snapshotContext.survival_probability_json,
+      boat1_escape_probability: snapshotContext.boat1_escape_probability,
+      attack_scenario_probability_json: snapshotContext.attack_scenario_probability_json,
+      role_probability_summary_json: snapshotContext.role_probability_summary_json,
+      role_probability_version: snapshotContext.role_probability_version,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       boat1_partner_bias_json: snapshotContext.boat1_partner_bias_json,
@@ -5839,6 +6133,9 @@ raceRouter.get("/race", async (req, res, next) => {
       exacta_partner_score: snapshotContext.exacta_partner_score,
       exacta_reason_tags: snapshotContext.exacta_reason_tags,
       exacta_section_shown: snapshotContext.exacta_section_shown,
+      backup_urasuji_recommendations_snapshot: snapshotContext.backup_urasuji_recommendations_snapshot,
+      backup_urasuji_section_shown: snapshotContext.backup_urasuji_section_shown,
+      backup_urasuji_reason_tags: snapshotContext.backup_urasuji_reason_tags,
       formation_pattern: escapePatternAnalysis.formation_pattern,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -5906,13 +6203,23 @@ raceRouter.get("/race", async (req, res, next) => {
       survival_scenario_type: snapshotContext.survival_scenario_type,
       formation_first_place_prior_json: snapshotContext.formation_first_place_prior_json,
       first_place_distribution_json: snapshotContext.first_place_distribution_json,
+      first_place_probability_json: snapshotContext.first_place_probability_json,
       head_distribution_json: snapshotContext.head_distribution_json,
       baseline_head_distribution_json: snapshotContext.baseline_head_distribution_json,
       second_distribution_json: snapshotContext.second_distribution_json,
       second_place_distribution_json: snapshotContext.second_place_distribution_json,
+      second_place_probability_json: snapshotContext.second_place_probability_json,
       third_place_distribution_json: snapshotContext.third_place_distribution_json,
+      third_place_probability_json: snapshotContext.third_place_probability_json,
       boat1_second_place_distribution_json: snapshotContext.boat1_second_place_distribution_json,
+      boat1_second_place_probability_json: snapshotContext.boat1_second_place_probability_json,
       boat1_third_place_distribution_json: snapshotContext.boat1_third_place_distribution_json,
+      boat1_third_place_probability_json: snapshotContext.boat1_third_place_probability_json,
+      survival_probability_json: snapshotContext.survival_probability_json,
+      boat1_escape_probability: snapshotContext.boat1_escape_probability,
+      attack_scenario_probability_json: snapshotContext.attack_scenario_probability_json,
+      role_probability_summary_json: snapshotContext.role_probability_summary_json,
+      role_probability_version: snapshotContext.role_probability_version,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
       boat1_partner_bias_json: snapshotContext.boat1_partner_bias_json,
@@ -5952,6 +6259,9 @@ raceRouter.get("/race", async (req, res, next) => {
       exacta_partner_score: snapshotContext.exacta_partner_score,
       exacta_reason_tags: snapshotContext.exacta_reason_tags,
       exacta_section_shown: snapshotContext.exacta_section_shown,
+      backup_urasuji_recommendations_snapshot: snapshotContext.backup_urasuji_recommendations_snapshot,
+      backup_urasuji_section_shown: snapshotContext.backup_urasuji_section_shown,
+      backup_urasuji_reason_tags: snapshotContext.backup_urasuji_reason_tags,
       escape_pattern_applied: escapePatternAnalysis.escape_pattern_applied ? 1 : 0,
       escape_second_place_bias_json: escapePatternAnalysis.escape_second_place_bias_json,
       escape_pattern_confidence: escapePatternAnalysis.escape_pattern_confidence,
@@ -6003,7 +6313,8 @@ raceRouter.get("/race", async (req, res, next) => {
         },
         boat1_head_bets: boat1HeadSnapshot.items,
         boat1_priority_mode_applied: toInt(headScenarioBalanceAnalysis.boat1_priority_mode_applied, 0),
-        exacta_recommended_bets: exactaSnapshot.items
+        exacta_recommended_bets: exactaSnapshot.items,
+        backup_urasuji_recommendations: backupUrasujiSnapshot.items
       },
       ai_bets_display_snapshot: finalRecommendedSnapshot.items,
       prediction_before_entry_change,
@@ -10049,7 +10360,10 @@ raceRouter.get("/prediction-feature-logs", async (req, res, next) => {
 
 export const __testHooks = {
   buildSeparatedCandidateDistributions,
+  buildRoleProbabilityLayers,
   buildExactaCoverageSnapshot,
+  buildParticipationDecision,
+  buildBackupUrasujiRecommendationsSnapshot,
   normalizeDistributionRows
 };
 
