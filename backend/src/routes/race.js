@@ -4407,7 +4407,10 @@ function computeLapExhibitionStrength(features) {
     clamp(
       0,
       100,
-      Math.max(0, 7 - toNum(features?.exhibition_rank, 6)) * 9 +
+      Math.max(0, 7 - toNum(features?.lap_time_rank, 6)) * 11 +
+        Math.max(0, 6.9 - toNum(features?.lap_time, 6.9)) * 150 +
+        Math.max(0, toNum(features?.lap_exhibition_score, 0)) * 7 +
+        Math.max(0, 7 - toNum(features?.exhibition_rank, 6)) * 9 +
         Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 180 +
         Math.max(0, toNum(features?.lap_attack_strength, 0)) * 4.2 +
         Math.max(0, 6.86 - toNum(features?.exhibition_time, 6.86)) * 120
@@ -4416,6 +4419,15 @@ function computeLapExhibitionStrength(features) {
 }
 
 function computeFinishOverrideStrength(features) {
+  const lapTimeContribution = Number(
+    clamp(
+      0,
+      100,
+      Math.max(0, 7 - toNum(features?.lap_time_rank, 6)) * 12 +
+        Math.max(0, 6.9 - toNum(features?.lap_time, 6.9)) * 170 +
+        Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 220
+    ).toFixed(2)
+  );
   const lapExhibitionContribution = computeLapExhibitionStrength(features);
   const motor2renContribution = computeMotor2renStrength(features);
   const motor3renContribution = Number(
@@ -4433,6 +4445,14 @@ function computeFinishOverrideStrength(features) {
   const exhibitionTimeContribution = Number(
     clamp(0, 100, Math.max(0, 6.86 - toNum(features?.exhibition_time, 6.86)) * 105).toFixed(2)
   );
+  const exhibitionStContribution = Number(
+    clamp(
+      0,
+      100,
+      Math.max(0, 7 - toNum(features?.st_rank, 6)) * 10 +
+        Math.max(0, 0.18 - toNum(features?.exhibition_st, 0.18)) * 220
+    ).toFixed(2)
+  );
   const venueFitContribution = Number(
     clamp(0, 100, toNum(features?.course_fit_score, 0) * 10 + toNum(features?.venue_lane_adjustment, 0) * 8).toFixed(2)
   );
@@ -4440,20 +4460,24 @@ function computeFinishOverrideStrength(features) {
     clamp(
       0,
       100,
-      lapExhibitionContribution * 0.34 +
+      lapTimeContribution * 0.24 +
+        lapExhibitionContribution * 0.22 +
         motor2renContribution * 0.26 +
         motor3renContribution * 0.14 +
         recentPlayerContribution * 0.14 +
-        exhibitionTimeContribution * 0.07 +
-        venueFitContribution * 0.05
+        exhibitionTimeContribution * 0.04 +
+        exhibitionStContribution * 0.04 +
+        venueFitContribution * 0.06
     ).toFixed(2)
   );
   return {
+    lap_time_contribution: lapTimeContribution,
     lap_exhibition_contribution: lapExhibitionContribution,
     motor_2ren_contribution: motor2renContribution,
     motor_3ren_contribution: motor3renContribution,
     recent_player_form_contribution: recentPlayerContribution,
     exhibition_time_contribution: exhibitionTimeContribution,
+    exhibition_st_contribution: exhibitionStContribution,
     venue_fit_contribution: venueFitContribution,
     finish_override_strength: finalStrength
   };
@@ -9485,8 +9509,11 @@ raceRouter.get("/race", async (req, res, next) => {
               avg_st_rank_delta_vs_left: toNullableNum(laneFeatures?.avg_st_rank_delta_vs_left),
               slit_alert_flag: toInt(laneFeatures?.slit_alert_flag, 0),
               lap_time_delta_vs_front: toNullableNum(laneFeatures?.lap_time_delta_vs_front),
+              lap_time_rank: toInt(laneFeatures?.lap_time_rank, null),
+              lap_time: toNullableNum(laneFeatures?.lap_time),
               lap_attack_flag: toInt(laneFeatures?.lap_attack_flag, 0),
               lap_attack_strength: toNullableNum(laneFeatures?.lap_attack_strength),
+              lap_exhibition_score: toNullableNum(laneFeatures?.lap_exhibition_score),
               feature_snapshot: laneFeatures,
               contribution_components: contributionComponents
             }
@@ -9520,6 +9547,11 @@ raceRouter.get("/race", async (req, res, next) => {
         exhibition_time: toNullableNum(racer?.exhibitionTime),
         exhibition_st: toNullableNum(racer?.exhibitionSt),
         exhibition_st_raw: racer?.exhibitionStRaw || null,
+        kyoteibiyori_fetched: toInt(racer?.kyoteiBiyoriFetched, 0),
+        kyoteibiyori_lap_time: toNullableNum(racer?.kyoteiBiyoriLapTime),
+        kyoteibiyori_lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExhibitionScore),
+        kyoteibiyori_stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel || null,
+        kyoteibiyori_exhibition_st: toNullableNum(racer?.kyoteiBiyoriExhibitionSt),
         entry_course: toInt(racer?.entryCourse, null),
         tilt: toNullableNum(racer?.tilt),
         lane_first_rate: toNullableNum(racer?.laneFirstRate),
@@ -9541,6 +9573,7 @@ raceRouter.get("/race", async (req, res, next) => {
       wave_height: toNullableNum(data?.race?.waveHeight),
       players: snapshotPlayers,
       player_summary: snapshotPlayers,
+      kyoteibiyori_fetch_status_json: data?.source?.kyotei_biyori || {},
       entry: {
         predicted_entry_order: entryMeta.predicted_entry_order,
         actual_entry_order: entryMeta.actual_entry_order,

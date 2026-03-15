@@ -1,5 +1,9 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
+import {
+  fetchKyoteiBiyoriRaceData,
+  mergeKyoteiBiyoriDataIntoRaceContext
+} from "./kyoteibiyori.js";
 
 const BOATRACE_BASE = "https://www.boatrace.jp";
 const BOATRACE_CACHE_TTL_MS = Number(process.env.BOATRACE_CACHE_TTL_MS || 45000);
@@ -525,11 +529,47 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       startRaw: raw
     };
   });
+  let kyoteiBiyori = {
+    ok: false,
+    url: null,
+    byLane: new Map(),
+    tableDiagnostics: [],
+    fallbackUsed: true,
+    error: null
+  };
+  try {
+    kyoteiBiyori = await fetchKyoteiBiyoriRaceData({
+      date,
+      venueId,
+      raceNo,
+      timeoutMs
+    });
+  } catch (error) {
+    kyoteiBiyori = {
+      ok: false,
+      url: null,
+      byLane: new Map(),
+      tableDiagnostics: [],
+      fallbackUsed: true,
+      error: String(error?.message || error)
+    };
+  }
+  const mergedWithKyoteiBiyori = mergeKyoteiBiyoriDataIntoRaceContext({
+    racers: mergedRacers,
+    kyoteiBiyori
+  });
 
   const result = {
     source: {
       racelistUrl,
       beforeinfoUrl,
+      kyotei_biyori: {
+        ok: !!kyoteiBiyori?.ok,
+        url: kyoteiBiyori?.url || null,
+        fallback_used: !!kyoteiBiyori?.fallbackUsed,
+        table_diagnostics: kyoteiBiyori?.tableDiagnostics || [],
+        error: kyoteiBiyori?.error || null
+      },
       start_display_source: "official_pre_race_info",
       fetched_at: new Date().toISOString(),
       cache: {
@@ -546,7 +586,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       windDirection: beforeinfo.weather.windDirection,
       waveHeight: beforeinfo.weather.waveHeight
     },
-    racers: mergedRacers
+    racers: mergedWithKyoteiBiyori
   };
   setCachedRaceData({ date, venueId, raceNo }, result);
   return result;

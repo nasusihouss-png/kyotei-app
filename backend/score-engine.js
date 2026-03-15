@@ -14,6 +14,7 @@ export function calcRacerScore(f) {
   score += f.nationwide_win_rate * 1.8;
   score += f.local_win_rate * 2.2;
   score += f.motor2_rate * 0.32;
+  score += (f.motor3_rate || 0) * 0.1;
   score += f.boat2_rate * 0.18;
   score += f.st_inv * 24;
   score += (f.expected_actual_st_inv || 0) * 16;
@@ -22,7 +23,10 @@ export function calcRacerScore(f) {
   // Exhibition bonuses
   if (f.exhibition_rank === 1) score += 8;
   else if (f.exhibition_rank === 2) score += 4;
+  if (f.lap_time_rank === 1) score += 10;
+  else if (f.lap_time_rank === 2) score += 5;
   score += Math.max(0, 7 - (f.exhibition_rank ?? 6)) * 1.6;
+  score += Math.max(0, 7 - (f.lap_time_rank ?? 6)) * 2.4;
   score += Math.max(0, f.lap_attack_strength || 0) * 0.22;
   if (f.lap_attack_flag === 1) score += 3.5;
 

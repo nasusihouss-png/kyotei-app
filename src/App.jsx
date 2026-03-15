@@ -1270,13 +1270,22 @@ function getPlayerComparisonRows({ prediction, data }) {
         lane: Number(row?.lane || 0),
         name: row?.name || `Boat ${row?.lane || "-"}`,
         fCount: Number(row?.f_hold_count || 0),
+        kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched || 0) === 1,
+        lapTime: Number.isFinite(Number(row?.kyoteibiyori_lap_time ?? row?.lap_time))
+          ? Number(row?.kyoteibiyori_lap_time ?? row?.lap_time)
+          : null,
         exhibitionSt: Number.isFinite(Number(row?.exhibition_st)) ? Number(row.exhibition_st) : null,
         exhibitionTime: Number.isFinite(Number(row?.exhibition_time)) ? Number(row.exhibition_time) : null,
-        lapScore: Number.isFinite(Number(row?.feature_snapshot?.lap_attack_strength))
-          ? Number(row.feature_snapshot.lap_attack_strength)
-          : Number.isFinite(Number(row?.feature_snapshot?.lap_time_delta_vs_front))
-            ? Number(row.feature_snapshot.lap_time_delta_vs_front) * 100
-            : null,
+        lapScore: Number.isFinite(Number(row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score))
+          ? Number(row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score)
+          : Number.isFinite(Number(row?.feature_snapshot?.lap_exhibition_score))
+            ? Number(row.feature_snapshot.lap_exhibition_score)
+            : Number.isFinite(Number(row?.feature_snapshot?.lap_attack_strength))
+              ? Number(row.feature_snapshot.lap_attack_strength)
+              : Number.isFinite(Number(row?.feature_snapshot?.lap_time_delta_vs_front))
+                ? Number(row.feature_snapshot.lap_time_delta_vs_front) * 100
+                : null,
+        stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
         motor2Rate: Number.isFinite(Number(row?.motor_2rate)) ? Number(row.motor_2rate) : null,
         motor3Rate: Number.isFinite(Number(row?.motor_3rate)) ? Number(row.motor_3rate) : null,
         laneFirstRate: Number.isFinite(Number(row?.lane_first_rate)) ? Number(row.lane_first_rate) : null,
@@ -1291,9 +1300,20 @@ function getPlayerComparisonRows({ prediction, data }) {
       lane: Number(row?.lane || 0),
       name: row?.name || `Boat ${row?.lane || "-"}`,
       fCount: Number(row?.fHoldCount || 0),
-      exhibitionSt: Number.isFinite(Number(row?.exhibitionSt)) ? Number(row.exhibitionSt) : null,
-      exhibitionTime: Number.isFinite(Number(row?.exhibitionTime)) ? Number(row.exhibitionTime) : null,
-      lapScore: null,
+      kyoteiBiyoriFetched: Number(row?.kyoteiBiyoriFetched || 0) === 1,
+      lapTime: Number.isFinite(Number(row?.kyoteiBiyoriLapTime ?? row?.lapTime))
+        ? Number(row?.kyoteiBiyoriLapTime ?? row?.lapTime)
+        : null,
+      exhibitionSt: Number.isFinite(Number(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt))
+        ? Number(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt)
+        : null,
+      exhibitionTime: Number.isFinite(Number(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime))
+        ? Number(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime)
+        : null,
+      lapScore: Number.isFinite(Number(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore))
+        ? Number(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore)
+        : null,
+      stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || null,
       motor2Rate: Number.isFinite(Number(row?.motor2Rate)) ? Number(row.motor2Rate) : null,
       motor3Rate: Number.isFinite(Number(row?.motor3Rate)) ? Number(row.motor3Rate) : null,
       laneFirstRate: Number.isFinite(Number(row?.laneFirstRate)) ? Number(row.laneFirstRate) : null,
@@ -2136,6 +2156,7 @@ export default function App() {
     [prediction, data]
   );
   const playerMetricLeaders = useMemo(() => ({
+    lapTime: buildTopMetricLaneSet(playerComparisonRows, "lapTime", "asc"),
     exhibitionSt: buildTopMetricLaneSet(playerComparisonRows, "exhibitionSt", "asc"),
     exhibitionTime: buildTopMetricLaneSet(playerComparisonRows, "exhibitionTime", "asc"),
     lapScore: buildTopMetricLaneSet(playerComparisonRows, "lapScore", "desc"),
@@ -3361,7 +3382,7 @@ export default function App() {
                         <h2>Player / Boat Comparison</h2>
                       </div>
                       <div className="hero-status-stack">
-                        <span className="hero-subtle">top 2 per metric highlighted</span>
+                        <span className="hero-subtle">{data?.source?.kyotei_biyori?.ok ? "kyoteibiyori linked" : "fallback mode"}</span>
                       </div>
                     </div>
                     <div className="table-wrap premium-player-table-wrap">
@@ -3371,9 +3392,10 @@ export default function App() {
                             <th>Boat</th>
                             <th>Player</th>
                             <th>F</th>
+                            <th>Lap Time</th>
                             <th>Ex ST</th>
                             <th>Ex Time</th>
-                            <th>Lap Ex</th>
+                            <th>Lap Ex / Stretch</th>
                             <th>Motor 2-ren</th>
                             <th>Motor 3-ren</th>
                             <th>Lane 1st (season + 3m)</th>
@@ -3397,9 +3419,13 @@ export default function App() {
                               <td>
                                 <span className={`f-count-badge ${row.fCount > 0 ? "has-f" : ""}`}>F{row.fCount}</span>
                               </td>
+                              <td className={playerMetricLeaders.lapTime.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.lapTime, 2)}</td>
                               <td className={playerMetricLeaders.exhibitionSt.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.exhibitionSt, 2)}</td>
                               <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.exhibitionTime, 2)}</td>
-                              <td className={playerMetricLeaders.lapScore.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.lapScore, 1)}</td>
+                              <td className={playerMetricLeaders.lapScore.has(row.lane) ? "metric-hot" : ""}>
+                                {Number.isFinite(Number(row.lapScore)) ? formatMaybeNumber(row.lapScore, 1) : "-"}
+                                {row.stretchFootLabel ? <div className="muted small-inline">{row.stretchFootLabel}</div> : null}
+                              </td>
                               <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.motor2Rate, 2)}</td>
                               <td className={playerMetricLeaders.motor3Rate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.motor3Rate, 2)}</td>
                               <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.laneFirstRate, 2)}</td>
@@ -3410,6 +3436,9 @@ export default function App() {
                         </tbody>
                       </table>
                     </div>
+                    <p className="muted strategy-line">
+                      Lap time is ranked as lower-is-better. Lap Ex / Stretch is ranked as higher-is-better. Lane stats use current season + recent 3 months.
+                    </p>
                   </section>
                 ) : null}
 

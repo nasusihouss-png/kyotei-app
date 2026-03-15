@@ -33,6 +33,7 @@ export function buildFeatures(racer) {
   const nationwide_win_rate = toNumber(racer?.nationwideWinRate, 0);
   const local_win_rate = toNumber(racer?.localWinRate, 0);
   const motor2_rate = toNumber(racer?.motor2Rate, 0);
+  const motor3_rate = toNumber(racer?.motor3Rate, 0);
   const boat2_rate = toNumber(racer?.boat2Rate, 0);
   const weight = toNumber(racer?.weight, 0);
   const avg_st_raw = racer?.avgSt;
@@ -42,12 +43,14 @@ export function buildFeatures(racer) {
   const st_inv = avg_st && avg_st > 0 ? 1 / avg_st : 0;
   const is_inner = lane >= 1 && lane <= 3 ? 1 : 0;
   const is_outer = lane >= 5 && lane <= 6 ? 1 : 0;
-  const exhibition_time_raw = racer?.exhibitionTime;
+  const exhibition_time_raw = racer?.kyoteiBiyoriExhibitionTime ?? racer?.exhibitionTime;
   const exhibition_time =
     Number.isFinite(Number(exhibition_time_raw)) ? Number(exhibition_time_raw) : null;
-  const exhibition_st_raw = racer?.exhibitionSt;
+  const exhibition_st_raw = racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt;
   const exhibition_st =
     Number.isFinite(Number(exhibition_st_raw)) ? Number(exhibition_st_raw) : null;
+  const lap_time = toNullableNumber(racer?.kyoteiBiyoriLapTime ?? racer?.lapTime);
+  const lap_exhibition_score = toNullableNumber(racer?.kyoteiBiyoriLapExhibitionScore ?? racer?.lapExhibitionScore);
   const entry_course_raw = racer?.entryCourse;
   const entry_course =
     Number.isFinite(Number(entry_course_raw)) ? Number(entry_course_raw) : null;
@@ -70,6 +73,7 @@ export function buildFeatures(racer) {
     nationwide_win_rate,
     local_win_rate,
     motor2_rate,
+    motor3_rate,
     boat2_rate,
     weight,
     avg_st,
@@ -80,6 +84,9 @@ export function buildFeatures(racer) {
     is_outer,
     exhibition_time,
     exhibition_st,
+    lap_time,
+    lap_exhibition_score,
+    stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel ?? racer?.stretchFootLabel ?? null,
     entry_course,
     tilt,
     wind_speed,
@@ -131,6 +138,7 @@ export function buildFeatures(racer) {
     slit_alert_flag: 0,
     front_boat_exists: 0,
     lap_time_delta_vs_front: null,
+    lap_time_rank: null,
     lap_attack_flag: 0,
     lap_attack_strength: 0,
     f_hold_count: Math.max(0, toNumber(racer?.fHoldCount, 0)),
@@ -138,7 +146,9 @@ export function buildFeatures(racer) {
     expected_actual_st_adjustment: 0,
     expected_actual_st: null,
     expected_actual_st_inv: 0,
-    f_hold_caution_penalty: 0
+    f_hold_caution_penalty: 0,
+    kyoteibiyori_fetched: toNumber(racer?.kyoteiBiyoriFetched, 0),
+    lap_time_gap_from_best: 0
   };
 }
 
@@ -199,6 +209,15 @@ export function buildRaceFeatures(racers, raceContext = {}) {
   const expectedActualStRanks = buildAscendingRanks(
     expectedActualStByLane.map((row) => ({ lane: row.lane, value: row.expectedActualSt }))
   );
+  const lapTimeRanks = buildAscendingRanks(
+    base.map((x) => ({ lane: x.features.lane, value: x.features.lap_time }))
+  );
+  const bestLapTime = Math.min(
+    ...base
+      .map((x) => x.features.lap_time)
+      .filter((v) => Number.isFinite(v)),
+    Number.POSITIVE_INFINITY
+  );
   const expectedActualStByLaneMap = new Map(expectedActualStByLane.map((row) => [row.lane, row]));
   const byLane = new Map(base.map((item) => [item.features.lane, item]));
   const byCourse = new Map(
@@ -237,14 +256,22 @@ export function buildRaceFeatures(racers, raceContext = {}) {
       ? byCourse.get(frontCourse) || leftItem
       : leftItem;
     const frontFeatures = frontItem?.features || {};
-    const selfLapTime = Number.isFinite(f.exhibition_time) ? f.exhibition_time : null;
-    const frontLapTime = Number.isFinite(frontFeatures?.exhibition_time) ? frontFeatures.exhibition_time : null;
+    const selfLapTime = Number.isFinite(f.lap_time)
+      ? f.lap_time
+      : Number.isFinite(f.exhibition_time)
+        ? f.exhibition_time
+        : null;
+    const frontLapTime = Number.isFinite(frontFeatures?.lap_time)
+      ? frontFeatures.lap_time
+      : Number.isFinite(frontFeatures?.exhibition_time)
+        ? frontFeatures.exhibition_time
+        : null;
     const lapTimeDeltaVsFront =
       Number.isFinite(selfLapTime) && Number.isFinite(frontLapTime)
         ? Number((frontLapTime - selfLapTime).toFixed(3))
         : null;
     const lapAttackStrength = Number.isFinite(lapTimeDeltaVsFront)
-      ? Number(Math.max(0, (lapTimeDeltaVsFront - 0.02) * 100).toFixed(2))
+      ? Number(Math.max(0, (lapTimeDeltaVsFront - 0.02) * 100 + toNumber(f.lap_exhibition_score, 0) * 0.8).toFixed(2))
       : 0;
     const lapAttackFlag =
       Number.isFinite(lapTimeDeltaVsFront) &&
@@ -277,8 +304,13 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         slit_alert_flag: slitAlertFlag,
         front_boat_exists: frontItem ? 1 : 0,
         lap_time_delta_vs_front: lapTimeDeltaVsFront,
+        lap_time_rank: lapTimeRanks.get(f.lane) ?? null,
         lap_attack_flag: lapAttackFlag,
         lap_attack_strength: lapAttackStrength,
+        lap_time_gap_from_best:
+          Number.isFinite(bestLapTime) && Number.isFinite(f.lap_time)
+            ? Number((f.lap_time - bestLapTime).toFixed(3))
+            : 0,
         f_hold_count: expectedActualStMeta.fHoldCount ?? 0,
         f_hold_bias_applied: (expectedActualStMeta.fHoldCount ?? 0) > 0 ? 1 : 0,
         expected_actual_st_adjustment: expectedActualStMeta.adjustment ?? 0,
