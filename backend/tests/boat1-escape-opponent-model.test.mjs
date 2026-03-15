@@ -8,6 +8,7 @@ const {
   buildRoleProbabilityLayers,
   buildBoat3WeakStHeadSuppressionContext,
   getLaunchStateConfig,
+  getVenueLaunchMicroCalibration,
   computeLaunchStateScores,
   classifyLaunchStates,
   buildIntermediateDevelopmentEvents,
@@ -1183,6 +1184,156 @@ const hollowUpsetRisk = computeUpsetRiskScore({
 assert.ok(
   hollowUpsetRisk >= 62,
   "boat1_hollow plus outer pressure should raise upset risk into the alert zone"
+);
+
+const tamagawaVenueCalibration = getVenueLaunchMicroCalibration({ race: { venueId: 5 } });
+assert.ok(
+  tamagawaVenueCalibration.values.boat1_escape_bias > 0,
+  "inside-favorable venues should be able to slightly boost boat1 escape conversion"
+);
+
+const neutralVenueEvents = buildIntermediateDevelopmentEvents({
+  launchStateScores: stableLaunchScores,
+  rows: stableLaunchStateRows,
+  race: { venueId: 999 },
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  escapePatternAnalysis: insideEscape,
+  venueCalibration: getVenueLaunchMicroCalibration({ race: { venueId: 999 } })
+});
+const tamagawaVenueEvents = buildIntermediateDevelopmentEvents({
+  launchStateScores: stableLaunchScores,
+  rows: stableLaunchStateRows,
+  race: { venueId: 5 },
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  escapePatternAnalysis: insideEscape,
+  venueCalibration: tamagawaVenueCalibration
+});
+assert.ok(
+  tamagawaVenueEvents.inner_stable > neutralVenueEvents.inner_stable,
+  "venue micro-calibration should only slightly raise inner_stable at inside-favorable venues"
+);
+assert.ok(
+  tamagawaVenueEvents.inner_stable - neutralVenueEvents.inner_stable <= 4.1,
+  "venue inner_stable adjustment should stay tightly capped"
+);
+
+const neutralScenarioProbabilities = computeRaceScenarioProbabilities({
+  intermediateEvents: stableLaunchEvents,
+  rows: stableLaunchStateRows,
+  race: { venueId: 999 },
+  attackScenarioAnalysis: noAttack,
+  escapePatternAnalysis: insideEscape,
+  outsideHeadPromotionContext: {
+    inner_collapse_score: 22,
+    by_lane: new Map()
+  },
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  venueCalibration: getVenueLaunchMicroCalibration({ race: { venueId: 999 } })
+});
+const venueScenarioProbabilities = computeRaceScenarioProbabilities({
+  intermediateEvents: stableLaunchEvents,
+  rows: stableLaunchStateRows,
+  race: { venueId: 5 },
+  attackScenarioAnalysis: noAttack,
+  escapePatternAnalysis: insideEscape,
+  outsideHeadPromotionContext: {
+    inner_collapse_score: 22,
+    by_lane: new Map()
+  },
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  venueCalibration: tamagawaVenueCalibration
+});
+const neutralScenarioProbMap = new Map(neutralScenarioProbabilities.map((row) => [row.scenario, row.probability]));
+const venueScenarioProbMap = new Map(venueScenarioProbabilities.map((row) => [row.scenario, row.probability]));
+assert.ok(
+  Number(venueScenarioProbMap.get("boat1_escape") || 0) >= Number(neutralScenarioProbMap.get("boat1_escape") || 0),
+  "venue calibration should keep boat1 escape stable or slightly stronger at inside-favorable venues"
+);
+assert.ok(
+  Math.abs(Number(venueScenarioProbMap.get("boat1_escape") || 0) - Number(neutralScenarioProbMap.get("boat1_escape") || 0)) <= 0.05,
+  "venue scenario calibration should stay small and conservative"
+);
+
+const edgyOutsideProbabilities = computeRaceScenarioProbabilities({
+  intermediateEvents: {
+    ...intermediateEvents,
+    outer_mix_ready: 46
+  },
+  rows: launchStateRows,
+  race: { venueId: 10 },
+  attackScenarioAnalysis: lane4Pressure,
+  escapePatternAnalysis: { ...insideEscape, formation_pattern: "outside_lead" },
+  outsideHeadPromotionContext: {
+    inner_collapse_score: 40,
+    by_lane: new Map()
+  },
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  venueCalibration: getVenueLaunchMicroCalibration({ race: { venueId: 10 } })
+});
+const edgyOutsideNeutralProbabilities = computeRaceScenarioProbabilities({
+  intermediateEvents: {
+    ...intermediateEvents,
+    outer_mix_ready: 46
+  },
+  rows: launchStateRows,
+  race: { venueId: 999 },
+  attackScenarioAnalysis: lane4Pressure,
+  escapePatternAnalysis: { ...insideEscape, formation_pattern: "outside_lead" },
+  outsideHeadPromotionContext: {
+    inner_collapse_score: 40,
+    by_lane: new Map()
+  },
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  venueCalibration: getVenueLaunchMicroCalibration({ race: { venueId: 999 } })
+});
+const edgyOutsideMap = new Map(edgyOutsideProbabilities.map((row) => [row.scenario, row.probability]));
+const edgyOutsideNeutralMap = new Map(edgyOutsideNeutralProbabilities.map((row) => [row.scenario, row.probability]));
+assert.ok(
+  Math.abs(Number(edgyOutsideMap.get("chaos_outer_mix") || 0) - Number(edgyOutsideNeutralMap.get("chaos_outer_mix") || 0)) <= 0.04,
+  "venue bias should only change outside-mix interpretation slightly"
+);
+
+const neutralUpsetRisk = computeUpsetRiskScore({
+  confidenceScores: {
+    head_fixed_confidence_pct: 56,
+    recommended_bet_confidence_pct: 52
+  },
+  participationDecision: {
+    decision: "watch",
+    participation_score_components: {
+      race_stability_score: 40,
+      prediction_readability_score: 43,
+      partner_clarity_score: 35,
+      quality_gate_applied: 1
+    }
+  },
+  roleProbabilityLayers: {
+    boat1_escape_probability: 0.38,
+    first_place_probability_json: [{ lane: 1, weight: 0.35 }, { lane: 4, weight: 0.22 }, { lane: 5, weight: 0.15 }],
+    second_place_probability_json: [{ lane: 4, weight: 0.21 }, { lane: 5, weight: 0.19 }, { lane: 3, weight: 0.16 }],
+    third_place_probability_json: [{ lane: 5, weight: 0.18 }, { lane: 4, weight: 0.17 }, { lane: 2, weight: 0.15 }]
+  },
+  attackScenarioAnalysis: lane4Pressure,
+  headScenarioBalanceAnalysis: {
+    ...insideHeadScenario,
+    launch_venue_calibration_json: getVenueLaunchMicroCalibration({ race: { venueId: 999 } }),
+    launch_state_labels_json: [
+      { lane: 1, label: "hollow" },
+      { lane: 4, label: "strong_out" },
+      { lane: 5, label: "out" }
+    ]
+  },
+  outsideHeadPromotionGate: {
+    inner_collapse_score: 67,
+    by_lane: {
+      "4": { matched_evidence_categories: ["entry_shape_advantage", "clear_exhibition_st_advantage", "lap_exhibition_advantage"] },
+      "5": { matched_evidence_categories: ["outer_mix_ready", "lap_exhibition_advantage", "learning_correction_match"] }
+    }
+  }
+});
+assert.ok(
+  Math.abs(hollowUpsetRisk - neutralUpsetRisk) <= 4.1,
+  "venue upset calibration should remain tightly capped"
 );
 
 console.log("boat1-escape-opponent-model tests passed");

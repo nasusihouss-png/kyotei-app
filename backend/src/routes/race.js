@@ -1209,6 +1209,13 @@ function computeUpsetRiskScore({
   const attackPressure = toNum(attackScenarioAnalysis?.attack_scenario_score, 0) * 0.18;
   const boat1EscapeProbability = toNum(roleProbabilityLayers?.boat1_escape_probability, 0);
   const innerCollapseScore = toNum(outsideHeadPromotionGate?.inner_collapse_score, 0);
+  const venueLaunchCalibration =
+    headScenarioBalanceAnalysis?.launch_venue_calibration_json ||
+    getVenueLaunchMicroCalibration({
+      race: null,
+      venueSummary: headScenarioBalanceAnalysis?.venue_correction_summary
+    });
+  const venueUpsetBias = toNum(venueLaunchCalibration?.values?.upset_risk_bias, 0);
   const outerEvidence = [5, 6].reduce((acc, lane) => {
     const row = outsideHeadPromotionGate?.by_lane?.[String(lane)] || outsideHeadPromotionGate?.by_lane?.[lane] || {};
     return Math.max(acc, safeArray(row?.matched_evidence_categories).length);
@@ -1228,6 +1235,7 @@ function computeUpsetRiskScore({
         attackPressure +
         outerEvidence * 2.6 +
         innerCollapseScore * 0.22 +
+        venueUpsetBias +
         (toInt(scoreSource?.quality_gate_applied, 0) === 1 ? 12 : 0)
     ).toFixed(2)
   );
@@ -3089,6 +3097,69 @@ const LAUNCH_STATE_CONFIG = {
   }
 };
 
+const VENUE_LAUNCH_MICRO_CALIBRATION = {
+  default: {
+    inner_stable_bias: 0,
+    boat1_escape_bias: 0,
+    boat3_attack_bias: 0,
+    boat4_cado_bias: 0,
+    outer_mix_bias: 0,
+    upset_risk_bias: 0,
+    launch_threshold_bias: 0
+  },
+  5: {
+    inner_stable_bias: 3,
+    boat1_escape_bias: 0.035,
+    boat3_attack_bias: -0.018,
+    boat4_cado_bias: 0.012,
+    outer_mix_bias: -0.015,
+    upset_risk_bias: -2.5,
+    launch_threshold_bias: 0
+  },
+  23: {
+    inner_stable_bias: 1.5,
+    boat1_escape_bias: 0.015,
+    boat3_attack_bias: 0.008,
+    boat4_cado_bias: 0.015,
+    outer_mix_bias: -0.01,
+    upset_risk_bias: -1,
+    launch_threshold_bias: 0
+  },
+  10: {
+    inner_stable_bias: -1,
+    boat1_escape_bias: -0.015,
+    boat3_attack_bias: 0.018,
+    boat4_cado_bias: 0.022,
+    outer_mix_bias: 0.012,
+    upset_risk_bias: 1.5,
+    launch_threshold_bias: 0
+  }
+};
+
+function getVenueLaunchMicroCalibration({ race, venueSummary } = {}) {
+  const venueKey =
+    toInt(race?.venueId, null) ??
+    toInt(venueSummary?.venue_segment_key, null) ??
+    null;
+  const base = VENUE_LAUNCH_MICRO_CALIBRATION.default;
+  const venue = venueKey !== null
+    ? (VENUE_LAUNCH_MICRO_CALIBRATION[venueKey] || base)
+    : base;
+  const calibration = {
+    inner_stable_bias: clamp(-4, 4, toNum(venue?.inner_stable_bias, 0)),
+    boat1_escape_bias: clamp(-0.05, 0.05, toNum(venue?.boat1_escape_bias, 0)),
+    boat3_attack_bias: clamp(-0.04, 0.04, toNum(venue?.boat3_attack_bias, 0)),
+    boat4_cado_bias: clamp(-0.04, 0.04, toNum(venue?.boat4_cado_bias, 0)),
+    outer_mix_bias: clamp(-0.04, 0.04, toNum(venue?.outer_mix_bias, 0)),
+    upset_risk_bias: clamp(-4, 4, toNum(venue?.upset_risk_bias, 0)),
+    launch_threshold_bias: clamp(-2, 2, toNum(venue?.launch_threshold_bias, 0))
+  };
+  return {
+    venue_key: venueKey,
+    values: calibration
+  };
+}
+
 function getLaunchStateConfig() {
   return {
     st_margins: { ...LAUNCH_STATE_CONFIG.st_margins },
@@ -3096,6 +3167,18 @@ function getLaunchStateConfig() {
     score_weights: { ...LAUNCH_STATE_CONFIG.score_weights },
     event_thresholds: { ...LAUNCH_STATE_CONFIG.event_thresholds }
   };
+}
+
+function getLaunchStateConfigWithVenueCalibration(venueCalibration = null) {
+  const config = getLaunchStateConfig();
+  const launchBias = clamp(-2, 2, toNum(venueCalibration?.values?.launch_threshold_bias, 0));
+  if (launchBias !== 0) {
+    config.score_thresholds.LAUNCH_SCORE_STRONG_OUT = Number((config.score_thresholds.LAUNCH_SCORE_STRONG_OUT + launchBias).toFixed(2));
+    config.score_thresholds.LAUNCH_SCORE_OUT = Number((config.score_thresholds.LAUNCH_SCORE_OUT + launchBias * 0.7).toFixed(2));
+    config.score_thresholds.LAUNCH_SCORE_HOLLOW = Number((config.score_thresholds.LAUNCH_SCORE_HOLLOW - launchBias * 0.7).toFixed(2));
+    config.score_thresholds.LAUNCH_SCORE_STRONG_HOLLOW = Number((config.score_thresholds.LAUNCH_SCORE_STRONG_HOLLOW - launchBias).toFixed(2));
+  }
+  return config;
 }
 
 function normalizeLaunchStateLabelWithThresholds(score, thresholds = LAUNCH_STATE_CONFIG.score_thresholds) {
@@ -3128,9 +3211,9 @@ function launchEventTriggered(value, threshold) {
   return toNum(value, 0) >= toNum(threshold, 0) ? 1 : 0;
 }
 
-function computeLaunchStateScores(rows) {
+function computeLaunchStateScores(rows, venueCalibration = null) {
   const laneRows = safeArray(rows);
-  const config = getLaunchStateConfig();
+  const config = getLaunchStateConfigWithVenueCalibration(venueCalibration);
   const weights = config.score_weights;
   const stByLane = new Map(
     laneRows
@@ -3220,11 +3303,16 @@ function classifyLaunchStates(launchStateScores) {
 function buildIntermediateDevelopmentEvents({
   launchStateScores,
   rows,
+  race,
   headScenarioBalanceAnalysis,
-  escapePatternAnalysis
+  escapePatternAnalysis,
+  venueCalibration
 }) {
   const config = getLaunchStateConfig();
   const eventThresholds = config.event_thresholds;
+  const effectiveVenueCalibration =
+    venueCalibration || getVenueLaunchMicroCalibration({ race, venueSummary: headScenarioBalanceAnalysis?.venue_correction_summary });
+  const venueBias = effectiveVenueCalibration?.values || {};
   const launchMap = new Map(
     safeArray(launchStateScores).map((row) => [toInt(row?.lane, null), { score: toNum(row?.score, 0), label: row?.label || "neutral" }])
   );
@@ -3310,8 +3398,17 @@ function buildIntermediateDevelopmentEvents({
   );
   const innerStable =
     laneState(1) >= 0 && laneState(2) >= 0 && boat1EscapeBase >= 0.42
-      ? innerStableBase
+      ? event(innerStableBase + toNum(venueBias?.inner_stable_bias, 0))
       : Number((innerStableBase * 0.68).toFixed(2));
+  const venueAdjustedBoat3AttackReady = event(
+    boat3AttackReady * (1 + toNum(venueBias?.boat3_attack_bias, 0))
+  );
+  const venueAdjustedBoat4CadoReady = event(
+    boat4CadoReady * (1 + toNum(venueBias?.boat4_cado_bias, 0))
+  );
+  const venueAdjustedOuterMixReady = event(
+    outerMixReady * (1 + toNum(venueBias?.outer_mix_bias, 0))
+  );
 
   return {
     inner_stable: innerStable,
@@ -3319,12 +3416,12 @@ function buildIntermediateDevelopmentEvents({
     boat1_hollow: event(lane1Hollow),
     boat2_out: event(lane2Out),
     boat2_hollow: event(lane2Hollow),
-    boat3_attack_ready: boat3AttackReady,
+    boat3_attack_ready: venueAdjustedBoat3AttackReady,
     boat3_hollow: event(lane3Hollow),
-    boat4_cado_ready: boat4CadoReady,
+    boat4_cado_ready: venueAdjustedBoat4CadoReady,
     boat4_hollow: event(lane4Hollow),
     boat5_outer_push: boat5OuterPush,
-    outer_mix_ready: outerMixReady,
+    outer_mix_ready: venueAdjustedOuterMixReady,
     inner_collapse: innerCollapse,
     weak_wall_on_2: weakWallOn2,
     weak_wall_on_3: weakWallOn3,
@@ -3340,7 +3437,7 @@ function buildIntermediateDevelopmentEvents({
         laneState(4) >= 1 && (laneState(3) <= -1 || weakWallOn3 >= toNum(eventThresholds?.WEAK_WALL_ON_3_MIN, 34)) ? 1 : 0,
       boat4_hollow: laneState(4) <= -1 ? 1 : 0,
       boat5_outer_push: boat5OuterPush >= toNum(eventThresholds?.BOAT5_OUTER_PUSH_MIN, 40) ? 1 : 0,
-      outer_mix_ready: outerOutCount >= 2 && outerMixReady >= toNum(eventThresholds?.OUTER_MIX_READY_MIN, 42) ? 1 : 0,
+      outer_mix_ready: outerOutCount >= 2 && venueAdjustedOuterMixReady >= toNum(eventThresholds?.OUTER_MIX_READY_MIN, 42) ? 1 : 0,
       inner_stable:
         laneState(1) >= 0 &&
         laneState(2) >= 0 &&
@@ -3351,18 +3448,46 @@ function buildIntermediateDevelopmentEvents({
       weak_wall_on_2: weakWallOn2 >= toNum(eventThresholds?.WEAK_WALL_ON_2_MIN, 34) ? 1 : 0,
       weak_wall_on_3: weakWallOn3 >= toNum(eventThresholds?.WEAK_WALL_ON_3_MIN, 34) ? 1 : 0
     },
-    thresholds_used: config
+    thresholds_used: config,
+    venue_calibration_used: effectiveVenueCalibration,
+    venue_adjusted_events: {
+      inner_stable: {
+        before: innerStableBase,
+        after: innerStable,
+        delta: Number((innerStable - innerStableBase).toFixed(2))
+      },
+      boat3_attack_ready: {
+        before: boat3AttackReady,
+        after: venueAdjustedBoat3AttackReady,
+        delta: Number((venueAdjustedBoat3AttackReady - boat3AttackReady).toFixed(2))
+      },
+      boat4_cado_ready: {
+        before: boat4CadoReady,
+        after: venueAdjustedBoat4CadoReady,
+        delta: Number((venueAdjustedBoat4CadoReady - boat4CadoReady).toFixed(2))
+      },
+      outer_mix_ready: {
+        before: outerMixReady,
+        after: venueAdjustedOuterMixReady,
+        delta: Number((venueAdjustedOuterMixReady - outerMixReady).toFixed(2))
+      }
+    }
   };
 }
 
 function computeRaceScenarioProbabilities({
   intermediateEvents,
   rows,
+  race,
   attackScenarioAnalysis,
   escapePatternAnalysis,
   outsideHeadPromotionContext,
-  headScenarioBalanceAnalysis
+  headScenarioBalanceAnalysis,
+  venueCalibration
 }) {
+  const effectiveVenueCalibration =
+    venueCalibration || getVenueLaunchMicroCalibration({ race, venueSummary: headScenarioBalanceAnalysis?.venue_correction_summary });
+  const venueBias = effectiveVenueCalibration?.values || {};
   const laneRows = new Map(
     safeArray(rows).map((row) => [toInt(row?.racer?.lane, null), row]).filter(([lane]) => Number.isInteger(lane))
   );
@@ -3375,7 +3500,7 @@ function computeRaceScenarioProbabilities({
   const playerAdj = (lane) =>
     toNum(laneFeature(lane)?.player_strength_blended, 0) * 2.4 +
     toNum(laneFeature(lane)?.player_recent_3_months_strength, 0) * 1.2;
-  const rawScores = {
+  const preAdjustedRawScores = {
     boat1_escape:
       28 +
       toNum(intermediateEvents?.inner_stable, 0) * 0.78 +
@@ -3418,6 +3543,22 @@ function computeRaceScenarioProbabilities({
       toNum(outsideHeadPromotionContext?.inner_collapse_score, 0) * 0.22 +
       (String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead" ? 18 : 0)
   };
+  const rawScores = {
+    ...preAdjustedRawScores,
+    boat1_escape: preAdjustedRawScores.boat1_escape * (1 + toNum(venueBias?.boat1_escape_bias, 0)),
+    boat3_makuri: preAdjustedRawScores.boat3_makuri * (1 + toNum(venueBias?.boat3_attack_bias, 0)),
+    boat3_makuri_sashi: preAdjustedRawScores.boat3_makuri_sashi * (1 + toNum(venueBias?.boat3_attack_bias, 0) * 0.9),
+    boat4_cado_attack: preAdjustedRawScores.boat4_cado_attack * (1 + toNum(venueBias?.boat4_cado_bias, 0)),
+    chaos_outer_mix: preAdjustedRawScores.chaos_outer_mix * (1 + toNum(venueBias?.outer_mix_bias, 0))
+  };
+  const preNormalized = normalizeDistributionRows(
+    Object.entries(preAdjustedRawScores).map(([scenario, weight]) => ({
+      lane: ({ boat1_escape: 1, boat2_sashi: 2, boat3_makuri: 3, boat3_makuri_sashi: 3, boat4_cado_attack: 4, chaos_outer_mix: 5 })[scenario],
+      role: scenario,
+      weight
+    }))
+  );
+  const preMap = new Map(preNormalized.map((row) => [row.role, row.weight]));
   const normalized = normalizeDistributionRows(
     Object.entries(rawScores).map(([scenario, weight]) => ({
       lane: ({ boat1_escape: 1, boat2_sashi: 2, boat3_makuri: 3, boat3_makuri_sashi: 3, boat4_cado_attack: 4, chaos_outer_mix: 5 })[scenario],
@@ -3426,7 +3567,10 @@ function computeRaceScenarioProbabilities({
     }))
   ).map((row) => ({
     scenario: row.role,
-    probability: row.weight
+    probability: row.weight,
+    pre_adjustment_probability: Number(toNum(preMap.get(row.role), 0).toFixed(4)),
+    venue_adjustment_delta: Number((toNum(row.weight, 0) - toNum(preMap.get(row.role), 0)).toFixed(4)),
+    venue_calibration_used: effectiveVenueCalibration
   }));
   return normalized.sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0));
 }
@@ -3565,6 +3709,7 @@ function buildPredictionFeatureBundle({
     role_layers: candidateDistributions || {},
     launch_context: {
       launch_state_thresholds_used_json: candidateDistributions?.launch_state_thresholds_used_json || getLaunchStateConfig(),
+      launch_venue_calibration_json: candidateDistributions?.launch_venue_calibration_json || getVenueLaunchMicroCalibration(),
       launch_state_scores_json: candidateDistributions?.launch_state_scores_json || [],
       launch_state_labels_json: candidateDistributions?.launch_state_labels_json || [],
       intermediate_development_events_json: candidateDistributions?.intermediate_development_events_json || {},
@@ -4191,14 +4336,20 @@ function buildSeparatedCandidateDistributions({
     outsideHeadPromotionContext
   });
   const boat1EscapePartnerVersion = "boat1_escape_partner_v2";
-  const launchStateScores = computeLaunchStateScores(rows);
+  const launchVenueCalibration = getVenueLaunchMicroCalibration({
+    race,
+    venueSummary: { ...headScenarioBalanceAnalysis?.venue_correction_summary, venue_segment_key: race?.venueId ?? headScenarioBalanceAnalysis?.venue_correction_summary?.venue_segment_key }
+  });
+  const launchStateScores = computeLaunchStateScores(rows, launchVenueCalibration);
   const launchStateLabels = classifyLaunchStates(launchStateScores);
   const launchStateThresholdsUsed = getLaunchStateConfig();
   const intermediateDevelopmentEvents = buildIntermediateDevelopmentEvents({
     launchStateScores,
     rows,
+    race,
     headScenarioBalanceAnalysis,
-    escapePatternAnalysis
+    escapePatternAnalysis,
+    venueCalibration: launchVenueCalibration
   });
 
   let firstPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
@@ -4484,10 +4635,12 @@ function buildSeparatedCandidateDistributions({
   const raceScenarioProbabilities = computeRaceScenarioProbabilities({
     intermediateEvents: intermediateDevelopmentEvents,
     rows,
+    race,
     attackScenarioAnalysis,
     escapePatternAnalysis,
     outsideHeadPromotionContext,
-    headScenarioBalanceAnalysis
+    headScenarioBalanceAnalysis,
+    venueCalibration: launchVenueCalibration
   });
   const finishProbabilitiesByScenario = computeFinishProbsByScenario({
     scenarioProbabilities: raceScenarioProbabilities,
@@ -4585,6 +4738,7 @@ function buildSeparatedCandidateDistributions({
     boat1_escape_partner_version: boat1EscapePartnerVersion,
     hit_rate_focus_applied: 1,
     launch_state_thresholds_used_json: launchStateThresholdsUsed,
+    launch_venue_calibration_json: launchVenueCalibration,
     launch_state_scores_json: launchStateScores,
     launch_state_labels_json: launchStateLabels,
     intermediate_development_events_json: intermediateDevelopmentEvents,
@@ -7972,6 +8126,7 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.boat1_partner_reason_tags = candidateDistributions.boat1_partner_reason_tags;
     headScenarioBalanceAnalysis.partner_search_lap_bias_json = candidateDistributions.partner_search_lap_bias_json;
     headScenarioBalanceAnalysis.venue_correction_summary = candidateDistributions.venue_correction_summary;
+    headScenarioBalanceAnalysis.launch_venue_calibration_json = candidateDistributions.launch_venue_calibration_json;
     headScenarioBalanceAnalysis.third_place_residual_bias_json = candidateDistributions.third_place_residual_bias_json;
     headScenarioBalanceAnalysis.boat1_partner_search_applied = candidateDistributions.boat1_partner_search_applied;
     headScenarioBalanceAnalysis.boat1_partner_model_applied = candidateDistributions.boat1_partner_model_applied;
@@ -12879,6 +13034,7 @@ export const __testHooks = {
   buildRoleProbabilityLayers,
   buildBoat3WeakStHeadSuppressionContext,
   getLaunchStateConfig,
+  getVenueLaunchMicroCalibration,
   computeLaunchStateScores,
   classifyLaunchStates,
   buildIntermediateDevelopmentEvents,
