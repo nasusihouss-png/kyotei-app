@@ -662,6 +662,8 @@ export function buildVerifiedLearningRows() {
             : [],
         finish_override_strength_by_lane_json:
           learning?.finish_override_strength_by_lane_json || context?.finish_override_strength_by_lane_json || {},
+        f_holder_role_penalty_summary_json:
+          learning?.f_holder_role_penalty_summary_json || context?.f_holder_role_penalty_summary_json || {},
         scenario_based_order_candidates_json: Array.isArray(learning?.scenario_based_order_candidates_json)
           ? learning.scenario_based_order_candidates_json
           : Array.isArray(context?.scenario_based_order_candidates_json)

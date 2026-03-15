@@ -9,6 +9,8 @@ const {
   buildBoat3WeakStHeadSuppressionContext,
   getLaunchStateConfig,
   getVenueLaunchMicroCalibration,
+  getFHolderPenaltyByRole,
+  computeStartAdvantageScore,
   computeMotor2renStrength,
   computeLapExhibitionStrength,
   computeFinishOverrideStrength,
@@ -149,6 +151,11 @@ assert.ok(
   insideDistributions.boat1_escape_probability >= 0.45,
   "boat 1 escape probability should stay meaningfully high in a stable inside race"
 );
+assert.ok(
+  insideDistributions.f_holder_role_penalty_summary_json &&
+    typeof insideDistributions.f_holder_role_penalty_summary_json === "object",
+  "candidate distributions should expose role-based F-holder penalty summary"
+);
 
 const lane3AttackRows = [
   ...insideRows.slice(0, 2),
@@ -205,6 +212,68 @@ assert.ok(
 assert.ok(
   laneOrder(lane4Distributions.first_place_probability_json, 3).includes(1),
   "lane 4 pressure should still leave boat 1 alive in first-place probabilities"
+);
+
+const laneAwareStartRows = [
+  makeRow(1, { features: { expected_actual_st: 0.13, expected_actual_st_rank: 3, exhibition_st: 0.13, display_time_delta_vs_left: 0 } }),
+  makeRow(5, { features: { expected_actual_st: 0.13, expected_actual_st_rank: 3, exhibition_st: 0.13, display_time_delta_vs_left: 0 } })
+];
+const laneAwareLaunchScores = computeLaunchStateScores(laneAwareStartRows);
+const lane1Start = laneAwareLaunchScores.find((row) => row.lane === 1);
+const lane5Start = laneAwareLaunchScores.find((row) => row.lane === 5);
+assert.ok(
+  Number(lane1Start?.final_start_advantage_score || 0) > Number(lane5Start?.final_start_advantage_score || 0),
+  "lane-aware ST interpretation should still favor inner lanes for the same ST"
+);
+assert.ok(
+  Number(lane1Start?.lane_base_advantage || 0) > Number(lane5Start?.lane_base_advantage || 0),
+  "start advantage logging should expose lane-prior advantage by lane"
+);
+
+const mildBoat1F = getFHolderPenaltyByRole({ f_hold_caution_penalty: 1.4, f_hold_count: 1 }, 1);
+const strongOuterF = getFHolderPenaltyByRole({ f_hold_caution_penalty: 1.4, f_hold_count: 1 }, 4);
+assert.ok(
+  mildBoat1F.first_penalty < strongOuterF.first_penalty,
+  "boat 1 F-holder penalty should stay milder than non-boat1 first-place penalty"
+);
+assert.ok(
+  strongOuterF.second_penalty < strongOuterF.first_penalty && strongOuterF.third_penalty < strongOuterF.second_penalty,
+  "non-boat1 F-holder penalties should be strongest for first, smaller for second, minimal for third"
+);
+
+const nonBoat1FRows = [
+  makeRow(1, { features: { exhibition_rank: 2, motor_total_score: 10.1, expected_actual_st_rank: 2 } }),
+  makeRow(2, { features: { exhibition_rank: 3, motor_total_score: 9.5, expected_actual_st_rank: 3 } }),
+  makeRow(3, { features: { exhibition_rank: 2, motor_total_score: 9.9, expected_actual_st_rank: 2, f_hold_caution_penalty: 1.8, f_hold_count: 1 } }),
+  makeRow(4, { features: { exhibition_rank: 4, motor_total_score: 8.9, expected_actual_st_rank: 4 } }),
+  makeRow(5, { features: { exhibition_rank: 5, motor_total_score: 8.1, expected_actual_st_rank: 5 } }),
+  makeRow(6, { features: { exhibition_rank: 6, motor_total_score: 7.7, expected_actual_st_rank: 6 } })
+];
+const nonBoat1FDistributions = buildSeparatedCandidateDistributions({
+  ranking: nonBoat1FRows,
+  tickets: [],
+  headScenarioBalanceAnalysis: insideHeadScenario,
+  escapePatternAnalysis: insideEscape,
+  attackScenarioAnalysis: noAttack,
+  learningWeights,
+  race
+});
+const lane3FirstWeight = Number(
+  nonBoat1FDistributions.first_place_distribution_json.find((row) => row.lane === 3)?.weight || 0
+);
+const lane3SecondWeight = Number(
+  nonBoat1FDistributions.second_place_distribution_json.find((row) => row.lane === 3)?.weight || 0
+);
+const lane3ThirdWeight = Number(
+  nonBoat1FDistributions.third_place_distribution_json.find((row) => row.lane === 3)?.weight || 0
+);
+assert.ok(
+  lane3SecondWeight > 0 && lane3ThirdWeight > 0,
+  "non-boat1 F-holders should still remain reasonably alive for second/third"
+);
+assert.ok(
+  lane3FirstWeight < lane3SecondWeight,
+  "non-boat1 F-holders should be penalized mainly for first-place rather than top-3 survival"
 );
 
 const exactaSnapshot = buildExactaCoverageSnapshot({
@@ -804,9 +873,12 @@ const topRecommendedTickets = buildTopRecommendedTickets({
   ],
   maxItems: 10
 });
-assert.equal(topRecommendedTickets.length, 5, "top recommended tickets should unify trifecta, exacta, and backup rows");
-assert.equal(topRecommendedTickets[0].ticket, "1-2-3", "main trifecta should stay ahead of cover tickets when hit rate is tied");
-assert.equal(topRecommendedTickets[1].ticket, "1-2", "exacta should rank just behind stronger main tickets when hit rate is tied");
+assert.equal(topRecommendedTickets.length, 3, "top recommended tickets should now keep only trifecta rows");
+assert.equal(topRecommendedTickets[0].ticket, "1-2-3", "main trifecta should stay at the top when hit rate is tied");
+assert.ok(
+  topRecommendedTickets.every((row) => row.ticket_type === "trifecta"),
+  "top recommended tickets should exclude exacta from the final visible list"
+);
 assert.ok(
   topRecommendedTickets.every((row, idx, arr) => idx === 0 || arr[idx - 1].estimated_hit_rate >= row.estimated_hit_rate),
   "top recommended tickets should be sorted by estimated hit rate descending"
@@ -892,7 +964,7 @@ const neutralLaunchRows = [
 ];
 const neutralLaunchStates = classifyLaunchStates(computeLaunchStateScores(neutralLaunchRows));
 assert.equal(
-  neutralLaunchStates.find((row) => row.lane === 2)?.label,
+  neutralLaunchStates.find((row) => row.lane === 3)?.label,
   "neutral",
   "small ST differences should remain neutral"
 );

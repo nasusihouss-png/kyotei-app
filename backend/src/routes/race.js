@@ -3212,6 +3212,100 @@ function launchEventTriggered(value, threshold) {
   return toNum(value, 0) >= toNum(threshold, 0) ? 1 : 0;
 }
 
+function hasFHolderSignal(features = {}) {
+  return toNum(features?.f_hold_count, 0) > 0 || toNum(features?.f_hold_bias_applied, 0) === 1 || toNum(features?.f_hold_caution_penalty, 0) > 0;
+}
+
+function getLaneBaseAdvantage(lane) {
+  switch (toInt(lane, 0)) {
+    case 1:
+      return 16;
+    case 2:
+      return 11;
+    case 3:
+      return 7;
+    case 4:
+      return 3;
+    case 5:
+      return -2;
+    case 6:
+      return -6;
+    default:
+      return 0;
+  }
+}
+
+function getFHolderPenaltyByRole(features = {}, lane = null) {
+  const hasF = hasFHolderSignal(features);
+  const caution = toNum(features?.f_hold_caution_penalty, 0);
+  if (!hasF && caution <= 0) {
+    return {
+      has_f_holder: 0,
+      first_penalty: 0,
+      second_penalty: 0,
+      third_penalty: 0
+    };
+  }
+  const mildFirst = 1.8 + caution * 1.15;
+  const strongFirst = 5.2 + caution * 2.15;
+  return {
+    has_f_holder: 1,
+    first_penalty: Number((toInt(lane, 0) === 1 ? mildFirst : strongFirst).toFixed(2)),
+    second_penalty: Number((0.25 + caution * (toInt(lane, 0) === 1 ? 0.22 : 0.34)).toFixed(2)),
+    third_penalty: Number((0.08 + caution * 0.12).toFixed(2))
+  };
+}
+
+function computeStartAdvantageScore({ row, rows }) {
+  const lane = toInt(row?.racer?.lane, null);
+  const f = row?.features || {};
+  const laneBaseAdvantage = getLaneBaseAdvantage(lane);
+  const rawExhibitionSt = toNum(f?.expected_actual_st ?? f?.exhibition_st ?? row?.racer?.exhibitionSt ?? f?.avg_st, null);
+  const rawExhibitionStContribution = Number(
+    (
+      (Number.isFinite(rawExhibitionSt) ? Math.max(-10, Math.min(18, (0.19 - rawExhibitionSt) * 150)) : 0) +
+      Math.max(0, 7 - toNum(f?.expected_actual_st_rank ?? f?.st_rank, 6)) * 2.6
+    ).toFixed(2)
+  );
+  const correctedStInterpretation = Number((rawExhibitionStContribution + laneBaseAdvantage * 0.78).toFixed(2));
+  const entryContextBonus = Number(
+    (
+      toNum(f?.entry_advantage_score, 0) * 0.72 +
+      Math.max(0, toNum(f?.avg_st_rank_delta_vs_left, 0)) * 1.8
+    ).toFixed(2)
+  );
+  const wallContextBonus = Number(
+    (
+      Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * 18 +
+      toNum(f?.slit_alert_flag, 0) * 6 +
+      (lane <= 2 ? 2 : 0)
+    ).toFixed(2)
+  );
+  const fRolePenalty = getFHolderPenaltyByRole(f, lane);
+  const fPenaltyComponent = Number((-toNum(fRolePenalty?.first_penalty, 0)).toFixed(2));
+  const finalStartAdvantageScore = Number(
+    clamp(
+      -100,
+      100,
+      laneBaseAdvantage +
+        correctedStInterpretation +
+        entryContextBonus +
+        wallContextBonus +
+        fPenaltyComponent
+    ).toFixed(2)
+  );
+  return {
+    lane_base_advantage: laneBaseAdvantage,
+    raw_exhibition_st_contribution: rawExhibitionStContribution,
+    corrected_st_interpretation: correctedStInterpretation,
+    entry_context_bonus: entryContextBonus,
+    wall_context_bonus: wallContextBonus,
+    f_penalty_component: fPenaltyComponent,
+    start_advantage_score: finalStartAdvantageScore,
+    f_holder_penalty_by_role: fRolePenalty
+  };
+}
+
 function computeLaunchStateScores(rows, venueCalibration = null) {
   const laneRows = safeArray(rows);
   const config = getLaunchStateConfigWithVenueCalibration(venueCalibration);
@@ -3229,6 +3323,7 @@ function computeLaunchStateScores(rows, venueCalibration = null) {
       const lane = toInt(row?.racer?.lane, null);
       if (!Number.isInteger(lane)) return null;
       const f = row?.features || {};
+      const startAdvantage = computeStartAdvantageScore({ row, rows: laneRows });
       const selfSt = toNum(stByLane.get(lane), null);
       const leftSt = toNum(stByLane.get(lane - 1), null);
       const insideStValues = [...stByLane.entries()]
@@ -3257,8 +3352,9 @@ function computeLaunchStateScores(rows, venueCalibration = null) {
         Math.max(0, toNum(f?.display_time_delta_vs_left, 0)) * toNum(weights?.display_time_positive_weight, 55) -
         Math.max(0, -toNum(f?.display_time_delta_vs_left, 0)) * toNum(weights?.display_time_negative_weight, 30) +
         toNum(f?.slit_alert_flag, 0) * toNum(weights?.slit_alert_weight, 12) -
-        toNum(f?.f_hold_caution_penalty, 0) * toNum(weights?.f_hold_penalty_weight, 1.25) +
-        (lane === 1 ? toNum(weights?.lane1_baseline_bonus, 8) : 0);
+        toNum(startAdvantage?.f_holder_penalty_by_role?.first_penalty, 0) * toNum(weights?.f_hold_penalty_weight, 1.25) +
+        (lane === 1 ? toNum(weights?.lane1_baseline_bonus, 8) : 0) +
+        toNum(startAdvantage?.lane_base_advantage, 0) * 0.32;
       const score = Number(
         clamp(
           -100,
@@ -3268,7 +3364,8 @@ function computeLaunchStateScores(rows, venueCalibration = null) {
             insideMarginComponent +
             formationFitComponent +
             lapSupportComponent +
-            environmentComponent
+            environmentComponent +
+            toNum(startAdvantage?.start_advantage_score, 0) * 0.36
         ).toFixed(2)
       );
       const label = normalizeLaunchStateLabelWithThresholds(score, config.score_thresholds);
@@ -3284,6 +3381,14 @@ function computeLaunchStateScores(rows, venueCalibration = null) {
         formation_fit_component: Number(formationFitComponent.toFixed(2)),
         lap_support_component: Number(lapSupportComponent.toFixed(2)),
         environment_component: Number(environmentComponent.toFixed(2)),
+        lane_base_advantage: toNum(startAdvantage?.lane_base_advantage, 0),
+        raw_exhibition_st_contribution: toNum(startAdvantage?.raw_exhibition_st_contribution, 0),
+        corrected_st_interpretation: toNum(startAdvantage?.corrected_st_interpretation, 0),
+        entry_context_bonus: toNum(startAdvantage?.entry_context_bonus, 0),
+        wall_context_bonus: toNum(startAdvantage?.wall_context_bonus, 0),
+        f_penalty_component: toNum(startAdvantage?.f_penalty_component, 0),
+        f_holder_penalty_by_role: startAdvantage?.f_holder_penalty_by_role || {},
+        final_start_advantage_score: toNum(startAdvantage?.start_advantage_score, 0),
         final_launch_state_score: score,
         thresholds_used: config
       };
@@ -4518,6 +4623,15 @@ function buildSeparatedCandidateDistributions({
   const launchStateScores = computeLaunchStateScores(rows, launchVenueCalibration);
   const launchStateLabels = classifyLaunchStates(launchStateScores);
   const launchStateThresholdsUsed = getLaunchStateConfig();
+  const fHolderRolePenaltySummary = Object.fromEntries(
+    rows
+      .map((row) => {
+        const lane = toInt(row?.racer?.lane, null);
+        if (!Number.isInteger(lane)) return null;
+        return [String(lane), getFHolderPenaltyByRole(row?.features || {}, lane)];
+      })
+      .filter(Boolean)
+  );
   const intermediateDevelopmentEvents = buildIntermediateDevelopmentEvents({
     launchStateScores,
     rows,
@@ -4530,6 +4644,7 @@ function buildSeparatedCandidateDistributions({
   let firstPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
+    const fRolePenalty = getFHolderPenaltyByRole(f, lane);
     const outsideLeadRoleBoost =
       String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead"
         ? lane === 4 ? 2.1 : lane === 5 ? 1.2 : lane === 6 ? 1.0 : 0
@@ -4565,7 +4680,7 @@ function buildSeparatedCandidateDistributions({
       outsideGatePenalty -
       boat1StrengthPenalty -
       outerHeadPenalty -
-      toNum(f?.f_hold_caution_penalty, 0) * (4.5 + venueFHoldAdj * 0.6) +
+      toNum(fRolePenalty?.first_penalty, 0) * (1.12 + venueFHoldAdj * 0.08) +
         (lane === 1 ? toNum(headScenarioBalanceAnalysis?.survival_residual_score, 0) * 0.22 : 0) +
         (attackHeadLane && lane === attackHeadLane ? toNum(attackScenarioAnalysis?.attack_scenario_score, 0) * 0.08 : 0) +
       outsideLeadRoleBoost +
@@ -4596,6 +4711,7 @@ function buildSeparatedCandidateDistributions({
   const secondPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
+    const fRolePenalty = getFHolderPenaltyByRole(f, lane);
     const outsideLeadRoleBoost =
       String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead"
         ? lane === 4 ? 5.8 : lane === 5 ? 4.4 : lane === 6 ? 3.8 : 0
@@ -4627,7 +4743,7 @@ function buildSeparatedCandidateDistributions({
       (outsideGate?.blocked_by_gate ? 1.8 : 0) +
       outsideLeadRoleBoost -
       outerPartnerPenalty -
-      toNum(f?.f_hold_caution_penalty, 0) * (3.8 + venueFHoldAdj * 0.55);
+      toNum(fRolePenalty?.second_penalty, 0) * (1 + venueFHoldAdj * 0.04);
     return { lane, role: lane === 2 || lane === 3 ? "primary_partner" : "partner", weight: partnerWeight };
   }));
 
@@ -4642,6 +4758,7 @@ function buildSeparatedCandidateDistributions({
   const thirdPlaceDistribution = normalizeDistributionRows(rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
     const f = row?.features || {};
+    const fRolePenalty = getFHolderPenaltyByRole(f, lane);
     const outsideLeadRoleBoost =
       String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead"
         ? lane === 4 ? 3.8 : lane === 5 ? 3.2 : lane === 6 ? 2.6 : 0
@@ -4662,7 +4779,7 @@ function buildSeparatedCandidateDistributions({
       (outsideGate?.blocked_by_gate ? 1.1 : 0) +
       outsideLeadRoleBoost -
       outerThirdPenalty -
-      toNum(f?.f_hold_caution_penalty, 0) * (2.4 + venueFHoldAdj * 0.4);
+      toNum(fRolePenalty?.third_penalty, 0) * (1 + venueFHoldAdj * 0.02);
     return { lane, role: "third", weight: thirdWeight };
   }));
 
@@ -4674,6 +4791,7 @@ function buildSeparatedCandidateDistributions({
               const lane = toInt(row?.racer?.lane, null);
               if (!Number.isInteger(lane) || lane === 1) return null;
               const f = row?.features || {};
+              const fRolePenalty = getFHolderPenaltyByRole(f, lane);
               const opponentSecondBias = toNum(boat1EscapeOpponentModel?.second_adjustments?.get(lane), 0);
               const escapeBias = escapePatternAnalysis?.escape_pattern_applied
                 ? getEscapeSecondPlaceBiasScore(escapePatternAnalysis?.escape_second_place_bias_json || {}, lane) * 3.1
@@ -4704,7 +4822,7 @@ function buildSeparatedCandidateDistributions({
                 (String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead" && lane >= 4 ? (lane === 4 ? 4.5 : lane === 5 ? 3.4 : 2.8) : 0) +
                 stabilityBias -
                 (lane === 5 ? 8.5 + venueOuterSuppressionAdj * 1.1 : lane === 6 ? 12.5 + venueOuterSuppressionAdj * 1.3 : 0) -
-                Math.min(4.8, toNum(f?.f_hold_caution_penalty, 0) * (1.7 + venueFHoldAdj * 0.22));
+                Math.min(2.2, toNum(fRolePenalty?.second_penalty, 0) * (0.95 + venueFHoldAdj * 0.04));
               return { lane, role: lane <= 4 ? "boat1_partner_primary" : "boat1_partner_secondary", weight: secondPlaceScore };
             })
             .filter(Boolean)
@@ -4719,6 +4837,7 @@ function buildSeparatedCandidateDistributions({
               const lane = toInt(row?.racer?.lane, null);
               if (!Number.isInteger(lane) || lane === 1) return null;
               const f = row?.features || {};
+              const fRolePenalty = getFHolderPenaltyByRole(f, lane);
               const insideRemainBias = lane === 2 ? 9 : lane === 3 ? 8.4 : lane === 4 ? 6.6 : lane === 5 ? -2.1 : -3.4;
               const opponentThirdBias = toNum(boat1EscapeOpponentModel?.third_adjustments?.get(lane), 0);
               const thirdPlaceScore =
@@ -4735,7 +4854,7 @@ function buildSeparatedCandidateDistributions({
                 toNum(f?.entry_advantage_score, 0) * 0.35 -
                 (String(escapePatternAnalysis?.formation_pattern || "") === "outside_lead" && lane >= 4 ? (lane === 4 ? 2.8 : lane === 5 ? 2.2 : 1.8) : 0) -
                 (lane === 5 ? 3.5 + venueOuterSuppressionAdj * 0.7 : lane === 6 ? 5.4 + venueOuterSuppressionAdj * 0.9 : 0) -
-                Math.min(3.6, toNum(f?.f_hold_caution_penalty, 0) * (1.15 + venueFHoldAdj * 0.16));
+                Math.min(1.2, toNum(fRolePenalty?.third_penalty, 0) * (0.9 + venueFHoldAdj * 0.02));
               return { lane, role: lane <= 4 ? "boat1_third_primary" : "boat1_third_secondary", weight: thirdPlaceScore };
             })
             .filter(Boolean)
@@ -4911,6 +5030,7 @@ function buildSeparatedCandidateDistributions({
       },
       boat3_head_suppression: boat3WeakStHeadSuppression
     },
+    f_holder_role_penalty_summary_json: fHolderRolePenaltySummary,
     boat1_partner_model_applied: mainHeadLane === 1 ? 1 : 0,
     boat1_escape_partner_version: boat1EscapePartnerVersion,
     hit_rate_focus_applied: 1,
@@ -13214,6 +13334,8 @@ export const __testHooks = {
   buildBoat3WeakStHeadSuppressionContext,
   getLaunchStateConfig,
   getVenueLaunchMicroCalibration,
+  getFHolderPenaltyByRole,
+  computeStartAdvantageScore,
   computeMotor2renStrength,
   computeLapExhibitionStrength,
   computeFinishOverrideStrength,
