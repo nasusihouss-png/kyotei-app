@@ -483,145 +483,180 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
 }
 
 export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
-  const byLane = kyoteiBiyori?.byLane || new Map();
+  const byLane = kyoteiBiyori?.byLane instanceof Map ? kyoteiBiyori.byLane : new Map();
   return (racers || []).map((racer) => {
-    const lane = Number(racer?.lane);
-    const extra = byLane.get(lane) || {};
-    return {
-      ...racer,
-      name: extra?.playerName || racer?.name || null,
-      fHoldCount: extra?.fCount ?? racer?.fHoldCount ?? null,
-      kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,
-      kyoteiBiyoriLapTime: extra?.lapTime ?? null,
-      kyoteiBiyoriLapTimeRaw: extra?.lapTimeRaw ?? null,
-      kyoteiBiyoriLapExhibitionScore: extra?.lapExhibitionScore ?? null,
-      kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
-      kyoteiBiyoriExhibitionSt: extra?.exhibitionSt ?? null,
-      kyoteiBiyoriExhibitionTime: extra?.exhibitionTime ?? null,
-      kyoteiBiyoriMotor2Rate: extra?.motor2Rate ?? null,
-      kyoteiBiyoriMotor3Rate: extra?.motor3Rate ?? null,
-      lapTime: extra?.lapTime ?? racer?.lapTime ?? null,
-      lapTimeRaw: extra?.lapTimeRaw ?? racer?.lapTimeRaw ?? null,
-      lapExhibitionScore: extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
-      stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,
-      exhibitionSt: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
-      exhibitionTime: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
-      motor2Rate: extra?.motor2Rate ?? racer?.motor2Rate ?? null,
-      motor3Rate: extra?.motor3Rate ?? racer?.motor3Rate ?? null,
-      laneFirstRate: extra?.laneFirstRate ?? racer?.laneFirstRate ?? null,
-      lane2RenRate: extra?.lane2RenRate ?? racer?.lane2RenRate ?? null,
-      lane3RenRate: extra?.lane3RenRate ?? racer?.lane3RenRate ?? null
-    };
+    try {
+      const lane = Number(racer?.lane);
+      const extra = byLane.get(lane) || {};
+      return {
+        ...racer,
+        name: extra?.playerName || racer?.name || null,
+        fHoldCount: extra?.fCount ?? racer?.fHoldCount ?? null,
+        kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,
+        kyoteiBiyoriLapTime: extra?.lapTime ?? null,
+        kyoteiBiyoriLapTimeRaw: extra?.lapTimeRaw ?? null,
+        kyoteiBiyoriLapExhibitionScore: extra?.lapExhibitionScore ?? null,
+        kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
+        kyoteiBiyoriExhibitionSt: extra?.exhibitionSt ?? null,
+        kyoteiBiyoriExhibitionTime: extra?.exhibitionTime ?? null,
+        kyoteiBiyoriMotor2Rate: extra?.motor2Rate ?? null,
+        kyoteiBiyoriMotor3Rate: extra?.motor3Rate ?? null,
+        lapTime: extra?.lapTime ?? racer?.lapTime ?? null,
+        lapTimeRaw: extra?.lapTimeRaw ?? racer?.lapTimeRaw ?? null,
+        lapExhibitionScore: extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
+        stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,
+        exhibitionSt: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
+        exhibitionTime: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
+        motor2Rate: extra?.motor2Rate ?? racer?.motor2Rate ?? null,
+        motor3Rate: extra?.motor3Rate ?? racer?.motor3Rate ?? null,
+        laneFirstRate: extra?.laneFirstRate ?? racer?.laneFirstRate ?? null,
+        lane2RenRate: extra?.lane2RenRate ?? racer?.lane2RenRate ?? null,
+        lane3RenRate: extra?.lane3RenRate ?? racer?.lane3RenRate ?? null
+      };
+    } catch {
+      return {
+        ...racer,
+        kyoteiBiyoriFetched: 0,
+        kyoteiBiyoriLapTime: null,
+        kyoteiBiyoriLapTimeRaw: null,
+        kyoteiBiyoriLapExhibitionScore: null,
+        kyoteiBiyoriStretchFootLabel: null,
+        kyoteiBiyoriExhibitionSt: null,
+        kyoteiBiyoriExhibitionTime: null,
+        kyoteiBiyoriMotor2Rate: null,
+        kyoteiBiyoriMotor3Rate: null
+      };
+    }
   });
 }
 
 export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeoutMs = 12000 }) {
-  const hiduke = String(date || "").replace(/-/g, "");
-  const placeNo = String(venueId || "").padStart(2, "0");
-  const rno = Number(raceNo);
-  const indexUrl = `${KYOTEI_BIYORI_BASE}/race_ichiran.php?place_no=${placeNo}&race_no=${rno}&hiduke=${hiduke}`;
-  const slider1Url = buildSliderUrl({ date, venueId, raceNo, slider: 1 });
-  const slider4Url = buildSliderUrl({ date, venueId, raceNo, slider: 4 });
-
-  const diagnostics = {
-    index_url: indexUrl,
-    target_urls: [indexUrl, slider1Url, slider4Url],
-    actual_fetch_paths: [],
-    initial_html: {
-      fetched: false,
-      has_placeholder: false
-    },
-    tab_pages: [],
-    field_source_summary: {}
-  };
-
-  const mergedByLane = new Map();
-  const fieldSources = {};
-  const tableDiagnostics = [];
-  let lastError = null;
-
   try {
-    const indexHtml = await fetchText(indexUrl, timeoutMs);
-    diagnostics.initial_html.fetched = true;
-    diagnostics.initial_html.has_placeholder = /データ取得中です|しばらくお待ちください/.test(indexHtml);
-    diagnostics.actual_fetch_paths.push("race_ichiran_shell");
-  } catch (error) {
-    lastError = error;
-    diagnostics.initial_html.error = String(error?.message || error);
-  }
+    const hiduke = String(date || "").replace(/-/g, "");
+    const placeNo = String(venueId || "").padStart(2, "0");
+    const rno = Number(raceNo);
+    const indexUrl = `${KYOTEI_BIYORI_BASE}/race_ichiran.php?place_no=${placeNo}&race_no=${rno}&hiduke=${hiduke}`;
+    const slider1Url = buildSliderUrl({ date, venueId, raceNo, slider: 1 });
+    const slider4Url = buildSliderUrl({ date, venueId, raceNo, slider: 4 });
 
-  try {
-    const ajaxPayload = await fetchOritenJson({ date, venueId, raceNo, timeoutMs });
-    const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
-    mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");
-    diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");
-    diagnostics.request_payload = {
-      endpoint: ORITEN_ENDPOINT,
-      data: {
-        hiduke,
-        place_no: placeNo,
-        race_no: rno,
-        mode: 2
-      }
+    const diagnostics = {
+      index_url: indexUrl,
+      target_urls: [indexUrl, slider1Url, slider4Url],
+      actual_fetch_paths: [],
+      initial_html: {
+        fetched: false,
+        has_placeholder: false
+      },
+      tab_pages: [],
+      field_source_summary: {}
     };
-    diagnostics.request_diagnostics = parsedAjax.diagnostics;
-  } catch (error) {
-    lastError = error;
-    diagnostics.request_error = String(error?.message || error);
-  }
 
-  for (const [label, url] of [
-    ["lane_stats_tab", slider1Url],
-    ["pre_race_tab", slider4Url]
-  ]) {
+    const mergedByLane = new Map();
+    const fieldSources = {};
+    const tableDiagnostics = [];
+    let lastError = null;
+
     try {
-      const html = await fetchText(url, timeoutMs);
-      const parsed = normalizeKyoteiBiyoriPreRaceFields(parseKyoteiBiyoriPreRaceData(html));
-      mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);
-      tableDiagnostics.push(...(parsed.tableDiagnostics || []));
-      diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);
-      diagnostics.tab_pages.push({
-        url,
-        label,
-        parsed_lanes: parsed.byLane.size,
-        populated_fields: parsed.fieldDiagnostics?.populated_fields || []
-      });
+      const indexHtml = await fetchText(indexUrl, timeoutMs);
+      diagnostics.initial_html.fetched = true;
+      diagnostics.initial_html.has_placeholder = /データ取得中です|しばらくお待ちください/.test(indexHtml);
+      diagnostics.actual_fetch_paths.push("race_ichiran_shell");
     } catch (error) {
       lastError = error;
-      diagnostics.tab_pages.push({
-        url,
-        label,
-        error: String(error?.message || error)
-      });
+      diagnostics.initial_html.error = String(error?.message || error);
     }
+
+    try {
+      const ajaxPayload = await fetchOritenJson({ date, venueId, raceNo, timeoutMs });
+      const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
+      mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");
+      diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");
+      diagnostics.request_payload = {
+        endpoint: ORITEN_ENDPOINT,
+        data: {
+          hiduke,
+          place_no: placeNo,
+          race_no: rno,
+          mode: 2
+        }
+      };
+      diagnostics.request_diagnostics = parsedAjax.diagnostics;
+    } catch (error) {
+      lastError = error;
+      diagnostics.request_error = String(error?.message || error);
+    }
+
+    for (const [label, url] of [
+      ["lane_stats_tab", slider1Url],
+      ["pre_race_tab", slider4Url]
+    ]) {
+      try {
+        const html = await fetchText(url, timeoutMs);
+        const parsed = normalizeKyoteiBiyoriPreRaceFields(parseKyoteiBiyoriPreRaceData(html));
+        mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);
+        tableDiagnostics.push(...(parsed.tableDiagnostics || []));
+        diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);
+        diagnostics.tab_pages.push({
+          url,
+          label,
+          parsed_lanes: parsed.byLane.size,
+          populated_fields: parsed.fieldDiagnostics?.populated_fields || []
+        });
+      } catch (error) {
+        lastError = error;
+        diagnostics.tab_pages.push({
+          url,
+          label,
+          error: String(error?.message || error)
+        });
+      }
+    }
+
+    for (const [lane, sources] of Object.entries(fieldSources)) {
+      diagnostics.field_source_summary[lane] = sources;
+    }
+
+    const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
+    const lapTimeReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("lapTimeRaw"));
+    const laneStatsReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("laneFirstRate"));
+    const ok = mergedByLane.size > 0 && lapTimeReady && laneStatsReady;
+    const fallbackReason =
+      ok
+        ? null
+        : lastError
+          ? String(lastError.message || lastError)
+          : "kyoteibiyori returned no usable lap-time or lane-stat fields";
+
+    return {
+      ok,
+      url: indexUrl,
+      triedUrls: diagnostics.target_urls,
+      byLane: mergedByLane,
+      tableDiagnostics,
+      fieldDiagnostics,
+      fieldSources,
+      fallbackUsed: !ok,
+      fallbackReason,
+      diagnostics,
+      error: ok ? null : fallbackReason
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      url: null,
+      triedUrls: [],
+      byLane: new Map(),
+      tableDiagnostics: [],
+      fieldDiagnostics: buildFieldDiagnostics(new Map(), {}),
+      fieldSources: {},
+      fallbackUsed: true,
+      fallbackReason: String(error?.message || error),
+      diagnostics: {
+        target_urls: [],
+        actual_fetch_paths: [],
+        fatal_error: String(error?.message || error)
+      },
+      error: String(error?.message || error)
+    };
   }
-
-  for (const [lane, sources] of Object.entries(fieldSources)) {
-    diagnostics.field_source_summary[lane] = sources;
-  }
-
-  const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
-  const lapTimeReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("lapTimeRaw"));
-  const laneStatsReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("laneFirstRate"));
-  const ok = mergedByLane.size > 0 && lapTimeReady && laneStatsReady;
-  const fallbackReason =
-    ok
-      ? null
-      : lastError
-        ? String(lastError.message || lastError)
-        : "kyoteibiyori returned no usable lap-time or lane-stat fields";
-
-  return {
-    ok,
-    url: indexUrl,
-    triedUrls: diagnostics.target_urls,
-    byLane: mergedByLane,
-    tableDiagnostics,
-    fieldDiagnostics,
-    fieldSources,
-    fallbackUsed: !ok,
-    fallbackReason,
-    diagnostics,
-    error: ok ? null : fallbackReason
-  };
 }

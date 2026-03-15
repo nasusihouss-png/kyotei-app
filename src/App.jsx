@@ -3456,6 +3456,11 @@ export default function App() {
                     <p className="muted strategy-line">
                       Lap time is ranked as lower-is-better. Lap Ex / Stretch is ranked as higher-is-better. Lane stats use current season + recent 3 months.
                     </p>
+                    {!data?.source?.kyotei_biyori?.ok ? (
+                      <p className="muted strategy-line">
+                        Supplemental kyoteibiyori data unavailable. Base race data is still loaded.
+                      </p>
+                    ) : null}
                   </section>
                 ) : null}
 

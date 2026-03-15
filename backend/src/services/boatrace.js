@@ -542,7 +542,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       date,
       venueId,
       raceNo,
-      timeoutMs
+      timeoutMs: Math.min(Number(timeoutMs) || 15000, 3500)
     });
   } catch (error) {
     kyoteiBiyori = {
@@ -554,10 +554,33 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       error: String(error?.message || error)
     };
   }
-  const mergedWithKyoteiBiyori = mergeKyoteiBiyoriDataIntoRaceContext({
-    racers: mergedRacers,
-    kyoteiBiyori
-  });
+  let mergedWithKyoteiBiyori = mergedRacers;
+  try {
+    mergedWithKyoteiBiyori = mergeKyoteiBiyoriDataIntoRaceContext({
+      racers: mergedRacers,
+      kyoteiBiyori
+    });
+  } catch (error) {
+    kyoteiBiyori = {
+      ...kyoteiBiyori,
+      ok: false,
+      fallbackUsed: true,
+      fallbackReason: `merge_failed: ${String(error?.message || error)}`,
+      error: String(error?.message || error)
+    };
+    mergedWithKyoteiBiyori = mergedRacers.map((racer) => ({
+      ...racer,
+      kyoteiBiyoriFetched: 0,
+      kyoteiBiyoriLapTime: null,
+      kyoteiBiyoriLapTimeRaw: null,
+      kyoteiBiyoriLapExhibitionScore: null,
+      kyoteiBiyoriStretchFootLabel: null,
+      kyoteiBiyoriExhibitionSt: null,
+      kyoteiBiyoriExhibitionTime: null,
+      kyoteiBiyoriMotor2Rate: null,
+      kyoteiBiyoriMotor3Rate: null
+    }));
+  }
 
   const result = {
     source: {
@@ -565,6 +588,8 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       beforeinfoUrl,
       kyotei_biyori: {
         ok: !!kyoteiBiyori?.ok,
+        kyoteibiyori_fetch_success: !!kyoteiBiyori?.ok,
+        kyoteibiyori_error_reason: kyoteiBiyori?.fallbackReason || kyoteiBiyori?.error || null,
         url: kyoteiBiyori?.url || null,
         tried_urls: Array.isArray(kyoteiBiyori?.triedUrls) ? kyoteiBiyori.triedUrls : [],
         fallback_used: !!kyoteiBiyori?.fallbackUsed,
