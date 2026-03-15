@@ -22,6 +22,17 @@ const sampleHtml = `
     <tr><td>2</td><td>Bravo</td><td>1</td><td>6.76</td><td>良い</td><td>0.14</td><td>6.81</td><td>41.5%</td><td>58.4%</td></tr>
     <tr><td>3</td><td>Charlie</td><td>0</td><td>6.82</td><td>普通</td><td>0.18</td><td>6.84</td><td>35.0%</td><td>49.0%</td></tr>
   </table>
+  <table>
+    <tr>
+      <th>コース</th>
+      <th>1着率</th>
+      <th>2連率</th>
+      <th>3連率</th>
+    </tr>
+    <tr><td>1</td><td>52.0%</td><td>72.0%</td><td>83.0%</td></tr>
+    <tr><td>2</td><td>18.0%</td><td>41.0%</td><td>61.0%</td></tr>
+    <tr><td>3</td><td>13.0%</td><td>34.0%</td><td>50.0%</td></tr>
+  </table>
 `;
 
 const parsed = parseKyoteiBiyoriPreRaceData(sampleHtml);
@@ -31,6 +42,8 @@ assert.equal(normalized.byLane.get(1)?.lapTime, 6.73, "adapter should parse lap 
 assert.equal(normalized.byLane.get(1)?.lapExhibitionScore, 5, "adapter should score stretch labels");
 assert.equal(normalized.byLane.get(2)?.exhibitionSt, 0.14, "adapter should parse exhibition ST");
 assert.equal(normalized.byLane.get(1)?.motor2Rate, 46.2, "adapter should parse motor 2-ren");
+assert.equal(normalized.byLane.get(1)?.laneFirstRate, 52.0, "adapter should parse lane first rate");
+assert.equal(normalized.byLane.get(2)?.lane2RenRate, 41.0, "adapter should parse lane 2-ren rate");
 assert.equal(normalized.fieldDiagnostics.populated_fields.includes("lapTime"), true, "field diagnostics should list populated fields");
 
 const merged = mergeKyoteiBiyoriDataIntoRaceContext({
@@ -46,5 +59,6 @@ assert.equal(merged[0].kyoteiBiyoriFetched, 1, "merged racer should mark kyoteib
 assert.equal(merged[0].lapTime, 6.73, "merged racer should expose lap time for feature building");
 assert.equal(merged[0].kyoteiBiyoriStretchFootLabel, "抜群", "merged racer should preserve stretch label");
 assert.equal(merged[0].motor2Rate, 46.2, "merged racer should merge motor 2-ren if available");
+assert.equal(merged[0].laneFirstRate, 52.0, "merged racer should merge lane stats if available");
 
 console.log("kyoteibiyori-adapter tests passed");

@@ -570,6 +570,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
         fallback_used: !!kyoteiBiyori?.fallbackUsed,
         fallback_reason: kyoteiBiyori?.fallbackReason || null,
         table_diagnostics: kyoteiBiyori?.tableDiagnostics || [],
+        request_diagnostics: kyoteiBiyori?.diagnostics || {},
         field_diagnostics: kyoteiBiyori?.fieldDiagnostics || {
           populated_fields: [],
           failed_fields: [],

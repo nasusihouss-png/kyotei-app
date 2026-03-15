@@ -3815,6 +3815,7 @@ export default function App() {
                     </div>
                     <div className="kv-list" style={{ marginTop: 10 }}>
                       <div className="kv-row"><span>kyoteibiyori fetch</span><strong>{data?.source?.kyotei_biyori?.ok ? "success" : "fallback"}</strong></div>
+                      <div className="kv-row"><span>target urls</span><strong>{(data?.source?.kyotei_biyori?.request_diagnostics?.target_urls || []).length || 0}</strong></div>
                       <div className="kv-row"><span>populated fields</span><strong>{(data?.source?.kyotei_biyori?.field_diagnostics?.populated_fields || []).join(", ") || "--"}</strong></div>
                       <div className="kv-row"><span>failed fields</span><strong>{(data?.source?.kyotei_biyori?.field_diagnostics?.failed_fields || []).join(", ") || "--"}</strong></div>
                       <div className="kv-row"><span>fallback reason</span><strong>{data?.source?.kyotei_biyori?.fallback_reason || "--"}</strong></div>
