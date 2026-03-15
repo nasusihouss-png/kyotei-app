@@ -1061,6 +1061,7 @@ function buildTopRecommendedTickets({ finalRecommendedBets, exactaBets, backupUr
   });
   const deduped = new Map();
   for (const row of allCandidates) {
+    if (String(row?.ticket_type || "") !== "trifecta") continue;
     const key = `${row.ticket_type}:${row.ticket}`;
     const existing = deduped.get(key);
     if (!existing) {
@@ -1186,7 +1187,7 @@ function buildPredictionViewModel({
   boat1EscapeProbability
 }) {
   const savedTopRecommendedTickets = Array.isArray(prediction?.top_recommended_tickets_snapshot)
-    ? prediction.top_recommended_tickets_snapshot
+    ? prediction.top_recommended_tickets_snapshot.filter((row) => String(row?.ticket_type || "trifecta") === "trifecta")
     : [];
   return {
     raceTitle: `${race.venueName || venueName} ${race.raceNo || "-"}R`,
@@ -3501,9 +3502,7 @@ export default function App() {
                       <div key={`top-ticket-${row.ticket_type}-${row.ticket}`} className="premium-ticket-row primary">
                         <div className="ticket-mainline">
                           <span className="rank-pill">#{row.rank}</span>
-                          <span className={`ticket-type ticket-type-inline ${row.ticket_type === "exacta" ? "ttype-main" : "ttype-backup"}`}>
-                            {row.ticket_type === "exacta" ? "2連単" : "3連単"}
-                          </span>
+                          <span className="ticket-type ticket-type-inline ttype-main">3連単</span>
                           <strong><ComboBadge combo={row.ticket} /></strong>
                         </div>
                         <div className="ticket-meta">

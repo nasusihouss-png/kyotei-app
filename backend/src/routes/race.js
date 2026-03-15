@@ -1155,6 +1155,7 @@ function buildTopRecommendedTickets({
 }) {
   const deduped = new Map();
   for (const row of collectAllTicketCandidates({ finalRecommendedBets, exactaBets, backupUrasujiBets })) {
+    if (String(row?.ticket_type || "") !== "trifecta") continue;
     const key = `${row.ticket_type}:${row.ticket}`;
     const existing = deduped.get(key);
     if (!existing) {
