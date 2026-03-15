@@ -1258,6 +1258,67 @@ function buildPredictionViewModel({
   };
 }
 
+function getPlayerComparisonRows({ prediction, data }) {
+  const snapshotContext =
+    prediction?.snapshot_context && typeof prediction.snapshot_context === "object"
+      ? prediction.snapshot_context
+      : {};
+  const snapshotPlayers = Array.isArray(snapshotContext?.players) ? snapshotContext.players : [];
+  if (snapshotPlayers.length > 0) {
+    return snapshotPlayers
+      .map((row) => ({
+        lane: Number(row?.lane || 0),
+        name: row?.name || `Boat ${row?.lane || "-"}`,
+        fCount: Number(row?.f_hold_count || 0),
+        exhibitionSt: Number.isFinite(Number(row?.exhibition_st)) ? Number(row.exhibition_st) : null,
+        exhibitionTime: Number.isFinite(Number(row?.exhibition_time)) ? Number(row.exhibition_time) : null,
+        lapScore: Number.isFinite(Number(row?.feature_snapshot?.lap_attack_strength))
+          ? Number(row.feature_snapshot.lap_attack_strength)
+          : Number.isFinite(Number(row?.feature_snapshot?.lap_time_delta_vs_front))
+            ? Number(row.feature_snapshot.lap_time_delta_vs_front) * 100
+            : null,
+        motor2Rate: Number.isFinite(Number(row?.motor_2rate)) ? Number(row.motor_2rate) : null,
+        motor3Rate: Number.isFinite(Number(row?.motor_3rate)) ? Number(row.motor_3rate) : null,
+        laneFirstRate: Number.isFinite(Number(row?.lane_first_rate)) ? Number(row.lane_first_rate) : null,
+        lane2RenRate: Number.isFinite(Number(row?.lane_2ren_rate)) ? Number(row.lane_2ren_rate) : null,
+        lane3RenRate: Number.isFinite(Number(row?.lane_3ren_rate)) ? Number(row.lane_3ren_rate) : null
+      }))
+      .sort((a, b) => a.lane - b.lane);
+  }
+  const racers = Array.isArray(data?.racers) ? data.racers : [];
+  return racers
+    .map((row) => ({
+      lane: Number(row?.lane || 0),
+      name: row?.name || `Boat ${row?.lane || "-"}`,
+      fCount: Number(row?.fHoldCount || 0),
+      exhibitionSt: Number.isFinite(Number(row?.exhibitionSt)) ? Number(row.exhibitionSt) : null,
+      exhibitionTime: Number.isFinite(Number(row?.exhibitionTime)) ? Number(row.exhibitionTime) : null,
+      lapScore: null,
+      motor2Rate: Number.isFinite(Number(row?.motor2Rate)) ? Number(row.motor2Rate) : null,
+      motor3Rate: Number.isFinite(Number(row?.motor3Rate)) ? Number(row.motor3Rate) : null,
+      laneFirstRate: Number.isFinite(Number(row?.laneFirstRate)) ? Number(row.laneFirstRate) : null,
+      lane2RenRate: Number.isFinite(Number(row?.lane2RenRate)) ? Number(row.lane2RenRate) : null,
+      lane3RenRate: Number.isFinite(Number(row?.lane3RenRate)) ? Number(row.lane3RenRate) : null
+    }))
+    .sort((a, b) => a.lane - b.lane);
+}
+
+function buildTopMetricLaneSet(rows, key, direction = "desc") {
+  const ranked = rows
+    .filter((row) => Number.isFinite(Number(row?.[key])))
+    .sort((a, b) => {
+      const av = Number(a?.[key]);
+      const bv = Number(b?.[key]);
+      return direction === "asc" ? av - bv : bv - av;
+    });
+  const topValues = [...new Set(ranked.slice(0, 2).map((row) => Number(row?.[key])))];
+  return new Set(
+    ranked
+      .filter((row) => topValues.includes(Number(row?.[key])))
+      .map((row) => Number(row?.lane))
+  );
+}
+
 function buildPremiumPredictionViewModel(args) {
   const base = buildPredictionViewModel(args);
   const upsetRiskScore = computeUpsetRiskScore(args);
@@ -2070,6 +2131,20 @@ export default function App() {
       })
       .slice(0, 6);
   }, [history, race.venueName, venueName, formationPatternLabel]);
+  const playerComparisonRows = useMemo(
+    () => getPlayerComparisonRows({ prediction, data }),
+    [prediction, data]
+  );
+  const playerMetricLeaders = useMemo(() => ({
+    exhibitionSt: buildTopMetricLaneSet(playerComparisonRows, "exhibitionSt", "asc"),
+    exhibitionTime: buildTopMetricLaneSet(playerComparisonRows, "exhibitionTime", "asc"),
+    lapScore: buildTopMetricLaneSet(playerComparisonRows, "lapScore", "desc"),
+    motor2Rate: buildTopMetricLaneSet(playerComparisonRows, "motor2Rate", "desc"),
+    motor3Rate: buildTopMetricLaneSet(playerComparisonRows, "motor3Rate", "desc"),
+    laneFirstRate: buildTopMetricLaneSet(playerComparisonRows, "laneFirstRate", "desc"),
+    lane2RenRate: buildTopMetricLaneSet(playerComparisonRows, "lane2RenRate", "desc"),
+    lane3RenRate: buildTopMetricLaneSet(playerComparisonRows, "lane3RenRate", "desc")
+  }), [playerComparisonRows]);
 
   const currentRaceKey = useMemo(
     () =>
@@ -3278,6 +3353,66 @@ export default function App() {
               <section className="card empty-state">レースを取得すると予想ダッシュボードを表示します。</section>
             ) : (
               <>
+                {playerComparisonRows.length > 0 ? (
+                  <section className="card summary-card premium-player-panel">
+                    <div className="premium-card-head">
+                      <div>
+                        <p className="eyebrow">Race Comparison</p>
+                        <h2>Player / Boat Comparison</h2>
+                      </div>
+                      <div className="hero-status-stack">
+                        <span className="hero-subtle">top 2 per metric highlighted</span>
+                      </div>
+                    </div>
+                    <div className="table-wrap premium-player-table-wrap">
+                      <table className="premium-player-table">
+                        <thead>
+                          <tr>
+                            <th>Boat</th>
+                            <th>Player</th>
+                            <th>F</th>
+                            <th>Ex ST</th>
+                            <th>Ex Time</th>
+                            <th>Lap Ex</th>
+                            <th>Motor 2-ren</th>
+                            <th>Motor 3-ren</th>
+                            <th>Lane 1st (season + 3m)</th>
+                            <th>Lane 2-ren (season + 3m)</th>
+                            <th>Lane 3-ren (season + 3m)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {playerComparisonRows.map((row) => (
+                            <tr key={`player-compare-${row.lane}`}>
+                              <td>
+                                <div className="player-boat-cell">
+                                  <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+                                </div>
+                              </td>
+                              <td>
+                                <div className="player-name-cell">
+                                  <strong>{row.name || "-"}</strong>
+                                </div>
+                              </td>
+                              <td>
+                                <span className={`f-count-badge ${row.fCount > 0 ? "has-f" : ""}`}>F{row.fCount}</span>
+                              </td>
+                              <td className={playerMetricLeaders.exhibitionSt.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.exhibitionSt, 2)}</td>
+                              <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.exhibitionTime, 2)}</td>
+                              <td className={playerMetricLeaders.lapScore.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.lapScore, 1)}</td>
+                              <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.motor2Rate, 2)}</td>
+                              <td className={playerMetricLeaders.motor3Rate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.motor3Rate, 2)}</td>
+                              <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.laneFirstRate, 2)}</td>
+                              <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.lane2RenRate, 2)}</td>
+                              <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatMaybeNumber(row.lane3RenRate, 2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ) : null}
+
                 <section className={`card premium-hero ${getRiskClass(raceRisk.recommendation)} ${predictionViewModel.semanticStyles.recommendationTone || ""}`}>
                   <div className="premium-hero-top">
                     <div>
