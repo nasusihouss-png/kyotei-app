@@ -319,6 +319,212 @@ function deriveModelVersion(row) {
   return `${rebalance} | ${confidence}`;
 }
 
+function normalizeConfidenceValue(value) {
+  const n = toNum(value, null);
+  if (!Number.isFinite(n)) return null;
+  if (n > 1.0001) return Number((n / 100).toFixed(4));
+  if (n < 0) return 0;
+  return Number(n.toFixed(4));
+}
+
+function confidenceBucketKey(value) {
+  const normalized = normalizeConfidenceValue(value);
+  if (!Number.isFinite(normalized)) return null;
+  if (normalized >= 0.9) return "0.9-1.0";
+  if (normalized >= 0.8) return "0.8-0.9";
+  if (normalized >= 0.7) return "0.7-0.8";
+  if (normalized >= 0.6) return "0.6-0.7";
+  if (normalized >= 0.5) return "0.5-0.6";
+  return "<0.5";
+}
+
+function deriveRecommendationLevel(row) {
+  const decision = normalizeParticipationDecision(row?.participation_decision);
+  if (decision === "participate") return "recommended";
+  if (decision === "watch") return "caution";
+  if (decision === "skip") return "not_recommended";
+  const mode = normalizeRecommendation(row?.recommendation_mode);
+  if (mode === "FULL BET") return "recommended";
+  if (mode === "SMALL BET" || mode === "MICRO BET") return "caution";
+  if (mode === "SKIP") return "not_recommended";
+  return "unknown";
+}
+
+function hasOutsideLeadFlag(row) {
+  return String(row?.formation_pattern || "").trim().toLowerCase() === "outside_lead";
+}
+
+function parseRecommendedSnapshotCombos(row) {
+  return normalizeSavedBetSnapshotItems(
+    row?.role_based_main_trifecta_tickets_snapshot?.length
+      ? row.role_based_main_trifecta_tickets_snapshot
+      : row?.final_recommended_bets_snapshot
+  );
+}
+
+function hasOutsideHeadRecommendation(row) {
+  const mainHeadLane =
+    topDistributionLane(row?.confirmed_first_place_probability_json) ??
+    topDistributionLane(row?.first_place_probability_json) ??
+    topDistributionLane(row?.first_place_distribution_json) ??
+    topDistributionLane(row?.head_distribution_json);
+  if (mainHeadLane === 5 || mainHeadLane === 6) return true;
+  return parseRecommendedSnapshotCombos(row).some((ticket) => {
+    const firstLane = toInt(String(ticket?.combo || "").split("-")[0], null);
+    return firstLane === 5 || firstLane === 6;
+  });
+}
+
+function getMainPredictedHeadLane(row) {
+  return (
+    topDistributionLane(row?.confirmed_first_place_probability_json) ??
+    topDistributionLane(row?.first_place_probability_json) ??
+    topDistributionLane(row?.first_place_distribution_json) ??
+    topDistributionLane(row?.head_distribution_json)
+  );
+}
+
+function getActualTop3Lanes(row) {
+  return parseTop3FromCombo(row?.confirmed_result);
+}
+
+function hasOuterLaneInActualPlace(row, targetPlaces = [2, 3]) {
+  const actual = getActualTop3Lanes(row);
+  return targetPlaces.some((place) => {
+    const lane = actual[place - 1];
+    return lane === 5 || lane === 6;
+  });
+}
+
+function isBoat1EscapePredicted(row) {
+  if (deriveBoat1HeadEvaluation(row)) return true;
+  return getMainPredictedHeadLane(row) === 1 || normalizeConfidenceValue(row?.boat1_escape_probability) >= 0.55;
+}
+
+function buildMissCategoryRows(rows) {
+  const items = safeArray(rows);
+  const definitions = [
+    ["miss_head", (row) => toNum(row?.miss_head, 0) === 1 || toNum(row?.head_hit, 0) === 0],
+    ["miss_second", (row) => toNum(row?.miss_second, 0) === 1 || toNum(row?.second_place_miss, 0) === 1],
+    ["miss_third", (row) => toNum(row?.miss_third, 0) === 1 || toNum(row?.third_place_miss, 0) === 1],
+    ["boat1_escape_correct_but_opponent_wrong", (row) => toNum(row?.boat1_escape_correct_but_opponent_wrong, 0) === 1],
+    ["attack_read_correct_but_finish_wrong", (row) => toNum(row?.attack_read_correct_but_finish_wrong, 0) === 1],
+    ["outside_head_overpromotion", (row) => hasTag(row?.miss_pattern_tags, "outer_head_overpromotion")],
+    [
+      "low_confidence_but_bet",
+      (row) => deriveRecommendationLevel(row) === "recommended" && normalizeConfidenceValue(row?.bet_confidence) < 0.6
+    ],
+    [
+      "recommendation_quality_mismatch",
+      (row) =>
+        deriveRecommendationLevel(row) === "recommended" &&
+        (toNum(row?.quality_gate_applied, 0) === 1 ||
+          toNum(row?.data_quality_score, 100) < 55 ||
+          toNum(row?.race_stability_score, 100) < 55)
+    ]
+  ];
+  return definitions.map(([key, predicate]) => {
+    const count = items.filter((row) => predicate(row)).length;
+    return {
+      category: key,
+      count,
+      rate: pct(count, items.length)
+    };
+  });
+}
+
+function buildConfidenceCalibration(rows, field, hitField = "hit_flag") {
+  const buckets = ["0.9-1.0", "0.8-0.9", "0.7-0.8", "0.6-0.7", "0.5-0.6", "<0.5"];
+  const grouped = new Map(buckets.map((key) => [key, []]));
+  for (const row of safeArray(rows)) {
+    const bucket = confidenceBucketKey(row?.[field]);
+    if (!bucket) continue;
+    grouped.get(bucket).push(row);
+  }
+  return buckets.map((bucket) => {
+    const bucketRows = grouped.get(bucket) || [];
+    const hitCount = bucketRows.filter((row) => toNum(row?.[hitField], 0) === 1).length;
+    const avgConfidence = bucketRows.length
+      ? Number(
+          (
+            bucketRows.reduce((acc, row) => acc + toNum(normalizeConfidenceValue(row?.[field]), 0), 0) /
+            bucketRows.length
+          ).toFixed(4)
+        )
+      : null;
+    return {
+      bucket,
+      race_count: bucketRows.length,
+      hit_count: hitCount,
+      hit_rate: pct(hitCount, bucketRows.length),
+      average_confidence: avgConfidence
+    };
+  });
+}
+
+function buildOutsideHeadMonitoring(rows) {
+  const items = safeArray(rows);
+  const boat5Rows = items.filter((row) => getMainPredictedHeadLane(row) === 5);
+  const boat6Rows = items.filter((row) => getMainPredictedHeadLane(row) === 6);
+  const outsideRecommendedRows = items.filter((row) => hasOutsideHeadRecommendation(row));
+  const aggressiveChaosRows = items.filter((row) => {
+    const recommendationLevel = deriveRecommendationLevel(row);
+    const lowHeadConfidence = normalizeConfidenceValue(row?.head_confidence) < 0.6;
+    return hasOutsideHeadRecommendation(row) && (recommendationLevel !== "recommended" || lowHeadConfidence);
+  });
+  const outsideLeadOverpromotionCount = items.filter((row) => (
+    hasOutsideLeadFlag(row) && hasTag(row?.miss_pattern_tags, "outer_head_overpromotion")
+  )).length;
+  return {
+    boat5_main_head_count: boat5Rows.length,
+    boat5_main_head_first_hit_rate: pct(boat5Rows.filter((row) => toNum(row?.head_hit, 0) === 1).length, boat5Rows.length),
+    boat6_main_head_count: boat6Rows.length,
+    boat6_main_head_first_hit_rate: pct(boat6Rows.filter((row) => toNum(row?.head_hit, 0) === 1).length, boat6Rows.length),
+    outside_head_recommendation_count: outsideRecommendedRows.length,
+    outside_second_third_survival_rate: pct(
+      outsideRecommendedRows.filter((row) => hasOuterLaneInActualPlace(row, [2, 3])).length,
+      outsideRecommendedRows.length
+    ),
+    outside_lead_overpromotion_count: outsideLeadOverpromotionCount,
+    chaos_or_not_recommended_outside_head_count: aggressiveChaosRows.length
+  };
+}
+
+function buildBoat1EscapeDiagnostics(rows) {
+  const boat1Rows = safeArray(rows).filter((row) => isBoat1EscapePredicted(row));
+  const boat1HeadHitRows = boat1Rows.filter((row) => toNum(row?.head_hit, 0) === 1);
+  const familyRows = [
+    { key: "1-2-x", predicate: (row) => parseRecommendedSnapshotCombos(row).some((ticket) => String(ticket?.combo || "").startsWith("1-2-")) },
+    { key: "1-3-x", predicate: (row) => parseRecommendedSnapshotCombos(row).some((ticket) => String(ticket?.combo || "").startsWith("1-3-")) },
+    { key: "1-4-x", predicate: (row) => parseRecommendedSnapshotCombos(row).some((ticket) => String(ticket?.combo || "").startsWith("1-4-")) }
+  ].map((family) => {
+    const predictedRows = boat1Rows.filter((row) => family.predicate(row));
+    const capturedRows = predictedRows.filter((row) => {
+      const actual = getActualTop3Lanes(row);
+      return actual.length === 3 && actual[0] === 1 && actual[1] === toInt(family.key.split("-")[1], null);
+    });
+    return {
+      family: family.key,
+      prediction_count: predictedRows.length,
+      captured_count: capturedRows.length,
+      capture_rate: pct(capturedRows.length, predictedRows.length)
+    };
+  });
+  const exactOpponentHitCount = boat1Rows.filter((row) => (
+    toNum(row?.head_hit, 0) === 1 &&
+    toNum(row?.second_place_miss, 0) === 0 &&
+    toNum(row?.third_place_miss, 0) === 0
+  )).length;
+  return {
+    boat1_escape_prediction_count: boat1Rows.length,
+    boat1_escape_hit_rate: pct(boat1HeadHitRows.length, boat1Rows.length),
+    boat1_escape_opponent_hit_rate: pct(exactOpponentHitCount, boat1Rows.length),
+    opponent_exact_hit_count: exactOpponentHitCount,
+    attack_read_correct_but_finish_wrong_count: boat1Rows.filter((row) => toNum(row?.attack_read_correct_but_finish_wrong, 0) === 1).length,
+    family_capture_rows: familyRows
+  };
+}
+
 function computeEvaluationMetrics(rows) {
   const items = Array.isArray(rows) ? rows : [];
   const verifiedRaceCount = items.length;
@@ -346,15 +552,28 @@ function computeEvaluationMetrics(rows) {
   const participateHitCount = participateRows.filter((row) => toNum(row?.hit_flag, 0) === 1).length;
   const watchHitCount = watchRows.filter((row) => toNum(row?.hit_flag, 0) === 1).length;
   const skipCorrectCount = skipRows.filter((row) => toNum(row?.hit_flag, 0) !== 1).length;
+  const recommendedRows = items.filter((row) => deriveRecommendationLevel(row) === "recommended");
+  const cautionRows = items.filter((row) => deriveRecommendationLevel(row) === "caution");
+  const notRecommendedRows = items.filter((row) => deriveRecommendationLevel(row) === "not_recommended");
+  const boat1EscapeRows = items.filter((row) => isBoat1EscapePredicted(row));
+  const boat1EscapeHitCount = boat1EscapeRows.filter((row) => toNum(row?.head_hit, 0) === 1).length;
+  const boat1EscapeOpponentHitCount = boat1EscapeRows.filter((row) => (
+    toNum(row?.head_hit, 0) === 1 &&
+    toNum(row?.second_place_miss, 0) === 0 &&
+    toNum(row?.third_place_miss, 0) === 0
+  )).length;
 
   return {
     verified_race_count: verifiedRaceCount,
+    total_races: verifiedRaceCount,
     trifecta_hit_count: trifectaHitCount,
     trifecta_hit_rate: pct(trifectaHitCount, verifiedRaceCount),
     exacta_hit_count: exactaHitCount,
     exacta_hit_rate: pct(exactaHitCount, exactaRows.length),
     head_hit_count: headHitCount,
     head_hit_rate: pct(headHitCount, verifiedRaceCount),
+    first_place_hit_count: headHitCount,
+    first_place_hit_rate: pct(headHitCount, verifiedRaceCount),
     second_place_hit_count: secondPlaceHitCount,
     second_place_hit_rate: pct(secondPlaceHitCount, secondRows.length),
     third_place_hit_count: thirdPlaceHitCount,
@@ -366,12 +585,32 @@ function computeEvaluationMetrics(rows) {
     boat1_survival_underestimated_count: boat1SurvivalUnderestimatedCount,
     outer_head_overpromotion_count: outerHeadOverpromotionCount,
     participate_race_count: participateRows.length,
+    participated_races: participateRows.length,
     participate_only_hit_rate: pct(participateHitCount, participateRows.length),
+    participation_hit_rate: pct(participateHitCount, participateRows.length),
     watch_race_count: watchRows.length,
+    caution_race_count: watchRows.length,
     watch_hit_rate: pct(watchHitCount, watchRows.length),
+    caution_only_hit_rate: pct(watchHitCount, watchRows.length),
     skip_race_count: skipRows.length,
+    skipped_races: skipRows.length,
     skip_correct_count: skipCorrectCount,
     skip_correctness_rate: pct(skipCorrectCount, skipRows.length),
+    recommended_race_count: recommendedRows.length,
+    recommended_only_hit_rate: pct(
+      recommendedRows.filter((row) => toNum(row?.hit_flag, 0) === 1).length,
+      recommendedRows.length
+    ),
+    not_recommended_race_count: notRecommendedRows.length,
+    not_recommended_participation_hit_rate: pct(
+      notRecommendedRows.filter((row) => toNum(row?.hit_flag, 0) === 1).length,
+      notRecommendedRows.length
+    ),
+    boat1_escape_prediction_count: boat1EscapeRows.length,
+    boat1_escape_hit_count: boat1EscapeHitCount,
+    boat1_escape_hit_rate: pct(boat1EscapeHitCount, boat1EscapeRows.length),
+    boat1_escape_opponent_hit_count: boat1EscapeOpponentHitCount,
+    boat1_escape_opponent_hit_rate: pct(boat1EscapeOpponentHitCount, boat1EscapeRows.length),
     quality_gate_applied_count: qualityGateRows.length,
     quality_gate_hit_rate: pct(
       qualityGateRows.filter((row) => toNum(row?.hit_flag, 0) === 1).length,
@@ -406,6 +645,22 @@ function buildEvaluationSegments(rows, learningRunId = null) {
     { type: "venue", getKey: (row) => row?.venue_name || (row?.venue_id ? String(row.venue_id) : null) },
     { type: "formation_pattern", getKey: (row) => row?.formation_pattern || null },
     { type: "scenario_type", getKey: (row) => row?.scenario_type || null },
+    { type: "attack_scenario", getKey: (row) => row?.attack_scenario_type || row?.attack_scenario_label || "none" },
+    { type: "recommendation_level", getKey: (row) => deriveRecommendationLevel(row) },
+    { type: "boat1_escape_confidence_bucket", getKey: (row) => confidenceBucketKey(row?.boat1_escape_probability) },
+    { type: "outside_lead_flag", getKey: (row) => (hasOutsideLeadFlag(row) ? "outside_lead" : "non_outside_lead") },
+    {
+      type: "outside_head_recommendation_presence",
+      getKey: (row) => (hasOutsideHeadRecommendation(row) ? "present" : "absent")
+    },
+    {
+      type: "outside_head_promoted_5_6",
+      getKey: (row) => {
+        const lane = getMainPredictedHeadLane(row);
+        if (lane === 5 || lane === 6) return `lane_${lane}`;
+        return "not_promoted";
+      }
+    },
     { type: "boat1_head_mode", getKey: (row) => (deriveBoat1HeadEvaluation(row) ? "boat1_head" : "non_boat1_head") },
     { type: "f_hold_present", getKey: (row) => (toNum(row?.f_hold_lane_count, 0) > 0 ? "present" : "absent") },
     { type: "entry_change_present", getKey: (row) => (toNum(row?.entry_changed, 0) === 1 ? "present" : "absent") },
@@ -431,11 +686,13 @@ function buildEvaluationSegments(rows, learningRunId = null) {
         segment_type: def.type,
         segment_key: segmentKey,
         verified_race_count: metrics.verified_race_count,
+        participation_count: metrics.participated_races,
         trifecta_hit_rate: metrics.trifecta_hit_rate,
         exacta_hit_rate: metrics.exacta_hit_rate,
         head_hit_rate: metrics.head_hit_rate,
         second_place_hit_rate: metrics.second_place_hit_rate,
         third_place_hit_rate: metrics.third_place_hit_rate,
+        participation_hit_rate: metrics.participation_hit_rate,
         model_version: deriveModelVersion(
           [...bucketRows].sort((a, b) =>
             String(b?.verified_at || b?.prediction_timestamp || "").localeCompare(
@@ -472,6 +729,55 @@ function buildEvaluationComparisons(segments) {
       .sort((a, b) => toNum(b?.verified_race_count, 0) - toNum(a?.verified_race_count, 0));
     return acc;
   }, {});
+}
+
+function buildEvaluationFilterOptions(rows) {
+  return {
+    venues: Array.from(new Set(safeArray(rows).map((row) => row?.venue_name).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    formation_patterns: Array.from(new Set(safeArray(rows).map((row) => row?.formation_pattern).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    recommendation_levels: ["recommended", "caution", "not_recommended"],
+    attack_scenarios: Array.from(
+      new Set(safeArray(rows).map((row) => row?.attack_scenario_type || row?.attack_scenario_label).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b))
+  };
+}
+
+function applyEvaluationFilters(rows, filters = {}) {
+  return safeArray(rows).filter((row) => {
+    const predictionDate = String(row?.prediction_timestamp || row?.verified_at || "").slice(0, 10);
+    if (filters?.venue && filters.venue !== "all" && String(row?.venue_name || row?.venue_id || "") !== String(filters.venue)) {
+      return false;
+    }
+    if (filters?.date_from && predictionDate && predictionDate < filters.date_from) return false;
+    if (filters?.date_to && predictionDate && predictionDate > filters.date_to) return false;
+    if (
+      filters?.recommendation_level &&
+      filters.recommendation_level !== "all" &&
+      deriveRecommendationLevel(row) !== filters.recommendation_level
+    ) {
+      return false;
+    }
+    if (
+      filters?.formation_pattern &&
+      filters.formation_pattern !== "all" &&
+      String(row?.formation_pattern || "") !== String(filters.formation_pattern)
+    ) {
+      return false;
+    }
+    if (toNum(filters?.only_participated, 0) === 1 && normalizeParticipationDecision(row?.participation_decision) !== "participate") {
+      return false;
+    }
+    if (toNum(filters?.only_recommended, 0) === 1 && deriveRecommendationLevel(row) !== "recommended") {
+      return false;
+    }
+    if (toNum(filters?.only_boat1_escape_predicted, 0) === 1 && !isBoat1EscapePredicted(row)) {
+      return false;
+    }
+    if (toNum(filters?.only_outside_head_cases, 0) === 1 && !hasOutsideHeadRecommendation(row)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function persistEvaluationSnapshot(evaluation, segments) {
@@ -574,8 +880,10 @@ function persistEvaluationSnapshot(evaluation, segments) {
   return evaluationRunId;
 }
 
-function buildEvaluationSummary(verifiedRows) {
-  const rows = safeArray(verifiedRows);
+function buildEvaluationSummary(verifiedRows, options = {}) {
+  const allRows = safeArray(verifiedRows);
+  const filters = options?.filters || {};
+  const rows = applyEvaluationFilters(allRows, filters);
   const latestLearningRun = getLatestLearningRun();
   const learningRunId = toNullableNum(latestLearningRun?.run_id);
   const overall = computeEvaluationMetrics(rows);
@@ -602,6 +910,10 @@ function buildEvaluationSummary(verifiedRows) {
   const evaluation = {
     evaluation_run_id: null,
     date_range: dateRange,
+    filters,
+    filtered_race_count: rows.length,
+    total_available_race_count: allRows.length,
+    filter_options: buildEvaluationFilterOptions(allRows),
     overall,
     recent_trend: buildEvaluationTrend(rows),
     highlights: {
@@ -611,6 +923,34 @@ function buildEvaluationSummary(verifiedRows) {
       weakest_formations: pickSegmentHighlights(segments, "formation_pattern", "worst")
     },
     comparisons: buildEvaluationComparisons(segments),
+    confidence_calibration: {
+      bet_confidence_bins: buildConfidenceCalibration(rows, "bet_confidence", "hit_flag"),
+      head_confidence_bins: buildConfidenceCalibration(rows, "head_confidence", "head_hit"),
+      boat1_escape_confidence_bins: buildConfidenceCalibration(
+        rows.filter((row) => isBoat1EscapePredicted(row)),
+        "boat1_escape_probability",
+        "head_hit"
+      )
+    },
+    miss_categories: buildMissCategoryRows(rows),
+    outside_head_monitoring: buildOutsideHeadMonitoring(rows),
+    boat1_escape_diagnostics: buildBoat1EscapeDiagnostics(rows),
+    segmented_tables: {
+      venue: safeArray(segments).filter((segment) => segment.segment_type === "venue"),
+      formation_pattern: safeArray(segments).filter((segment) => segment.segment_type === "formation_pattern"),
+      attack_scenario: safeArray(segments).filter((segment) => segment.segment_type === "attack_scenario"),
+      recommendation_level: safeArray(segments).filter((segment) => segment.segment_type === "recommendation_level"),
+      boat1_escape_confidence_bucket: safeArray(segments).filter(
+        (segment) => segment.segment_type === "boat1_escape_confidence_bucket"
+      ),
+      outside_lead_flag: safeArray(segments).filter((segment) => segment.segment_type === "outside_lead_flag"),
+      outside_head_recommendation_presence: safeArray(segments).filter(
+        (segment) => segment.segment_type === "outside_head_recommendation_presence"
+      ),
+      outside_head_promoted_5_6: safeArray(segments).filter(
+        (segment) => segment.segment_type === "outside_head_promoted_5_6"
+      )
+    },
     segment_counts: segments.reduce((acc, segment) => {
       acc[segment.segment_type] = (acc[segment.segment_type] || 0) + 1;
       return acc;
@@ -619,7 +959,11 @@ function buildEvaluationSummary(verifiedRows) {
     learning_run_id: learningRunId,
     evaluation_created_at: new Date().toISOString()
   };
-  const evaluationRunId = persistEvaluationSnapshot(evaluation, segments);
+  const shouldPersist = !Object.values(filters).some((value) => {
+    if (value === null || value === undefined || value === "" || value === "all") return false;
+    return !(Number(value) === 0);
+  });
+  const evaluationRunId = shouldPersist ? persistEvaluationSnapshot(evaluation, segments) : null;
   return {
     ...evaluation,
     evaluation_run_id: evaluationRunId,
@@ -8892,9 +9236,20 @@ raceRouter.get("/placed-bets/summaries", async (req, res, next) => {
   }
 });
 
-raceRouter.get("/stats", async (_req, res, next) => {
+raceRouter.get("/stats", async (req, res, next) => {
   try {
-    const evaluation = buildEvaluationSummary(buildVerifiedLearningRows());
+    const evaluationFilters = {
+      venue: String(req.query?.venue || "").trim() || "all",
+      date_from: dateKey(req.query?.date_from) || null,
+      date_to: dateKey(req.query?.date_to) || null,
+      recommendation_level: String(req.query?.recommendation_level || "").trim() || "all",
+      formation_pattern: String(req.query?.formation_pattern || "").trim() || "all",
+      only_participated: toNum(req.query?.only_participated, 0),
+      only_recommended: toNum(req.query?.only_recommended, 0),
+      only_boat1_escape_predicted: toNum(req.query?.only_boat1_escape_predicted, 0),
+      only_outside_head_cases: toNum(req.query?.only_outside_head_cases, 0)
+    };
+    const evaluation = buildEvaluationSummary(buildVerifiedLearningRows(), { filters: evaluationFilters });
     const settlementRows = db
       .prepare(
         `
@@ -11238,6 +11593,11 @@ export const __testHooks = {
   buildExactaCoverageSnapshot,
   buildParticipationDecision,
   buildBackupUrasujiRecommendationsSnapshot,
-  normalizeDistributionRows
+  normalizeDistributionRows,
+  computeEvaluationMetrics,
+  buildEvaluationSummary,
+  buildConfidenceCalibration,
+  buildOutsideHeadMonitoring,
+  buildBoat1EscapeDiagnostics
 };
 

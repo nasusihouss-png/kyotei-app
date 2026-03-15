@@ -409,6 +409,21 @@ export function buildVerifiedLearningRows() {
           headHitValue,
         bet_hit:
           betHitValue,
+        miss_head: summary?.miss_head === true ? 1 : summary?.miss_head === false ? 0 : null,
+        miss_second: summary?.miss_second === true ? 1 : summary?.miss_second === false ? 0 : null,
+        miss_third: summary?.miss_third === true ? 1 : summary?.miss_third === false ? 0 : null,
+        attack_read_correct_but_finish_wrong:
+          summary?.attack_read_correct_but_finish_wrong === true
+            ? 1
+            : summary?.attack_read_correct_but_finish_wrong === false
+              ? 0
+              : null,
+        boat1_escape_correct_but_opponent_wrong:
+          summary?.boat1_escape_correct_but_opponent_wrong === true
+            ? 1
+            : summary?.boat1_escape_correct_but_opponent_wrong === false
+              ? 0
+              : null,
         structure_hit: summary?.second_third_correct === true ? 1 : summary?.second_third_correct === false ? 0 : null,
         second_place_miss: summary?.second_place_miss === true ? 1 : summary?.second_place_miss === false ? 0 : null,
         third_place_miss: summary?.third_place_miss === true ? 1 : summary?.third_place_miss === false ? 0 : null,
