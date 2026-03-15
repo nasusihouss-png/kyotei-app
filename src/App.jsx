@@ -427,6 +427,38 @@ function toFiniteComparisonNumber(value) {
   return Number.isFinite(num) ? num : null;
 }
 
+function firstFiniteValue(...values) {
+  for (const value of values) {
+    const normalized = toFiniteComparisonNumber(value);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function normalizeLaneStats(source = {}) {
+  return {
+    laneFirstRate: firstFiniteValue(
+      source?.laneFirstRate,
+      source?.lane1stRate,
+      source?.lane_first_rate,
+      source?.lane_1st_rate,
+      source?.lane1stRate_raw
+    ),
+    lane2RenRate: firstFiniteValue(
+      source?.lane2RenRate,
+      source?.lane2renRate,
+      source?.lane_2ren_rate,
+      source?.lane2renRate_raw
+    ),
+    lane3RenRate: firstFiniteValue(
+      source?.lane3RenRate,
+      source?.lane3renRate,
+      source?.lane_3ren_rate,
+      source?.lane3renRate_raw
+    )
+  };
+}
+
 function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
   const debug =
     data?.kyoteibiyori_debug ||
@@ -1349,8 +1381,14 @@ function getPlayerComparisonRows({ prediction, data }) {
       ? prediction.snapshot_context
       : {};
   const snapshotPlayers = Array.isArray(snapshotContext?.players) ? snapshotContext.players : [];
+  const debugLaneRows = Array.isArray(data?.kyoteibiyori_debug?.lane_rows) ? data.kyoteibiyori_debug.lane_rows : [];
   const snapshotByLane = new Map(
     snapshotPlayers
+      .map((row) => [Number(row?.lane || 0), row])
+      .filter(([lane]) => Number.isInteger(lane) && lane > 0)
+  );
+  const debugByLane = new Map(
+    debugLaneRows
       .map((row) => [Number(row?.lane || 0), row])
       .filter(([lane]) => Number.isInteger(lane) && lane > 0)
   );
@@ -1360,15 +1398,21 @@ function getPlayerComparisonRows({ prediction, data }) {
       .map((row) => {
         const lane = Number(row?.lane || 0);
         const snapshotRow = snapshotByLane.get(lane) || {};
+        const debugRow = debugByLane.get(lane) || {};
+        const debugLaneStats = normalizeLaneStats(debugRow);
+        const liveLaneStats = normalizeLaneStats(row);
+        const snapshotLaneStats = normalizeLaneStats(snapshotRow);
         const liveLapTime = toFiniteComparisonNumber(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime);
         const liveExhibitionSt = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt);
         const liveExhibitionTime = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime);
         const liveLapScore = toFiniteComparisonNumber(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore);
         const liveMotor2Rate = toFiniteComparisonNumber(row?.kyoteiBiyoriMotor2Rate ?? row?.motor2Rate);
-        const liveMotor3Rate = toFiniteComparisonNumber(row?.kyoteiBiyoriMotor3Rate ?? row?.motor3Rate);
-        const liveLane1stRate = toFiniteComparisonNumber(row?.laneFirstRate);
-        const liveLane2RenRate = toFiniteComparisonNumber(row?.lane2RenRate);
-        const liveLane3RenRate = toFiniteComparisonNumber(row?.lane3RenRate);
+        const liveMotor3Rate = firstFiniteValue(
+          row?.kyoteiBiyoriMotor3Rate,
+          row?.motor3Rate,
+          debugRow?.motor3ren_raw,
+          snapshotRow?.motor_3rate
+        );
         const snapshotLapScore = toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_lap_exhibition_score ?? snapshotRow?.lap_exhibition_score)
           ?? toFiniteComparisonNumber(snapshotRow?.feature_snapshot?.lap_exhibition_score)
           ?? toFiniteComparisonNumber(snapshotRow?.feature_snapshot?.lap_attack_strength)
@@ -1390,10 +1434,10 @@ function getPlayerComparisonRows({ prediction, data }) {
           lapScore: liveLapScore ?? snapshotLapScore,
           stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || snapshotRow?.kyoteibiyori_stretch_foot_label || snapshotRow?.stretch_foot_label || null,
           motor2Rate: liveMotor2Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_2rate),
-          motor3Rate: liveMotor3Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_3rate),
-          laneFirstRate: liveLane1stRate ?? toFiniteComparisonNumber(snapshotRow?.lane_first_rate),
-          lane2RenRate: liveLane2RenRate ?? toFiniteComparisonNumber(snapshotRow?.lane_2ren_rate),
-          lane3RenRate: liveLane3RenRate ?? toFiniteComparisonNumber(snapshotRow?.lane_3ren_rate)
+          motor3Rate: liveMotor3Rate,
+          laneFirstRate: debugLaneStats.laneFirstRate ?? liveLaneStats.laneFirstRate ?? snapshotLaneStats.laneFirstRate,
+          lane2RenRate: debugLaneStats.lane2RenRate ?? liveLaneStats.lane2RenRate ?? snapshotLaneStats.lane2RenRate,
+          lane3RenRate: debugLaneStats.lane3RenRate ?? liveLaneStats.lane3RenRate ?? snapshotLaneStats.lane3RenRate
         };
       })
       .sort((a, b) => a.lane - b.lane);
@@ -1411,9 +1455,9 @@ function getPlayerComparisonRows({ prediction, data }) {
       stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
       motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
       motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
-      laneFirstRate: toFiniteComparisonNumber(row?.lane_first_rate),
-      lane2RenRate: toFiniteComparisonNumber(row?.lane_2ren_rate),
-      lane3RenRate: toFiniteComparisonNumber(row?.lane_3ren_rate)
+      laneFirstRate: normalizeLaneStats(row).laneFirstRate,
+      lane2RenRate: normalizeLaneStats(row).lane2RenRate,
+      lane3RenRate: normalizeLaneStats(row).lane3RenRate
     }))
     .sort((a, b) => a.lane - b.lane);
 }
