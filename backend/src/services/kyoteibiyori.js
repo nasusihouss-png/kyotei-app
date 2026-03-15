@@ -2,10 +2,12 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 
 const KYOTEI_BIYORI_BASE = "https://kyoteibiyori.com";
+const ORITEN_ENDPOINT = `${KYOTEI_BIYORI_BASE}/request/request_oriten_kaiseki_custom.php`;
 const EXPECTED_FIELDS = [
   "playerName",
   "fCount",
   "lapTime",
+  "lapTimeRaw",
   "lapExhibitionScore",
   "stretchFootLabel",
   "exhibitionSt",
@@ -26,13 +28,16 @@ function normalizeSpace(value) {
 }
 
 function normalizeDigits(value) {
-  return normalizeSpace(value).replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+  return normalizeSpace(value).replace(/[\uFF10-\uFF19]/g, (ch) =>
+    String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+  );
 }
 
-function normalizeTableCellText(value) {
+function normalizeText(value) {
   return normalizeDigits(value)
-    .replace(/[：:]/g, ":")
+    .replace(/[：]/g, ":")
     .replace(/[／]/g, "/")
+    .replace(/[％]/g, "%")
     .trim();
 }
 
@@ -71,239 +76,63 @@ function parseFCount(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-function detectLaneFromText(text) {
-  const normalized = normalizeTableCellText(text);
-  const direct = normalized.match(/^(?:艇番|コース|枠)?\s*([1-6])$/);
-  if (direct) return Number(direct[1]);
-  const withLabel = normalized.match(/([1-6])\s*号艇/);
-  if (withLabel) return Number(withLabel[1]);
-  return null;
-}
-
-function detectLane(cells) {
-  for (const cell of cells) {
-    const lane = detectLaneFromText(cell);
-    if (lane) return lane;
-  }
-  return null;
-}
-
-function scoreStretchFoot(value) {
-  const text = normalizeSpace(value);
-  if (!text) return { score: null, label: null };
-  const numeric = toNumber(text);
-  if (numeric !== null) return { score: numeric, label: text };
-
-  const table = [
-    [/抜群|かなり良い|かなり強い|非常に良い/i, 5],
-    [/上位|良い|強い|目立つ/i, 4],
-    [/普通|まずまず|並/i, 3],
-    [/弱め|少し弱い|やや弱い/i, 1.5],
-    [/弱い|劣勢|見劣り/i, 0.5]
-  ];
-
-  for (const [pattern, score] of table) {
-    if (pattern.test(text)) return { score, label: text };
-  }
-  return { score: null, label: text };
-}
-
-function fetchHtml(url, timeoutMs = 12000) {
-  return axios
-    .get(url, {
-      timeout: timeoutMs,
-      responseType: "text",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
-      }
-    })
-    .then((response) => response.data);
-}
-
-function parseHeaders($, $table) {
-  return $table
-    .find("tr")
-    .first()
-    .children("th,td")
-    .map((_, cell) => normalizeTableCellText($(cell).text()))
-    .get();
-}
-
-function detectColumnIndex(headers, patterns) {
-  const idx = headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)));
-  return idx >= 0 ? idx : null;
-}
-
-function getRelevantTables($) {
-  return $("table")
-    .toArray()
-    .map((el) => {
-      const $table = $(el);
-      const headers = parseHeaders($, $table);
-      const bodyText = normalizeTableCellText($table.text());
-      return {
-        $table,
-        headers,
-        bodyText
-      };
-    })
-    .filter((row) => row.headers.length > 0);
-}
-
-function parsePreRaceTables(html) {
-  const $ = cheerio.load(html);
-  const byLane = new Map();
-  const tableDiagnostics = [];
-  const tables = getRelevantTables($);
-
-  const fieldPatterns = {
-    lane: [/艇番/i, /コース/i, /枠/i],
-    playerName: [/選手/i, /名前/i],
-    fCount: [/F/i, /フライング/i],
-    lapTime: [/周回.*タイム/i, /1周.*タイム/i, /ラップ.*タイム/i],
-    lapExhibition: [/周回展示/i, /伸び足/i, /足色/i, /出足/i, /回り足/i],
-    exhibitionSt: [/展示.*ST/i, /^ST$/i],
-    exhibitionTime: [/展示.*タイム/i],
-    motor2Rate: [/モーター.*2連/i, /^2連率$/i],
-    motor3Rate: [/モーター.*3連/i, /^3連率$/i]
-  };
-
-  for (const table of tables) {
-    const joined = `${table.headers.join(" ")} ${table.bodyText}`;
-    if (!/(周回|展示|ST|モーター|F|選手)/i.test(joined)) continue;
-
-    const indexes = {
-      lane: detectColumnIndex(table.headers, fieldPatterns.lane),
-      playerName: detectColumnIndex(table.headers, fieldPatterns.playerName),
-      fCount: detectColumnIndex(table.headers, fieldPatterns.fCount),
-      lapTime: detectColumnIndex(table.headers, fieldPatterns.lapTime),
-      lapExhibition: detectColumnIndex(table.headers, fieldPatterns.lapExhibition),
-      exhibitionSt: detectColumnIndex(table.headers, fieldPatterns.exhibitionSt),
-      exhibitionTime: detectColumnIndex(table.headers, fieldPatterns.exhibitionTime),
-      motor2Rate: detectColumnIndex(table.headers, fieldPatterns.motor2Rate),
-      motor3Rate: detectColumnIndex(table.headers, fieldPatterns.motor3Rate)
+function parseStartTimingRaw(value) {
+  const raw = normalizeSpace(value) || null;
+  if (!raw) {
+    return {
+      raw: null,
+      type: "missing",
+      numeric: null
     };
-
-    let parsedCount = 0;
-    table.$table.find("tr").slice(1).each((_, tr) => {
-      const cells = $(tr)
-        .children("td,th")
-        .map((__, cell) => normalizeTableCellText($(cell).text()))
-        .get();
-      if (cells.length < 2) return;
-      const lane =
-        (indexes.lane !== null ? toNumber(cells[indexes.lane]) : null) ??
-        detectLane(cells);
-      if (!Number.isInteger(lane) || lane < 1 || lane > 6) return;
-
-      const stretch = scoreStretchFoot(indexes.lapExhibition !== null ? cells[indexes.lapExhibition] : null);
-      const current = byLane.get(lane) || {};
-      const next = {
-        playerName: indexes.playerName !== null ? cells[indexes.playerName] || null : null,
-        fCount: indexes.fCount !== null ? parseFCount(cells[indexes.fCount]) : null,
-        lapTime: indexes.lapTime !== null ? parseDecimal(cells[indexes.lapTime]) : null,
-        lapExhibitionScore: indexes.lapExhibition !== null ? stretch.score : null,
-        stretchFootLabel: indexes.lapExhibition !== null ? stretch.label : null,
-        exhibitionSt: indexes.exhibitionSt !== null ? parseDecimal(cells[indexes.exhibitionSt]) : null,
-        exhibitionTime: indexes.exhibitionTime !== null ? parseDecimal(cells[indexes.exhibitionTime]) : null,
-        motor2Rate: indexes.motor2Rate !== null ? parsePercent(cells[indexes.motor2Rate]) : null,
-        motor3Rate: indexes.motor3Rate !== null ? parsePercent(cells[indexes.motor3Rate]) : null
-      };
-
-      const merged = { ...current };
-      for (const [key, value] of Object.entries(next)) {
-        if (value !== null && value !== undefined && value !== "") merged[key] = value;
-      }
-      if (Object.keys(merged).length > 0) {
-        byLane.set(lane, merged);
-        parsedCount += 1;
-      }
-    });
-
-    tableDiagnostics.push({
-      type: "pre_race",
-      headers: table.headers,
-      indexes,
-      parsedCount
-    });
   }
-
+  const normalized = normalizeDigits(raw).replace(/\s+/g, "").toUpperCase();
+  if (/^F\.?\d+/.test(normalized)) {
+    return { raw, type: "flying", numeric: null };
+  }
+  if (/^L\.?\d+/.test(normalized)) {
+    return { raw, type: "late", numeric: null };
+  }
+  const numeric = parseDecimal(normalized);
   return {
-    byLane,
-    tableDiagnostics
+    raw,
+    type: numeric === null ? "unknown" : "normal",
+    numeric
   };
 }
 
-function parseLaneStatsTables(html) {
-  const $ = cheerio.load(html);
-  const byLane = new Map();
-  const tableDiagnostics = [];
-  const tables = getRelevantTables($);
-
-  const patterns = {
-    lane: [/艇番/i, /コース/i, /枠/i],
-    laneFirstRate: [/1着率/i, /1着/i],
-    lane2RenRate: [/2連率/i, /2連/i],
-    lane3RenRate: [/3連率/i, /3連/i]
-  };
-
-  for (const table of tables) {
-    const joined = `${table.headers.join(" ")} ${table.bodyText}`;
-    if (!/(枠別勝率|1着率|2連率|3連率)/i.test(joined)) continue;
-
-    const indexes = {
-      lane: detectColumnIndex(table.headers, patterns.lane),
-      laneFirstRate: detectColumnIndex(table.headers, patterns.laneFirstRate),
-      lane2RenRate: detectColumnIndex(table.headers, patterns.lane2RenRate),
-      lane3RenRate: detectColumnIndex(table.headers, patterns.lane3RenRate)
-    };
-
-    let parsedCount = 0;
-    table.$table.find("tr").slice(1).each((_, tr) => {
-      const cells = $(tr)
-        .children("td,th")
-        .map((__, cell) => normalizeTableCellText($(cell).text()))
-        .get();
-      if (cells.length < 2) return;
-
-      const lane =
-        (indexes.lane !== null ? toNumber(cells[indexes.lane]) : null) ??
-        detectLane(cells);
-      if (!Number.isInteger(lane) || lane < 1 || lane > 6) return;
-
-      const current = byLane.get(lane) || {};
-      const next = {
-        laneFirstRate: indexes.laneFirstRate !== null ? parsePercent(cells[indexes.laneFirstRate]) : null,
-        lane2RenRate: indexes.lane2RenRate !== null ? parsePercent(cells[indexes.lane2RenRate]) : null,
-        lane3RenRate: indexes.lane3RenRate !== null ? parsePercent(cells[indexes.lane3RenRate]) : null
-      };
-
-      const merged = { ...current };
-      for (const [key, value] of Object.entries(next)) {
-        if (value !== null && value !== undefined && value !== "") merged[key] = value;
-      }
-      if (Object.keys(merged).length > 0) {
-        byLane.set(lane, merged);
-        parsedCount += 1;
-      }
-    });
-
-    tableDiagnostics.push({
-      type: "lane_stats",
-      headers: table.headers,
-      indexes,
-      parsedCount
-    });
-  }
-
-  return {
-    byLane,
-    tableDiagnostics
-  };
+function parseScaledDecimal(value, divisor = 100) {
+  const n = toNumber(value);
+  if (n === null) return null;
+  return Number((n / divisor).toFixed(2));
 }
 
-function buildFieldDiagnostics(byLane) {
+function toFiniteNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeLapTimeForModel(rawLapTime) {
+  if (!Number.isFinite(Number(rawLapTime))) return null;
+  const adjusted = Number(rawLapTime) - 29.5;
+  return Number.isFinite(adjusted) ? Number(adjusted.toFixed(2)) : null;
+}
+
+function makeStretchLabel({ mawariashi, chokusen }) {
+  const parts = [];
+  if (Number.isFinite(Number(chokusen))) parts.push(`伸び ${Number(chokusen).toFixed(2)}`);
+  if (Number.isFinite(Number(mawariashi))) parts.push(`周回 ${Number(mawariashi).toFixed(2)}`);
+  return parts.length > 0 ? parts.join(" / ") : null;
+}
+
+function computeLapExhibitionScore({ mawariashi, chokusen }) {
+  const scores = [mawariashi, chokusen].filter((value) => Number.isFinite(Number(value))).map(Number);
+  if (scores.length === 0) return null;
+  const avg = scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  return Number(avg.toFixed(2));
+}
+
+function buildFieldDiagnostics(byLane, fieldSources = {}) {
   const populated = new Set();
   const missing = new Set(EXPECTED_FIELDS);
   const perLane = [];
@@ -320,7 +149,8 @@ function buildFieldDiagnostics(byLane) {
     perLane.push({
       lane,
       populated_fields: populatedFields,
-      missing_fields: EXPECTED_FIELDS.filter((field) => !populatedFields.includes(field))
+      missing_fields: EXPECTED_FIELDS.filter((field) => !populatedFields.includes(field)),
+      field_sources: fieldSources?.[lane] || {}
     });
   }
 
@@ -331,94 +161,324 @@ function buildFieldDiagnostics(byLane) {
   };
 }
 
-function mergeLaneMaps(...maps) {
-  const merged = new Map();
-  for (const sourceMap of maps) {
-    for (const [lane, row] of sourceMap || []) {
-      const current = merged.get(lane) || {};
-      merged.set(lane, {
-        ...current,
-        ...Object.fromEntries(
-          Object.entries(row || {}).filter(([, value]) => value !== null && value !== undefined && value !== "")
-        )
-      });
-    }
-  }
-  return merged;
-}
-
-function buildSliderUrls({ date, venueId, raceNo }) {
-  const hd = String(date || "").replace(/-/g, "");
+function buildSliderUrl({ date, venueId, raceNo, slider }) {
+  const hiduke = String(date || "").replace(/-/g, "");
   const placeNo = String(venueId || "").padStart(2, "0");
-  const rno = Number(raceNo);
-  return Array.from({ length: 6 }, (_, idx) =>
-    `${KYOTEI_BIYORI_BASE}/race_shusso.php?hiduke=${hd}&place_no=${placeNo}&race_no=${rno}&slider=${idx + 1}`
-  );
+  return `${KYOTEI_BIYORI_BASE}/race_shusso.php?place_no=${placeNo}&race_no=${Number(raceNo)}&hiduke=${hiduke}&slider=${slider}`;
 }
 
-function parseTabLinksFromIndex(html) {
-  const $ = cheerio.load(html);
-  const links = [];
-  $("a[href]").each((_, el) => {
-    const href = $(el).attr("href");
-    const text = normalizeSpace($(el).text());
-    if (!href) return;
-    if (/race_shusso\.php/i.test(href) || /枠別勝率|直前情報/.test(text)) {
-      try {
-        links.push({
-          href: new URL(href, KYOTEI_BIYORI_BASE).href,
-          text
-        });
-      } catch {
-        // ignore invalid href
-      }
+async function fetchText(url, timeoutMs = 12000) {
+  const response = await axios.get(url, {
+    timeout: timeoutMs,
+    responseType: "text",
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
   });
-  return links;
+  return String(response.data || "");
 }
 
-function classifyTabContent(html) {
-  const text = normalizeTableCellText(html);
+async function fetchOritenJson({ date, venueId, raceNo, timeoutMs = 12000 }) {
+  const payload = {
+    hiduke: String(date || "").replace(/-/g, ""),
+    place_no: String(venueId || "").padStart(2, "0"),
+    race_no: Number(raceNo),
+    mode: 2
+  };
+  const params = new URLSearchParams();
+  params.set("data", JSON.stringify(payload));
+
+  const response = await axios.post(ORITEN_ENDPOINT, params.toString(), {
+    timeout: timeoutMs,
+    responseType: "json",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With": "XMLHttpRequest",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+      Referer: buildSliderUrl({ date, venueId, raceNo, slider: 4 })
+    }
+  });
+
+  return response.data;
+}
+
+function detectLaneText(text) {
+  const normalized = normalizeText(text);
+  const direct = normalized.match(/^(?:艇番|コース|枠)?\s*([1-6])$/);
+  if (direct) return Number(direct[1]);
+  const loose = normalized.match(/([1-6])/);
+  return loose ? Number(loose[1]) : null;
+}
+
+function detectColumnIndex(headers, patterns) {
+  const idx = headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)));
+  return idx >= 0 ? idx : null;
+}
+
+function extractTableMaps(html) {
+  const $ = cheerio.load(html);
+  return $("table")
+    .toArray()
+    .map((el) => {
+      const $table = $(el);
+      const headers = $table
+        .find("tr")
+        .first()
+        .children("th,td")
+        .map((_, cell) => normalizeText($(cell).text()))
+        .get();
+      return {
+        $,
+        $table,
+        headers,
+        text: normalizeText($table.text())
+      };
+    })
+    .filter((table) => table.headers.length > 0);
+}
+
+function parseHtmlSupplement(html) {
+  const byLane = new Map();
+  const fieldSources = {};
+  const tableDiagnostics = [];
+  const tables = extractTableMaps(html);
+
+  const preRacePatterns = {
+    lane: [/^艇番$/i, /^コース$/i, /^枠$/i],
+    playerName: [/選手/i, /名前/i],
+    fCount: [/^F$/i, /F数/i],
+    lapTime: [/周回タイム/i, /1周タイム/i, /ラップタイム/i],
+    lapExhibition: [/周回展示/i, /伸び足/i, /足色/i, /出足/i, /回り足/i],
+    exhibitionSt: [/展示ST/i, /^ST$/i],
+    exhibitionTime: [/展示タイム/i],
+    motor2Rate: [/モーター.*2連率/i, /^2連率$/i],
+    motor3Rate: [/モーター.*3連率/i, /^3連率$/i],
+    laneFirstRate: [/1着率/i],
+    lane2RenRate: [/2連率/i],
+    lane3RenRate: [/3連率/i]
+  };
+
+  for (const table of tables) {
+    if (!/(周回タイム|展示ST|モーター|1着率|2連率|3連率|選手|F)/.test(table.text)) continue;
+
+    const indexes = {
+      lane: detectColumnIndex(table.headers, preRacePatterns.lane),
+      playerName: detectColumnIndex(table.headers, preRacePatterns.playerName),
+      fCount: detectColumnIndex(table.headers, preRacePatterns.fCount),
+      lapTime: detectColumnIndex(table.headers, preRacePatterns.lapTime),
+      lapExhibition: detectColumnIndex(table.headers, preRacePatterns.lapExhibition),
+      exhibitionSt: detectColumnIndex(table.headers, preRacePatterns.exhibitionSt),
+      exhibitionTime: detectColumnIndex(table.headers, preRacePatterns.exhibitionTime),
+      motor2Rate: detectColumnIndex(table.headers, preRacePatterns.motor2Rate),
+      motor3Rate: detectColumnIndex(table.headers, preRacePatterns.motor3Rate),
+      laneFirstRate: detectColumnIndex(table.headers, preRacePatterns.laneFirstRate),
+      lane2RenRate: detectColumnIndex(table.headers, preRacePatterns.lane2RenRate),
+      lane3RenRate: detectColumnIndex(table.headers, preRacePatterns.lane3RenRate)
+    };
+
+    let parsedCount = 0;
+    table.$table.find("tr").slice(1).each((_, tr) => {
+      const values = [];
+      table.$(tr)
+        .children("td,th")
+        .each((__, cell) => {
+          values.push(normalizeText(table.$(cell).text()));
+      });
+      if (values.length < 2) return;
+
+      const lane =
+        (indexes.lane !== null ? toNumber(values[indexes.lane]) : null) ??
+        values.map((value) => detectLaneText(value)).find((value) => Number.isInteger(value)) ??
+        null;
+      if (!Number.isInteger(lane) || lane < 1 || lane > 6) return;
+
+      const current = byLane.get(lane) || {};
+      const next = {
+        playerName: indexes.playerName !== null ? values[indexes.playerName] || null : null,
+        fCount: indexes.fCount !== null ? parseFCount(values[indexes.fCount]) : null,
+        lapTimeRaw: indexes.lapTime !== null ? parseDecimal(values[indexes.lapTime]) : null,
+        exhibitionSt: indexes.exhibitionSt !== null ? parseDecimal(values[indexes.exhibitionSt]) : null,
+        exhibitionTime: indexes.exhibitionTime !== null ? parseDecimal(values[indexes.exhibitionTime]) : null,
+        motor2Rate: indexes.motor2Rate !== null ? parsePercent(values[indexes.motor2Rate]) : null,
+        motor3Rate: indexes.motor3Rate !== null ? parsePercent(values[indexes.motor3Rate]) : null,
+        laneFirstRate: indexes.laneFirstRate !== null ? parsePercent(values[indexes.laneFirstRate]) : null,
+        lane2RenRate: indexes.lane2RenRate !== null ? parsePercent(values[indexes.lane2RenRate]) : null,
+        lane3RenRate: indexes.lane3RenRate !== null ? parsePercent(values[indexes.lane3RenRate]) : null
+      };
+
+      const lapExLabel = indexes.lapExhibition !== null ? values[indexes.lapExhibition] : null;
+      if (lapExLabel) {
+        next.stretchFootLabel = lapExLabel;
+        next.lapExhibitionScore = parseDecimal(lapExLabel) ?? null;
+      }
+      if (next.lapTimeRaw !== null) {
+        next.lapTime = normalizeLapTimeForModel(next.lapTimeRaw);
+      }
+
+      const merged = { ...current };
+      const laneFieldSources = fieldSources[lane] || {};
+      for (const [key, value] of Object.entries(next)) {
+        if (value === null || value === undefined || value === "") continue;
+        merged[key] = value;
+        laneFieldSources[key] = "tab_html";
+      }
+      if (Object.keys(merged).length > 0) {
+        byLane.set(lane, merged);
+        fieldSources[lane] = laneFieldSources;
+        parsedCount += 1;
+      }
+    });
+
+    tableDiagnostics.push({
+      headers: table.headers,
+      parsedCount
+    });
+  }
+
+  return { byLane, fieldSources, tableDiagnostics };
+}
+
+export function parseKyoteiBiyoriAjaxData(payload) {
+  const byLane = new Map();
+  const fieldSources = {};
+
+  const chokuzenList = Array.isArray(payload?.chokuzen_list) ? payload.chokuzen_list : [];
+  const oritenAveList =
+    payload?.oriten_ave_list && typeof payload.oriten_ave_list === "object"
+      ? payload.oriten_ave_list
+      : {};
+
+  for (const row of chokuzenList) {
+    const lane = Number(row?.course);
+    if (!Number.isInteger(lane) || lane < 1 || lane > 6) continue;
+    const playerNo = String(row?.player_no || "");
+    const oriten = oritenAveList[playerNo] || null;
+
+    const lapTimeRaw = parseScaledDecimal(row?.shukai, 100);
+    const exhibitionTime = parseScaledDecimal(row?.tenji, 100);
+    const mawariashi = parseScaledDecimal(row?.mawariashi, 100);
+    const chokusen = parseScaledDecimal(row?.chokusen, 100);
+    const startParsed = parseStartTimingRaw(row?.start);
+    const lapExhibitionScore = computeLapExhibitionScore({ mawariashi, chokusen });
+    const stretchFootLabel = makeStretchLabel({ mawariashi, chokusen });
+    const entryCourse = Number(row?.shinnyuu);
+
+    const courseField = (suffix) => {
+      if (!oriten || !Number.isInteger(lane)) return null;
+      const byCourse = parsePercent(oriten[`shukai_${suffix}_${lane}_ave`]);
+      return byCourse ?? parsePercent(oriten[`shukai_${suffix}_ave`]);
+    };
+
+    const laneRow = {
+      playerName: normalizeSpace(row?.player_name) || null,
+      lapTimeRaw,
+      lapTime: normalizeLapTimeForModel(lapTimeRaw),
+      lapExhibitionScore,
+      stretchFootLabel,
+      exhibitionSt: startParsed.type === "normal" ? startParsed.numeric : null,
+      exhibitionTime,
+      entryCourse: Number.isInteger(entryCourse) ? entryCourse : null,
+      laneFirstRate: courseField("1_1"),
+      lane2RenRate: courseField("1_2"),
+      lane3RenRate: courseField("1_3")
+    };
+
+    const sources = {
+      playerName: "request_oriten_kaiseki_custom.chokuzen_list",
+      lapTimeRaw: "request_oriten_kaiseki_custom.chokuzen_list.shukai",
+      lapTime: "request_oriten_kaiseki_custom.chokuzen_list.shukai(normalized)",
+      lapExhibitionScore: "request_oriten_kaiseki_custom.chokuzen_list.mawariashi/chokusen",
+      stretchFootLabel: "request_oriten_kaiseki_custom.chokuzen_list.mawariashi/chokusen",
+      exhibitionSt: "request_oriten_kaiseki_custom.chokuzen_list.start",
+      exhibitionTime: "request_oriten_kaiseki_custom.chokuzen_list.tenji",
+      laneFirstRate: "request_oriten_kaiseki_custom.oriten_ave_list",
+      lane2RenRate: "request_oriten_kaiseki_custom.oriten_ave_list",
+      lane3RenRate: "request_oriten_kaiseki_custom.oriten_ave_list"
+    };
+
+    if (oriten) {
+      const overall1 = parsePercent(oriten?.shukai_1_1_ave);
+      const overall2 = parsePercent(oriten?.shukai_1_2_ave);
+      const overall3 = parsePercent(oriten?.shukai_1_3_ave);
+      if (laneRow.laneFirstRate === null) laneRow.laneFirstRate = overall1;
+      if (laneRow.lane2RenRate === null) laneRow.lane2RenRate = overall2;
+      if (laneRow.lane3RenRate === null) laneRow.lane3RenRate = overall3;
+    }
+
+    byLane.set(lane, laneRow);
+    fieldSources[lane] = Object.fromEntries(
+      Object.entries(laneRow)
+        .filter(([, value]) => value !== null && value !== undefined && value !== "")
+        .map(([key]) => [key, sources[key] || "request_oriten_kaiseki_custom"])
+    );
+  }
+
   return {
-    hasInitialPlaceholder: /データ取得中です|しばらくお待ちください/.test(text),
-    hasLaneStats: /枠別勝率|1着率|2連率|3連率/.test(text),
-    hasPreRace: /直前情報|周回タイム|周回展示|展示ST|展示タイム/.test(text)
+    byLane,
+    fieldSources,
+    diagnostics: {
+      response_keys: Object.keys(payload || {}),
+      chokuzen_count: chokuzenList.length,
+      oriten_player_count: Object.keys(oritenAveList).length
+    }
   };
 }
 
+function mergeLaneMaps(target, source, fieldSources, sourceLabel) {
+  for (const [lane, row] of source.entries()) {
+    const current = target.get(lane) || {};
+    const laneFieldSources = fieldSources[lane] || {};
+    for (const [key, value] of Object.entries(row || {})) {
+      if (value === null || value === undefined || value === "") continue;
+      current[key] = value;
+      laneFieldSources[key] = laneFieldSources[key] || sourceLabel;
+    }
+    target.set(lane, current);
+    fieldSources[lane] = laneFieldSources;
+  }
+}
+
 export function parseKyoteiBiyoriPreRaceData(html) {
-  const preRace = parsePreRaceTables(html);
-  const laneStats = parseLaneStatsTables(html);
-  const byLane = mergeLaneMaps(preRace.byLane, laneStats.byLane);
+  const supplement = parseHtmlSupplement(html);
+  const byLane = new Map();
+  const fieldSources = {};
+  mergeLaneMaps(byLane, supplement.byLane, fieldSources, "tab_html");
   return {
     byLane,
-    tableDiagnostics: [...preRace.tableDiagnostics, ...laneStats.tableDiagnostics],
-    fieldDiagnostics: buildFieldDiagnostics(byLane)
+    fieldSources,
+    tableDiagnostics: supplement.tableDiagnostics,
+    fieldDiagnostics: buildFieldDiagnostics(byLane, fieldSources)
   };
 }
 
 export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
   const normalizedByLane = new Map();
+  const fieldSources = parsed?.fieldSources || {};
   for (const [lane, row] of parsed?.byLane || []) {
     normalizedByLane.set(Number(lane), {
       playerName: row?.playerName || null,
-      fCount: Number.isFinite(Number(row?.fCount)) ? Number(row.fCount) : null,
-      lapTime: Number.isFinite(Number(row?.lapTime)) ? Number(row.lapTime) : null,
-      lapExhibitionScore: Number.isFinite(Number(row?.lapExhibitionScore)) ? Number(row.lapExhibitionScore) : null,
+      fCount: toFiniteNumberOrNull(row?.fCount),
+      lapTime: toFiniteNumberOrNull(row?.lapTime),
+      lapTimeRaw: toFiniteNumberOrNull(row?.lapTimeRaw),
+      lapExhibitionScore: toFiniteNumberOrNull(row?.lapExhibitionScore),
       stretchFootLabel: row?.stretchFootLabel || null,
-      exhibitionSt: Number.isFinite(Number(row?.exhibitionSt)) ? Number(row.exhibitionSt) : null,
-      exhibitionTime: Number.isFinite(Number(row?.exhibitionTime)) ? Number(row.exhibitionTime) : null,
-      motor2Rate: Number.isFinite(Number(row?.motor2Rate)) ? Number(row.motor2Rate) : null,
-      motor3Rate: Number.isFinite(Number(row?.motor3Rate)) ? Number(row.motor3Rate) : null,
-      laneFirstRate: Number.isFinite(Number(row?.laneFirstRate)) ? Number(row.laneFirstRate) : null,
-      lane2RenRate: Number.isFinite(Number(row?.lane2RenRate)) ? Number(row.lane2RenRate) : null,
-      lane3RenRate: Number.isFinite(Number(row?.lane3RenRate)) ? Number(row.lane3RenRate) : null
+      exhibitionSt: toFiniteNumberOrNull(row?.exhibitionSt),
+      exhibitionTime: toFiniteNumberOrNull(row?.exhibitionTime),
+      motor2Rate: toFiniteNumberOrNull(row?.motor2Rate),
+      motor3Rate: toFiniteNumberOrNull(row?.motor3Rate),
+      laneFirstRate: toFiniteNumberOrNull(row?.laneFirstRate),
+      lane2RenRate: toFiniteNumberOrNull(row?.lane2RenRate),
+      lane3RenRate: toFiniteNumberOrNull(row?.lane3RenRate)
     });
   }
   return {
     byLane: normalizedByLane,
+    fieldSources,
     tableDiagnostics: parsed?.tableDiagnostics || [],
-    fieldDiagnostics: parsed?.fieldDiagnostics || buildFieldDiagnostics(normalizedByLane)
+    fieldDiagnostics: parsed?.fieldDiagnostics || buildFieldDiagnostics(normalizedByLane, fieldSources),
+    diagnostics: parsed?.diagnostics || {}
   };
 }
 
@@ -433,6 +493,7 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
       fHoldCount: extra?.fCount ?? racer?.fHoldCount ?? null,
       kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,
       kyoteiBiyoriLapTime: extra?.lapTime ?? null,
+      kyoteiBiyoriLapTimeRaw: extra?.lapTimeRaw ?? null,
       kyoteiBiyoriLapExhibitionScore: extra?.lapExhibitionScore ?? null,
       kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
       kyoteiBiyoriExhibitionSt: extra?.exhibitionSt ?? null,
@@ -440,6 +501,7 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
       kyoteiBiyoriMotor2Rate: extra?.motor2Rate ?? null,
       kyoteiBiyoriMotor3Rate: extra?.motor3Rate ?? null,
       lapTime: extra?.lapTime ?? racer?.lapTime ?? null,
+      lapTimeRaw: extra?.lapTimeRaw ?? racer?.lapTimeRaw ?? null,
       lapExhibitionScore: extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
       stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,
       exhibitionSt: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
@@ -454,95 +516,112 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
 }
 
 export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeoutMs = 12000 }) {
-  const hd = String(date || "").replace(/-/g, "");
+  const hiduke = String(date || "").replace(/-/g, "");
   const placeNo = String(venueId || "").padStart(2, "0");
   const rno = Number(raceNo);
-  const indexUrl = `${KYOTEI_BIYORI_BASE}/race_ichiran.php?hiduke=${hd}&place_no=${placeNo}&race_no=${rno}`;
+  const indexUrl = `${KYOTEI_BIYORI_BASE}/race_ichiran.php?place_no=${placeNo}&race_no=${rno}&hiduke=${hiduke}`;
+  const slider1Url = buildSliderUrl({ date, venueId, raceNo, slider: 1 });
+  const slider4Url = buildSliderUrl({ date, venueId, raceNo, slider: 4 });
 
   const diagnostics = {
     index_url: indexUrl,
-    target_urls: [],
+    target_urls: [indexUrl, slider1Url, slider4Url],
+    actual_fetch_paths: [],
     initial_html: {
       fetched: false,
       has_placeholder: false
     },
-    tab_pages: []
+    tab_pages: [],
+    field_source_summary: {}
   };
 
-  let indexHtml = "";
+  const mergedByLane = new Map();
+  const fieldSources = {};
+  const tableDiagnostics = [];
   let lastError = null;
 
   try {
-    indexHtml = await fetchHtml(indexUrl, timeoutMs);
+    const indexHtml = await fetchText(indexUrl, timeoutMs);
     diagnostics.initial_html.fetched = true;
-    diagnostics.initial_html.has_placeholder = /データ取得中です|しばらくお待ちください/.test(normalizeTableCellText(indexHtml));
+    diagnostics.initial_html.has_placeholder = /データ取得中です|しばらくお待ちください/.test(indexHtml);
+    diagnostics.actual_fetch_paths.push("race_ichiran_shell");
   } catch (error) {
     lastError = error;
+    diagnostics.initial_html.error = String(error?.message || error);
   }
 
-  const discoveredLinks = indexHtml ? parseTabLinksFromIndex(indexHtml) : [];
-  const sliderUrls = buildSliderUrls({ date, venueId, raceNo });
-  const targetUrls = [...new Set([...discoveredLinks.map((row) => row.href), ...sliderUrls])];
-  diagnostics.target_urls = targetUrls;
-
-  const mergedByLane = new Map();
-  const allTableDiagnostics = [];
-
-  for (const url of targetUrls) {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const html = await fetchHtml(url, timeoutMs);
-        const contentFlags = classifyTabContent(html);
-        const parsed = parseKyoteiBiyoriPreRaceData(html);
-        const normalized = normalizeKyoteiBiyoriPreRaceFields(parsed);
-
-        for (const [lane, row] of normalized.byLane.entries()) {
-          const current = mergedByLane.get(lane) || {};
-          mergedByLane.set(lane, {
-            ...current,
-            ...Object.fromEntries(
-              Object.entries(row).filter(([, value]) => value !== null && value !== undefined && value !== "")
-            )
-          });
-        }
-
-        allTableDiagnostics.push(...(normalized.tableDiagnostics || []));
-        diagnostics.tab_pages.push({
-          url,
-          attempt: attempt + 1,
-          has_placeholder: contentFlags.hasInitialPlaceholder,
-          has_lane_stats: contentFlags.hasLaneStats,
-          has_pre_race: contentFlags.hasPreRace,
-          parsed_lanes: normalized.byLane.size,
-          populated_fields: normalized.fieldDiagnostics?.populated_fields || []
-        });
-        break;
-      } catch (error) {
-        lastError = error;
-        if (attempt === 1) {
-          diagnostics.tab_pages.push({
-            url,
-            attempt: attempt + 1,
-            error: String(error?.message || error)
-          });
-        }
+  try {
+    const ajaxPayload = await fetchOritenJson({ date, venueId, raceNo, timeoutMs });
+    const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
+    mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");
+    diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");
+    diagnostics.request_payload = {
+      endpoint: ORITEN_ENDPOINT,
+      data: {
+        hiduke,
+        place_no: placeNo,
+        race_no: rno,
+        mode: 2
       }
+    };
+    diagnostics.request_diagnostics = parsedAjax.diagnostics;
+  } catch (error) {
+    lastError = error;
+    diagnostics.request_error = String(error?.message || error);
+  }
+
+  for (const [label, url] of [
+    ["lane_stats_tab", slider1Url],
+    ["pre_race_tab", slider4Url]
+  ]) {
+    try {
+      const html = await fetchText(url, timeoutMs);
+      const parsed = normalizeKyoteiBiyoriPreRaceFields(parseKyoteiBiyoriPreRaceData(html));
+      mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);
+      tableDiagnostics.push(...(parsed.tableDiagnostics || []));
+      diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);
+      diagnostics.tab_pages.push({
+        url,
+        label,
+        parsed_lanes: parsed.byLane.size,
+        populated_fields: parsed.fieldDiagnostics?.populated_fields || []
+      });
+    } catch (error) {
+      lastError = error;
+      diagnostics.tab_pages.push({
+        url,
+        label,
+        error: String(error?.message || error)
+      });
     }
   }
 
-  const fieldDiagnostics = buildFieldDiagnostics(mergedByLane);
-  const ok = mergedByLane.size > 0 && fieldDiagnostics.populated_fields.length > 0;
+  for (const [lane, sources] of Object.entries(fieldSources)) {
+    diagnostics.field_source_summary[lane] = sources;
+  }
+
+  const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
+  const lapTimeReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("lapTimeRaw"));
+  const laneStatsReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("laneFirstRate"));
+  const ok = mergedByLane.size > 0 && lapTimeReady && laneStatsReady;
+  const fallbackReason =
+    ok
+      ? null
+      : lastError
+        ? String(lastError.message || lastError)
+        : "kyoteibiyori returned no usable lap-time or lane-stat fields";
 
   return {
     ok,
     url: indexUrl,
-    triedUrls: targetUrls,
+    triedUrls: diagnostics.target_urls,
     byLane: mergedByLane,
-    tableDiagnostics: allTableDiagnostics,
+    tableDiagnostics,
     fieldDiagnostics,
+    fieldSources,
     fallbackUsed: !ok,
-    fallbackReason: ok ? null : (lastError ? String(lastError.message || lastError) : "kyoteibiyori returned no usable fields"),
+    fallbackReason,
     diagnostics,
-    error: ok ? null : (lastError ? String(lastError.message || lastError) : "kyoteibiyori returned no usable fields")
+    error: ok ? null : fallbackReason
   };
 }

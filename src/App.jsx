@@ -1278,8 +1278,8 @@ function getPlayerComparisonRows({ prediction, data }) {
         name: row?.name || `Boat ${row?.lane || "-"}`,
         fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
         kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched || 0) === 1,
-        lapTime: Number.isFinite(Number(row?.kyoteibiyori_lap_time ?? row?.lap_time))
-          ? Number(row?.kyoteibiyori_lap_time ?? row?.lap_time)
+        lapTime: Number.isFinite(Number(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time))
+          ? Number(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time)
           : null,
         exhibitionSt: Number.isFinite(Number(row?.exhibition_st)) ? Number(row.exhibition_st) : null,
         exhibitionTime: Number.isFinite(Number(row?.exhibition_time)) ? Number(row.exhibition_time) : null,
@@ -1308,8 +1308,8 @@ function getPlayerComparisonRows({ prediction, data }) {
       name: row?.name || `Boat ${row?.lane || "-"}`,
       fCount: row?.fHoldCount === null || row?.fHoldCount === undefined ? null : Number(row.fHoldCount),
       kyoteiBiyoriFetched: Number(row?.kyoteiBiyoriFetched || 0) === 1,
-      lapTime: Number.isFinite(Number(row?.kyoteiBiyoriLapTime ?? row?.lapTime))
-        ? Number(row?.kyoteiBiyoriLapTime ?? row?.lapTime)
+      lapTime: Number.isFinite(Number(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime))
+        ? Number(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime)
         : null,
       exhibitionSt: Number.isFinite(Number(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt))
         ? Number(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt)
@@ -3815,6 +3815,7 @@ export default function App() {
                     </div>
                     <div className="kv-list" style={{ marginTop: 10 }}>
                       <div className="kv-row"><span>kyoteibiyori fetch</span><strong>{data?.source?.kyotei_biyori?.ok ? "success" : "fallback"}</strong></div>
+                      <div className="kv-row"><span>fetch path</span><strong>{(data?.source?.kyotei_biyori?.request_diagnostics?.actual_fetch_paths || []).join(" -> ") || "--"}</strong></div>
                       <div className="kv-row"><span>target urls</span><strong>{(data?.source?.kyotei_biyori?.request_diagnostics?.target_urls || []).length || 0}</strong></div>
                       <div className="kv-row"><span>populated fields</span><strong>{(data?.source?.kyotei_biyori?.field_diagnostics?.populated_fields || []).join(", ") || "--"}</strong></div>
                       <div className="kv-row"><span>failed fields</span><strong>{(data?.source?.kyotei_biyori?.field_diagnostics?.failed_fields || []).join(", ") || "--"}</strong></div>

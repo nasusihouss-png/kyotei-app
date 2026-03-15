@@ -1,9 +1,64 @@
 import assert from "node:assert/strict";
 import {
+  parseKyoteiBiyoriAjaxData,
   parseKyoteiBiyoriPreRaceData,
   normalizeKyoteiBiyoriPreRaceFields,
   mergeKyoteiBiyoriDataIntoRaceContext
 } from "../src/services/kyoteibiyori.js";
+
+const sampleAjaxPayload = {
+  chokuzen_list: [
+    {
+      course: 1,
+      player_no: 3514,
+      player_name: "山一鉄也",
+      tenji: 675,
+      shukai: 3623,
+      mawariashi: 554,
+      chokusen: 599,
+      start: ".08",
+      shinnyuu: 1
+    },
+    {
+      course: 2,
+      player_no: 9999,
+      player_name: "木谷賢太",
+      tenji: 681,
+      shukai: 3643,
+      mawariashi: 520,
+      chokusen: 551,
+      start: "F.01",
+      shinnyuu: 2
+    }
+  ],
+  oriten_ave_list: {
+    "3514": {
+      shukai_1_1_1_ave: "66.6667",
+      shukai_1_2_1_ave: "71.4286",
+      shukai_1_3_1_ave: "71.4286",
+      shukai_1_1_ave: "40.0000",
+      shukai_1_2_ave: "57.1429",
+      shukai_1_3_ave: "68.5714"
+    },
+    "9999": {
+      shukai_1_1_2_ave: "16.6667",
+      shukai_1_2_2_ave: "41.6667",
+      shukai_1_3_2_ave: "70.8333",
+      shukai_1_1_ave: "33.6066",
+      shukai_1_2_ave: "50.0000",
+      shukai_1_3_ave: "73.7705"
+    }
+  }
+};
+
+const parsedAjax = parseKyoteiBiyoriAjaxData(sampleAjaxPayload);
+assert.equal(parsedAjax.byLane.get(1)?.playerName, "山一鉄也");
+assert.equal(parsedAjax.byLane.get(1)?.lapTimeRaw, 36.23);
+assert.equal(parsedAjax.byLane.get(1)?.lapTime, 6.73);
+assert.equal(parsedAjax.byLane.get(1)?.exhibitionTime, 6.75);
+assert.equal(parsedAjax.byLane.get(1)?.exhibitionSt, 0.08);
+assert.equal(parsedAjax.byLane.get(1)?.laneFirstRate, 66.6667);
+assert.equal(parsedAjax.byLane.get(2)?.exhibitionSt, null, "F start should not become a normal ST value");
 
 const sampleHtml = `
   <table>
@@ -11,54 +66,46 @@ const sampleHtml = `
       <th>艇番</th>
       <th>選手</th>
       <th>F</th>
-      <th>周回タイム</th>
-      <th>周回展示</th>
-      <th>展示ST</th>
-      <th>展示タイム</th>
       <th>モーター2連率</th>
       <th>モーター3連率</th>
     </tr>
-    <tr><td>1</td><td>Alpha</td><td>0</td><td>6.73</td><td>抜群</td><td>0.12</td><td>6.79</td><td>46.2%</td><td>61.0%</td></tr>
-    <tr><td>2</td><td>Bravo</td><td>1</td><td>6.76</td><td>良い</td><td>0.14</td><td>6.81</td><td>41.5%</td><td>58.4%</td></tr>
-    <tr><td>3</td><td>Charlie</td><td>0</td><td>6.82</td><td>普通</td><td>0.18</td><td>6.84</td><td>35.0%</td><td>49.0%</td></tr>
-  </table>
-  <table>
-    <tr>
-      <th>コース</th>
-      <th>1着率</th>
-      <th>2連率</th>
-      <th>3連率</th>
-    </tr>
-    <tr><td>1</td><td>52.0%</td><td>72.0%</td><td>83.0%</td></tr>
-    <tr><td>2</td><td>18.0%</td><td>41.0%</td><td>61.0%</td></tr>
-    <tr><td>3</td><td>13.0%</td><td>34.0%</td><td>50.0%</td></tr>
+    <tr><td>1</td><td>山一鉄也</td><td>F0</td><td>46.2%</td><td>61.0%</td></tr>
+    <tr><td>2</td><td>木谷賢太</td><td>F1</td><td>41.5%</td><td>58.4%</td></tr>
   </table>
 `;
 
-const parsed = parseKyoteiBiyoriPreRaceData(sampleHtml);
-const normalized = normalizeKyoteiBiyoriPreRaceFields(parsed);
+const parsedHtml = parseKyoteiBiyoriPreRaceData(sampleHtml);
+const mergedByLane = new Map(parsedAjax.byLane);
+for (const [lane, row] of parsedHtml.byLane.entries()) {
+  const cleanRow = Object.fromEntries(
+    Object.entries(row).filter(([, value]) => value !== null && value !== undefined && value !== "")
+  );
+  mergedByLane.set(lane, {
+    ...(mergedByLane.get(lane) || {}),
+    ...cleanRow
+  });
+}
+const normalized = normalizeKyoteiBiyoriPreRaceFields({
+  byLane: mergedByLane,
+  fieldSources: {
+    ...(parsedAjax.fieldSources || {}),
+    ...(parsedHtml.fieldSources || {})
+  }
+});
 
-assert.equal(normalized.byLane.get(1)?.lapTime, 6.73, "adapter should parse lap time");
-assert.equal(normalized.byLane.get(1)?.lapExhibitionScore, 5, "adapter should score stretch labels");
-assert.equal(normalized.byLane.get(2)?.exhibitionSt, 0.14, "adapter should parse exhibition ST");
-assert.equal(normalized.byLane.get(1)?.motor2Rate, 46.2, "adapter should parse motor 2-ren");
-assert.equal(normalized.byLane.get(1)?.laneFirstRate, 52.0, "adapter should parse lane first rate");
-assert.equal(normalized.byLane.get(2)?.lane2RenRate, 41.0, "adapter should parse lane 2-ren rate");
-assert.equal(normalized.fieldDiagnostics.populated_fields.includes("lapTime"), true, "field diagnostics should list populated fields");
+assert.equal(normalized.byLane.get(2)?.fCount, 1);
 
 const merged = mergeKyoteiBiyoriDataIntoRaceContext({
   racers: [
     { lane: 1, name: "A", exhibitionSt: 0.13, exhibitionTime: 6.8 },
-    { lane: 2, name: "B", exhibitionSt: 0.15, exhibitionTime: 6.82 },
-    { lane: 3, name: "C", exhibitionSt: 0.18, exhibitionTime: 6.85 }
+    { lane: 2, name: "B", exhibitionSt: 0.15, exhibitionTime: 6.82 }
   ],
   kyoteiBiyori: normalized
 });
 
-assert.equal(merged[0].kyoteiBiyoriFetched, 1, "merged racer should mark kyoteibiyori fetch state");
-assert.equal(merged[0].lapTime, 6.73, "merged racer should expose lap time for feature building");
-assert.equal(merged[0].kyoteiBiyoriStretchFootLabel, "抜群", "merged racer should preserve stretch label");
-assert.equal(merged[0].motor2Rate, 46.2, "merged racer should merge motor 2-ren if available");
-assert.equal(merged[0].laneFirstRate, 52.0, "merged racer should merge lane stats if available");
+assert.equal(merged[0].kyoteiBiyoriFetched, 1);
+assert.equal(merged[0].kyoteiBiyoriLapTimeRaw, 36.23);
+assert.equal(merged[0].lapTime, 6.73);
+assert.equal(merged[1].fHoldCount, 1);
 
 console.log("kyoteibiyori-adapter tests passed");
