@@ -2309,6 +2309,15 @@ export default function App() {
     () => buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }),
     [data, playerComparisonRows]
   );
+  const safeTopRecommendedTickets = Array.isArray(predictionViewModel?.topRecommendedTickets)
+    ? predictionViewModel.topRecommendedTickets
+    : [];
+  const recommendedShape = data?.recommendedShape && typeof data.recommendedShape === "object"
+    ? data.recommendedShape
+    : null;
+  const recommendedShapeLabel = typeof recommendedShape?.shape === "string" && recommendedShape.shape
+    ? recommendedShape.shape
+    : null;
 
   const currentRaceKey = useMemo(
     () =>
@@ -3911,27 +3920,27 @@ export default function App() {
                 <article className={`card summary-card premium-ticket-card top-ranked-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
                   <h2>Top Recommended Tickets</h2>
                   <div className="summary-inline-meta">
-                    <span>{predictionViewModel.topRecommendedTickets.length} / 10</span>
+                    <span>{safeTopRecommendedTickets.length} / 10</span>
                     <span>sorted by estimated hit rate</span>
                   </div>
-                  {data?.recommendedShape?.shape ? (
+                  {recommendedShapeLabel ? (
                     <p className="muted strategy-line">
-                      Recommended Shape: {data.recommendedShape.shape}
+                      Recommended Shape: {recommendedShapeLabel}
                     </p>
                   ) : null}
                   <div className="ticket-stack compact-list">
-                    {predictionViewModel.topRecommendedTickets.map((row) => (
-                      <div key={`top-ticket-${row.ticket_type}-${row.ticket}`} className="premium-ticket-row primary">
+                    {safeTopRecommendedTickets.map((row, idx) => (
+                      <div key={`top-ticket-${row?.ticket_type || "trifecta"}-${row?.ticket || idx}`} className="premium-ticket-row primary">
                         <div className="ticket-mainline">
-                          <span className="rank-pill">#{row.rank}</span>
+                          <span className="rank-pill">#{row?.rank ?? idx + 1}</span>
                           <span className="ticket-type ticket-type-inline ttype-main">3連単</span>
-                          <strong><ComboBadge combo={row.ticket} /></strong>
+                          <strong><ComboBadge combo={row?.ticket || "--"} /></strong>
                         </div>
                         <div className="ticket-meta">
-                          <span className={`ticket-type ${getTicketTypeClass(row.recommendation_tier === "cover" ? "backup" : row.recommendation_tier)}`}>
-                            {row.recommendation_tier}
+                          <span className={`ticket-type ${getTicketTypeClass(row?.recommendation_tier === "cover" ? "backup" : row?.recommendation_tier)}`}>
+                            {row?.recommendation_tier || "main"}
                           </span>
-                          <span>hit {formatMaybeNumber(row.estimated_hit_rate * 100, 1)}%</span>
+                          <span>hit {formatMaybeNumber((Number(row?.estimated_hit_rate) || 0) * 100, 1)}%</span>
                         </div>
                       </div>
                     ))}

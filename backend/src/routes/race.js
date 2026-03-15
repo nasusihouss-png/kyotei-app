@@ -9597,20 +9597,29 @@ raceRouter.get("/race", async (req, res, next) => {
     headScenarioBalanceAnalysis.boat1_priority_mode_applied = boat1PriorityAdjustment.boat1_priority_mode_applied;
     headScenarioBalanceAnalysis.boat1_head_ratio_in_final_bets = boat1PriorityAdjustment.boat1_head_ratio_in_final_bets;
     headScenarioBalanceAnalysis.boat1_priority_reason_tags = boat1PriorityAdjustment.boat1_priority_reason_tags;
-    const shapeRecommendation = buildHitRateShapeRecommendation({
-      firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
-      secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
-      thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
-      boat1EscapeProbability: explicitBoat1EscapeProbability,
-      confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
-    });
-    const shapeBasedTrifectaTickets = buildShapeBasedTrifectaTickets({
-      shapeRecommendation,
-      firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
-      secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
-      thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
-      confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
-    });
+    let shapeRecommendation = null;
+    let shapeBasedTrifectaTickets = [];
+    let shapeGenerationError = null;
+    try {
+      shapeRecommendation = buildHitRateShapeRecommendation({
+        firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
+        secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
+        thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
+        boat1EscapeProbability: explicitBoat1EscapeProbability,
+        confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+      });
+      shapeBasedTrifectaTickets = buildShapeBasedTrifectaTickets({
+        shapeRecommendation,
+        firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
+        secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
+        thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
+        confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+      });
+    } catch (error) {
+      shapeRecommendation = null;
+      shapeBasedTrifectaTickets = [];
+      shapeGenerationError = error instanceof Error ? error.message : String(error || "shape_generation_failed");
+    }
     bet_plan_with_stake.recommended_bets = mergeShapeBasedTickets(
       bet_plan_with_stake.recommended_bets,
       shapeBasedTrifectaTickets
@@ -9829,7 +9838,14 @@ raceRouter.get("/race", async (req, res, next) => {
       player_summary: snapshotPlayers,
       fetched_signal_diagnostics: fetchedSignalDiagnostics,
       recommended_shape: shapeRecommendation?.selected_shape || null,
-      recommended_shape_debug: shapeRecommendation || null,
+      recommended_shape_debug: shapeRecommendation
+        ? {
+            ...shapeRecommendation,
+            shape_generation_error: shapeGenerationError
+          }
+        : shapeGenerationError
+          ? { shape_generation_error: shapeGenerationError }
+          : null,
       kyoteibiyori_fetch_status_json: data?.source?.kyotei_biyori || {},
       entry: {
         predicted_entry_order: entryMeta.predicted_entry_order,
@@ -10300,7 +10316,14 @@ raceRouter.get("/race", async (req, res, next) => {
         ...safeArray(headScenarioBalanceAnalysis.boat1_priority_reason_tags)
       ])],
       recommended_shape: shapeRecommendation?.selected_shape || null,
-      recommended_shape_debug: shapeRecommendation || null,
+      recommended_shape_debug: shapeRecommendation
+        ? {
+            ...shapeRecommendation,
+            shape_generation_error: shapeGenerationError
+          }
+        : shapeGenerationError
+          ? { shape_generation_error: shapeGenerationError }
+          : null,
       exacta_recommended_bets_snapshot: exactaSnapshot.items,
       exacta_head_score: exactaSnapshot.exacta_head_score,
       exacta_partner_score: exactaSnapshot.exacta_partner_score,
@@ -10482,9 +10505,12 @@ raceRouter.get("/race", async (req, res, next) => {
             shape: shapeRecommendation.selected_shape,
             expanded_tickets: shapeRecommendation.expanded_tickets,
             reason_tags: shapeRecommendation.reason_tags,
-            concentration_metrics: shapeRecommendation.concentration_metrics
+            concentration_metrics: shapeRecommendation.concentration_metrics,
+            shape_generation_error: shapeGenerationError
           }
-        : null,
+        : shapeGenerationError
+          ? { shape: null, expanded_tickets: [], reason_tags: [], concentration_metrics: null, shape_generation_error: shapeGenerationError }
+          : null,
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,
