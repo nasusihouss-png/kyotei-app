@@ -11,6 +11,8 @@ const {
   computeSecondPlaceProbabilities,
   computeSurvivalProbabilities,
   computeThirdPlaceProbabilities,
+  buildEvidenceBiasTable,
+  applyEvidenceBiasConfirmationToRoleProbabilities,
   composeFinishOrderCandidates,
   generateMainTrifectaTickets,
   generateExactaCoverTickets,
@@ -296,11 +298,35 @@ const thirdPlaceProbabilities = computeThirdPlaceProbabilities(
   computeAttackScenarioProbabilities(featureBundle),
   survivalProbabilities
 );
-const finishOrderCandidates = composeFinishOrderCandidates({
+const evidenceBiasTable = buildEvidenceBiasTable({
   featureBundle,
   firstProbs: firstPlaceProbabilities,
   secondProbs: secondPlaceProbabilities,
   thirdProbs: thirdPlaceProbabilities,
+  attackProbs: computeAttackScenarioProbabilities(featureBundle),
+  survivalProbs: survivalProbabilities
+});
+assert.equal(
+  evidenceBiasTable.confirmation_flags.main_head_candidate,
+  1,
+  "stable inside races should still confirm boat 1 as the main head candidate"
+);
+assert.ok(
+  evidenceBiasTable.boat_summary["3"].second_support_score > evidenceBiasTable.boat_summary["3"].head_support_score,
+  "lane 3 attack support should raise second-place confirmation more than head confirmation"
+);
+const confirmedRoleProbabilities = applyEvidenceBiasConfirmationToRoleProbabilities({
+  featureBundle,
+  firstProbs: firstPlaceProbabilities,
+  secondProbs: secondPlaceProbabilities,
+  thirdProbs: thirdPlaceProbabilities,
+  evidenceBiasTable
+});
+const finishOrderCandidates = composeFinishOrderCandidates({
+  featureBundle,
+  firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
+  secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
+  thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
   attackProbs: computeAttackScenarioProbabilities(featureBundle),
   survivalProbs: survivalProbabilities
 });
@@ -338,6 +364,11 @@ const roleBasedBackupUrasuji = generateBackupUrasujiTickets(
 assert.ok(
   roleBasedBackupUrasuji.length <= 2,
   "role-based backup urasuji should stay compact"
+);
+assert.ok(
+  evidenceBiasTable.per_group_rankings.motor.length > 0 &&
+    evidenceBiasTable.per_group_rankings.exhibition.length > 0,
+  "evidence bias table should expose grouped rankings instead of raw-column vote counting"
 );
 
 const outsideLeadOnlyRows = [
@@ -396,6 +427,27 @@ assert.ok(
   outsideLeadOnlyDistributions.attack_scenario_probability_json.length > 0,
   "outside_lead should still contribute to attack scenario probability"
 );
+const outsideLeadOnlyEvidenceTable = buildEvidenceBiasTable({
+  featureBundle: buildPredictionFeatureBundle({
+    ranking: outsideLeadOnlyRows,
+    race,
+    entryMeta: { predicted_entry_order: [1, 2, 3, 4, 5, 6], actual_entry_order: [1, 2, 3, 4, 5, 6] },
+    learningWeights,
+    escapePatternAnalysis: outsideLeadOnlyEscape,
+    attackScenarioAnalysis: outsideLeadOnlyAttack,
+    headScenarioBalanceAnalysis: outsideLeadOnlyHeadScenario,
+    candidateDistributions: outsideLeadOnlyDistributions
+  }),
+  firstProbs: outsideLeadOnlyDistributions.first_place_probability_json,
+  secondProbs: outsideLeadOnlyDistributions.second_place_probability_json,
+  thirdProbs: outsideLeadOnlyDistributions.third_place_probability_json,
+  attackProbs: outsideLeadOnlyDistributions.attack_scenario_probability_json,
+  survivalProbs: outsideLeadOnlyDistributions.survival_probability_json
+});
+assert.ok(
+  outsideLeadOnlyEvidenceTable.boat_summary["5"].warnings.includes("OUTER_SUPPORT_NARROW"),
+  "outside-heavy support should be marked as narrow instead of over-counted as broad independent evidence"
+);
 
 const strongOuterRows = [
   makeRow(1, { features: { exhibition_rank: 5, motor_total_score: 7.8, expected_actual_st_rank: 5, f_hold_caution_penalty: 1.8 } }),
@@ -448,6 +500,44 @@ assert.equal(
   strongOuterDistributions.outside_head_promotion_gate_json.by_lane["5"].allowed_as_main_head,
   1,
   "genuine outer setup with strong inner collapse should allow lane 5 main-head consideration"
+);
+const strongOuterFeatureBundle = buildPredictionFeatureBundle({
+  ranking: strongOuterRows,
+  race,
+  entryMeta: { predicted_entry_order: [1, 2, 3, 4, 5, 6], actual_entry_order: [1, 2, 3, 4, 5, 6] },
+  learningWeights,
+  escapePatternAnalysis: outsideLeadOnlyEscape,
+  attackScenarioAnalysis: strongOuterAttack,
+  headScenarioBalanceAnalysis: strongOuterHeadScenario,
+  candidateDistributions: strongOuterDistributions
+});
+const strongOuterEvidenceTable = buildEvidenceBiasTable({
+  featureBundle: strongOuterFeatureBundle,
+  firstProbs: computeFirstPlaceProbabilities(strongOuterFeatureBundle),
+  secondProbs: computeSecondPlaceProbabilities(
+    strongOuterFeatureBundle,
+    computeBoat1EscapeProbability(strongOuterFeatureBundle),
+    computeAttackScenarioProbabilities(strongOuterFeatureBundle),
+    computeFirstPlaceProbabilities(strongOuterFeatureBundle)
+  ),
+  thirdProbs: computeThirdPlaceProbabilities(
+    strongOuterFeatureBundle,
+    computeFirstPlaceProbabilities(strongOuterFeatureBundle),
+    computeSecondPlaceProbabilities(
+      strongOuterFeatureBundle,
+      computeBoat1EscapeProbability(strongOuterFeatureBundle),
+      computeAttackScenarioProbabilities(strongOuterFeatureBundle),
+      computeFirstPlaceProbabilities(strongOuterFeatureBundle)
+    ),
+    computeAttackScenarioProbabilities(strongOuterFeatureBundle),
+    computeSurvivalProbabilities(strongOuterFeatureBundle)
+  ),
+  attackProbs: computeAttackScenarioProbabilities(strongOuterFeatureBundle),
+  survivalProbs: computeSurvivalProbabilities(strongOuterFeatureBundle)
+});
+assert.ok(
+  strongOuterEvidenceTable.boat_summary["5"].independent_evidence_count >= 3,
+  "broad independent group support should be counted once per group and confirm strong outer setups"
 );
 
 const chaosFeatureBundle = buildPredictionFeatureBundle({

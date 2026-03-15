@@ -610,6 +610,23 @@ export function buildVerifiedLearningRows() {
           : Array.isArray(context?.role_based_order_candidates_json)
             ? context.role_based_order_candidates_json
             : [],
+        evidence_bias_table_json:
+          learning?.evidence_bias_table_json || context?.evidence_bias_table_json || {},
+        confirmed_first_place_probability_json: Array.isArray(learning?.confirmed_first_place_probability_json)
+          ? learning.confirmed_first_place_probability_json
+          : Array.isArray(context?.confirmed_first_place_probability_json)
+            ? context.confirmed_first_place_probability_json
+            : [],
+        confirmed_second_place_probability_json: Array.isArray(learning?.confirmed_second_place_probability_json)
+          ? learning.confirmed_second_place_probability_json
+          : Array.isArray(context?.confirmed_second_place_probability_json)
+            ? context.confirmed_second_place_probability_json
+            : [],
+        confirmed_third_place_probability_json: Array.isArray(learning?.confirmed_third_place_probability_json)
+          ? learning.confirmed_third_place_probability_json
+          : Array.isArray(context?.confirmed_third_place_probability_json)
+            ? context.confirmed_third_place_probability_json
+            : [],
         outside_head_promotion_gate_json:
           learning?.outside_head_promotion_gate_json || context?.outside_head_promotion_gate_json || {},
         partner_search_bias_json:
