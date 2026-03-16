@@ -782,10 +782,6 @@ function normalizeExactaCombo(value) {
   return lanes.join("-");
 }
 
-function isBoat1HeadCombo(combo) {
-  return typeof combo === "string" && combo.trim().startsWith("1-");
-}
-
 function getSavedFinalRecommendedBets(row) {
   const snapshot = Array.isArray(row?.final_recommended_bets_snapshot)
     ? row.final_recommended_bets_snapshot
@@ -2448,21 +2444,13 @@ export default function App() {
   const safeTopRecommendedTickets = Array.isArray(predictionViewModel?.topRecommendedTickets)
     ? predictionViewModel.topRecommendedTickets
     : [];
-  const visibleTopRecommendedTickets = useMemo(
-    () => safeTopRecommendedTickets.filter((row) => !isBoat1HeadCombo(row?.ticket)),
+  const topRecommendedTop10 = useMemo(
+    () => safeTopRecommendedTickets.slice(0, 10),
     [safeTopRecommendedTickets]
   );
-  const visibleMainTrifectaTickets = useMemo(
-    () => (Array.isArray(predictionViewModel?.tickets?.mainTrifecta) ? predictionViewModel.tickets.mainTrifecta : []).filter((bet) => !isBoat1HeadCombo(bet?.combo)),
-    [predictionViewModel]
-  );
-  const visibleExactaCoverTickets = useMemo(
-    () => (Array.isArray(predictionViewModel?.tickets?.exactaCover) ? predictionViewModel.tickets.exactaCover : []).filter((bet) => !isBoat1HeadCombo(bet?.combo)),
-    [predictionViewModel]
-  );
-  const visibleBackupUrasujiTickets = useMemo(
-    () => (Array.isArray(predictionViewModel?.tickets?.backupUrasuji) ? predictionViewModel.tickets.backupUrasuji : []).filter((bet) => !isBoat1HeadCombo(bet?.combo)),
-    [predictionViewModel]
+  const selectedBest4Tickets = useMemo(
+    () => topRecommendedTop10.slice(0, 4),
+    [topRecommendedTop10]
   );
   const recommendedShapeSource =
     data?.recommendedShape && typeof data.recommendedShape === "object"
@@ -2488,7 +2476,6 @@ export default function App() {
   const recommendedShapeLabel = typeof recommendedShape?.shape === "string" && recommendedShape.shape
     ? recommendedShape.shape
     : null;
-  const boat1HeadVisibleSectionShown = false;
   const hitRateEnhancementDebug = useMemo(() => {
     if (prediction?.hit_rate_enhancement_json && typeof prediction.hit_rate_enhancement_json === "object") {
       return prediction.hit_rate_enhancement_json;
@@ -3816,8 +3803,8 @@ export default function App() {
                   <section className="card summary-card premium-player-panel">
                     <div className="premium-card-head">
                       <div>
-                        <p className="eyebrow">Race Comparison</p>
-                        <h2>Player / Boat Comparison</h2>
+                        <p className="eyebrow">Step 1</p>
+                        <h2>Player / Boat Data List</h2>
                       </div>
                     </div>
                     <div className="table-wrap premium-player-table-wrap">
@@ -4067,11 +4054,18 @@ export default function App() {
                 <section className="card summary-card premium-start-top-card">
                   <div className="premium-card-head">
                     <div>
-                      <p className="eyebrow">Pre-race</p>
-                      <h2>Start Exhibition</h2>
+                      <p className="eyebrow">Step 2</p>
+                      <h2>Start / Entry Layout</h2>
                     </div>
                   </div>
                   <StartExhibitionDisplay startDisplay={startDisplay} />
+                  <div className="kv-list" style={{ marginTop: 12 }}>
+                    <div className="kv-row"><span>Predicted entry</span><strong><LanePills lanes={predictedEntryOrder} /></strong></div>
+                    <div className="kv-row"><span>Actual entry</span><strong><LanePills lanes={actualEntryOrder} /></strong></div>
+                    <div className="kv-row"><span>Entry change</span><strong>{entryChanged ? "changed" : "none"}</strong></div>
+                    <div className="kv-row"><span>Formation</span><strong>{formationPatternLabel || "-"}</strong></div>
+                    <div className="kv-row"><span>Attack scenario</span><strong>{attackScenarioLabel || "-"}</strong></div>
+                  </div>
                   <p className="muted strategy-line">
                     {data?.source?.kyotei_biyori?.ok
                       ? "official pre-race + kyoteibiyori merged"
@@ -4084,9 +4078,14 @@ export default function App() {
                 </section>
 
                 <article className={`card summary-card premium-ticket-card top-ranked-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
-                  <h2>Top Recommended Tickets</h2>
+                  <div className="premium-card-head">
+                    <div>
+                      <p className="eyebrow">Step 3</p>
+                      <h2>Final Top Recommended Tickets</h2>
+                    </div>
+                  </div>
                   <div className="summary-inline-meta">
-                    <span>{visibleTopRecommendedTickets.length} / 10</span>
+                    <span>{topRecommendedTop10.length} / 10</span>
                     <span>sorted by estimated hit rate</span>
                   </div>
                   {recommendedShapeLabel ? (
@@ -4094,20 +4093,8 @@ export default function App() {
                       Recommended Shape: {recommendedShapeLabel}
                     </p>
                   ) : null}
-                  {hitRateEnhancementDebug ? (
-                    <details style={{ marginBottom: 12 }}>
-                      <summary>hit-rate enhancement debug</summary>
-                      <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
-                    </details>
-                  ) : null}
-                  {predictionDataUsageDebug ? (
-                    <details style={{ marginBottom: 12 }}>
-                      <summary>prediction data usage</summary>
-                      <pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre>
-                    </details>
-                  ) : null}
                   <div className="ticket-stack compact-list">
-                    {visibleTopRecommendedTickets.map((row, idx) => (
+                    {topRecommendedTop10.map((row, idx) => (
                       <div key={`top-ticket-${row?.ticket_type || "trifecta"}-${row?.ticket || idx}`} className="premium-ticket-row primary">
                         <div className="ticket-mainline">
                           <span className="rank-pill">#{row?.rank ?? idx + 1}</span>
@@ -4128,21 +4115,33 @@ export default function App() {
                   ) : null}
                 </article>
 
-                <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
-                  <h2>Main Trifecta</h2>
+                <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                  <div className="premium-card-head">
+                    <div>
+                      <p className="eyebrow">Step 4</p>
+                      <h2>Selected Best 4 Tickets</h2>
+                    </div>
+                  </div>
                   <div className="summary-inline-meta">
-                    <span>{visibleMainTrifectaTickets.length}件</span>
-                    <span>{attackScenarioLabel || formationPatternLabel || data.racePattern || "-"}</span>
+                    <span>{selectedBest4Tickets.length} items</span>
+                    <span>highest-priority subset from the top recommendation list</span>
                   </div>
                   <div className="list-stack compact-list">
-                    {visibleMainTrifectaTickets.map((bet, idx) => (
-                      <div key={`${bet.combo}-${idx}`} className="list-stack">
+                    {selectedBest4Tickets.map((row, idx) => (
+                      <div key={`best4-${row?.ticket || idx}`} className="list-stack">
                         <div className="list-row list-row-actions premium-ticket-row primary">
-                          <strong><ComboBadge combo={bet.combo} /></strong>
-                          <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
-                          <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                          <span>JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
+                          <strong><ComboBadge combo={row?.ticket || "--"} /></strong>
+                          <span className={`ticket-type ${getTicketTypeClass(row?.recommendation_tier === "cover" ? "backup" : row?.recommendation_tier)}`}>
+                            {row?.recommendation_tier || "main"}
+                          </span>
+                          <span>hit {formatMaybeNumber((Number(row?.estimated_hit_rate) || 0) * 100, 1)}%</span>
+                          <span>#{row?.rank ?? idx + 1}</span>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({
+                            ticket: row?.ticket,
+                            combo: row?.ticket,
+                            recommended_bet: row?.recommended_bet,
+                            ticket_type: row?.recommendation_tier || "main"
+                          })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
                             記録に追加
                           </button>
                         </div>
@@ -4262,7 +4261,50 @@ export default function App() {
                   </section>
                 ) : null}
 
-                {boat1HeadVisibleSectionShown && boat1HeadSectionShown ? (
+                {hitRateEnhancementDebug || predictionDataUsageDebug ? (
+                  <details className="card">
+                    <summary>Recommendation debug</summary>
+                    <div style={{ marginTop: 10 }}>
+                      {hitRateEnhancementDebug ? (
+                        <details style={{ marginBottom: 12 }}>
+                          <summary>hit-rate enhancement debug</summary>
+                          <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
+                        </details>
+                      ) : null}
+                      {predictionDataUsageDebug ? (
+                        <details style={{ marginBottom: 12 }}>
+                          <summary>prediction data usage</summary>
+                          <pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre>
+                        </details>
+                      ) : null}
+                    </div>
+                  </details>
+                ) : null}
+
+                <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                  <h2>Main Trifecta</h2>
+                  <div className="summary-inline-meta">
+                    <span>{Array.isArray(predictionViewModel?.tickets?.mainTrifecta) ? predictionViewModel.tickets.mainTrifecta.length : 0}件</span>
+                    <span>{attackScenarioLabel || formationPatternLabel || data.racePattern || "-"}</span>
+                  </div>
+                  <div className="list-stack compact-list">
+                    {(Array.isArray(predictionViewModel?.tickets?.mainTrifecta) ? predictionViewModel.tickets.mainTrifecta : []).map((bet, idx) => (
+                      <div key={`${bet.combo}-${idx}`} className="list-stack">
+                        <div className="list-row list-row-actions premium-ticket-row primary">
+                          <strong><ComboBadge combo={bet.combo} /></strong>
+                          <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
+                          <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                          <span>JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
+                            記録に追加
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+
+                {boat1HeadSectionShown ? (
                   <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
                     <h2>Boat 1 Head Predictions</h2>
                     <div className="summary-inline-meta">
@@ -4303,11 +4345,11 @@ export default function App() {
                   </article>
                 ) : null}
 
-                {exactaSectionShown && visibleExactaCoverTickets.length > 0 ? (
+                {exactaSectionShown ? (
                   <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
                     <h2>Exacta Cover</h2>
                     <div className="summary-inline-meta">
-                      <span>{visibleExactaCoverTickets.length}件</span>
+                      <span>{Array.isArray(predictionViewModel?.tickets?.exactaCover) ? predictionViewModel.tickets.exactaCover.length : 0}件</span>
                       <span>head {formatMaybeNumber(exactaHeadScore, 1)} / partner {formatMaybeNumber(exactaPartnerScore, 1)}</span>
                     </div>
                     {exactaReasonTags.length > 0 ? (
@@ -4316,7 +4358,7 @@ export default function App() {
                       </div>
                     ) : null}
                     <div className="list-stack compact-list">
-                      {visibleExactaCoverTickets.map((bet, idx) => (
+                      {(Array.isArray(predictionViewModel?.tickets?.exactaCover) ? predictionViewModel.tickets.exactaCover : []).map((bet, idx) => (
                         <div key={`exacta-${bet.combo}-${idx}`} className="list-stack">
                           <div className="list-row list-row-actions premium-ticket-row support">
                             <strong><ComboBadge combo={bet.combo} /></strong>
@@ -4331,11 +4373,11 @@ export default function App() {
                   </article>
                 ) : null}
 
-                {backupUrasujiShown && visibleBackupUrasujiTickets.length > 0 ? (
+                {backupUrasujiShown ? (
                   <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
                     <h2>Backup / Urasuji</h2>
                     <div className="summary-inline-meta">
-                      <span>{visibleBackupUrasujiTickets.length}件</span>
+                      <span>{Array.isArray(predictionViewModel?.tickets?.backupUrasuji) ? predictionViewModel.tickets.backupUrasuji.length : 0}件</span>
                       <span>backup only when justified</span>
                     </div>
                     {backupUrasujiReasonTags.length > 0 ? (
@@ -4344,7 +4386,7 @@ export default function App() {
                       </div>
                     ) : null}
                     <div className="list-stack compact-list">
-                      {visibleBackupUrasujiTickets.map((bet, idx) => (
+                      {(Array.isArray(predictionViewModel?.tickets?.backupUrasuji) ? predictionViewModel.tickets.backupUrasuji : []).map((bet, idx) => (
                         <div key={`backup-${bet.combo}-${idx}`} className="list-stack">
                           <div className="list-row list-row-actions premium-ticket-row backup">
                             <strong><ComboBadge combo={bet.combo} /></strong>
