@@ -2469,6 +2469,18 @@ export default function App() {
   const recommendedShapeLabel = typeof recommendedShape?.shape === "string" && recommendedShape.shape
     ? recommendedShape.shape
     : null;
+  const hitRateEnhancementDebug = useMemo(() => {
+    if (prediction?.hit_rate_enhancement_json && typeof prediction.hit_rate_enhancement_json === "object") {
+      return prediction.hit_rate_enhancement_json;
+    }
+    if (prediction?.snapshot_context?.hit_rate_enhancement_json && typeof prediction.snapshot_context.hit_rate_enhancement_json === "object") {
+      return prediction.snapshot_context.hit_rate_enhancement_json;
+    }
+    if (recommendedShapeSource?.hit_rate_enhancement && typeof recommendedShapeSource.hit_rate_enhancement === "object") {
+      return recommendedShapeSource.hit_rate_enhancement;
+    }
+    return null;
+  }, [prediction, recommendedShapeSource]);
 
   const currentRaceKey = useMemo(
     () =>
@@ -4162,6 +4174,12 @@ export default function App() {
                     <p className="muted strategy-line">
                       Recommended Shape: {recommendedShapeLabel}
                     </p>
+                  ) : null}
+                  {hitRateEnhancementDebug ? (
+                    <details style={{ marginBottom: 12 }}>
+                      <summary>hit-rate enhancement debug</summary>
+                      <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
+                    </details>
                   ) : null}
                   <div className="ticket-stack compact-list">
                     {safeTopRecommendedTickets.map((row, idx) => (

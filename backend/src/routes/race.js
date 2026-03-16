@@ -85,6 +85,12 @@ import {
   listPredictionSnapshots,
   mapPredictionSnapshotRow
 } from "../../prediction-snapshot-store.js";
+import {
+  applyHitRateEnhancementToProbabilities,
+  buildEnhancedShapeBasedTrifectaTickets,
+  buildEnhancedTrifectaShapeRecommendation,
+  buildHitRateEnhancementContext
+} from "../services/hit-rate-enhancement.js";
 
 export const raceRouter = Router();
 
@@ -9540,11 +9546,25 @@ raceRouter.get("/race", async (req, res, next) => {
       thirdProbs: explicitThirdPlaceProbabilities,
       evidenceBiasTable
     });
-    const roleBasedOrderCandidates = composeFinishOrderCandidates({
-      featureBundle: predictionFeatureBundle,
+    const hitRateEnhancement = buildHitRateEnhancementContext({
+      ranking,
+      race: data?.race || null,
+      raceFlow,
+      playerStartProfile,
+      roleProbabilityLayers: candidateDistributions,
+      confidence: null
+    });
+    const enhancedRoleProbabilities = applyHitRateEnhancementToProbabilities({
       firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
       secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
       thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
+      enhancement: hitRateEnhancement
+    });
+    const roleBasedOrderCandidates = composeFinishOrderCandidates({
+      featureBundle: predictionFeatureBundle,
+      firstProbs: enhancedRoleProbabilities.first,
+      secondProbs: enhancedRoleProbabilities.second,
+      thirdProbs: enhancedRoleProbabilities.third,
       attackProbs: explicitAttackScenarioProbabilities,
       survivalProbs: explicitSurvivalProbabilities
     });
@@ -9607,20 +9627,40 @@ raceRouter.get("/race", async (req, res, next) => {
     let shapeBasedTrifectaTickets = [];
     let shapeGenerationError = null;
     try {
-      shapeRecommendation = buildHitRateShapeRecommendation({
-        firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
-        secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
-        thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
-        boat1EscapeProbability: explicitBoat1EscapeProbability,
+      hitRateEnhancement.confidence = confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct ?? null;
+      shapeRecommendation = buildEnhancedTrifectaShapeRecommendation({
+        firstProbs: enhancedRoleProbabilities.first,
+        secondProbs: enhancedRoleProbabilities.second,
+        thirdProbs: enhancedRoleProbabilities.third,
+        enhancement: hitRateEnhancement,
         confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
       });
-      shapeBasedTrifectaTickets = buildShapeBasedTrifectaTickets({
+      if (!shapeRecommendation?.selected_shape) {
+        shapeRecommendation = buildHitRateShapeRecommendation({
+          firstProbs: enhancedRoleProbabilities.first,
+          secondProbs: enhancedRoleProbabilities.second,
+          thirdProbs: enhancedRoleProbabilities.third,
+          boat1EscapeProbability: explicitBoat1EscapeProbability,
+          confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+        });
+      }
+      shapeBasedTrifectaTickets = buildEnhancedShapeBasedTrifectaTickets({
         shapeRecommendation,
-        firstProbs: confirmedRoleProbabilities.confirmed_first_place_probability_json,
-        secondProbs: confirmedRoleProbabilities.confirmed_second_place_probability_json,
-        thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
+        firstProbs: enhancedRoleProbabilities.first,
+        secondProbs: enhancedRoleProbabilities.second,
+        thirdProbs: enhancedRoleProbabilities.third,
+        enhancement: hitRateEnhancement,
         confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
       });
+      if (shapeBasedTrifectaTickets.length === 0) {
+        shapeBasedTrifectaTickets = buildShapeBasedTrifectaTickets({
+          shapeRecommendation,
+          firstProbs: enhancedRoleProbabilities.first,
+          secondProbs: enhancedRoleProbabilities.second,
+          thirdProbs: enhancedRoleProbabilities.third,
+          confidence: confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
+        });
+      }
     } catch (error) {
       shapeRecommendation = null;
       shapeBasedTrifectaTickets = [];
@@ -9669,8 +9709,8 @@ raceRouter.get("/race", async (req, res, next) => {
       shapeBasedTrifectaTickets
     ).slice(0, 8);
     const roleBasedExactaCoverTickets = generateExactaCoverTickets(
-      confirmedRoleProbabilities.confirmed_first_place_probability_json,
-      confirmedRoleProbabilities.confirmed_second_place_probability_json,
+      enhancedRoleProbabilities.first,
+      enhancedRoleProbabilities.second,
       confidenceScores?.bet_confidence_calibrated ?? confidenceScores?.recommended_bet_confidence_pct
     );
     const backupUrasujiSnapshot = buildBackupUrasujiRecommendationsSnapshot({
@@ -9848,6 +9888,7 @@ raceRouter.get("/race", async (req, res, next) => {
       recommended_shape_debug: shapeRecommendation
         ? {
             ...shapeRecommendation,
+            hit_rate_enhancement: hitRateEnhancement,
             shape_generation_error: shapeGenerationError
           }
         : shapeGenerationError
@@ -9942,6 +9983,22 @@ raceRouter.get("/race", async (req, res, next) => {
       confirmed_first_place_probability_json: confirmedRoleProbabilities.confirmed_first_place_probability_json,
       confirmed_second_place_probability_json: confirmedRoleProbabilities.confirmed_second_place_probability_json,
       confirmed_third_place_probability_json: confirmedRoleProbabilities.confirmed_third_place_probability_json,
+      enhanced_first_place_probability_json: enhancedRoleProbabilities.first,
+      enhanced_second_place_probability_json: enhancedRoleProbabilities.second,
+      enhanced_third_place_probability_json: enhancedRoleProbabilities.third,
+      hit_rate_enhancement_json: hitRateEnhancement,
+      style_profile_by_lane_json: hitRateEnhancement?.stage1_static?.style_profile_by_lane || {},
+      escape_score: toNullableNum(hitRateEnhancement?.stage1_static?.escape_score),
+      start_edge_by_lane_json: hitRateEnhancement?.stage2_dynamic?.start_edge_by_lane || {},
+      late_risk_by_lane_json: hitRateEnhancement?.stage2_dynamic?.late_risk_by_lane || {},
+      hidden_f_by_lane_json: hitRateEnhancement?.stage1_static?.hidden_F_by_lane || {},
+      motivation_by_lane_json: hitRateEnhancement?.stage1_static?.motivation_by_lane || {},
+      motor_true_by_lane_json: hitRateEnhancement?.stage1_static?.motor_true_by_lane || {},
+      lane_fit_by_lane_json: hitRateEnhancement?.stage2_dynamic?.lane_fit_by_lane || {},
+      enhanced_scenario_probabilities_json: hitRateEnhancement?.stage3_scenarios?.selected_scenario_probabilities || [],
+      enhanced_ticket_shape_json: shapeRecommendation || null,
+      enhanced_ticket_shape_reason: shapeRecommendation?.why_shape_chosen || null,
+      dark_horse_alerts_json: hitRateEnhancement?.dark_horse_alerts || [],
       outside_head_promotion_gate_json: candidateDistributions.outside_head_promotion_gate_json || {},
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
       boat1_partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
@@ -10122,6 +10179,22 @@ raceRouter.get("/race", async (req, res, next) => {
       confirmed_first_place_probability_json: snapshotContext.confirmed_first_place_probability_json,
       confirmed_second_place_probability_json: snapshotContext.confirmed_second_place_probability_json,
       confirmed_third_place_probability_json: snapshotContext.confirmed_third_place_probability_json,
+      enhanced_first_place_probability_json: snapshotContext.enhanced_first_place_probability_json,
+      enhanced_second_place_probability_json: snapshotContext.enhanced_second_place_probability_json,
+      enhanced_third_place_probability_json: snapshotContext.enhanced_third_place_probability_json,
+      hit_rate_enhancement_json: snapshotContext.hit_rate_enhancement_json,
+      style_profile_by_lane_json: snapshotContext.style_profile_by_lane_json,
+      escape_score: snapshotContext.escape_score,
+      start_edge_by_lane_json: snapshotContext.start_edge_by_lane_json,
+      late_risk_by_lane_json: snapshotContext.late_risk_by_lane_json,
+      hidden_f_by_lane_json: snapshotContext.hidden_f_by_lane_json,
+      motivation_by_lane_json: snapshotContext.motivation_by_lane_json,
+      motor_true_by_lane_json: snapshotContext.motor_true_by_lane_json,
+      lane_fit_by_lane_json: snapshotContext.lane_fit_by_lane_json,
+      enhanced_scenario_probabilities_json: snapshotContext.enhanced_scenario_probabilities_json,
+      enhanced_ticket_shape_json: snapshotContext.enhanced_ticket_shape_json,
+      enhanced_ticket_shape_reason: snapshotContext.enhanced_ticket_shape_reason,
+      dark_horse_alerts_json: snapshotContext.dark_horse_alerts_json,
       outside_head_promotion_gate_json: snapshotContext.outside_head_promotion_gate_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,
       boat1_partner_search_bias_json: snapshotContext.boat1_partner_search_bias_json,
@@ -10326,6 +10399,7 @@ raceRouter.get("/race", async (req, res, next) => {
       recommended_shape_debug: shapeRecommendation
         ? {
             ...shapeRecommendation,
+            hit_rate_enhancement: hitRateEnhancement,
             shape_generation_error: shapeGenerationError
           }
         : shapeGenerationError

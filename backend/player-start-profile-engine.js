@@ -74,11 +74,42 @@ export function analyzePlayerStartProfiles({ ranking }) {
         Math.max(0, entryAdv) * 1.4 +
         slitAttackBoost * 0.75
     );
+    const makuri_sashi_style_score = clamp(
+      0,
+      100,
+      (lane === 3 ? 24 : lane === 4 ? 18 : 8) +
+        start_attack_score * 0.46 +
+        start_stability_score * 0.16 +
+        Math.max(0, motorTrend) * 3.4 +
+        Math.max(0, entryAdv) * 1.1 +
+        slitAttackBoost * 0.52 -
+        fHoldCautionPenalty * 0.2
+    );
+    const nuki_style_score = clamp(
+      0,
+      100,
+      8 +
+        start_stability_score * 0.42 +
+        exRankQ * 18 +
+        classScore * 4 +
+        Math.max(0, motorTrend) * 2.6 -
+        fHoldCautionPenalty * 0.3
+    );
+
+    const style_profile = {
+      nige: Number(nige_style_score.toFixed(2)),
+      sashi: Number(sashi_style_score.toFixed(2)),
+      makuri: Number(makuri_style_score.toFixed(2)),
+      makuri_sashi: Number(makuri_sashi_style_score.toFixed(2)),
+      nuki: Number(nuki_style_score.toFixed(2))
+    };
 
     const styleRows = [
-      { key: "nige", score: nige_style_score },
-      { key: "sashi", score: sashi_style_score },
-      { key: "makuri", score: makuri_style_score }
+      { key: "nige", score: style_profile.nige },
+      { key: "sashi", score: style_profile.sashi },
+      { key: "makuri", score: style_profile.makuri },
+      { key: "makuri_sashi", score: style_profile.makuri_sashi },
+      { key: "nuki", score: style_profile.nuki }
     ].sort((a, b) => b.score - a.score);
 
     return {
@@ -88,6 +119,9 @@ export function analyzePlayerStartProfiles({ ranking }) {
       nige_style_score: Number(nige_style_score.toFixed(2)),
       sashi_style_score: Number(sashi_style_score.toFixed(2)),
       makuri_style_score: Number(makuri_style_score.toFixed(2)),
+      makuri_sashi_style_score: Number(makuri_sashi_style_score.toFixed(2)),
+      nuki_style_score: Number(nuki_style_score.toFixed(2)),
+      style_profile,
       slit_alert_flag: slitAlertFlag ? 1 : 0,
       slit_attack_boost: Number(slitAttackBoost.toFixed(2)),
       f_hold_bias_applied: fHoldBiasApplied ? 1 : 0,

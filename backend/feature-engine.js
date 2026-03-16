@@ -66,6 +66,10 @@ export function buildFeatures(racer) {
   const course4_3rate = toNullableNumber(racer?.course4_3rate ?? racer?.course4_3Rate);
   const course_change = entry_course && lane ? (entry_course !== lane ? 1 : 0) : 0;
   const tilt_bonus = tilt === 0.5 ? 2 : 0;
+  const laneFirstRate = toNullableNumber(racer?.lane1stAvg ?? racer?.laneFirstRate);
+  const lane2RenRate = toNullableNumber(racer?.lane2renAvg ?? racer?.lane2RenRate);
+  const lane3RenRate = toNullableNumber(racer?.lane3renAvg ?? racer?.lane3RenRate);
+  const lapExStretch = toNullableNumber(racer?.lapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore ?? racer?.lapExhibitionScore);
 
   return {
     lane,
@@ -104,6 +108,14 @@ export function buildFeatures(racer) {
     course2_2rate,
     course3_3rate,
     course4_3rate,
+    laneFirstRate,
+    lane2RenRate,
+    lane3RenRate,
+    lane_avg_st: avg_st,
+    lane_st_rank: null,
+    hidden_f_flag: 0,
+    unresolved_f_count: Math.max(0, toNumber(racer?.fHoldCount, 0)),
+    start_caution_penalty: 0,
     course_fit_score: 0,
     motor_base_score: 0,
     motor_exhibition_score: 0,
@@ -148,7 +160,18 @@ export function buildFeatures(racer) {
     expected_actual_st_inv: 0,
     f_hold_caution_penalty: 0,
     kyoteibiyori_fetched: toNumber(racer?.kyoteiBiyoriFetched, 0),
-    lap_time_gap_from_best: 0
+    lap_time_gap_from_best: 0,
+    motor_true: 0,
+    motor_form: {
+      lapTime: lap_time,
+      lapExStretch,
+      exhibitionTime: exhibition_time
+    },
+    lane_fit_1st: laneFirstRate,
+    lane_fit_2ren: lane2RenRate,
+    lane_fit_3ren: lane3RenRate,
+    lane_fit_local: local_win_rate,
+    lane_fit_grade: class_score * 20
   };
 }
 
@@ -290,6 +313,7 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         exhibition_rank: exhibitionRanks.get(f.lane) ?? null,
         st_rank: stRanks.get(f.lane) ?? null,
         avg_st_rank: selfAvgStRank,
+        lane_st_rank: selfAvgStRank,
         expected_actual_st_rank: expectedActualStRanks.get(f.lane) ?? null,
         exhibition_gap_from_best:
           Number.isFinite(bestExhibition) && Number.isFinite(f.exhibition_time)
@@ -313,6 +337,8 @@ export function buildRaceFeatures(racers, raceContext = {}) {
             : 0,
         f_hold_count: expectedActualStMeta.fHoldCount ?? 0,
         f_hold_bias_applied: (expectedActualStMeta.fHoldCount ?? 0) > 0 ? 1 : 0,
+        hidden_f_flag: (expectedActualStMeta.fHoldCount ?? 0) > 0 ? 1 : 0,
+        unresolved_f_count: expectedActualStMeta.fHoldCount ?? 0,
         expected_actual_st_adjustment: expectedActualStMeta.adjustment ?? 0,
         expected_actual_st: expectedActualStMeta.expectedActualSt ?? null,
         expected_actual_st_inv:
@@ -322,7 +348,26 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         f_hold_caution_penalty:
           (expectedActualStMeta.fHoldCount ?? 0) > 0
             ? Number((2 + (expectedActualStMeta.adjustment ?? 0) * 120).toFixed(2))
-            : 0
+            : 0,
+        start_caution_penalty:
+          (expectedActualStMeta.fHoldCount ?? 0) > 0
+            ? Number((2 + (expectedActualStMeta.adjustment ?? 0) * 120).toFixed(2))
+            : 0,
+        motor_true: Number((
+          toNumber(f.motor_total_score, 0) * 0.62 +
+          toNumber(f.motor2_rate, 0) * 0.24 +
+          toNumber(f.motor3_rate, 0) * 0.14
+        ).toFixed(2)),
+        motor_form: {
+          lapTime: Number.isFinite(f.lap_time) ? f.lap_time : null,
+          lapExStretch: Number.isFinite(f.lap_exhibition_score) ? f.lap_exhibition_score : null,
+          exhibitionTime: Number.isFinite(f.exhibition_time) ? f.exhibition_time : null
+        },
+        lane_fit_1st: Number.isFinite(f.laneFirstRate) ? f.laneFirstRate : null,
+        lane_fit_2ren: Number.isFinite(f.lane2RenRate) ? f.lane2RenRate : null,
+        lane_fit_3ren: Number.isFinite(f.lane3RenRate) ? f.lane3RenRate : null,
+        lane_fit_local: Number.isFinite(f.local_win_rate) ? f.local_win_rate : null,
+        lane_fit_grade: Number.isFinite(f.class_score) ? f.class_score * 20 : null
       }
     };
   });
