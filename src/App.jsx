@@ -35,6 +35,37 @@ async function fetchJsonWithTimeout(url, options = {}) {
   }
 }
 
+function buildApiError({ message, url, status = null, payload = null, step = null, method = "GET" }) {
+  const error = new Error(message || "API request failed");
+  error.apiError = {
+    url,
+    status,
+    method,
+    step,
+    payload
+  };
+  return error;
+}
+
+function getApiErrorDetails(err) {
+  const details =
+    err?.apiError && typeof err.apiError === "object"
+      ? err.apiError
+      : {};
+  const payload =
+    details?.payload && typeof details.payload === "object"
+      ? details.payload
+      : {};
+  return {
+    status: Number.isFinite(Number(details?.status)) ? Number(details.status) : null,
+    code: payload?.error || payload?.code || null,
+    where: payload?.where || details?.step || null,
+    route: payload?.route || null,
+    message: err?.message || payload?.message || "Search failed",
+    url: details?.url || null
+  };
+}
+
 const VENUES = [
   { id: 1, name: "Kiryu" },
   { id: 2, name: "Toda" },
@@ -99,10 +130,55 @@ async function fetchRaceData(date, venueId, raceNo) {
   url.searchParams.set("venueId", String(venueId));
   url.searchParams.set("raceNo", String(raceNo));
 
-  const response = await fetch(url.toString());
-  const body = await response.json().catch(() => ({}));
+  const requestUrl = url.toString();
+  let response;
+  try {
+    response = await fetch(requestUrl);
+  } catch (err) {
+    throw buildApiError({
+      message: err?.message || "Network request failed",
+      url: requestUrl,
+      step: "frontend.fetch:/api/race"
+    });
+  }
+
+  const rawText = await response.text();
+  let body = {};
+  let parseFailed = false;
+  if (rawText) {
+    try {
+      body = JSON.parse(rawText);
+    } catch {
+      parseFailed = true;
+    }
+  }
+
+  if (parseFailed) {
+    throw buildApiError({
+      message: `Race API returned invalid JSON (${response.status})`,
+      url: requestUrl,
+      status: response.status,
+      step: "frontend.parse:/api/race",
+      payload: { raw: rawText.slice(0, 1200) }
+    });
+  }
   if (!response.ok) {
-    throw new Error(body?.message || `Failed to fetch race data (${response.status})`);
+    throw buildApiError({
+      message: body?.message || `Failed to fetch race data (${response.status})`,
+      url: requestUrl,
+      status: response.status,
+      step: body?.where || "backend:/api/race",
+      payload: body
+    });
+  }
+  if (!body || typeof body !== "object") {
+    throw buildApiError({
+      message: "Race API returned an empty response",
+      url: requestUrl,
+      status: response.status,
+      step: "frontend.validate:/api/race",
+      payload: body
+    });
   }
   return body;
 }
@@ -1787,6 +1863,7 @@ export default function App() {
   const [raceNo, setRaceNo] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [errorDetails, setErrorDetails] = useState(null);
   const [data, setData] = useState(null);
   const [rankingsLoading, setRankingsLoading] = useState(false);
   const [rankingsError, setRankingsError] = useState("");
@@ -2584,6 +2661,7 @@ export default function App() {
   const onFetch = async () => {
     setLoading(true);
     setError("");
+    setErrorDetails(null);
     try {
       const result = await fetchRaceData(date, venueId, raceNo);
       setData(result);
@@ -2606,6 +2684,7 @@ export default function App() {
       });
     } catch (e) {
       setError(e.message || "Failed to fetch race data");
+      setErrorDetails(getApiErrorDetails(e));
     } finally {
       setLoading(false);
     }
@@ -2657,6 +2736,7 @@ export default function App() {
     setScreen("predict");
     setLoading(true);
     setError("");
+    setErrorDetails(null);
     try {
       const result = await fetchRaceData(date, nextVenueId, nextRaceNo);
       setData(result);
@@ -2667,6 +2747,7 @@ export default function App() {
       setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
     } catch (e) {
       setError(e.message || "Failed to fetch race data");
+      setErrorDetails(getApiErrorDetails(e));
     } finally {
       setLoading(false);
     }
@@ -3542,7 +3623,20 @@ export default function App() {
               </div>
             </section>
 
-            {error && <div className="error-banner">{error}</div>}
+            {error && (
+              <div className="error-banner">
+                <div>{error}</div>
+                {errorDetails ? (
+                  <div className="kv-list" style={{ marginTop: 8 }}>
+                    <div className="kv-row"><span>status</span><strong>{errorDetails.status ?? "-"}</strong></div>
+                    <div className="kv-row"><span>code</span><strong>{errorDetails.code || "-"}</strong></div>
+                    <div className="kv-row"><span>where</span><strong>{errorDetails.where || "-"}</strong></div>
+                    <div className="kv-row"><span>route</span><strong>{errorDetails.route || "-"}</strong></div>
+                    <div className="kv-row"><span>url</span><strong>{errorDetails.url || "-"}</strong></div>
+                  </div>
+                ) : null}
+              </div>
+            )}
             {journalNotice && <div className="notice-banner">{journalNotice}</div>}
 
             {!data ? (

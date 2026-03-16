@@ -8779,6 +8779,7 @@ function calcHitRateRankingScore({
 }
 
 raceRouter.get("/race", async (req, res, next) => {
+  let failureWhere = "race.route:validate_query";
   try {
     const { date, venueId, raceNo, participationMode } = req.query;
     const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, false);
@@ -8792,12 +8793,15 @@ raceRouter.get("/race", async (req, res, next) => {
 
     let data;
     try {
+      failureWhere = "race.route:getRaceData";
       data = await getRaceData({ date, venueId, raceNo, forceRefresh });
     } catch (fetchErr) {
+      failureWhere = "race.route:loadRaceSnapshotFallback";
       const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });
       if (!fallback) throw fetchErr;
       data = fallback;
     }
+    failureWhere = "race.route:feature_pipeline";
     const learningWeights = getActiveLearningWeights();
     const learningState = getLatestLearningRun();
     const raceId = saveRace(data);
@@ -8889,6 +8893,7 @@ raceRouter.get("/race", async (req, res, next) => {
       simulations: monteCarlo.simulations,
       top_combinations: monteCarlo.top_combinations
     };
+    failureWhere = "race.route:odds_pipeline";
     let evData = {
       ev_analysis: { best_ev_bets: [] },
       oddsData: {
@@ -8909,6 +8914,7 @@ raceRouter.get("/race", async (req, res, next) => {
     } catch (oddsErr) {
       console.warn("[ODDS] fetch failed:", oddsErr?.message || oddsErr);
     }
+    failureWhere = "race.route:recommendation_pipeline";
     const rawBetPlan = buildBetPlan(evData.ev_analysis, 10000);
     const bet_plan = {
       ...rawBetPlan,
@@ -10410,7 +10416,7 @@ raceRouter.get("/race", async (req, res, next) => {
               normalized_entry_order: toInt(r?.entryCourse, null),
               normalized_st_raw: r?.exhibitionStRaw ?? null,
               normalized_st_type: r?.exhibitionStType ?? "missing",
-              normalized_st_numeric: nullableNum(r?.exhibitionStNumeric)
+              normalized_st_numeric: toNullableNum(r?.exhibitionStNumeric)
             }))
             .sort((a, b) => toInt(a.boat_no, 0) - toInt(b.boat_no, 0)),
           layer3_render_input: (Array.isArray(startDisplay?.start_display_debug) ? startDisplay.start_display_debug : [])
@@ -10419,8 +10425,8 @@ raceRouter.get("/race", async (req, res, next) => {
               displayed_entry_label: toInt(row?.entry_order, null),
               displayed_st_string:
                 startDisplay?.start_display_timing?.[String(toInt(row?.lane, 0))]?.display ?? "--",
-              computed_visual_unit: nullableNum(row?.visual_unit),
-              computed_percent_position: nullableNum(row?.visual_percent)
+              computed_visual_unit: toNullableNum(row?.visual_unit),
+              computed_percent_position: toNullableNum(row?.visual_percent)
             }))
             .sort((a, b) => toInt(a.displayed_boat_no, 0) - toInt(b.displayed_boat_no, 0))
         }
@@ -10436,6 +10442,7 @@ raceRouter.get("/race", async (req, res, next) => {
       predictionBeforeEntryChange: prediction_before_entry_change,
       predictionAfterEntryChange: prediction_after_entry_change
     });
+    failureWhere = "race.route:response_build";
     const safeScenarioSuggestions =
       scenarioSuggestions && typeof scenarioSuggestions === "object"
         ? scenarioSuggestions
@@ -12030,6 +12037,22 @@ raceRouter.post("/results/edit", async (req, res, next) => {
         : "Confirmed result note updated."
     });
   } catch (err) {
+    if (err && typeof err === "object") {
+      err.statusCode = err?.statusCode || 500;
+      err.code = err?.code || "race_search_failed";
+      err.where = err?.where || failureWhere;
+      err.route = err?.route || "/api/race";
+      err.details = {
+        ...(err?.details && typeof err.details === "object" ? err.details : {}),
+        query: {
+          date: req.query?.date || null,
+          venueId: req.query?.venueId || null,
+          raceNo: req.query?.raceNo || null,
+          participationMode: req.query?.participationMode || null,
+          forceRefresh: parseBooleanFlag(req.query?.forceRefresh, false)
+        }
+      };
+    }
     return next(err);
   }
 });

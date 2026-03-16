@@ -21,10 +21,21 @@ app.use("/api", raceRouter);
 
 app.use((err, _req, res, _next) => {
   const status = err?.statusCode || 500;
+  const debugMode =
+    process.env.NODE_ENV !== "production" ||
+    process.env.DEBUG_API_ERRORS === "1";
   const payload = {
+    ok: false,
+    status,
     error: err?.code || "internal_error",
-    message: err?.message || "Unexpected server error"
+    message: err?.message || "Unexpected server error",
+    where: err?.where || "server",
+    route: err?.route || null
   };
+
+  if (err?.details && typeof err.details === "object") {
+    payload.details = err.details;
+  }
 
   if (err?.debug) {
     payload.debug = err.debug;
@@ -51,6 +62,10 @@ app.use((err, _req, res, _next) => {
     }
   } else {
     console.error(err);
+  }
+
+  if (debugMode && err?.stack) {
+    payload.stack = String(err.stack);
   }
 
   res.status(status).json(payload);
