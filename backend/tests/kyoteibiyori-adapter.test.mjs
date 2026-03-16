@@ -257,6 +257,24 @@ const preRaceStrictHtml = `
       <td>.09</td>
     </tr>
     <tr>
+      <td>周り足</td>
+      <td>6.0</td>
+      <td>5.8</td>
+      <td>5.6</td>
+      <td>5.4</td>
+      <td>5.2</td>
+      <td>5.0</td>
+    </tr>
+    <tr>
+      <td>伸び足</td>
+      <td>7.0</td>
+      <td>6.8</td>
+      <td>6.6</td>
+      <td>6.4</td>
+      <td>6.2</td>
+      <td>6.0</td>
+    </tr>
+    <tr>
       <td>モーター2連率</td>
       <td>30.8%</td>
       <td>40.0%</td>
@@ -280,7 +298,8 @@ const preRaceStrictHtml = `
 const strictLaneStats = normalizeKyoteiBiyoriPreRaceFields(
   parseKyoteiBiyoriPreRaceData(laneStatsHtml, { mode: "lane_stats", sourceLabel: "lane_stats_tab" })
 );
-assert.equal(strictLaneStats.byLane.get(1)?.laneFirstRate, 63.945);
+assert.equal(strictLaneStats.byLane.get(1)?.laneFirstRate, 63.05);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stAvg, 63.05);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_season, 55.5);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_6m, 60);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_3m, 66.7);
@@ -290,51 +309,14 @@ assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_avg, 63.05);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_weighted, 63.945);
 assert.equal(strictLaneStats.byLane.get(5)?.lane2renRate_3m, 30.8);
 assert.equal(strictLaneStats.byLane.get(3)?.lane3renRate_3m, 66.7);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2RenRate, 69.78);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2RenRate, 69.7);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renAvg, 69.7);
 assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_sum, 278.8);
 assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_avg, 69.7);
 assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_weighted, 69.78);
-assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate, {
-  season: {
-    section: "枠別勝率",
-    metric: "1着率",
-    period: "今季",
-    row: "今季",
-    column: "1号艇",
-    raw: "55.5%",
-    value: 55.5
-  },
-  m6: {
-    section: "枠別勝率",
-    metric: "1着率",
-    period: "直近6か月",
-    row: "直近6か月",
-    column: "1号艇",
-    raw: "60.0%",
-    value: 60
-  },
-  m3: {
-    section: "枠別勝率",
-    metric: "1着率",
-    period: "直近3か月",
-    row: "直近3か月",
-    column: "1号艇",
-    raw: "66.7%",
-    value: 66.7
-  },
-  m1: {
-    section: "枠別勝率",
-    metric: "1着率",
-    period: "直近1か月",
-    row: "直近1か月",
-    column: "1号艇",
-    raw: "70.0%",
-    value: 70
-  },
-  sum: 252.2,
-  avg: 63.05,
-  weighted: 63.945
-});
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.avg, 63.05);
+assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.availablePeriods, ["season", "m6", "m3", "m1"]);
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.finalValue, 63.05);
 
 const strictPreRace = normalizeKyoteiBiyoriPreRaceFields(
   parseKyoteiBiyoriPreRaceData(preRaceStrictHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
@@ -342,17 +324,18 @@ const strictPreRace = normalizeKyoteiBiyoriPreRaceFields(
 assert.equal(strictPreRace.byLane.get(1)?.lapTimeRaw, 36.23);
 assert.equal(strictPreRace.byLane.get(2)?.exhibitionSt, 0.03);
 assert.equal(strictPreRace.byLane.get(4)?.exhibitionSt, null);
+assert.equal(strictPreRace.byLane.get(1)?.lapExStretch, 6.5);
 assert.equal(strictPreRace.byLane.get(1)?.motor2Rate, 30.8);
 assert.equal(strictPreRace.byLane.get(1)?.motor3Rate, 66.7);
-assert.deepEqual(strictPreRace.fieldDebugs["2"]?.exhibitionST, {
-  section: "直前情報",
-  metric: "ST",
-  period: null,
-  row: "ST",
-  column: "2号艇",
-  raw: ".03",
-  value: 0.03
+assert.deepEqual(strictPreRace.fieldDebugs["1"]?.lapExStretch?.raw, {
+  mawariashi: "6.0",
+  nobiashi: "7.0"
 });
+assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.value, 6.5);
+assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.mawariashi?.metric, "\u5468\u308a\u8db3");
+assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.nobiashi?.metric, "\u4f38\u3073\u8db3");
+assert.equal(strictPreRace.fieldDebugs["2"]?.exhibitionST?.section, "\u76f4\u524d\u60c5\u5831");
+assert.equal(strictPreRace.fieldDebugs["2"]?.exhibitionST?.value, 0.03);
 
 const merged = mergeKyoteiBiyoriDataIntoRaceContext({
   racers: [

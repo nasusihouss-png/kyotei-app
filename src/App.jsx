@@ -514,25 +514,34 @@ function firstFiniteValue(...values) {
 function normalizeLaneStats(source = {}) {
   return {
     laneFirstRate: firstFiniteValue(
-      source?.lane1stRate_weighted,
+      source?.lane1stAvg,
       source?.laneFirstRate,
+      source?.lane1stRate_avg,
+      source?.lane1stRate_weighted,
       source?.lane1stRate,
       source?.lane_first_rate,
       source?.lane_1st_rate,
+      source?.lane1stRate_raw?.avg,
       source?.lane1stRate_raw?.weighted
     ),
     lane2RenRate: firstFiniteValue(
-      source?.lane2renRate_weighted,
+      source?.lane2renAvg,
       source?.lane2RenRate,
+      source?.lane2renRate_avg,
+      source?.lane2renRate_weighted,
       source?.lane2renRate,
       source?.lane_2ren_rate,
+      source?.lane2renRate_raw?.avg,
       source?.lane2renRate_raw?.weighted
     ),
     lane3RenRate: firstFiniteValue(
-      source?.lane3renRate_weighted,
+      source?.lane3renAvg,
       source?.lane3RenRate,
+      source?.lane3renRate_avg,
+      source?.lane3renRate_weighted,
       source?.lane3renRate,
       source?.lane_3ren_rate,
+      source?.lane3renRate_raw?.avg,
       source?.lane3renRate_raw?.weighted
     )
   };
@@ -567,13 +576,15 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
           lane1stRate_raw: racer?.lane1stRate_raw ?? racer?.laneFirstRate ?? null,
           lane2renRate_raw: racer?.lane2renRate_raw ?? racer?.lane2RenRate ?? null,
           lane3renRate_raw: racer?.lane3renRate_raw ?? racer?.lane3RenRate ?? null,
+          lapExStretch_raw: racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
           lapTime_raw: racer?.kyoteiBiyoriLapTimeRaw ?? racer?.kyoteiBiyoriLapTime ?? racer?.lapTime ?? null,
           exhibitionST_raw: racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt ?? null,
-          motor2ren_raw: racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate ?? null,
-          motor3ren_raw: racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate ?? null,
+          motor2ren_raw: racer?.motor2ren ?? racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate ?? null,
+          motor3ren_raw: racer?.motor3ren ?? racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate ?? null,
           lane1stRate_debug: null,
           lane2renRate_debug: null,
           lane3renRate_debug: null,
+          lapExStretch_debug: null,
           lapTime_debug: null,
           exhibitionST_debug: null,
           motor2ren_debug: null,
@@ -582,6 +593,7 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
     lane1stRate_raw: debug?.lane1stRate_raw || {},
     lane2renRate_raw: debug?.lane2renRate_raw || {},
     lane3renRate_raw: debug?.lane3renRate_raw || {},
+    lapExStretch_raw: debug?.lapExStretch_raw || {},
     lapTime_raw: debug?.lapTime_raw || {},
     exhibitionST_raw: debug?.exhibitionST_raw || {},
     motor2ren_raw: debug?.motor2ren_raw || {},
@@ -589,25 +601,30 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
     lane1stRate_debug: debug?.lane1stRate || {},
     lane2renRate_debug: debug?.lane2renRate || {},
     lane3renRate_debug: debug?.lane3renRate || {},
+    lapExStretch_debug: debug?.lapExStretch || {},
     lapTime_debug: debug?.lapTime || {},
     exhibitionST_debug: debug?.exhibitionST || {},
     motor2ren_debug: debug?.motor2ren || {},
     motor3ren_debug: debug?.motor3ren || {},
     rendered_rows: (Array.isArray(playerComparisonRows) ? playerComparisonRows : []).map((row) => ({
       lane: row?.lane ?? null,
-      lane1stRate_raw: row?.laneFirstRate ?? null,
-      lane2renRate_raw: row?.lane2RenRate ?? null,
-      lane3renRate_raw: row?.lane3RenRate ?? null,
-      motor3ren_raw: row?.motor3Rate ?? null,
-      lane1stRate: Number.isFinite(Number(row?.laneFirstRate)),
-      lane2renRate: Number.isFinite(Number(row?.lane2RenRate)),
-      lane3renRate: Number.isFinite(Number(row?.lane3RenRate)),
+      lane1stRate_raw: row?.lane1stAvg ?? row?.laneFirstRate ?? null,
+      lane2renRate_raw: row?.lane2renAvg ?? row?.lane2RenRate ?? null,
+      lane3renRate_raw: row?.lane3renAvg ?? row?.lane3RenRate ?? null,
+      lapExStretch_raw: row?.lapExStretch ?? row?.lapScore ?? null,
+      motor2ren_raw: row?.motor2ren ?? row?.motor2Rate ?? null,
+      motor3ren_raw: row?.motor3ren ?? row?.motor3Rate ?? null,
+      lane1stRate: Number.isFinite(Number(row?.lane1stAvg ?? row?.laneFirstRate)),
+      lane2renRate: Number.isFinite(Number(row?.lane2renAvg ?? row?.lane2RenRate)),
+      lane3renRate: Number.isFinite(Number(row?.lane3renAvg ?? row?.lane3RenRate)),
       lapTime: Number.isFinite(Number(row?.lapTime)),
       exhibitionST: Number.isFinite(Number(row?.exhibitionSt)),
-      display_lane1stRate: formatComparisonValue(row?.laneFirstRate, 2),
-      display_lane2renRate: formatComparisonValue(row?.lane2RenRate, 2),
-      display_lane3renRate: formatComparisonValue(row?.lane3RenRate, 2),
-      display_motor3ren: formatComparisonValue(row?.motor3Rate, 2)
+      display_lapExStretch: formatComparisonValue(row?.lapExStretch ?? row?.lapScore, 2),
+      display_motor2ren: formatComparisonValue(row?.motor2ren ?? row?.motor2Rate, 2),
+      display_lane1stRate: formatComparisonValue(row?.lane1stAvg ?? row?.laneFirstRate, 2),
+      display_lane2renRate: formatComparisonValue(row?.lane2renAvg ?? row?.lane2RenRate, 2),
+      display_lane3renRate: formatComparisonValue(row?.lane3renAvg ?? row?.lane3RenRate, 2),
+      display_motor3ren: formatComparisonValue(row?.motor3ren ?? row?.motor3Rate, 2)
     }))
   };
 }
@@ -1498,15 +1515,20 @@ function getPlayerComparisonRows({ prediction, data }) {
         const liveLapTime = toFiniteComparisonNumber(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime);
         const liveExhibitionSt = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt);
         const liveExhibitionTime = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime);
-        const liveLapScore = toFiniteComparisonNumber(row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore);
-        const liveMotor2Rate = toFiniteComparisonNumber(row?.kyoteiBiyoriMotor2Rate ?? row?.motor2Rate);
+        const liveLapExStretch = toFiniteComparisonNumber(
+          row?.kyoteiBiyoriLapExStretch ?? row?.lapExStretch ?? row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore
+        );
+        const liveMotor2Rate = toFiniteComparisonNumber(row?.motor2ren ?? row?.kyoteiBiyoriMotor2Rate ?? row?.motor2Rate);
         const liveMotor3Rate = firstFiniteValue(
+          row?.motor3ren,
           row?.kyoteiBiyoriMotor3Rate,
           row?.motor3Rate,
           debugRow?.motor3ren_raw,
           snapshotRow?.motor_3rate
         );
-        const snapshotLapScore = toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_lap_exhibition_score ?? snapshotRow?.lap_exhibition_score)
+        const snapshotLapExStretch = toFiniteComparisonNumber(
+          snapshotRow?.kyoteibiyori_lap_ex_stretch ?? snapshotRow?.lap_ex_stretch ?? snapshotRow?.kyoteibiyori_lap_exhibition_score ?? snapshotRow?.lap_exhibition_score
+        )
           ?? toFiniteComparisonNumber(snapshotRow?.feature_snapshot?.lap_exhibition_score)
           ?? toFiniteComparisonNumber(snapshotRow?.feature_snapshot?.lap_attack_strength)
           ?? (toFiniteComparisonNumber(snapshotRow?.feature_snapshot?.lap_time_delta_vs_front) !== null
@@ -1524,10 +1546,16 @@ function getPlayerComparisonRows({ prediction, data }) {
           lapTime: liveLapTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_lap_time_raw ?? snapshotRow?.kyoteibiyori_lap_time ?? snapshotRow?.lap_time),
           exhibitionSt: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_st ?? snapshotRow?.exhibition_st),
           exhibitionTime: liveExhibitionTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_time ?? snapshotRow?.exhibition_time),
-          lapScore: liveLapScore ?? snapshotLapScore,
+          lapExStretch: liveLapExStretch ?? snapshotLapExStretch,
+          lapScore: liveLapExStretch ?? snapshotLapExStretch,
           stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || snapshotRow?.kyoteibiyori_stretch_foot_label || snapshotRow?.stretch_foot_label || null,
+          motor2ren: liveMotor2Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_2rate),
+          motor3ren: liveMotor3Rate,
           motor2Rate: liveMotor2Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_2rate),
           motor3Rate: liveMotor3Rate,
+          lane1stAvg: debugLaneStats.laneFirstRate ?? liveLaneStats.laneFirstRate ?? snapshotLaneStats.laneFirstRate,
+          lane2renAvg: debugLaneStats.lane2RenRate ?? liveLaneStats.lane2RenRate ?? snapshotLaneStats.lane2RenRate,
+          lane3renAvg: debugLaneStats.lane3RenRate ?? liveLaneStats.lane3RenRate ?? snapshotLaneStats.lane3RenRate,
           laneFirstRate: debugLaneStats.laneFirstRate ?? liveLaneStats.laneFirstRate ?? snapshotLaneStats.laneFirstRate,
           lane2RenRate: debugLaneStats.lane2RenRate ?? liveLaneStats.lane2RenRate ?? snapshotLaneStats.lane2RenRate,
           lane3RenRate: debugLaneStats.lane3RenRate ?? liveLaneStats.lane3RenRate ?? snapshotLaneStats.lane3RenRate
@@ -1544,10 +1572,16 @@ function getPlayerComparisonRows({ prediction, data }) {
       lapTime: toFiniteComparisonNumber(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time),
       exhibitionSt: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_st ?? row?.exhibition_st),
       exhibitionTime: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_time ?? row?.exhibition_time),
-      lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
+      lapExStretch: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
+      lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
       stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
+      motor2ren: toFiniteComparisonNumber(row?.motor_2rate),
+      motor3ren: toFiniteComparisonNumber(row?.motor_3rate),
       motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
       motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
+      lane1stAvg: normalizeLaneStats(row).laneFirstRate,
+      lane2renAvg: normalizeLaneStats(row).lane2RenRate,
+      lane3renAvg: normalizeLaneStats(row).lane3RenRate,
       laneFirstRate: normalizeLaneStats(row).laneFirstRate,
       lane2RenRate: normalizeLaneStats(row).lane2RenRate,
       lane3RenRate: normalizeLaneStats(row).lane3RenRate
@@ -3755,9 +3789,9 @@ export default function App() {
                             <th>Lap Ex / Stretch</th>
                             <th>Motor 2-ren</th>
                             <th>Motor 3-ren</th>
-                            <th>Lane 1st (season + 3m)</th>
-                            <th>Lane 2-ren (season + 3m)</th>
-                            <th>Lane 3-ren (season + 3m)</th>
+                            <th>Lane 1st Avg</th>
+                            <th>Lane 2-ren Avg</th>
+                            <th>Lane 3-ren Avg</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3780,21 +3814,21 @@ export default function App() {
                               <td className={playerMetricLeaders.exhibitionSt.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionSt, 2)}</td>
                               <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionTime, 2)}</td>
                               <td className={playerMetricLeaders.lapScore.has(row.lane) ? "metric-hot" : ""}>
-                                {Number.isFinite(Number(row.lapScore)) ? formatComparisonValue(row.lapScore, 1) : "--"}
+                                {Number.isFinite(Number(row.lapExStretch)) ? formatComparisonValue(row.lapExStretch, 2) : "--"}
                                 {row.stretchFootLabel ? <div className="muted small-inline">{row.stretchFootLabel}</div> : null}
                               </td>
-                              <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor2Rate, 2)}</td>
-                              <td className={playerMetricLeaders.motor3Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor3Rate, 2)}</td>
-                              <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.laneFirstRate, 2)}</td>
-                              <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane2RenRate, 2)}</td>
-                              <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane3RenRate, 2)}</td>
+                              <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor2ren, 2)}</td>
+                              <td className={playerMetricLeaders.motor3Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor3ren, 2)}</td>
+                              <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane1stAvg, 2)}</td>
+                              <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane2renAvg, 2)}</td>
+                              <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane3renAvg, 2)}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                     <p className="muted strategy-line">
-                      Lap time is ranked as lower-is-better. Lap Ex / Stretch is ranked as higher-is-better. Lane stats use current season + recent 3 months.
+                      Lap time is ranked as lower-is-better. Lap Ex / Stretch is ranked as higher-is-better. Lane stats use a simple average of season, 6m, 3m, and 1m over available periods only.
                     </p>
                     {!data?.source?.kyotei_biyori?.ok ? (
                       <p className="muted strategy-line">
@@ -3946,6 +3980,10 @@ export default function App() {
                           <thead>
                             <tr>
                               <th>Rendered lane</th>
+                              <th>lapExStretch raw</th>
+                              <th>lapExStretch display</th>
+                              <th>motor2ren raw</th>
+                              <th>motor2ren display</th>
                               <th>lane1st raw</th>
                               <th>lane1st display</th>
                               <th>lane2ren raw</th>
@@ -3960,6 +3998,10 @@ export default function App() {
                             {kyoteiBiyoriFrontendDebug.rendered_rows.map((row) => (
                               <tr key={`kyotei-debug-render-${row.lane}`}>
                                 <td>{row.lane ?? "-"}</td>
+                                <td><code>{formatDebugRawValue(row.lapExStretch_raw)}</code></td>
+                                <td>{row.display_lapExStretch}</td>
+                                <td><code>{formatDebugRawValue(row.motor2ren_raw)}</code></td>
+                                <td>{row.display_motor2ren}</td>
                                 <td><code>{formatDebugRawValue(row.lane1stRate_raw)}</code></td>
                                 <td>{row.display_lane1stRate}</td>
                                 <td><code>{formatDebugRawValue(row.lane2renRate_raw)}</code></td>

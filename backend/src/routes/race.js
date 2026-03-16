@@ -9796,8 +9796,8 @@ raceRouter.get("/race", async (req, res, next) => {
         player_stat_windows_used: racer?.playerStatWindowsUsed || null,
         lane_recent_sample_size: toInt(racer?.laneRecentSampleSize, 0),
         motor_no: toInt(racer?.motorNo, null),
-        motor_2rate: toNullableNum(racer?.motor2Rate),
-        motor_3rate: toNullableNum(racer?.motor3Rate),
+        motor_2rate: toNullableNum(racer?.motor2ren ?? racer?.motor2Rate),
+        motor_3rate: toNullableNum(racer?.motor3ren ?? racer?.motor3Rate),
         boat_no: toInt(racer?.boatNo, null),
         boat_2rate: toNullableNum(racer?.boat2Rate),
         exhibition_time: toNullableNum(racer?.exhibitionTime),
@@ -9805,14 +9805,15 @@ raceRouter.get("/race", async (req, res, next) => {
         exhibition_st_raw: racer?.exhibitionStRaw || null,
         kyoteibiyori_fetched: toInt(racer?.kyoteiBiyoriFetched, 0),
         kyoteibiyori_lap_time: toNullableNum(racer?.kyoteiBiyoriLapTime),
-        kyoteibiyori_lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExhibitionScore),
+        kyoteibiyori_lap_ex_stretch: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch),
+        kyoteibiyori_lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore),
         kyoteibiyori_stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel || null,
         kyoteibiyori_exhibition_st: toNullableNum(racer?.kyoteiBiyoriExhibitionSt),
         entry_course: toInt(racer?.entryCourse, null),
         tilt: toNullableNum(racer?.tilt),
-        lane_first_rate: toNullableNum(racer?.laneFirstRate),
-        lane_2ren_rate: toNullableNum(racer?.lane2RenRate),
-        lane_3ren_rate: toNullableNum(racer?.lane3RenRate)
+        lane_first_rate: toNullableNum(racer?.lane1stAvg ?? racer?.laneFirstRate),
+        lane_2ren_rate: toNullableNum(racer?.lane2renAvg ?? racer?.lane2RenRate),
+        lane_3ren_rate: toNullableNum(racer?.lane3renAvg ?? racer?.lane3RenRate)
       };
     });
     const fetchedSignalDiagnostics = snapshotPlayers.map((row) => ({

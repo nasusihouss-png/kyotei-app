@@ -105,13 +105,17 @@ function normalizeLapTimeForModel(rawLapTime) {
 
 function makeStretchLabel({ mawariashi, chokusen }) {
   const parts = [];
-  if (Number.isFinite(Number(chokusen))) parts.push(`伸び ${Number(chokusen).toFixed(2)}`);
-  if (Number.isFinite(Number(mawariashi))) parts.push(`周回 ${Number(mawariashi).toFixed(2)}`);
+  const stretch = toFiniteNumberOrNull(chokusen);
+  const lap = toFiniteNumberOrNull(mawariashi);
+  if (stretch !== null) parts.push(`?? ${stretch.toFixed(2)}`);
+  if (lap !== null) parts.push(`?? ${lap.toFixed(2)}`);
   return parts.length > 0 ? parts.join(" / ") : null;
 }
 
 function computeLapExhibitionScore({ mawariashi, chokusen }) {
-  const scores = [mawariashi, chokusen].filter((value) => Number.isFinite(Number(value))).map(Number);
+  const scores = [mawariashi, chokusen]
+    .map((value) => toFiniteNumberOrNull(value))
+    .filter((value) => value !== null);
   if (scores.length === 0) return null;
   return Number((scores.reduce((sum, value) => sum + value, 0) / scores.length).toFixed(2));
 }
@@ -284,31 +288,52 @@ const FIELD_DEBUG_NAME_MAP = {
   lapTimeRaw: "lapTime",
   exhibitionSt: "exhibitionST",
   motor2Rate: "motor2ren",
-  motor3Rate: "motor3ren"
+  motor3Rate: "motor3ren",
+  lapExStretch: "lapExStretch"
+};
+
+const JAPANESE_LABELS = {
+  laneStatsSection: "枠別勝率",
+  preRaceSection: "直前情報",
+  motorSection: "モーター",
+  motor2: "モーター2連率",
+  motor3: "モーター3連率",
+  mawariashi: "周り足",
+  nobiashi: "伸び足",
+  lapTime: "周回",
+  exhibition: "展示",
+  st: "ST",
+  lane1st: "1着率",
+  lane2ren: "2連率",
+  lane3ren: "3連率",
+  season: "今季",
+  m6: "直近6か月",
+  m3: "直近3か月",
+  m1: "直近1か月"
 };
 
 const LANE_STAT_PERIODS = {
   season: {
-    labels: ["今季", "今期"],
-    canonical: "今季",
+    labels: [JAPANESE_LABELS.season, "今期"],
+    canonical: JAPANESE_LABELS.season,
     debugKey: "season",
     weight: 0.2
   },
   m6: {
-    labels: ["直近6か月", "直近6ヶ月"],
-    canonical: "直近6か月",
+    labels: [JAPANESE_LABELS.m6, "直近6ヶ月", "直近6個月"],
+    canonical: JAPANESE_LABELS.m6,
     debugKey: "m6",
     weight: 0.2
   },
   m3: {
-    labels: ["直近3か月", "直近3ヶ月"],
-    canonical: "直近3か月",
+    labels: [JAPANESE_LABELS.m3, "直近3ヶ月", "直近3個月"],
+    canonical: JAPANESE_LABELS.m3,
     debugKey: "m3",
     weight: 0.35
   },
   m1: {
-    labels: ["直近1か月", "直近1ヶ月"],
-    canonical: "直近1か月",
+    labels: [JAPANESE_LABELS.m1, "直近1ヶ月", "直近1個月"],
+    canonical: JAPANESE_LABELS.m1,
     debugKey: "m1",
     weight: 0.25
   }
@@ -317,7 +342,7 @@ const LANE_STAT_PERIODS = {
 const LANE_STAT_FIELD_CONFIG = {
   laneFirstRate: {
     debugField: "lane1stRate",
-    metricLabel: "1着率",
+    metricLabel: JAPANESE_LABELS.lane1st,
     periodsKey: "lane1stRate_raw",
     periodFields: {
       season: "lane1stRate_season",
@@ -331,7 +356,7 @@ const LANE_STAT_FIELD_CONFIG = {
   },
   lane2RenRate: {
     debugField: "lane2renRate",
-    metricLabel: "2連率",
+    metricLabel: JAPANESE_LABELS.lane2ren,
     periodsKey: "lane2renRate_raw",
     periodFields: {
       season: "lane2renRate_season",
@@ -345,7 +370,7 @@ const LANE_STAT_FIELD_CONFIG = {
   },
   lane3RenRate: {
     debugField: "lane3renRate",
-    metricLabel: "3連率",
+    metricLabel: JAPANESE_LABELS.lane3ren,
     periodsKey: "lane3renRate_raw",
     periodFields: {
       season: "lane3renRate_season",
@@ -369,27 +394,32 @@ function compactJapaneseLabel(value) {
 function canonicalizeExplicitSectionLabel(value) {
   const text = compactJapaneseLabel(value);
   if (!text) return null;
-  if (text.includes("枠別勝率") || text.includes("枠別情報")) return "枠別勝率";
-  if (text.includes("直前情報")) return "直前情報";
-  if (text.includes("モーター2連率") || text.includes("モーター2連対率")) return "モーター2連率";
-  if (text.includes("モーター3連率") || text.includes("モーター3連対率")) return "モーター3連率";
-  if (text.includes("モーター")) return "モーター";
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.laneStatsSection))) return JAPANESE_LABELS.laneStatsSection;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.preRaceSection))) return JAPANESE_LABELS.preRaceSection;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motor2))) return JAPANESE_LABELS.motor2;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motor3))) return JAPANESE_LABELS.motor3;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motorSection))) return JAPANESE_LABELS.motorSection;
   return null;
 }
 
 function canonicalizeExplicitMetricLabel(value) {
   const text = compactJapaneseLabel(value);
   if (!text) return null;
-  if (/^周回(?:タイム)?$/.test(text)) return "周回";
-  if (/^(?:展示)?ST$/.test(text)) return "ST";
-  if (/^展示(?:タイム)?$/.test(text)) return "展示";
-  if (/^周り足$/.test(text)) return "周り足";
-  if (/^直線$/.test(text)) return "直線";
-  if (/^モーター?2(?:連率|連対率)$/.test(text)) return "モーター2連率";
-  if (/^モーター?3(?:連率|連対率)$/.test(text)) return "モーター3連率";
-  if (/^1着率$/.test(text)) return "1着率";
-  if (/^(?:2連率|2連対率)$/.test(text)) return "2連率";
-  if (/^(?:3連率|3連対率)$/.test(text)) return "3連率";
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.lapTime))) return JAPANESE_LABELS.lapTime;
+  if (text.includes(compactJapaneseLabel("蜻ｨ蝗・"))) return JAPANESE_LABELS.lapTime;
+  if (text === compactJapaneseLabel(JAPANESE_LABELS.st)) return JAPANESE_LABELS.st;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.exhibition))) return JAPANESE_LABELS.exhibition;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.mawariashi))) return JAPANESE_LABELS.mawariashi;
+  if (text.includes(compactJapaneseLabel("蜻ｨ繧願ｶｳ"))) return JAPANESE_LABELS.mawariashi;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.nobiashi))) return JAPANESE_LABELS.nobiashi;
+  if (text.includes(compactJapaneseLabel("逶ｴ邱・"))) return JAPANESE_LABELS.nobiashi;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motor2)) || (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motorSection)) && text.includes("2"))) return JAPANESE_LABELS.motor2;
+  if (text.includes(compactJapaneseLabel("繝｢繝ｼ繧ｿ繝ｼ2騾｣邇・"))) return JAPANESE_LABELS.motor2;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motor3)) || (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motorSection)) && text.includes("3"))) return JAPANESE_LABELS.motor3;
+  if (text.includes(compactJapaneseLabel("繝｢繝ｼ繧ｿ繝ｼ3騾｣邇・"))) return JAPANESE_LABELS.motor3;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.lane1st))) return JAPANESE_LABELS.lane1st;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.lane2ren)) || (text.includes("2") && text.includes(compactJapaneseLabel("連対")))) return JAPANESE_LABELS.lane2ren;
+  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.lane3ren)) || (text.includes("3") && text.includes(compactJapaneseLabel("連対")))) return JAPANESE_LABELS.lane3ren;
   return null;
 }
 
@@ -397,10 +427,8 @@ function canonicalizeExplicitTimeWindowLabel(value) {
   const text = compactJapaneseLabel(value);
   if (!text) return null;
   for (const [periodKey, config] of Object.entries(LANE_STAT_PERIODS)) {
-    if (config.labels.map((label) => compactJapaneseLabel(label)).includes(text)) return periodKey;
+    if (config.labels.some((label) => compactJapaneseLabel(label) === text)) return periodKey;
   }
-  if (text === "当地") return "当地";
-  if (text === "一般戦") return "一般戦";
   return null;
 }
 
@@ -416,12 +444,15 @@ function normalizeLaneStatPeriodValues(periods = {}) {
 function aggregateLaneStatPeriods(periods = {}) {
   const normalized = normalizeLaneStatPeriodValues(periods);
   const available = Object.entries(normalized).filter(([, value]) => value !== null);
+  const availablePeriods = available.map(([periodKey]) => periodKey);
   if (!available.length) {
     return {
       raw: normalized,
       sum: null,
       avg: null,
-      weighted: null
+      weighted: null,
+      availablePeriods,
+      count: 0
     };
   }
 
@@ -444,7 +475,9 @@ function aggregateLaneStatPeriods(periods = {}) {
     raw: normalized,
     sum,
     avg,
-    weighted
+    weighted,
+    availablePeriods,
+    count: available.length
   };
 }
 
@@ -460,7 +493,9 @@ function hydrateLaneStatAggregateFields(row = {}) {
     next[config.sumField] = aggregate.sum;
     next[config.avgField] = aggregate.avg;
     next[config.weightedField] = aggregate.weighted;
-    next[baseField] = aggregate.weighted;
+    next[baseField] = aggregate.avg;
+    next[`${config.debugField}_available_periods`] = aggregate.availablePeriods;
+    next[`${config.debugField}_period_count`] = aggregate.count;
   }
   return next;
 }
@@ -468,7 +503,7 @@ function hydrateLaneStatAggregateFields(row = {}) {
 function normalizeLaneStatAggregateFields(row = {}) {
   const next = { ...row };
   for (const [baseField, config] of Object.entries(LANE_STAT_FIELD_CONFIG)) {
-    for (const [periodKey, fieldName] of Object.entries(config.periodFields)) {
+    for (const fieldName of Object.values(config.periodFields)) {
       next[fieldName] = toFiniteNumberOrNull(next?.[fieldName]);
     }
     const normalizedPeriods = normalizeLaneStatPeriodValues(next?.[config.periodsKey] || {});
@@ -486,15 +521,19 @@ function normalizeLaneStatAggregateFields(row = {}) {
     next[config.sumField] = aggregate.sum;
     next[config.avgField] = aggregate.avg;
     next[config.weightedField] = aggregate.weighted;
-    next[baseField] = aggregate.weighted ?? toFiniteNumberOrNull(next?.[baseField]);
+    next[baseField] = aggregate.avg ?? toFiniteNumberOrNull(next?.[baseField]);
+    next[`${config.debugField}_available_periods`] = aggregate.availablePeriods;
+    next[`${config.debugField}_period_count`] = aggregate.count;
   }
   return next;
 }
 
 function detectExplicitBoatHeaderLane(text) {
   const normalized = compactJapaneseLabel(text);
-  const exact = normalized.match(/^([1-6])号艇$/);
+  const exact = normalized.match(/^([1-6])(?:\u53f7\u8247|\u53f7)$/);
   if (exact) return Number(exact[1]);
+  const loose = normalized.match(/^([1-6])/);
+  if (loose) return Number(loose[1]);
   return null;
 }
 
@@ -506,7 +545,7 @@ function findExplicitBoatColumnHeader(table) {
       const lane = detectExplicitBoatHeaderLane(cell?.rawText);
       if (!Number.isInteger(lane)) continue;
       laneColumns.set(lane, cell.cellIndex);
-      laneHeaders[lane] = normalizeSpace(cell.rawText) || `${lane}号艇`;
+      laneHeaders[lane] = normalizeSpace(cell.rawText) || `${lane}`;
     }
     if (laneColumns.size === 6) {
       return {
@@ -540,35 +579,40 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
     .filter(Boolean);
 
   const section = sectionCandidates[0] || null;
-  const metric = metricCandidates[0] || null;
+  const joinedRowLabels = normalizeSpace(rowLabels.join(" "));
+  const metric =
+    metricCandidates[0] ||
+    (/\u5468.*\u56de/u.test(joinedRowLabels) ? JAPANESE_LABELS.lapTime : null) ||
+    (/\u5468.*\u8db3/u.test(joinedRowLabels) ? JAPANESE_LABELS.mawariashi : null) ||
+    (/\u4f38.*\u8db3/u.test(joinedRowLabels) ? JAPANESE_LABELS.nobiashi : null) ||
+    (/\u30e2\u30fc\u30bf\u30fc.*2/u.test(joinedRowLabels) ? JAPANESE_LABELS.motor2 : null) ||
+    (/\u30e2\u30fc\u30bf\u30fc.*3/u.test(joinedRowLabels) ? JAPANESE_LABELS.motor3 : null);
   const timeWindow = timeWindowCandidates[0] || null;
 
   if (mode === "lane_stats") {
-    if (section !== "枠別勝率") return null;
+    if (section !== JAPANESE_LABELS.laneStatsSection) return null;
     if (!Object.prototype.hasOwnProperty.call(LANE_STAT_PERIODS, timeWindow)) return null;
     const period = timeWindow;
     const periodLabel = LANE_STAT_PERIODS[period]?.canonical || period;
-    if (metric === "1着率") return { field: "laneFirstRate", section, row: metric, period, periodLabel };
-    if (metric === "2連率") return { field: "lane2RenRate", section, row: metric, period, periodLabel };
-    if (metric === "3連率") return { field: "lane3RenRate", section, row: metric, period, periodLabel };
+    if (metric === JAPANESE_LABELS.lane1st) return { field: "laneFirstRate", section, row: metric, period, periodLabel };
+    if (metric === JAPANESE_LABELS.lane2ren) return { field: "lane2RenRate", section, row: metric, period, periodLabel };
+    if (metric === JAPANESE_LABELS.lane3ren) return { field: "lane3RenRate", section, row: metric, period, periodLabel };
     return null;
   }
 
   if (mode === "pre_race") {
-    if (metric === "周回") return { field: "lapTimeRaw", section: section || "直前情報", row: "周回" };
-    if (metric === "ST") return { field: "exhibitionSt", section: section || "直前情報", row: "ST" };
-
-    if (metric === "モーター2連率") {
-      return { field: "motor2Rate", section: section || "モーター2連率", row: "モーター2連率" };
+    const resolvedSection = section || JAPANESE_LABELS.preRaceSection;
+    if (metric === JAPANESE_LABELS.lapTime) return { field: "lapTimeRaw", section: resolvedSection, row: JAPANESE_LABELS.lapTime };
+    if (metric === JAPANESE_LABELS.st) return { field: "exhibitionSt", section: resolvedSection, row: JAPANESE_LABELS.st };
+    if (metric === JAPANESE_LABELS.mawariashi) return { field: "mawariashi", section: resolvedSection, row: JAPANESE_LABELS.mawariashi };
+    if (metric === JAPANESE_LABELS.nobiashi) return { field: "nobiashi", section: resolvedSection, row: JAPANESE_LABELS.nobiashi };
+    if (metric === JAPANESE_LABELS.motor2) return { field: "motor2Rate", section: resolvedSection, row: JAPANESE_LABELS.motor2 };
+    if (metric === JAPANESE_LABELS.motor3) return { field: "motor3Rate", section: resolvedSection, row: JAPANESE_LABELS.motor3 };
+    if (section === JAPANESE_LABELS.motorSection && metric === JAPANESE_LABELS.lane2ren) {
+      return { field: "motor2Rate", section: JAPANESE_LABELS.motorSection, row: JAPANESE_LABELS.lane2ren };
     }
-    if (metric === "モーター3連率") {
-      return { field: "motor3Rate", section: section || "モーター3連率", row: "モーター3連率" };
-    }
-    if (section === "モーター" && metric === "2連率") {
-      return { field: "motor2Rate", section: "モーター", row: "2連率" };
-    }
-    if (section === "モーター" && metric === "3連率") {
-      return { field: "motor3Rate", section: "モーター", row: "3連率" };
+    if (section === JAPANESE_LABELS.motorSection && metric === JAPANESE_LABELS.lane3ren) {
+      return { field: "motor3Rate", section: JAPANESE_LABELS.motorSection, row: JAPANESE_LABELS.lane3ren };
     }
     return null;
   }
@@ -593,6 +637,22 @@ function parseExplicitTargetCell(field, rawText) {
     const value = parsed.type === "normal" ? parsed.numeric : null;
     return {
       fields: { exhibitionSt: value },
+      value
+    };
+  }
+
+  if (field === "mawariashi") {
+    const value = parseDecimal(rawText);
+    return {
+      fields: { __mawariashi: value },
+      value
+    };
+  }
+
+  if (field === "nobiashi") {
+    const value = parseDecimal(rawText);
+    return {
+      fields: { __nobiashi: value },
       value
     };
   }
@@ -776,9 +836,54 @@ function parseHtmlSupplementExplicit(html, options = {}) {
             m1: fieldDebug?.m1 || null,
             sum: aggregate.sum,
             avg: aggregate.avg,
-            weighted: aggregate.weighted
+            weighted: aggregate.weighted,
+            availablePeriods: aggregate.availablePeriods,
+            count: aggregate.count,
+            finalValue: aggregate.avg
           };
         }
+        fieldDebugs[lane] = laneDebug;
+      }
+    } else if ((options?.mode || "all") === "pre_race") {
+      for (const [lane, row] of byLane.entries()) {
+        const mawariashi = toFiniteNumberOrNull(row?.__mawariashi);
+        const nobiashi = toFiniteNumberOrNull(row?.__nobiashi);
+        const lapExStretch = computeLapExhibitionScore({
+          mawariashi,
+          chokusen: nobiashi
+        });
+        const nextRow = {
+          ...row,
+          lapExhibitionScore: lapExStretch,
+          lapExStretch,
+          stretchFootLabel: makeStretchLabel({
+            mawariashi,
+            chokusen: nobiashi
+          })
+        };
+        byLane.set(lane, nextRow);
+        const laneFieldSources = fieldSources[lane] || {};
+        if (lapExStretch !== null) {
+          laneFieldSources.lapExStretch = options?.sourceLabel || "race_shusso_html";
+          laneFieldSources.lapExhibitionScore = options?.sourceLabel || "race_shusso_html";
+        }
+        fieldSources[lane] = laneFieldSources;
+        const laneDebug = fieldDebugs?.[lane] || {};
+        laneDebug.lapExStretch = {
+          raw: {
+            mawariashi: laneDebug?.mawariashi?.raw ?? null,
+            nobiashi: laneDebug?.nobiashi?.raw ?? null
+          },
+          sourceLabel: options?.sourceLabel || "race_shusso_html",
+          boatColumn: laneDebug?.mawariashi?.column ?? laneDebug?.nobiashi?.column ?? null,
+          value: lapExStretch,
+          mawariashi: laneDebug?.mawariashi
+            ? { ...laneDebug.mawariashi, sourceLabel: options?.sourceLabel || "race_shusso_html" }
+            : null,
+          nobiashi: laneDebug?.nobiashi
+            ? { ...laneDebug.nobiashi, sourceLabel: options?.sourceLabel || "race_shusso_html" }
+            : null
+        };
         fieldDebugs[lane] = laneDebug;
       }
     }
@@ -1241,9 +1346,14 @@ export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
     "lane3RenRate",
     "lapTime",
     "lapTimeRaw",
+    "lapExStretch",
+    "lapExhibitionScore",
+    "stretchFootLabel",
     "exhibitionSt",
     "motor2Rate",
-    "motor3Rate"
+    "motor3Rate",
+    "__mawariashi",
+    "__nobiashi"
   ]);
   const byLane = new Map();
   const fieldSources = {};
@@ -1274,12 +1384,18 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       fCount: toFiniteNumberOrNull(row?.fCount),
       lapTime: toFiniteNumberOrNull(row?.lapTime),
       lapTimeRaw: toFiniteNumberOrNull(row?.lapTimeRaw),
+      lapExStretch: toFiniteNumberOrNull(row?.lapExStretch ?? row?.lapExhibitionScore),
       lapExhibitionScore: toFiniteNumberOrNull(row?.lapExhibitionScore),
       stretchFootLabel: row?.stretchFootLabel || null,
       exhibitionSt: toFiniteNumberOrNull(row?.exhibitionSt),
       exhibitionTime: toFiniteNumberOrNull(row?.exhibitionTime),
+      motor2ren: toFiniteNumberOrNull(row?.motor2ren ?? row?.motor2Rate),
+      motor3ren: toFiniteNumberOrNull(row?.motor3ren ?? row?.motor3Rate),
       motor2Rate: toFiniteNumberOrNull(row?.motor2Rate),
       motor3Rate: toFiniteNumberOrNull(row?.motor3Rate),
+      lane1stAvg: toFiniteNumberOrNull(row?.lane1stAvg ?? row?.laneFirstRate ?? row?.lane1stRate_avg),
+      lane2renAvg: toFiniteNumberOrNull(row?.lane2renAvg ?? row?.lane2RenRate ?? row?.lane2renRate_avg),
+      lane3renAvg: toFiniteNumberOrNull(row?.lane3renAvg ?? row?.lane3RenRate ?? row?.lane3renRate_avg),
       laneFirstRate: toFiniteNumberOrNull(row?.laneFirstRate),
       lane2RenRate: toFiniteNumberOrNull(row?.lane2RenRate),
       lane3RenRate: toFiniteNumberOrNull(row?.lane3RenRate),
@@ -1308,6 +1424,12 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       lane3renRate_avg: row?.lane3renRate_avg,
       lane3renRate_weighted: row?.lane3renRate_weighted
     });
+    normalizedRow.motor2Rate = normalizedRow.motor2ren;
+    normalizedRow.motor3Rate = normalizedRow.motor3ren;
+    normalizedRow.lapExhibitionScore = normalizedRow.lapExStretch;
+    normalizedRow.laneFirstRate = normalizedRow.lane1stAvg;
+    normalizedRow.lane2RenRate = normalizedRow.lane2renAvg;
+    normalizedRow.lane3RenRate = normalizedRow.lane3renAvg;
     normalizedByLane.set(Number(lane), normalizedRow);
   }
   return {
@@ -1333,23 +1455,30 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,
         kyoteiBiyoriLapTime: extra?.lapTime ?? null,
         kyoteiBiyoriLapTimeRaw: extra?.lapTimeRaw ?? null,
-        kyoteiBiyoriLapExhibitionScore: extra?.lapExhibitionScore ?? null,
+        kyoteiBiyoriLapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
+        kyoteiBiyoriLapExStretch: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
         kyoteiBiyoriExhibitionSt: extra?.exhibitionSt ?? null,
         kyoteiBiyoriExhibitionTime: extra?.exhibitionTime ?? null,
-        kyoteiBiyoriMotor2Rate: extra?.motor2Rate ?? null,
-        kyoteiBiyoriMotor3Rate: extra?.motor3Rate ?? null,
+        kyoteiBiyoriMotor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? null,
+        kyoteiBiyoriMotor3Rate: extra?.motor3ren ?? extra?.motor3Rate ?? null,
+        lapExStretch: extra?.lapExStretch ?? racer?.lapExStretch ?? null,
+        motor2ren: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2ren ?? racer?.motor2Rate ?? null,
+        motor3ren: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3ren ?? racer?.motor3Rate ?? null,
+        lane1stAvg: extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
+        lane2renAvg: extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
+        lane3renAvg: extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
         lapTime: extra?.lapTime ?? racer?.lapTime ?? null,
         lapTimeRaw: extra?.lapTimeRaw ?? racer?.lapTimeRaw ?? null,
-        lapExhibitionScore: extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
+        lapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
         stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,
         exhibitionSt: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
         exhibitionTime: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
-        motor2Rate: extra?.motor2Rate ?? racer?.motor2Rate ?? null,
-        motor3Rate: extra?.motor3Rate ?? racer?.motor3Rate ?? null,
-        laneFirstRate: extra?.laneFirstRate ?? racer?.laneFirstRate ?? null,
-        lane2RenRate: extra?.lane2RenRate ?? racer?.lane2RenRate ?? null,
-        lane3RenRate: extra?.lane3RenRate ?? racer?.lane3RenRate ?? null,
+        motor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2Rate ?? null,
+        motor3Rate: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3Rate ?? null,
+        laneFirstRate: extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.laneFirstRate ?? null,
+        lane2RenRate: extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2RenRate ?? null,
+        lane3RenRate: extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3RenRate ?? null,
         lane1stRate_raw: extra?.lane1stRate_raw ?? racer?.lane1stRate_raw ?? null,
         lane1stRate_season: extra?.lane1stRate_season ?? racer?.lane1stRate_season ?? null,
         lane1stRate_6m: extra?.lane1stRate_6m ?? racer?.lane1stRate_6m ?? null,
@@ -1382,11 +1511,18 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         kyoteiBiyoriLapTime: null,
         kyoteiBiyoriLapTimeRaw: null,
         kyoteiBiyoriLapExhibitionScore: null,
+        kyoteiBiyoriLapExStretch: null,
         kyoteiBiyoriStretchFootLabel: null,
         kyoteiBiyoriExhibitionSt: null,
         kyoteiBiyoriExhibitionTime: null,
         kyoteiBiyoriMotor2Rate: null,
-        kyoteiBiyoriMotor3Rate: null
+        kyoteiBiyoriMotor3Rate: null,
+        lapExStretch: null,
+        motor2ren: null,
+        motor3ren: null,
+        lane1stAvg: null,
+        lane2renAvg: null,
+        lane3renAvg: null
       };
     }
   });

@@ -148,6 +148,7 @@ function buildKyoteiBiyoriFieldDebugMaps(fieldDebugSources = {}) {
     lane1stRate: {},
     lane2renRate: {},
     lane3renRate: {},
+    lapExStretch: {},
     lapTime: {},
     exhibitionST: {},
     motor2ren: {},
@@ -173,20 +174,25 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     ? racers
         .map((racer) => ({
           lane: Number.isInteger(Number(racer?.lane)) ? Number(racer.lane) : null,
+          lapExStretch: toNullableDebugNumber(racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore ?? racer?.lapExhibitionScore),
           lane1stRate_raw: racer?.lane1stRate_raw ?? toKyoteiDebugValue(racer?.laneFirstRate),
           lane2renRate_raw: racer?.lane2renRate_raw ?? toKyoteiDebugValue(racer?.lane2RenRate),
           lane3renRate_raw: racer?.lane3renRate_raw ?? toKyoteiDebugValue(racer?.lane3RenRate),
           lapTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriLapTimeRaw ?? racer?.kyoteiBiyoriLapTime ?? racer?.lapTime),
           exhibitionST_raw: toNullableDebugNumber(racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt),
-          motor2ren_raw: toNullableDebugNumber(racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate),
-          motor3ren_raw: toNullableDebugNumber(racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate),
+          motor2ren_raw: toNullableDebugNumber(racer?.motor2ren ?? racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate),
+          motor3ren_raw: toNullableDebugNumber(racer?.motor3ren ?? racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate),
+          lane1stAvg: toNullableDebugNumber(racer?.lane1stAvg ?? racer?.laneFirstRate),
+          lane2renAvg: toNullableDebugNumber(racer?.lane2renAvg ?? racer?.lane2RenRate),
+          lane3renAvg: toNullableDebugNumber(racer?.lane3renAvg ?? racer?.lane3RenRate),
           lane1stRate_debug: fieldDebugMaps.lane1stRate[String(racer?.lane)] || null,
           lane2renRate_debug: fieldDebugMaps.lane2renRate[String(racer?.lane)] || null,
           lane3renRate_debug: fieldDebugMaps.lane3renRate[String(racer?.lane)] || null,
           lapTime_debug: fieldDebugMaps.lapTime[String(racer?.lane)] || null,
           exhibitionST_debug: fieldDebugMaps.exhibitionST[String(racer?.lane)] || null,
           motor2ren_debug: fieldDebugMaps.motor2ren[String(racer?.lane)] || null,
-          motor3ren_debug: fieldDebugMaps.motor3ren[String(racer?.lane)] || null
+          motor3ren_debug: fieldDebugMaps.motor3ren[String(racer?.lane)] || null,
+          lapExStretch_debug: fieldDebugMaps.lapExStretch[String(racer?.lane)] || null
         }))
         .sort((a, b) => Number(a?.lane || 0) - Number(b?.lane || 0))
     : [];
@@ -201,13 +207,33 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     lane1stRate_raw: byField("lane1stRate_raw"),
     lane2renRate_raw: byField("lane2renRate_raw"),
     lane3renRate_raw: byField("lane3renRate_raw"),
+    lapExStretch_raw: byField("lapExStretch"),
     lapTime_raw: byField("lapTime_raw"),
     exhibitionST_raw: byField("exhibitionST_raw"),
     motor2ren_raw: byField("motor2ren_raw"),
     motor3ren_raw: byField("motor3ren_raw"),
+    lane1stAvg_raw: byField("lane1stAvg"),
+    lane2renAvg_raw: byField("lane2renAvg"),
+    lane3renAvg_raw: byField("lane3renAvg"),
     lane1stRate: fieldDebugMaps.lane1stRate,
     lane2renRate: fieldDebugMaps.lane2renRate,
     lane3renRate: fieldDebugMaps.lane3renRate,
+    lapExStretch: fieldDebugMaps.lapExStretch,
+    lane1st: Object.fromEntries(
+      laneRows
+        .filter((row) => Number.isInteger(row?.lane))
+        .map((row) => [String(row.lane), { ...(row?.lane1stRate_debug || {}), avg: row?.lane1stAvg ?? null }])
+    ),
+    lane2ren: Object.fromEntries(
+      laneRows
+        .filter((row) => Number.isInteger(row?.lane))
+        .map((row) => [String(row.lane), { ...(row?.lane2renRate_debug || {}), avg: row?.lane2renAvg ?? null }])
+    ),
+    lane3ren: Object.fromEntries(
+      laneRows
+        .filter((row) => Number.isInteger(row?.lane))
+        .map((row) => [String(row.lane), { ...(row?.lane3renRate_debug || {}), avg: row?.lane3renAvg ?? null }])
+    ),
     lapTime: fieldDebugMaps.lapTime,
     exhibitionST: fieldDebugMaps.exhibitionST,
     motor2ren: fieldDebugMaps.motor2ren,
