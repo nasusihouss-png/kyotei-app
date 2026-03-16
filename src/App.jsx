@@ -3843,6 +3843,51 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+                      <div style={{ marginTop: 10 }}>
+                        {Object.entries(kyoteiBiyoriFrontendDebug.backend_parse_results).map(([key, value]) => (
+                          <details key={`kyotei-debug-table-diag-${key}`} style={{ marginBottom: 8 }}>
+                            <summary>{key} row/column debug</summary>
+                            {Array.isArray(value?.table_diagnostics) && value.table_diagnostics.length ? (
+                              value.table_diagnostics.map((diag, diagIdx) => (
+                                <div key={`kyotei-debug-table-diag-${key}-${diagIdx}`} className="table-wrap" style={{ marginTop: 8 }}>
+                                  <table>
+                                    <thead>
+                                      <tr>
+                                        <th>mode</th>
+                                        <th>row label</th>
+                                        <th>lane</th>
+                                        <th>column header</th>
+                                        <th>raw cell</th>
+                                        <th>parsed</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {Array.isArray(diag?.cell_matches) && diag.cell_matches.length ? (
+                                        diag.cell_matches.map((match, matchIdx) => (
+                                          <tr key={`kyotei-cell-match-${key}-${diagIdx}-${matchIdx}`}>
+                                            <td>{diag?.mode || "-"}</td>
+                                            <td>{match?.row_label || "-"}</td>
+                                            <td>{match?.lane ?? "-"}</td>
+                                            <td>{match?.column_header || "-"}</td>
+                                            <td><code>{match?.raw_cell_text || "-"}</code></td>
+                                            <td>{formatDebugRawValue(match?.parsed_value)}</td>
+                                          </tr>
+                                        ))
+                                      ) : (
+                                        <tr>
+                                          <td colSpan="6">no matched cells</td>
+                                        </tr>
+                                      )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="muted">no table diagnostics</p>
+                            )}
+                          </details>
+                        ))}
+                      </div>
                       <div className="table-wrap" style={{ marginTop: 10 }}>
                         <table>
                           <thead>

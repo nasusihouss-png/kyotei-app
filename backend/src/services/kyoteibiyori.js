@@ -247,16 +247,30 @@ function extractTableMaps(html) {
     .toArray()
     .map((el) => {
       const $table = $(el);
-      const headers = $table
+      const rows = $table
         .find("tr")
-        .first()
-        .children("th,td")
-        .map((_, cell) => normalizeText($(cell).text()))
-        .get();
+        .toArray()
+        .map((tr, rowIndex) => ({
+          rowIndex,
+          cells: $(tr)
+            .children("th,td")
+            .toArray()
+            .map((cell, cellIndex) => {
+              const rawText = normalizeSpace($(cell).text());
+              return {
+                cellIndex,
+                rawText,
+                normalizedText: normalizeText(rawText)
+              };
+            })
+        }))
+        .filter((row) => row.cells.length > 0);
+      const headers = rows[0]?.cells.map((cell) => cell.normalizedText) || [];
       return {
         $,
         $table,
         headers,
+        rows,
         text: normalizeText($table.text())
       };
     })
@@ -274,6 +288,153 @@ function detectLaneText(text) {
 function detectColumnIndex(headers, patterns) {
   const idx = headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)));
   return idx >= 0 ? idx : null;
+}
+
+function detectBoatHeaderLane(text) {
+  const normalized = normalizeDigits(normalizeSpace(text)).replace(/\s+/g, "");
+  const exact = normalized.match(/^([1-6])号艇$/);
+  if (exact) return Number(exact[1]);
+  const compact = normalized.match(/^([1-6])(?:号|艇)?$/);
+  return compact ? Number(compact[1]) : null;
+}
+
+function findBoatColumnHeader(table) {
+  for (const row of table.rows || []) {
+    const laneColumns = new Map();
+    const laneHeaders = {};
+    for (const cell of row.cells || []) {
+      const lane = detectBoatHeaderLane(cell?.rawText);
+      if (!Number.isInteger(lane)) continue;
+      laneColumns.set(lane, cell.cellIndex);
+      laneHeaders[lane] = cell.rawText || `${lane}号艇`;
+    }
+    if (laneColumns.size === 6) {
+      return {
+        headerRowIndex: row.rowIndex,
+        laneColumns,
+        laneHeaders
+      };
+    }
+  }
+  return null;
+}
+
+function canonicalizeSupplementRowLabel(text) {
+  const normalized = normalizeText(text).replace(/\s+/g, "");
+  if (!normalized) return null;
+  if (/^周回(?:タイム)?$/.test(normalized)) return "周回";
+  if (/^(?:展示)?ST$/.test(normalized)) return "ST";
+  if (/^展示(?:タイム)?$/.test(normalized)) return "展示";
+  if (/^(?:周り足|回り足)$/.test(normalized)) return "周り足";
+  if (/^直線$/.test(normalized)) return "直線";
+  if (/^モーター?2(?:連率|連対率|連)$/.test(normalized)) return "モーター2連率";
+  if (/^モーター?3(?:連率|連対率|連)$/.test(normalized)) return "モーター3連率";
+  if (/^1着率$/.test(normalized)) return "1着率";
+  if (/^(?:2連率|2連対率)$/.test(normalized)) return "2連率";
+  if (/^(?:3連率|3連対率)$/.test(normalized)) return "3連率";
+  return null;
+}
+
+function getAllowedSupplementRowLabels(mode = "all") {
+  if (mode === "pre_race") return new Set(["周回", "ST", "展示", "周り足", "直線"]);
+  if (mode === "lane_stats") return new Set(["モーター2連率", "モーター3連率", "1着率", "2連率", "3連率"]);
+  return new Set(["周回", "ST", "展示", "周り足", "直線", "モーター2連率", "モーター3連率", "1着率", "2連率", "3連率"]);
+}
+
+function parseSupplementCell(rowLabel, rawText) {
+  if (rowLabel === "周回") {
+    const lapTimeRaw = parseDecimal(rawText);
+    return {
+      fields: {
+        lapTimeRaw,
+        lapTime: lapTimeRaw !== null ? normalizeLapTimeForModel(lapTimeRaw) : null
+      },
+      parsedValue: lapTimeRaw
+    };
+  }
+  if (rowLabel === "ST") {
+    const parsed = parseStartTimingRaw(rawText);
+    return {
+      fields: {
+        exhibitionSt: parsed.type === "normal" ? parsed.numeric : null
+      },
+      parsedValue: parsed.type === "normal" ? parsed.numeric : null
+    };
+  }
+  if (rowLabel === "展示") {
+    const exhibitionTime = parseDecimal(rawText);
+    return {
+      fields: { exhibitionTime },
+      parsedValue: exhibitionTime
+    };
+  }
+  if (rowLabel === "周り足") {
+    const mawariashi = parseDecimal(rawText);
+    return {
+      fields: { __mawariashi: mawariashi },
+      parsedValue: mawariashi
+    };
+  }
+  if (rowLabel === "直線") {
+    const chokusen = parseDecimal(rawText);
+    return {
+      fields: { __chokusen: chokusen },
+      parsedValue: chokusen
+    };
+  }
+  if (rowLabel === "モーター2連率") {
+    const motor2Rate = parsePercent(rawText);
+    return {
+      fields: { motor2Rate },
+      parsedValue: motor2Rate
+    };
+  }
+  if (rowLabel === "モーター3連率") {
+    const motor3Rate = parsePercent(rawText);
+    return {
+      fields: { motor3Rate },
+      parsedValue: motor3Rate
+    };
+  }
+  if (rowLabel === "1着率") {
+    const laneFirstRate = parsePercent(rawText);
+    return {
+      fields: { laneFirstRate },
+      parsedValue: laneFirstRate
+    };
+  }
+  if (rowLabel === "2連率") {
+    const lane2RenRate = parsePercent(rawText);
+    return {
+      fields: { lane2RenRate },
+      parsedValue: lane2RenRate
+    };
+  }
+  if (rowLabel === "3連率") {
+    const lane3RenRate = parsePercent(rawText);
+    return {
+      fields: { lane3RenRate },
+      parsedValue: lane3RenRate
+    };
+  }
+  return {
+    fields: {},
+    parsedValue: null
+  };
+}
+
+function finalizeSupplementLaneRow(row = {}) {
+  const mawariashi = Number.isFinite(Number(row?.__mawariashi)) ? Number(row.__mawariashi) : null;
+  const chokusen = Number.isFinite(Number(row?.__chokusen)) ? Number(row.__chokusen) : null;
+  return {
+    ...row,
+    lapExhibitionScore:
+      row?.lapExhibitionScore ??
+      computeLapExhibitionScore({ mawariashi, chokusen }),
+    stretchFootLabel:
+      row?.stretchFootLabel ??
+      makeStretchLabel({ mawariashi, chokusen })
+  };
 }
 
 function parseHtmlSupplement(html) {
@@ -377,6 +538,89 @@ function parseHtmlSupplement(html) {
   return { byLane, fieldSources, tableDiagnostics };
 }
 
+function parseHtmlSupplementStrict(html, options = {}) {
+  const byLane = new Map();
+  const fieldSources = {};
+  const tableDiagnostics = [];
+  const tables = extractTableMaps(html);
+  const allowedRows = getAllowedSupplementRowLabels(options?.mode || "all");
+
+  for (const table of tables) {
+    const boatHeader = findBoatColumnHeader(table);
+    if (!boatHeader) continue;
+
+    let parsedCount = 0;
+    const matchedRows = [];
+    const cellMatches = [];
+    const firstBoatColumn = Math.min(...boatHeader.laneColumns.values());
+
+    for (const row of table.rows || []) {
+      if (row.rowIndex === boatHeader.headerRowIndex) continue;
+      const labelCells = row.cells.filter((cell) => cell.cellIndex < firstBoatColumn);
+      const rawLabelText = labelCells.map((cell) => cell.rawText).filter(Boolean).join(" / ");
+      const matchedRowLabel = canonicalizeSupplementRowLabel(rawLabelText);
+      if (!matchedRowLabel || !allowedRows.has(matchedRowLabel)) continue;
+
+      matchedRows.push({
+        row_index: row.rowIndex,
+        raw_label_text: rawLabelText,
+        matched_row_label: matchedRowLabel
+      });
+
+      for (let lane = 1; lane <= 6; lane += 1) {
+        const columnIndex = boatHeader.laneColumns.get(lane);
+        const columnHeader = boatHeader.laneHeaders[lane] || `${lane}号艇`;
+        const cell = row.cells.find((candidate) => candidate.cellIndex === columnIndex);
+        const rawCellText = cell?.rawText || "";
+        const parsed = parseSupplementCell(matchedRowLabel, rawCellText);
+        const current = byLane.get(lane) || {};
+        byLane.set(lane, { ...current, ...parsed.fields });
+
+        const laneFieldSources = fieldSources[lane] || {};
+        for (const [key, value] of Object.entries(parsed.fields)) {
+          if (value === null || value === undefined || value === "") continue;
+          laneFieldSources[key] = options?.sourceLabel || "race_shusso_html";
+        }
+        fieldSources[lane] = laneFieldSources;
+
+        cellMatches.push({
+          lane,
+          row_label: matchedRowLabel,
+          column_header: columnHeader,
+          raw_cell_text: rawCellText,
+          parsed_value: parsed.parsedValue
+        });
+      }
+      parsedCount += 1;
+    }
+
+    for (let lane = 1; lane <= 6; lane += 1) {
+      if (!byLane.has(lane)) continue;
+      byLane.set(lane, finalizeSupplementLaneRow(byLane.get(lane)));
+    }
+
+    tableDiagnostics.push({
+      mode: options?.mode || "all",
+      headers: table.headers,
+      header_row_index: boatHeader.headerRowIndex,
+      boat_columns: Object.fromEntries(
+        [...boatHeader.laneColumns.entries()].map(([lane, columnIndex]) => [
+          String(lane),
+          {
+            column_index: columnIndex,
+            header_text: boatHeader.laneHeaders[lane] || `${lane}号艇`
+          }
+        ])
+      ),
+      matched_rows: matchedRows,
+      cell_matches: cellMatches,
+      parsedCount
+    });
+  }
+
+  return { byLane, fieldSources, tableDiagnostics };
+}
+
 export function parseKyoteiBiyoriAjaxData(payload) {
   const byLane = new Map();
   const fieldSources = {};
@@ -461,16 +705,13 @@ function mergeLaneMaps(target, source, fieldSources, sourceLabel) {
   }
 }
 
-export function parseKyoteiBiyoriPreRaceData(html) {
-  const supplement = parseHtmlSupplement(html);
-  const byLane = new Map();
-  const fieldSources = {};
-  mergeLaneMaps(byLane, supplement.byLane, fieldSources, "race_shusso_html");
+export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
+  const supplement = parseHtmlSupplementStrict(html, options);
   return {
-    byLane,
-    fieldSources,
+    byLane: supplement.byLane,
+    fieldSources: supplement.fieldSources,
     tableDiagnostics: supplement.tableDiagnostics,
-    fieldDiagnostics: buildFieldDiagnostics(byLane, fieldSources)
+    fieldDiagnostics: buildFieldDiagnostics(supplement.byLane, supplement.fieldSources)
   };
 }
 
@@ -671,7 +912,12 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     ]) {
       try {
         const html = await fetchText(url, timeoutMs);
-        const parsed = normalizeKyoteiBiyoriPreRaceFields(parseKyoteiBiyoriPreRaceData(html));
+        const parsed = normalizeKyoteiBiyoriPreRaceFields(
+          parseKyoteiBiyoriPreRaceData(html, {
+            mode: label === "lane_stats_tab" ? "lane_stats" : "pre_race",
+            sourceLabel: label
+          })
+        );
         mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);
         tableDiagnostics.push(...(parsed.tableDiagnostics || []));
         diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);
