@@ -3,7 +3,8 @@ import {
   applyHitRateEnhancementToProbabilities,
   buildEnhancedShapeBasedTrifectaTickets,
   buildEnhancedTrifectaShapeRecommendation,
-  buildHitRateEnhancementContext
+  buildHitRateEnhancementContext,
+  buildScenarioTreeOrderCandidates
 } from "../src/services/hit-rate-enhancement.js";
 
 const ranking = [
@@ -136,6 +137,10 @@ const enhancement = buildHitRateEnhancementContext({
 
 assert.equal(enhancement.stage1_static.escape_score > 0.2, true);
 assert.equal(enhancement.stage3_scenarios.selected_scenario_probabilities.some((row) => row.scenario === "boat4_cado_attack"), true);
+assert.equal(Array.isArray(enhancement.finishProbabilitiesByScenario), true);
+assert.equal(Array.isArray(enhancement.scenarioProbabilities), true);
+assert.equal(typeof enhancement.aggregatedFinishProbabilities, "object");
+assert.equal(typeof enhancement.intermediateEvents, "object");
 assert.equal(Array.isArray(enhancement.dark_horse_alerts), true);
 
 const enhanced = applyHitRateEnhancementToProbabilities({
@@ -147,6 +152,7 @@ const enhanced = applyHitRateEnhancementToProbabilities({
 
 assert.equal(enhanced.first[0].lane, 1, "boat 1 should remain the strongest head in a normal inside race");
 assert.equal(enhanced.second.some((row) => row.lane === 2), true);
+assert.equal(Array.isArray(buildScenarioTreeOrderCandidates(enhancement, 66)), true);
 
 const shape = buildEnhancedTrifectaShapeRecommendation({
   firstProbs: enhanced.first,

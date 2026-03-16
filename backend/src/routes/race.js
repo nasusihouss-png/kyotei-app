@@ -89,7 +89,8 @@ import {
   applyHitRateEnhancementToProbabilities,
   buildEnhancedShapeBasedTrifectaTickets,
   buildEnhancedTrifectaShapeRecommendation,
-  buildHitRateEnhancementContext
+  buildHitRateEnhancementContext,
+  buildScenarioTreeOrderCandidates
 } from "../services/hit-rate-enhancement.js";
 
 export const raceRouter = Router();
@@ -9560,7 +9561,11 @@ raceRouter.get("/race", async (req, res, next) => {
       thirdProbs: confirmedRoleProbabilities.confirmed_third_place_probability_json,
       enhancement: hitRateEnhancement
     });
-    const roleBasedOrderCandidates = composeFinishOrderCandidates({
+    const scenarioTreeOrderCandidates = buildScenarioTreeOrderCandidates(
+      hitRateEnhancement,
+      null
+    );
+    const roleBasedOrderCandidatesBase = composeFinishOrderCandidates({
       featureBundle: predictionFeatureBundle,
       firstProbs: enhancedRoleProbabilities.first,
       secondProbs: enhancedRoleProbabilities.second,
@@ -9568,6 +9573,16 @@ raceRouter.get("/race", async (req, res, next) => {
       attackProbs: explicitAttackScenarioProbabilities,
       survivalProbs: explicitSurvivalProbabilities
     });
+    const roleBasedOrderCandidates = [...new Map([
+      ...scenarioTreeOrderCandidates.map((row) => [row.combo, {
+        combo: row.combo,
+        probability: toNum(row?.probability, 0) + toNum(row?.rank_bonus, 0),
+        reason_tags: row.reason_tags || []
+      }]),
+      ...roleBasedOrderCandidatesBase.map((row) => [row.combo, row])
+    ]).values()]
+      .sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0))
+      .slice(0, 18);
     const finalBalanceAdjustmentJson = buildFinalBalanceAdjustmentSummary({
       ranking,
       recommendedBets: bet_plan_with_stake.recommended_bets,
@@ -9987,8 +10002,14 @@ raceRouter.get("/race", async (req, res, next) => {
       enhanced_second_place_probability_json: enhancedRoleProbabilities.second,
       enhanced_third_place_probability_json: enhancedRoleProbabilities.third,
       hit_rate_enhancement_json: hitRateEnhancement,
+      scenarioProbabilities: hitRateEnhancement?.scenarioProbabilities || [],
+      finishProbabilitiesByScenario: hitRateEnhancement?.finishProbabilitiesByScenario || [],
+      aggregatedFinishProbabilities: hitRateEnhancement?.aggregatedFinishProbabilities || {},
+      expandedShapeTickets: shapeBasedTrifectaTickets || [],
       style_profile_by_lane_json: hitRateEnhancement?.stage1_static?.style_profile_by_lane || {},
       escape_score: toNullableNum(hitRateEnhancement?.stage1_static?.escape_score),
+      start_development_states_json: hitRateEnhancement?.startDevelopmentStates || {},
+      intermediate_events_json: hitRateEnhancement?.intermediateEvents || {},
       start_edge_by_lane_json: hitRateEnhancement?.stage2_dynamic?.start_edge_by_lane || {},
       late_risk_by_lane_json: hitRateEnhancement?.stage2_dynamic?.late_risk_by_lane || {},
       hidden_f_by_lane_json: hitRateEnhancement?.stage1_static?.hidden_F_by_lane || {},
@@ -9998,6 +10019,9 @@ raceRouter.get("/race", async (req, res, next) => {
       enhanced_scenario_probabilities_json: hitRateEnhancement?.stage3_scenarios?.selected_scenario_probabilities || [],
       enhanced_ticket_shape_json: shapeRecommendation || null,
       enhanced_ticket_shape_reason: shapeRecommendation?.why_shape_chosen || null,
+      recommendedShape: shapeRecommendation || null,
+      expandedShapeTickets: shapeBasedTrifectaTickets || [],
+      scenario_tree_order_candidates_json: scenarioTreeOrderCandidates || [],
       dark_horse_alerts_json: hitRateEnhancement?.dark_horse_alerts || [],
       outside_head_promotion_gate_json: candidateDistributions.outside_head_promotion_gate_json || {},
       partner_search_bias_json: headScenarioBalanceAnalysis.partner_search_bias_json,
@@ -10183,6 +10207,12 @@ raceRouter.get("/race", async (req, res, next) => {
       enhanced_second_place_probability_json: snapshotContext.enhanced_second_place_probability_json,
       enhanced_third_place_probability_json: snapshotContext.enhanced_third_place_probability_json,
       hit_rate_enhancement_json: snapshotContext.hit_rate_enhancement_json,
+      scenarioProbabilities: snapshotContext.scenarioProbabilities,
+      finishProbabilitiesByScenario: snapshotContext.finishProbabilitiesByScenario,
+      aggregatedFinishProbabilities: snapshotContext.aggregatedFinishProbabilities,
+      start_development_states_json: snapshotContext.start_development_states_json,
+      intermediate_events_json: snapshotContext.intermediate_events_json,
+      scenario_tree_order_candidates_json: snapshotContext.scenario_tree_order_candidates_json,
       style_profile_by_lane_json: snapshotContext.style_profile_by_lane_json,
       escape_score: snapshotContext.escape_score,
       start_edge_by_lane_json: snapshotContext.start_edge_by_lane_json,
@@ -10194,6 +10224,8 @@ raceRouter.get("/race", async (req, res, next) => {
       enhanced_scenario_probabilities_json: snapshotContext.enhanced_scenario_probabilities_json,
       enhanced_ticket_shape_json: snapshotContext.enhanced_ticket_shape_json,
       enhanced_ticket_shape_reason: snapshotContext.enhanced_ticket_shape_reason,
+      recommendedShape: snapshotContext.recommendedShape,
+      expandedShapeTickets: snapshotContext.expandedShapeTickets,
       dark_horse_alerts_json: snapshotContext.dark_horse_alerts_json,
       outside_head_promotion_gate_json: snapshotContext.outside_head_promotion_gate_json,
       partner_search_bias_json: snapshotContext.partner_search_bias_json,

@@ -101,6 +101,238 @@ function normalizeCombo(combo) {
   return parts.join("-");
 }
 
+function normalizeScenarioRows(rows) {
+  const total = safeArray(rows).reduce((sum, row) => sum + Math.max(0, toNum(row?.probability, 0)), 0);
+  if (total <= 0) {
+    return safeArray(rows).map((row) => ({
+      ...row,
+      probability: 0
+    }));
+  }
+  return safeArray(rows)
+    .map((row) => ({
+      ...row,
+      probability: round(Math.max(0, toNum(row?.probability, 0)) / total, 4)
+    }))
+    .sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0));
+}
+
+function buildIntermediateEvents(laneMap, escapeScore, outerAttackPressure) {
+  const lane1 = laneMap.get(1) || {};
+  const lane2 = laneMap.get(2) || {};
+  const lane3 = laneMap.get(3) || {};
+  const lane4 = laneMap.get(4) || {};
+  const boat1Out = toNum(lane1.start_edge, 0) < 0.015 || toNum(lane1.hidden_F_flag, 0) === 1 ? 1 : 0;
+  const boat1Hollow = toNum(lane1.late_risk, 0) >= 0.16 || escapeScore < 0.24 ? 1 : 0;
+  const boat2Out = toNum(lane2.start_edge, 0) >= 0.045 ? 1 : 0;
+  const boat2Hollow = toNum(lane2.late_risk, 0) >= 0.16 ? 1 : 0;
+  const boat3AttackReady =
+    (toNum(lane3.style_profile?.makuri, 0) >= 58 || toNum(lane3.style_profile?.makuri_sashi, 0) >= 58) &&
+    toNum(lane3.start_edge, 0) >= 0.03
+      ? 1
+      : 0;
+  const boat4CadoReady =
+    toNum(lane4.style_profile?.makuri, 0) >= 60 &&
+    toNum(lane4.start_edge, 0) >= 0.035 &&
+    toNum(lane4.lane_fit_1st, 0) >= 38
+      ? 1
+      : 0;
+  const innerStable = escapeScore >= 0.28 && boat1Out === 0 && boat1Hollow === 0 ? 1 : 0;
+  const innerCollapse = boat1Out === 1 || boat1Hollow === 1 || outerAttackPressure >= 0.18 ? 1 : 0;
+  const outerPressure = outerAttackPressure >= 0.14 || boat3AttackReady === 1 || boat4CadoReady === 1 ? 1 : 0;
+  return {
+    boat1_out: boat1Out,
+    boat1_hollow: boat1Hollow,
+    boat2_out: boat2Out,
+    boat2_hollow: boat2Hollow,
+    boat3_attack_ready: boat3AttackReady,
+    boat4_cado_ready: boat4CadoReady,
+    inner_stable: innerStable,
+    inner_collapse: innerCollapse,
+    outer_pressure: outerPressure
+  };
+}
+
+function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore) {
+  let first = 1;
+  let second = 1;
+  let third = 1;
+  const laneFit1 = toNum(row?.lane_fit_1st, 0) / 100;
+  const laneFit2 = toNum(row?.lane_fit_2ren, 0) / 100;
+  const laneFit3 = toNum(row?.lane_fit_3ren, 0) / 100;
+  const lapBoost = Math.max(0, 6.82 - toNum(row?.motor_form?.lapTime, 6.82)) * 0.6;
+  const stretchBoost = Math.max(0, toNum(row?.motor_form?.lapExStretch, 0)) * 0.02;
+  const motor2 = toNum(row?.motor_raw?.motor2ren, 0) / 100;
+  const motor3 = toNum(row?.motor_raw?.motor3ren, 0) / 100;
+  const motorTrue = toNum(row?.motor_true, 0) / 100;
+  const startEdge = Math.max(-0.08, toNum(row?.start_edge, 0));
+  const lateRisk = toNum(row?.late_risk, 0);
+  const hiddenF = toNum(row?.hidden_F_flag, 0);
+
+  first += laneFit1 * 0.28 + motorTrue * 0.12 + lapBoost * 0.16 + startEdge * 0.7 - lateRisk * 0.28 - hiddenF * 0.16;
+  second += laneFit2 * 0.3 + motor2 * 0.22 + startEdge * 0.3 + stretchBoost * 0.15 - lateRisk * 0.16 - hiddenF * 0.06;
+  third += laneFit3 * 0.34 + motor3 * 0.24 + stretchBoost * 0.22 + toNum(row?.safe_run_bias, 0) * 0.4 - lateRisk * 0.12 - hiddenF * 0.03;
+
+  if (lane === 1) first += 0.18 + escapeScore * 0.14;
+
+  switch (scenario) {
+    case "boat1_escape":
+      if (lane === 1) first += 0.32;
+      if (lane === 2 || lane === 3) second += 0.12;
+      if (lane >= 2 && lane <= 4) third += 0.12;
+      break;
+    case "boat2_sashi":
+      if (lane === 2) {
+        second += 0.26;
+        first += events.boat1_hollow ? 0.06 : -0.04;
+      }
+      if (lane === 1) {
+        first += 0.16;
+        second += 0.08;
+      }
+      if (lane === 3 || lane === 4) third += 0.1;
+      break;
+    case "boat2_direct_makuri":
+      if (lane === 2) first += 0.22;
+      if (lane === 1) {
+        first -= 0.16;
+        second += 0.14;
+      }
+      if (lane === 3 || lane === 4) second += 0.1;
+      break;
+    case "boat3_makuri":
+      if (lane === 3) first += 0.26;
+      if (lane === 1) {
+        first -= 0.12;
+        second += 0.15;
+      }
+      if (lane === 2) third += 0.12;
+      break;
+    case "boat3_makuri_sashi":
+      if (lane === 3) {
+        second += 0.22;
+        first += events.boat1_hollow ? 0.08 : -0.02;
+      }
+      if (lane === 1) {
+        first += 0.1;
+        second += 0.05;
+      }
+      if (lane === 2 || lane === 4) third += 0.1;
+      break;
+    case "boat4_cado_attack":
+      if (lane === 4) first += 0.24;
+      if (lane === 1) {
+        first -= 0.09;
+        second += 0.14;
+      }
+      if (lane === 3) third += 0.1;
+      break;
+    case "outer_mix_chaos":
+      if (lane >= 3) first += 0.08;
+      if (lane === 1) {
+        first -= 0.08;
+        second += 0.04;
+        third += 0.06;
+      }
+      break;
+    default:
+      break;
+  }
+
+  return {
+    first: Math.max(0.05, first),
+    second: Math.max(0.05, second),
+    third: Math.max(0.05, third)
+  };
+}
+
+function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, events, escapeScore) {
+  const finishProbabilitiesByScenario = [];
+  const laneSet = [...new Set([
+    ...Object.keys(baseProbs?.first || {}).map((lane) => toInt(lane, null)),
+    ...Object.keys(baseProbs?.second || {}).map((lane) => toInt(lane, null)),
+    ...Object.keys(baseProbs?.third || {}).map((lane) => toInt(lane, null)),
+    ...[...laneMap.keys()]
+  ].filter(Number.isInteger))].sort((a, b) => a - b);
+
+  const aggregatedFirst = new Map();
+  const aggregatedSecond = new Map();
+  const aggregatedThird = new Map();
+  const orderMap = new Map();
+
+  for (const scenarioRow of safeArray(scenarioRows)) {
+    const scenario = String(scenarioRow?.scenario || "");
+    const scenarioProbability = toNum(scenarioRow?.probability, 0);
+    const firstRows = [];
+    const secondRows = [];
+    const thirdRows = [];
+    for (const lane of laneSet) {
+      const row = laneMap.get(lane) || {};
+      const roleWeights = roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore);
+      firstRows.push({ lane, weight: toNum(baseProbs?.first?.[lane], 0) * roleWeights.first });
+      secondRows.push({ lane, weight: toNum(baseProbs?.second?.[lane], 0) * roleWeights.second });
+      thirdRows.push({ lane, weight: toNum(baseProbs?.third?.[lane], 0) * roleWeights.third });
+    }
+    const normalizedFirst = normalizeRows(firstRows);
+    const normalizedSecond = normalizeRows(secondRows);
+    const normalizedThird = normalizeRows(thirdRows);
+
+    finishProbabilitiesByScenario.push({
+      scenario,
+      probability: scenarioProbability,
+      first: normalizedFirst,
+      second: normalizedSecond,
+      third: normalizedThird
+    });
+
+    for (const row of normalizedFirst) {
+      aggregatedFirst.set(row.lane, toNum(aggregatedFirst.get(row.lane), 0) + scenarioProbability * toNum(row.weight, 0));
+    }
+    for (const row of normalizedSecond) {
+      aggregatedSecond.set(row.lane, toNum(aggregatedSecond.get(row.lane), 0) + scenarioProbability * toNum(row.weight, 0));
+    }
+    for (const row of normalizedThird) {
+      aggregatedThird.set(row.lane, toNum(aggregatedThird.get(row.lane), 0) + scenarioProbability * toNum(row.weight, 0));
+    }
+
+    const topFirst = normalizedFirst.slice(0, 3);
+    const topSecond = normalizedSecond.slice(0, 4);
+    const topThird = normalizedThird.slice(0, 5);
+    for (const a of topFirst) {
+      for (const b of topSecond) {
+        for (const c of topThird) {
+          const combo = normalizeCombo(`${a.lane}-${b.lane}-${c.lane}`);
+          if (!combo) continue;
+          const orderProbability = scenarioProbability * toNum(a.weight, 0) * toNum(b.weight, 0) * toNum(c.weight, 0) * 7.8;
+          const existing = orderMap.get(combo);
+          orderMap.set(combo, {
+            combo,
+            probability: round(toNum(existing?.probability, 0) + orderProbability, 6),
+            scenario_support: [
+              ...new Set([...
+                safeArray(existing?.scenario_support),
+                scenario
+              ])
+            ]
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    finishProbabilitiesByScenario,
+    aggregatedFinishProbabilities: {
+      first: normalizeRows([...aggregatedFirst.entries()].map(([lane, weight]) => ({ lane, weight }))),
+      second: normalizeRows([...aggregatedSecond.entries()].map(([lane, weight]) => ({ lane, weight }))),
+      third: normalizeRows([...aggregatedThird.entries()].map(([lane, weight]) => ({ lane, weight })))
+    },
+    orderProbabilities: [...orderMap.values()]
+      .sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0))
+      .slice(0, 24)
+  };
+}
+
 export function buildHitRateEnhancementContext({
   ranking,
   race,
@@ -302,7 +534,21 @@ export function buildHitRateEnhancementContext({
         Math.max(0, 0.34 - escapeScore) * 0.46
       ), 4)
     }
-  ].sort((a, b) => b.probability - a.probability);
+  ];
+  const normalizedScenarioProbabilities = normalizeScenarioRows(scenarioProbabilities);
+  const intermediateEvents = buildIntermediateEvents(laneMap, escapeScore, outerAttackPressure);
+  const baseRoleProbabilities = {
+    first: Object.fromEntries(normalizeRows(roleProbabilityLayers?.first_place_probability_json).map((row) => [row.lane, row.weight])),
+    second: Object.fromEntries(normalizeRows(roleProbabilityLayers?.second_place_probability_json).map((row) => [row.lane, row.weight])),
+    third: Object.fromEntries(normalizeRows(roleProbabilityLayers?.third_place_probability_json).map((row) => [row.lane, row.weight]))
+  };
+  const treeAggregation = aggregateScenarioFinishProbabilities(
+    normalizedScenarioProbabilities,
+    laneMap,
+    baseRoleProbabilities,
+    intermediateEvents,
+    escapeScore
+  );
 
   const darkHorseAlerts = [
     toNum(laneMap.get(4)?.lane_fit_1st, 0) >= 46 && String(rows.find((row) => toInt(row?.racer?.lane, null) === 4)?.racer?.class || "") === "B1"
@@ -334,6 +580,24 @@ export function buildHitRateEnhancementContext({
       }]))
     },
     stage2_dynamic: {
+      start_development_states: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
+        lane_avgST: row.lane_avgST,
+        lane_STrank: row.lane_STrank,
+        exhibition_st: row.exhibition_st,
+        start_edge: row.start_edge,
+        late_risk: row.late_risk,
+        hidden_F_flag: row.hidden_F_flag,
+        start_caution_penalty: row.start_caution_penalty,
+        launch_state_bonus: row.launch_state_bonus,
+        style_attack_readiness: round(
+          Math.max(
+            toNum(row.style_profile?.sashi, 0),
+            toNum(row.style_profile?.makuri, 0),
+            toNum(row.style_profile?.makuri_sashi, 0)
+          ) / 100,
+          4
+        )
+      }])),
       start_edge_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.start_edge])),
       late_risk_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.late_risk])),
       motor_form_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.motor_form])),
@@ -346,7 +610,8 @@ export function buildHitRateEnhancementContext({
       }]))
     },
     stage3_scenarios: {
-      selected_scenario_probabilities: scenarioProbabilities
+      selected_scenario_probabilities: normalizedScenarioProbabilities,
+      intermediate_events: intermediateEvents
     },
     stage4_opponents: {
       head_candidate_set: pickTopLanes(roleProbabilityLayers?.first_place_probability_json, 3),
@@ -356,12 +621,26 @@ export function buildHitRateEnhancementContext({
     },
     stage5_ticketing: {
       selected_ticket_shape: null,
-      shape_reason: null
+      shape_reason: null,
+      finish_probabilities_by_scenario: treeAggregation.finishProbabilitiesByScenario,
+      aggregated_finish_probabilities: treeAggregation.aggregatedFinishProbabilities,
+      order_probabilities: treeAggregation.orderProbabilities
     },
     confidence: toNum(confidence, 0),
     by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row])),
     dark_horse_alerts: darkHorseAlerts,
-    race_flow_summary: raceFlow || null
+    race_flow_summary: raceFlow || null,
+    scenarioProbabilities: normalizedScenarioProbabilities,
+    finishProbabilitiesByScenario: treeAggregation.finishProbabilitiesByScenario,
+    aggregatedFinishProbabilities: treeAggregation.aggregatedFinishProbabilities,
+    treeOrderProbabilities: treeAggregation.orderProbabilities,
+    startDevelopmentStates: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
+      start_edge: row.start_edge,
+      late_risk: row.late_risk,
+      hidden_F_flag: row.hidden_F_flag,
+      style_profile: row.style_profile
+    }])),
+    intermediateEvents
   };
 }
 
@@ -371,6 +650,14 @@ export function applyHitRateEnhancementToProbabilities({
   thirdProbs,
   enhancement
 }) {
+  const treeAggregated = enhancement?.aggregatedFinishProbabilities || enhancement?.stage5_ticketing?.aggregated_finish_probabilities;
+  if (treeAggregated?.first && treeAggregated?.second && treeAggregated?.third) {
+    return {
+      first: normalizeRows(treeAggregated.first),
+      second: normalizeRows(treeAggregated.second),
+      third: normalizeRows(treeAggregated.third)
+    };
+  }
   const firstMap = mapByLane(firstProbs);
   const secondMap = mapByLane(secondProbs);
   const thirdMap = mapByLane(thirdProbs);
@@ -431,6 +718,24 @@ export function applyHitRateEnhancementToProbabilities({
     second: applyByRole(secondMap, "second"),
     third: applyByRole(thirdMap, "third")
   };
+}
+
+export function buildScenarioTreeOrderCandidates(enhancement, confidence) {
+  const confFactor = clamp(0.9, 1.08, toNum(confidence, 50) / 64);
+  return safeArray(enhancement?.treeOrderProbabilities || enhancement?.stage5_ticketing?.order_probabilities)
+    .map((row, index) => ({
+      combo: normalizeCombo(row?.combo),
+      probability: round(toNum(row?.probability, 0) * confFactor, 4),
+      reason_tags: [
+        "SCENARIO_TREE",
+        ...safeArray(row?.scenario_support).map((scenario) => `SCENARIO_${scenario.toUpperCase()}`)
+      ],
+      scenario_support: safeArray(row?.scenario_support),
+      rank_bonus: round(0.0015 - index * 0.00008, 4)
+    }))
+    .filter((row) => row.combo)
+    .sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0))
+    .slice(0, 18);
 }
 
 export function buildEnhancedTrifectaShapeRecommendation({
@@ -573,6 +878,12 @@ export function buildEnhancedShapeBasedTrifectaTickets({
   const secondMap = mapByLane(secondProbs);
   const thirdMap = mapByLane(thirdProbs);
   const laneRows = enhancement?.by_lane || {};
+  const treeOrderMap = new Map(
+    safeArray(enhancement?.treeOrderProbabilities || enhancement?.stage5_ticketing?.order_probabilities).map((row) => [
+      normalizeCombo(row?.combo),
+      toNum(row?.probability, 0)
+    ])
+  );
   const confidenceFactor = clamp(0.9, 1.12, toNum(confidence, 50) / 60);
   return safeArray(shapeRecommendation.expanded_tickets)
     .map((combo, index) => {
@@ -587,10 +898,13 @@ export function buildEnhancedShapeBasedTrifectaTickets({
       const probability = clamp(
         0,
         1,
-        toNum(firstMap.get(a), 0) *
+        (
+          toNum(treeOrderMap.get(normalized), 0) * 4.4 +
+          toNum(firstMap.get(a), 0) *
           toNum(secondMap.get(b), 0) *
           toNum(thirdMap.get(c), 0) *
-          (8.2 + roleSupport * 2.8) *
+          (8.2 + roleSupport * 2.8)
+        ) *
           confidenceFactor
       );
       return {
