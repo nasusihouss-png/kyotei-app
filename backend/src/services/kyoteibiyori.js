@@ -19,6 +19,131 @@ const EXPECTED_FIELDS = [
   "lane3RenRate"
 ];
 
+const PREDICTION_FIELD_META_CONFIG = {
+  lapTime: { key: "lapTime", minConfidence: 0.6, required: true },
+  exhibitionST: { key: "exhibitionST", minConfidence: 0.6, required: true },
+  lapExStretch: { key: "lapExStretch", minConfidence: 0.6, required: true },
+  motor2ren: { key: "motor2ren", minConfidence: 0.6, required: true },
+  motor3ren: { key: "motor3ren", minConfidence: 0.5, required: false },
+  lane1stAvg: { key: "lane1stAvg", minConfidence: 0.6, required: true },
+  lane2renAvg: { key: "lane2renAvg", minConfidence: 0.6, required: true },
+  lane3renAvg: { key: "lane3renAvg", minConfidence: 0.6, required: true },
+  fCount: { key: "fCount", minConfidence: 0.5, required: false }
+};
+
+function clampConfidence(value) {
+  return Number(Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0)).toFixed(3));
+}
+
+function baseSourceConfidence(source) {
+  if (!source) return 0;
+  if (String(source).includes("request_oriten_kaiseki_custom")) return 0.97;
+  if (String(source).includes("race_shusso_html")) return 0.93;
+  if (String(source).includes("boatrace_profile_lane_stats")) return 0.78;
+  if (String(source).includes("boatrace_racelist")) return 0.74;
+  if (String(source).includes("boatrace_official")) return 0.76;
+  return 0.68;
+}
+
+function makePredictionFieldMeta({ field, value, source, debugEntry, required = false, minConfidence = 0.6 }) {
+  const hasValue = value !== null && value !== undefined && Number.isFinite(Number(value));
+  if (!hasValue) {
+    return {
+      value: null,
+      source: source || null,
+      confidence: 0,
+      is_usable: false,
+      required,
+      reason: "missing"
+    };
+  }
+  let confidence = baseSourceConfidence(source);
+  if (debugEntry && typeof debugEntry === "object") {
+    if (Number.isFinite(Number(debugEntry?.value ?? debugEntry?.avg ?? debugEntry?.finalValue))) confidence += 0.05;
+    if (debugEntry?.section || debugEntry?.metric || debugEntry?.sourceLabel) confidence += 0.03;
+    if (Array.isArray(debugEntry?.availablePeriods)) {
+      const count = debugEntry.availablePeriods.length;
+      confidence += count >= 4 ? 0.08 : count >= 2 ? 0.02 : -0.08;
+    }
+  }
+  if (field === "motor3ren") confidence -= 0.04;
+  if (field === "fCount") confidence -= 0.06;
+  const normalizedConfidence = clampConfidence(confidence);
+  return {
+    value: Number(value),
+    source: source || null,
+    confidence: normalizedConfidence,
+    is_usable: !!source && normalizedConfidence >= minConfidence,
+    required,
+    reason: !!source
+      ? normalizedConfidence >= minConfidence
+        ? "verified"
+        : "confidence_below_threshold"
+      : "unknown_source"
+  };
+}
+
+function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fieldDebugs }) {
+  const laneSources = fieldSources?.[lane] || {};
+  const laneDebug = fieldDebugs?.[lane] || {};
+  const getFieldMeta = (field, options) => makePredictionFieldMeta({
+    field,
+    value: options.value,
+    source: options.source,
+    debugEntry: options.debugEntry,
+    required: PREDICTION_FIELD_META_CONFIG[field]?.required,
+    minConfidence: PREDICTION_FIELD_META_CONFIG[field]?.minConfidence
+  });
+
+  return {
+    lapTime: getFieldMeta("lapTime", {
+      value: extra?.lapTime ?? racer?.lapTime ?? null,
+      source: laneSources.lapTimeRaw || laneSources.lapTime || (Number.isFinite(Number(racer?.lapTime)) ? "boatrace_racelist" : null),
+      debugEntry: laneDebug?.lapTime || null
+    }),
+    exhibitionST: getFieldMeta("exhibitionST", {
+      value: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
+      source: laneSources.exhibitionSt || (Number.isFinite(Number(racer?.exhibitionSt)) ? "boatrace_racelist" : null),
+      debugEntry: laneDebug?.exhibitionST || null
+    }),
+    lapExStretch: getFieldMeta("lapExStretch", {
+      value: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExStretch ?? racer?.lapExhibitionScore ?? null,
+      source: laneSources.lapExStretch || laneSources.lapExhibitionScore || null,
+      debugEntry: laneDebug?.lapExStretch || null
+    }),
+    motor2ren: getFieldMeta("motor2ren", {
+      value: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2ren ?? racer?.motor2Rate ?? null,
+      source: laneSources.motor2Rate || (Number.isFinite(Number(racer?.motor2Rate ?? racer?.motor2ren)) ? "boatrace_official" : null),
+      debugEntry: laneDebug?.motor2ren || null
+    }),
+    motor3ren: getFieldMeta("motor3ren", {
+      value: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3ren ?? racer?.motor3Rate ?? null,
+      source: laneSources.motor3Rate || (Number.isFinite(Number(racer?.motor3Rate ?? racer?.motor3ren)) ? "boatrace_official" : null),
+      debugEntry: laneDebug?.motor3ren || null
+    }),
+    lane1stAvg: getFieldMeta("lane1stAvg", {
+      value: extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
+      source: laneSources.laneFirstRate || (Number.isFinite(Number(racer?.lane1stAvg ?? racer?.laneFirstRate)) ? "boatrace_profile_lane_stats" : null),
+      debugEntry: laneDebug?.lane1stRate || null
+    }),
+    lane2renAvg: getFieldMeta("lane2renAvg", {
+      value: extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
+      source: laneSources.lane2RenRate || (Number.isFinite(Number(racer?.lane2renAvg ?? racer?.lane2RenRate)) ? "boatrace_profile_lane_stats" : null),
+      debugEntry: laneDebug?.lane2renRate || null
+    }),
+    lane3renAvg: getFieldMeta("lane3renAvg", {
+      value: extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
+      source: laneSources.lane3RenRate || (Number.isFinite(Number(racer?.lane3renAvg ?? racer?.lane3RenRate)) ? "boatrace_profile_lane_stats" : null),
+      debugEntry: laneDebug?.lane3renRate || null
+    }),
+    fCount: getFieldMeta("fCount", {
+      value: extra?.fCount ?? racer?.fHoldCount ?? null,
+      source: laneSources.fCount || (Number.isFinite(Number(racer?.fHoldCount)) ? "boatrace_racelist" : null),
+      debugEntry: laneDebug?.fCount || null
+    })
+  };
+}
+
 function normalizeSpace(value) {
   return String(value || "")
     .normalize("NFKC")
@@ -1444,10 +1569,19 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
 
 export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
   const byLane = kyoteiBiyori?.byLane instanceof Map ? kyoteiBiyori.byLane : new Map();
+  const fieldSources = kyoteiBiyori?.fieldSources || {};
+  const fieldDebugs = kyoteiBiyori?.fieldDebugs || {};
   return (racers || []).map((racer) => {
     try {
       const lane = Number(racer?.lane);
       const extra = byLane.get(lane) || {};
+      const predictionFieldMeta = buildPredictionFieldMetaForLane({
+        lane,
+        extra,
+        racer,
+        fieldSources,
+        fieldDebugs
+      });
       return {
         ...racer,
         name: extra?.playerName || racer?.name || null,
@@ -1502,7 +1636,8 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         lane3renRate_1m: extra?.lane3renRate_1m ?? racer?.lane3renRate_1m ?? null,
         lane3renRate_sum: extra?.lane3renRate_sum ?? racer?.lane3renRate_sum ?? null,
         lane3renRate_avg: extra?.lane3renRate_avg ?? racer?.lane3renRate_avg ?? null,
-        lane3renRate_weighted: extra?.lane3renRate_weighted ?? racer?.lane3renRate_weighted ?? null
+        lane3renRate_weighted: extra?.lane3renRate_weighted ?? racer?.lane3renRate_weighted ?? null,
+        predictionFieldMeta
       };
     } catch {
       return {
@@ -1522,7 +1657,14 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         motor3ren: null,
         lane1stAvg: null,
         lane2renAvg: null,
-        lane3renAvg: null
+        lane3renAvg: null,
+        predictionFieldMeta: buildPredictionFieldMetaForLane({
+          lane: Number(racer?.lane),
+          extra: {},
+          racer,
+          fieldSources: {},
+          fieldDebugs: {}
+        })
       };
     }
   });

@@ -15,6 +15,18 @@ function toNullableNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function getPredictionFieldMeta(racer, field) {
+  const meta = racer?.predictionFieldMeta?.[field];
+  return meta && typeof meta === "object"
+    ? meta
+    : { value: null, source: null, confidence: 0, is_usable: false, reason: "missing" };
+}
+
+function getUsablePredictionValue(racer, field, fallbackValue = null) {
+  const meta = getPredictionFieldMeta(racer, field);
+  return meta?.is_usable ? toNullableNumber(meta.value) : fallbackValue;
+}
+
 function buildAscendingRanks(valuesByLane) {
   const valid = valuesByLane
     .filter((v) => Number.isFinite(v.value))
@@ -32,25 +44,27 @@ export function buildFeatures(racer) {
   const class_score = CLASS_SCORE[racer?.class] ?? 0;
   const nationwide_win_rate = toNumber(racer?.nationwideWinRate, 0);
   const local_win_rate = toNumber(racer?.localWinRate, 0);
-  const motor2_rate = toNumber(racer?.motor2Rate, 0);
-  const motor3_rate = toNumber(racer?.motor3Rate, 0);
   const boat2_rate = toNumber(racer?.boat2Rate, 0);
   const weight = toNumber(racer?.weight, 0);
   const avg_st_raw = racer?.avgSt;
   const avg_st = Number.isFinite(Number(avg_st_raw)) ? Number(avg_st_raw) : null;
-  const local_minus_nation = local_win_rate - nationwide_win_rate;
-  const motor_boat_avg = (motor2_rate + boat2_rate) / 2;
-  const st_inv = avg_st && avg_st > 0 ? 1 / avg_st : 0;
-  const is_inner = lane >= 1 && lane <= 3 ? 1 : 0;
-  const is_outer = lane >= 5 && lane <= 6 ? 1 : 0;
+  const prediction_field_meta = {
+    lapTime: getPredictionFieldMeta(racer, "lapTime"),
+    exhibitionST: getPredictionFieldMeta(racer, "exhibitionST"),
+    lapExStretch: getPredictionFieldMeta(racer, "lapExStretch"),
+    motor2ren: getPredictionFieldMeta(racer, "motor2ren"),
+    motor3ren: getPredictionFieldMeta(racer, "motor3ren"),
+    lane1stAvg: getPredictionFieldMeta(racer, "lane1stAvg"),
+    lane2renAvg: getPredictionFieldMeta(racer, "lane2renAvg"),
+    lane3renAvg: getPredictionFieldMeta(racer, "lane3renAvg"),
+    fCount: getPredictionFieldMeta(racer, "fCount")
+  };
   const exhibition_time_raw = racer?.kyoteiBiyoriExhibitionTime ?? racer?.exhibitionTime;
   const exhibition_time =
     Number.isFinite(Number(exhibition_time_raw)) ? Number(exhibition_time_raw) : null;
-  const exhibition_st_raw = racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt;
-  const exhibition_st =
-    Number.isFinite(Number(exhibition_st_raw)) ? Number(exhibition_st_raw) : null;
-  const lap_time = toNullableNumber(racer?.kyoteiBiyoriLapTime ?? racer?.lapTime);
-  const lap_exhibition_score = toNullableNumber(racer?.kyoteiBiyoriLapExhibitionScore ?? racer?.lapExhibitionScore);
+  const exhibition_st = getUsablePredictionValue(racer, "exhibitionST", null);
+  const lap_time = getUsablePredictionValue(racer, "lapTime", null);
+  const lap_exhibition_score = getUsablePredictionValue(racer, "lapExStretch", null);
   const entry_course_raw = racer?.entryCourse;
   const entry_course =
     Number.isFinite(Number(entry_course_raw)) ? Number(entry_course_raw) : null;
@@ -66,10 +80,24 @@ export function buildFeatures(racer) {
   const course4_3rate = toNullableNumber(racer?.course4_3rate ?? racer?.course4_3Rate);
   const course_change = entry_course && lane ? (entry_course !== lane ? 1 : 0) : 0;
   const tilt_bonus = tilt === 0.5 ? 2 : 0;
-  const laneFirstRate = toNullableNumber(racer?.lane1stAvg ?? racer?.laneFirstRate);
-  const lane2RenRate = toNullableNumber(racer?.lane2renAvg ?? racer?.lane2RenRate);
-  const lane3RenRate = toNullableNumber(racer?.lane3renAvg ?? racer?.lane3RenRate);
-  const lapExStretch = toNullableNumber(racer?.lapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore ?? racer?.lapExhibitionScore);
+  const laneFirstRate = getUsablePredictionValue(racer, "lane1stAvg", null);
+  const lane2RenRate = getUsablePredictionValue(racer, "lane2renAvg", null);
+  const lane3RenRate = getUsablePredictionValue(racer, "lane3renAvg", null);
+  const lapExStretch = getUsablePredictionValue(racer, "lapExStretch", null);
+  const motor2_rate = prediction_field_meta.motor2ren?.is_usable
+    ? toNullableNumber(prediction_field_meta.motor2ren.value)
+    : (Number.isFinite(Number(racer?.motor2Rate)) ? Number(racer.motor2Rate) : null);
+  const motor3_rate = prediction_field_meta.motor3ren?.is_usable
+    ? toNullableNumber(prediction_field_meta.motor3ren.value)
+    : (Number.isFinite(Number(racer?.motor3Rate)) ? Number(racer.motor3Rate) : null);
+  const f_hold_count = prediction_field_meta.fCount?.is_usable
+    ? Math.max(0, toNumber(prediction_field_meta.fCount.value, 0))
+    : (Number.isFinite(Number(racer?.fHoldCount)) ? Math.max(0, toNumber(racer?.fHoldCount, 0)) : null);
+  const local_minus_nation = local_win_rate - nationwide_win_rate;
+  const motor_boat_avg = ((Number.isFinite(motor2_rate) ? motor2_rate : 0) + boat2_rate) / 2;
+  const st_inv = avg_st && avg_st > 0 ? 1 / avg_st : 0;
+  const is_inner = lane >= 1 && lane <= 3 ? 1 : 0;
+  const is_outer = lane >= 5 && lane <= 6 ? 1 : 0;
 
   return {
     lane,
@@ -111,6 +139,7 @@ export function buildFeatures(racer) {
     laneFirstRate,
     lane2RenRate,
     lane3RenRate,
+    prediction_field_meta,
     lane_avg_st: avg_st,
     lane_st_rank: null,
     hidden_f_flag: 0,
@@ -153,7 +182,7 @@ export function buildFeatures(racer) {
     lap_time_rank: null,
     lap_attack_flag: 0,
     lap_attack_strength: 0,
-    f_hold_count: Math.max(0, toNumber(racer?.fHoldCount, 0)),
+    f_hold_count,
     f_hold_bias_applied: 0,
     expected_actual_st_adjustment: 0,
     expected_actual_st: null,
@@ -212,9 +241,12 @@ export function buildRaceFeatures(racers, raceContext = {}) {
   );
   const expectedActualStByLane = base.map((item) => {
     const lane = item.features.lane;
-    const fHoldCount = Math.max(0, toNumber(item.racer?.fHoldCount ?? item.features?.f_hold_count, 0));
+    const fHoldMeta = item.features?.prediction_field_meta?.fCount || {};
+    const fHoldCount = fHoldMeta?.is_usable
+      ? Math.max(0, toNumber(item.features?.f_hold_count ?? item.racer?.fHoldCount, 0))
+      : null;
     const insideBias = lane >= 1 && lane <= 3 ? 0.01 : lane === 4 ? 0.005 : 0;
-    const baseOffset = fHoldCount > 0 ? 0.02 + Math.min(0.02, (fHoldCount - 1) * 0.01) : 0;
+    const baseOffset = Number.isFinite(fHoldCount) && fHoldCount > 0 ? 0.02 + Math.min(0.02, (fHoldCount - 1) * 0.01) : 0;
     const adjustment = Number((baseOffset + insideBias).toFixed(3));
     const exhibitionSt = Number.isFinite(item.features.exhibition_st) ? item.features.exhibition_st : null;
     const avgSt = Number.isFinite(item.features.avg_st) ? item.features.avg_st : null;
@@ -335,10 +367,10 @@ export function buildRaceFeatures(racers, raceContext = {}) {
           Number.isFinite(bestLapTime) && Number.isFinite(f.lap_time)
             ? Number((f.lap_time - bestLapTime).toFixed(3))
             : 0,
-        f_hold_count: expectedActualStMeta.fHoldCount ?? 0,
-        f_hold_bias_applied: (expectedActualStMeta.fHoldCount ?? 0) > 0 ? 1 : 0,
-        hidden_f_flag: (expectedActualStMeta.fHoldCount ?? 0) > 0 ? 1 : 0,
-        unresolved_f_count: expectedActualStMeta.fHoldCount ?? 0,
+        f_hold_count: Number.isFinite(expectedActualStMeta.fHoldCount) ? expectedActualStMeta.fHoldCount : null,
+        f_hold_bias_applied: Number.isFinite(expectedActualStMeta.fHoldCount) && expectedActualStMeta.fHoldCount > 0 ? 1 : 0,
+        hidden_f_flag: Number.isFinite(expectedActualStMeta.fHoldCount) && expectedActualStMeta.fHoldCount > 0 ? 1 : 0,
+        unresolved_f_count: Number.isFinite(expectedActualStMeta.fHoldCount) ? expectedActualStMeta.fHoldCount : null,
         expected_actual_st_adjustment: expectedActualStMeta.adjustment ?? 0,
         expected_actual_st: expectedActualStMeta.expectedActualSt ?? null,
         expected_actual_st_inv:
@@ -346,11 +378,11 @@ export function buildRaceFeatures(racers, raceContext = {}) {
             ? Number((1 / expectedActualStMeta.expectedActualSt).toFixed(6))
             : 0,
         f_hold_caution_penalty:
-          (expectedActualStMeta.fHoldCount ?? 0) > 0
+          Number.isFinite(expectedActualStMeta.fHoldCount) && expectedActualStMeta.fHoldCount > 0
             ? Number((2 + (expectedActualStMeta.adjustment ?? 0) * 120).toFixed(2))
             : 0,
         start_caution_penalty:
-          (expectedActualStMeta.fHoldCount ?? 0) > 0
+          Number.isFinite(expectedActualStMeta.fHoldCount) && expectedActualStMeta.fHoldCount > 0
             ? Number((2 + (expectedActualStMeta.adjustment ?? 0) * 120).toFixed(2))
             : 0,
         motor_true: Number((

@@ -11,13 +11,17 @@ function clamp(min, max, value) {
   return Math.max(min, Math.min(max, value));
 }
 
+function isUsableField(f, field) {
+  return !!f?.prediction_field_meta?.[field]?.is_usable;
+}
+
 function buildFetchedSignalScoreBreakdown(f) {
   const lapTimeContribution = Number(
     clamp(
       0,
       28,
-      Math.max(0, 7 - (f.lap_time_rank ?? 6)) * 3.1 +
-        Math.max(0, (f.lap_time_delta_vs_front ?? 0)) * 95 +
+      (isUsableField(f, "lapTime") ? Math.max(0, 7 - (f.lap_time_rank ?? 6)) * 3.1 : 0) +
+        (isUsableField(f, "lapTime") ? Math.max(0, (f.lap_time_delta_vs_front ?? 0)) * 95 : 0) +
         Math.max(0, f.lap_attack_strength || 0) * 0.5
     ).toFixed(2)
   );
@@ -25,16 +29,16 @@ function buildFetchedSignalScoreBreakdown(f) {
     clamp(
       0,
       18,
-      Math.max(0, 7 - (f.st_rank ?? 6)) * 2 +
+      (isUsableField(f, "exhibitionST") ? Math.max(0, 7 - (f.st_rank ?? 6)) * 2 : 0) +
         Math.max(0, 7 - (f.expected_actual_st_rank ?? 6)) * 2 +
         (f.slit_alert_flag ? 2.5 : 0)
     ).toFixed(2)
   );
   const motor2renContribution = Number(
-    clamp(0, 20, (f.motor2_rate || 0) * 0.24 + Math.max(0, 7 - (f.exhibition_rank ?? 6)) * 0.8).toFixed(2)
+    clamp(0, 20, (isUsableField(f, "motor2ren") ? (f.motor2_rate || 0) * 0.24 : 0) + Math.max(0, 7 - (f.exhibition_rank ?? 6)) * 0.8).toFixed(2)
   );
   const motor3renContribution = Number(
-    clamp(0, 12, Number.isFinite(f.motor3_rate) ? f.motor3_rate * 0.12 : 0).toFixed(2)
+    clamp(0, 12, isUsableField(f, "motor3ren") && Number.isFinite(f.motor3_rate) ? f.motor3_rate * 0.12 : 0).toFixed(2)
   );
   return {
     lap_time_contribution: lapTimeContribution,
@@ -55,8 +59,8 @@ export function calcRacerScore(f) {
   score += f.class_score * 4.0;
   score += f.nationwide_win_rate * 1.8;
   score += f.local_win_rate * 2.2;
-  score += f.motor2_rate * 0.26;
-  score += (f.motor3_rate || 0) * 0.06;
+  score += (isUsableField(f, "motor2ren") && Number.isFinite(f.motor2_rate) ? f.motor2_rate : 0) * 0.26;
+  score += (isUsableField(f, "motor3ren") && Number.isFinite(f.motor3_rate) ? f.motor3_rate : 0) * 0.06;
   score += f.boat2_rate * 0.18;
   score += f.st_inv * 24;
   score += (f.expected_actual_st_inv || 0) * 16;

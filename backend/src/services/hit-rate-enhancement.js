@@ -160,10 +160,14 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore) {
   const laneFit1 = toNum(row?.lane_fit_1st, 0) / 100;
   const laneFit2 = toNum(row?.lane_fit_2ren, 0) / 100;
   const laneFit3 = toNum(row?.lane_fit_3ren, 0) / 100;
-  const lapBoost = Math.max(0, 6.82 - toNum(row?.motor_form?.lapTime, 6.82)) * 0.6;
-  const stretchBoost = Math.max(0, toNum(row?.motor_form?.lapExStretch, 0)) * 0.02;
-  const motor2 = toNum(row?.motor_raw?.motor2ren, 0) / 100;
-  const motor3 = toNum(row?.motor_raw?.motor3ren, 0) / 100;
+  const lapBoost = row?.prediction_data_usage?.lapTime?.used
+    ? Math.max(0, 6.82 - toNum(row?.motor_form?.lapTime, 6.82)) * 0.6
+    : 0;
+  const stretchBoost = row?.prediction_data_usage?.lapExStretch?.used
+    ? Math.max(0, toNum(row?.motor_form?.lapExStretch, 0)) * 0.02
+    : 0;
+  const motor2 = row?.prediction_data_usage?.motor2ren?.used ? toNum(row?.motor_raw?.motor2ren, 0) / 100 : 0;
+  const motor3 = row?.prediction_data_usage?.motor3ren?.used ? toNum(row?.motor_raw?.motor3ren, 0) / 100 : 0;
   const motorTrue = toNum(row?.motor_true, 0) / 100;
   const startEdge = Math.max(-0.08, toNum(row?.start_edge, 0));
   const lateRisk = toNum(row?.late_risk, 0);
@@ -333,6 +337,16 @@ function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, 
   };
 }
 
+function buildFieldUsage(meta) {
+  return {
+    used: !!meta?.is_usable && !!meta?.source,
+    source: meta?.source || null,
+    confidence: round(toNum(meta?.confidence, 0), 3),
+    is_usable: !!meta?.is_usable,
+    reason: meta?.reason || (!meta?.source ? "missing" : "skipped")
+  };
+}
+
 export function buildHitRateEnhancementContext({
   ranking,
   race,
@@ -363,6 +377,18 @@ export function buildHitRateEnhancementContext({
       Number.isFinite(features?.lane_fit_3ren) ? features.lane_fit_3ren : null,
       Number.isFinite(features?.lane3RenRate) ? features.lane3RenRate : null
     ]);
+    const predictionFieldMeta = features?.prediction_field_meta || {};
+    const predictionDataUsage = {
+      lapTime: buildFieldUsage(predictionFieldMeta?.lapTime),
+      exhibitionST: buildFieldUsage(predictionFieldMeta?.exhibitionST),
+      lapExStretch: buildFieldUsage(predictionFieldMeta?.lapExStretch),
+      motor2ren: buildFieldUsage(predictionFieldMeta?.motor2ren),
+      motor3ren: buildFieldUsage(predictionFieldMeta?.motor3ren),
+      lane1stAvg: buildFieldUsage(predictionFieldMeta?.lane1stAvg),
+      lane2renAvg: buildFieldUsage(predictionFieldMeta?.lane2renAvg),
+      lane3renAvg: buildFieldUsage(predictionFieldMeta?.lane3renAvg),
+      fCount: buildFieldUsage(predictionFieldMeta?.fCount)
+    };
     const motorTrue = Number.isFinite(features?.motor_true)
       ? features.motor_true
       : (
@@ -422,14 +448,15 @@ export function buildHitRateEnhancementContext({
       lane_fit_3ren: laneFit3ren === null ? null : round(laneFit3ren, 2),
       lane_fit_local: Number.isFinite(features?.lane_fit_local) ? round(features.lane_fit_local, 2) : null,
       lane_fit_grade: Number.isFinite(features?.lane_fit_grade) ? round(features.lane_fit_grade, 2) : null,
+      prediction_data_usage: predictionDataUsage,
       motor_raw: {
-        motor2ren: Number.isFinite(features?.motor2_rate) ? round(features.motor2_rate, 2) : null,
-        motor3ren: Number.isFinite(features?.motor3_rate) ? round(features.motor3_rate, 2) : null
+        motor2ren: predictionDataUsage.motor2ren.used && Number.isFinite(features?.motor2_rate) ? round(features.motor2_rate, 2) : null,
+        motor3ren: predictionDataUsage.motor3ren.used && Number.isFinite(features?.motor3_rate) ? round(features.motor3_rate, 2) : null
       },
       motor_true: round(motorTrue, 2),
       motor_form: {
-        lapTime: Number.isFinite(features?.lap_time) ? round(features.lap_time, 2) : null,
-        lapExStretch: Number.isFinite(features?.lap_exhibition_score) ? round(features.lap_exhibition_score, 2) : null,
+        lapTime: predictionDataUsage.lapTime.used && Number.isFinite(features?.lap_time) ? round(features.lap_time, 2) : null,
+        lapExStretch: predictionDataUsage.lapExStretch.used && Number.isFinite(features?.lap_exhibition_score) ? round(features.lap_exhibition_score, 2) : null,
         exhibitionTime: Number.isFinite(features?.exhibition_time) ? round(features.exhibition_time, 2) : null
       },
       style_pressure: stylePressure,

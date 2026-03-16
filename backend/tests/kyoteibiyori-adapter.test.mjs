@@ -89,6 +89,16 @@ const normalized = normalizeKyoteiBiyoriPreRaceFields({
 });
 
 assert.equal(normalized.byLane.get(2)?.fCount, 1);
+const mergedRaceContext = mergeKyoteiBiyoriDataIntoRaceContext({
+  racers: [
+    { lane: 1, motor2Rate: 46.2, motor3Rate: 61.0, laneFirstRate: 63.2, lane2RenRate: 71.1, lane3RenRate: 80.2 },
+    { lane: 2, motor2Rate: 41.5, motor3Rate: 58.4 }
+  ],
+  kyoteiBiyori: normalized
+});
+assert.equal(mergedRaceContext[0]?.predictionFieldMeta?.motor2ren?.is_usable, true);
+assert.equal(typeof mergedRaceContext[0]?.predictionFieldMeta?.motor2ren?.source, "string");
+assert.equal(mergedRaceContext[0]?.predictionFieldMeta?.lapExStretch?.is_usable, false);
 
 const laneStatsHtml = `
   <table>

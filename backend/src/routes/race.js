@@ -2147,7 +2147,7 @@ function analyzeStartSignals(racers, entryMeta, signatureTrendContext) {
   const stRows = rows
     .map((r) => ({
       lane: toInt(r?.lane, null),
-      st: Number(r?.exhibitionST)
+      st: r?.predictionFieldMeta?.exhibitionST?.is_usable ? Number(r?.exhibitionST) : NaN
     }))
     .filter((x) => Number.isInteger(x.lane) && Number.isFinite(x.st) && x.st >= 0)
     .sort((a, b) => a.st - b.st);
@@ -4399,39 +4399,52 @@ function boostScenarioDistribution(baseRows, boosts) {
 }
 
 function computeMotor2renStrength(features) {
+  const motor2Meta = features?.prediction_field_meta?.motor2ren || {};
+  const motor2Value = motor2Meta?.is_usable
+    ? toNum(motor2Meta.value, 0)
+    : null;
   return Number(
     clamp(
       0,
       100,
-      toNum(features?.motor2_rate ?? features?.motor_2rate, 0) * 1.15 +
+      (Number.isFinite(motor2Value) ? motor2Value : 0) * 1.15 +
         toNum(features?.boat2_rate, 0) * 0.22
     ).toFixed(2)
   );
 }
 
 function computeLapExhibitionStrength(features) {
+  const lapTimeMeta = features?.prediction_field_meta?.lapTime || {};
+  const lapStretchMeta = features?.prediction_field_meta?.lapExStretch || {};
+  const exhibitionStMeta = features?.prediction_field_meta?.exhibitionST || {};
   return Number(
     clamp(
       0,
       100,
       Math.max(0, 7 - toNum(features?.lap_time_rank, 6)) * 11 +
-        Math.max(0, 6.9 - toNum(features?.lap_time, 6.9)) * 150 +
-        Math.max(0, toNum(features?.lap_exhibition_score, 0)) * 7 +
+        Math.max(0, 6.9 - (lapTimeMeta?.is_usable ? toNum(features?.lap_time, 6.9) : 6.9)) * 150 +
+        Math.max(0, lapStretchMeta?.is_usable ? toNum(features?.lap_exhibition_score, 0) : 0) * 7 +
         Math.max(0, 7 - toNum(features?.exhibition_rank, 6)) * 9 +
         Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 180 +
         Math.max(0, toNum(features?.lap_attack_strength, 0)) * 4.2 +
-        Math.max(0, 6.86 - toNum(features?.exhibition_time, 6.86)) * 120
+        Math.max(0, 6.86 - toNum(features?.exhibition_time, 6.86)) * 120 +
+        (exhibitionStMeta?.is_usable ? 2 : 0)
     ).toFixed(2)
   );
 }
 
 function computeFinishOverrideStrength(features) {
+  const lapTimeMeta = features?.prediction_field_meta?.lapTime || {};
+  const lapStretchMeta = features?.prediction_field_meta?.lapExStretch || {};
+  const motor2Meta = features?.prediction_field_meta?.motor2ren || {};
+  const motor3Meta = features?.prediction_field_meta?.motor3ren || {};
+  const exhibitionStMeta = features?.prediction_field_meta?.exhibitionST || {};
   const lapTimeContribution = Number(
     clamp(
       0,
       100,
       Math.max(0, 7 - toNum(features?.lap_time_rank, 6)) * 12 +
-        Math.max(0, 6.9 - toNum(features?.lap_time, 6.9)) * 195 +
+        Math.max(0, 6.9 - (lapTimeMeta?.is_usable ? toNum(features?.lap_time, 6.9) : 6.9)) * 195 +
         Math.max(0, toNum(features?.lap_time_delta_vs_front, 0)) * 255 +
         Math.max(0, toNum(features?.lap_attack_strength, 0)) * 2.8
     ).toFixed(2)
@@ -4439,7 +4452,7 @@ function computeFinishOverrideStrength(features) {
   const lapExhibitionContribution = computeLapExhibitionStrength(features);
   const motor2renContribution = computeMotor2renStrength(features);
   const motor3renContribution = Number(
-    clamp(0, 100, toNum(features?.motor3_rate ?? features?.motor_3rate, 0) * 0.9).toFixed(2)
+    clamp(0, 100, (motor3Meta?.is_usable ? toNum(features?.motor3_rate ?? features?.motor_3rate, 0) : 0) * 0.9).toFixed(2)
   );
   const recentPlayerContribution = Number(
     clamp(
@@ -4459,7 +4472,7 @@ function computeFinishOverrideStrength(features) {
       100,
       Math.max(0, 7 - toNum(features?.st_rank, 6)) * 10 +
         Math.max(0, 7 - toNum(features?.expected_actual_st_rank, 6)) * 11 +
-        Math.max(0, 0.18 - toNum(features?.exhibition_st, 0.18)) * 260
+        Math.max(0, 0.18 - (exhibitionStMeta?.is_usable ? toNum(features?.exhibition_st, 0.18) : 0.18)) * 260
     ).toFixed(2)
   );
   const venueFitContribution = Number(
@@ -4512,6 +4525,13 @@ function computeFinishOverrideStrength(features) {
     lap_exhibition_contribution: lapExhibitionContribution,
     motor_2ren_contribution: motor2renContribution,
     motor_3ren_contribution: motor3renContribution,
+    prediction_data_usage: {
+      lapTime: { used: !!lapTimeMeta?.is_usable, source: lapTimeMeta?.source || null, confidence: toNum(lapTimeMeta?.confidence, 0), reason: lapTimeMeta?.reason || null },
+      exhibitionST: { used: !!exhibitionStMeta?.is_usable, source: exhibitionStMeta?.source || null, confidence: toNum(exhibitionStMeta?.confidence, 0), reason: exhibitionStMeta?.reason || null },
+      lapExStretch: { used: !!lapStretchMeta?.is_usable, source: lapStretchMeta?.source || null, confidence: toNum(lapStretchMeta?.confidence, 0), reason: lapStretchMeta?.reason || null },
+      motor2ren: { used: !!motor2Meta?.is_usable, source: motor2Meta?.source || null, confidence: toNum(motor2Meta?.confidence, 0), reason: motor2Meta?.reason || null },
+      motor3ren: { used: !!motor3Meta?.is_usable, source: motor3Meta?.source || null, confidence: toNum(motor3Meta?.confidence, 0), reason: motor3Meta?.reason || null }
+    },
     recent_player_form_contribution: recentPlayerContribution,
     exhibition_time_contribution: exhibitionTimeContribution,
     exhibition_st_contribution: exhibitionStContribution,
@@ -8452,7 +8472,8 @@ function buildConfidenceScores({
   contenderSignals,
   scenarioSuggestions,
   escapePatternAnalysis,
-  race
+  race,
+  predictionDataUsage
 }) {
   const clampPct = (v) => Number(clamp(0, 100, toNum(v, 0)).toFixed(2));
   const headBase = clampPct(toNum(headConfidence?.head_confidence, 0.5) * 100);
@@ -8491,6 +8512,12 @@ function buildConfidenceScores({
     const missEx = exhibitionSignal <= 0 ? 1 : 0;
     return Math.min(12, (missPlayer + missMotor + missEx) * 4);
   })();
+  const predictionDataPenalty = Math.min(
+    22,
+    toNum(predictionDataUsage?.penalties?.head_confidence_penalty, 0) +
+      toNum(predictionDataUsage?.penalties?.top2_confidence_penalty, 0) * 0.75 +
+      toNum(predictionDataUsage?.penalties?.lane_fit_confidence_penalty, 0) * 0.55
+  );
   const topFHoldPenalty = topRows.reduce((acc, row) => acc + toNum(row?.features?.f_hold_caution_penalty, 0), 0) / Math.max(1, topRows.length);
   const mainHeadFHoldPenalty = toNum(topRows[0]?.features?.f_hold_caution_penalty, 0);
   const fHoldCautionScore = clampPct(mainHeadFHoldPenalty * 7 + topFHoldPenalty * 4);
@@ -8543,7 +8570,8 @@ function buildConfidenceScores({
       entryPenalty -
       Math.max(0, fHoldCautionScore + segmentCautionAdj) * 0.18 -
       learnedCaution -
-      missingDataPenalty
+      missingDataPenalty -
+      predictionDataPenalty
   );
   const headFixed = clampPct(headFixedRaw + segmentHeadCorrection);
   const betConfidenceRaw = clampPct(
@@ -8556,7 +8584,8 @@ function buildConfidenceScores({
       top3Concentration * 0.06 -
       Math.max(0, fHoldCautionScore + segmentCautionAdj) * 0.12 +
       learnedCaution * 0.6 -
-      Math.max(0, missingDataPenalty - 4)
+      Math.max(0, missingDataPenalty - 4) -
+      predictionDataPenalty * 0.72
   );
   const betConfidence = clampPct(betConfidenceRaw + segmentBetCorrection);
   const raceConfidence = clampPct((raceConf * 0.6 + headFixed * 0.2 + betConfidence * 0.2));
@@ -8577,6 +8606,10 @@ function buildConfidenceScores({
   if (entrySeverity !== "none") confidenceReasonTags.push("ENTRY_CHANGE_PENALTY");
   if (chaosRisk >= 70) confidenceReasonTags.push("ST_CHAOS");
   if (missingDataPenalty >= 8) confidenceReasonTags.push("INSUFFICIENT_EXHIBITION_DATA");
+  if (predictionDataPenalty >= 6) confidenceReasonTags.push("PREDICTION_FIELD_RELIABILITY_LOW");
+  if (toNum(predictionDataUsage?.penalties?.head_confidence_penalty, 0) >= 5) confidenceReasonTags.push("MISSING_LAPTIME_OR_ST");
+  if (toNum(predictionDataUsage?.penalties?.top2_confidence_penalty, 0) >= 4) confidenceReasonTags.push("MISSING_MOTOR2REN");
+  if (toNum(predictionDataUsage?.penalties?.lane_fit_confidence_penalty, 0) >= 4) confidenceReasonTags.push("MISSING_LANE_FIT");
   if (contenderOverlap < 40) confidenceReasonTags.push("WEAK_MOTOR_EXHIBITION_OVERLAP");
   if (learnedCaution >= 3.5) confidenceReasonTags.push("LEARNED_CAUTION_PENALTY");
   if (startStability < 44) confidenceReasonTags.push("START_SIGNAL_UNSTABLE");
@@ -8614,6 +8647,8 @@ function buildConfidenceScores({
     segment_bet_confidence_correction: Number(segmentBetCorrection.toFixed(2)),
     segment_participation_correction: Number(segmentParticipationCorrection.toFixed(2)),
     segment_caution_adjustment: Number(segmentCautionAdj.toFixed(2)),
+    prediction_data_penalty: Number(predictionDataPenalty.toFixed(2)),
+    prediction_data_usage: predictionDataUsage || {},
     confidence_reason_tags: [...new Set(confidenceReasonTags)],
     confidence_version: CONFIDENCE_VERSION
   };
@@ -8636,6 +8671,84 @@ function classifyWeaknessCodes({
   if (placedCount >= 8) codes.push("OVERSPREAD");
   if (!hasHit && placedCount <= 2 && top3Concentration < 0.52) codes.push("UNDERSPREAD");
   return [...new Set(codes)];
+}
+
+function buildPredictionDataUsageSummary(ranking) {
+  const rows = Array.isArray(ranking) ? ranking : [];
+  const fieldConfig = {
+    lapTime: { required: true, penalty: 6 },
+    exhibitionST: { required: true, penalty: 5 },
+    lapExStretch: { required: true, penalty: 5 },
+    motor2ren: { required: true, penalty: 5 },
+    lane1stAvg: { required: true, penalty: 4 },
+    lane2renAvg: { required: true, penalty: 4 },
+    lane3renAvg: { required: true, penalty: 4 },
+    motor3ren: { required: false, penalty: 2 },
+    fCount: { required: false, penalty: 1.5 }
+  };
+  const byLane = {};
+  const fieldSummary = {};
+  let penaltyHead = 0;
+  let penaltyTop2 = 0;
+  let penaltyLaneFit = 0;
+
+  for (const row of rows) {
+    const lane = toInt(row?.racer?.lane, null);
+    const metaMap = row?.features?.prediction_field_meta || row?.racer?.predictionFieldMeta || {};
+    if (!Number.isInteger(lane)) continue;
+    byLane[String(lane)] = {};
+    for (const [field, config] of Object.entries(fieldConfig)) {
+      const meta = metaMap?.[field] || {};
+      const entry = {
+        used: !!meta?.is_usable && !!meta?.source,
+        source: meta?.source || null,
+        confidence: toNum(meta?.confidence, 0),
+        is_usable: !!meta?.is_usable,
+        reason: meta?.reason || (!meta?.source ? "missing" : "skipped")
+      };
+      byLane[String(lane)][field] = entry;
+      if (!fieldSummary[field]) {
+        fieldSummary[field] = {
+          required: !!config.required,
+          used_count: 0,
+          missing_count: 0,
+          lanes_used: [],
+          lanes_missing: []
+        };
+      }
+      if (entry.used) {
+        fieldSummary[field].used_count += 1;
+        fieldSummary[field].lanes_used.push(lane);
+      } else {
+        fieldSummary[field].missing_count += 1;
+        fieldSummary[field].lanes_missing.push(lane);
+      }
+    }
+  }
+
+  const topRows = rows.slice(0, 3);
+  for (const row of topRows) {
+    const metaMap = row?.features?.prediction_field_meta || {};
+    if (!(metaMap?.lapTime?.is_usable)) penaltyHead += fieldConfig.lapTime.penalty;
+    if (!(metaMap?.exhibitionST?.is_usable)) penaltyHead += fieldConfig.exhibitionST.penalty * 0.8;
+    if (!(metaMap?.lapExStretch?.is_usable)) penaltyHead += fieldConfig.lapExStretch.penalty * 0.75;
+    if (!(metaMap?.motor2ren?.is_usable)) penaltyTop2 += fieldConfig.motor2ren.penalty;
+    if (!(metaMap?.lane1stAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane1stAvg.penalty * 0.8;
+    if (!(metaMap?.lane2renAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane2renAvg.penalty * 0.8;
+    if (!(metaMap?.lane3renAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane3renAvg.penalty * 0.8;
+  }
+
+  return {
+    by_lane: byLane,
+    field_summary: fieldSummary,
+    required_fields: Object.keys(fieldConfig).filter((field) => fieldConfig[field].required),
+    secondary_fields: Object.keys(fieldConfig).filter((field) => !fieldConfig[field].required),
+    penalties: {
+      head_confidence_penalty: Number(penaltyHead.toFixed(2)),
+      top2_confidence_penalty: Number(penaltyTop2.toFixed(2)),
+      lane_fit_confidence_penalty: Number(penaltyLaneFit.toFixed(2))
+    }
+  };
 }
 
 function toInt(value, fallback = null) {
@@ -9588,6 +9701,7 @@ raceRouter.get("/race", async (req, res, next) => {
       recommendedBets: bet_plan_with_stake.recommended_bets,
       headScenarioBalanceAnalysis
     });
+    const predictionDataUsage = buildPredictionDataUsageSummary(ranking);
 
     saveFeatureSnapshots(raceId, ranking);
 
@@ -9604,7 +9718,8 @@ raceRouter.get("/race", async (req, res, next) => {
       contenderSignals: contenderAdjusted.contenderSignals,
       scenarioSuggestions,
       escapePatternAnalysis,
-      race: data?.race || null
+      race: data?.race || null,
+      predictionDataUsage
     });
     const segmentCorrectionUsage = buildSegmentCorrectionUsageSummary({
       learningWeights,
@@ -9899,6 +10014,7 @@ raceRouter.get("/race", async (req, res, next) => {
       players: snapshotPlayers,
       player_summary: snapshotPlayers,
       fetched_signal_diagnostics: fetchedSignalDiagnostics,
+      prediction_data_usage: predictionDataUsage,
       recommended_shape: shapeRecommendation?.selected_shape || null,
       recommended_shape_debug: shapeRecommendation
         ? {
@@ -10163,6 +10279,7 @@ raceRouter.get("/race", async (req, res, next) => {
       confidence_calibration_source: confidenceScores.confidence_calibration_source,
       confidence_calibration_segments: confidenceScores.confidence_calibration_segments || [],
       confidence_calibration_thresholds: confidenceScores.confidence_calibration_thresholds || {},
+      prediction_data_usage: predictionDataUsage,
       scenario_labels: snapshotContext.scenario_labels,
       scenario_type: snapshotContext.scenario_type,
       scenario_match_score: snapshotContext.scenario_match_score,
@@ -10318,6 +10435,7 @@ raceRouter.get("/race", async (req, res, next) => {
       bet_confidence_calibrated: confidenceScores.bet_confidence_calibrated,
       participation_decision: participationDecision.decision,
       confidence_reason_tags: confidenceScores.confidence_reason_tags,
+      prediction_data_usage: predictionDataUsage,
       confidence_version: confidenceScores.confidence_version,
       snapshot_created_at: snapshotCreatedAt,
       race_key: raceId,

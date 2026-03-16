@@ -192,7 +192,8 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
           exhibitionST_debug: fieldDebugMaps.exhibitionST[String(racer?.lane)] || null,
           motor2ren_debug: fieldDebugMaps.motor2ren[String(racer?.lane)] || null,
           motor3ren_debug: fieldDebugMaps.motor3ren[String(racer?.lane)] || null,
-          lapExStretch_debug: fieldDebugMaps.lapExStretch[String(racer?.lane)] || null
+          lapExStretch_debug: fieldDebugMaps.lapExStretch[String(racer?.lane)] || null,
+          predictionFieldMeta: racer?.predictionFieldMeta || null
         }))
         .sort((a, b) => Number(a?.lane || 0) - Number(b?.lane || 0))
     : [];
@@ -238,6 +239,11 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     exhibitionST: fieldDebugMaps.exhibitionST,
     motor2ren: fieldDebugMaps.motor2ren,
     motor3ren: fieldDebugMaps.motor3ren,
+    prediction_field_meta: Object.fromEntries(
+      laneRows
+        .filter((row) => Number.isInteger(row?.lane))
+        .map((row) => [String(row.lane), row?.predictionFieldMeta || null])
+    ),
     fetch_success: !!kyoteiBiyori?.ok,
     fallback_reason: kyoteiBiyori?.fallbackReason || kyoteiBiyori?.error || null,
     extracted_hrefs: kyoteiBiyori?.diagnostics?.extracted_hrefs || {},

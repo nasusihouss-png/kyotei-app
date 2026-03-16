@@ -2481,6 +2481,18 @@ export default function App() {
     }
     return null;
   }, [prediction, recommendedShapeSource]);
+  const predictionDataUsageDebug = useMemo(() => {
+    if (prediction?.prediction_data_usage && typeof prediction.prediction_data_usage === "object") {
+      return prediction.prediction_data_usage;
+    }
+    if (prediction?.snapshot_context?.prediction_data_usage && typeof prediction.snapshot_context.prediction_data_usage === "object") {
+      return prediction.snapshot_context.prediction_data_usage;
+    }
+    if (prediction?.confidence_scores?.prediction_data_usage && typeof prediction.confidence_scores.prediction_data_usage === "object") {
+      return prediction.confidence_scores.prediction_data_usage;
+    }
+    return null;
+  }, [prediction]);
 
   const currentRaceKey = useMemo(
     () =>
@@ -4179,6 +4191,12 @@ export default function App() {
                     <details style={{ marginBottom: 12 }}>
                       <summary>hit-rate enhancement debug</summary>
                       <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
+                    </details>
+                  ) : null}
+                  {predictionDataUsageDebug ? (
+                    <details style={{ marginBottom: 12 }}>
+                      <summary>prediction data usage</summary>
+                      <pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre>
                     </details>
                   ) : null}
                   <div className="ticket-stack compact-list">
