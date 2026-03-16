@@ -138,18 +138,55 @@ function toNullableDebugNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function toKyoteiDebugValue(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  return toNullableDebugNumber(value);
+}
+
+function buildKyoteiBiyoriFieldDebugMaps(fieldDebugSources = {}) {
+  const result = {
+    lane1stRate: {},
+    lane2renRate: {},
+    lane3renRate: {},
+    lapTime: {},
+    exhibitionST: {},
+    motor2ren: {},
+    motor3ren: {}
+  };
+
+  for (const source of Object.values(fieldDebugSources || {})) {
+    for (const [lane, laneDebug] of Object.entries(source || {})) {
+      if (!laneDebug || typeof laneDebug !== "object") continue;
+      for (const [field, debugEntry] of Object.entries(laneDebug)) {
+        if (!Object.prototype.hasOwnProperty.call(result, field)) continue;
+        result[field][lane] = debugEntry || null;
+      }
+    }
+  }
+
+  return result;
+}
+
 function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
+  const fieldDebugMaps = buildKyoteiBiyoriFieldDebugMaps(kyoteiBiyori?.fieldDebugs || {});
   const laneRows = Array.isArray(racers)
     ? racers
         .map((racer) => ({
           lane: Number.isInteger(Number(racer?.lane)) ? Number(racer.lane) : null,
-          lane1stRate_raw: toNullableDebugNumber(racer?.laneFirstRate),
-          lane2renRate_raw: toNullableDebugNumber(racer?.lane2RenRate),
-          lane3renRate_raw: toNullableDebugNumber(racer?.lane3RenRate),
+          lane1stRate_raw: racer?.lane1stRate_raw ?? toKyoteiDebugValue(racer?.laneFirstRate),
+          lane2renRate_raw: racer?.lane2renRate_raw ?? toKyoteiDebugValue(racer?.lane2RenRate),
+          lane3renRate_raw: racer?.lane3renRate_raw ?? toKyoteiDebugValue(racer?.lane3RenRate),
           lapTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriLapTimeRaw ?? racer?.kyoteiBiyoriLapTime ?? racer?.lapTime),
           exhibitionST_raw: toNullableDebugNumber(racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt),
           motor2ren_raw: toNullableDebugNumber(racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate),
-          motor3ren_raw: toNullableDebugNumber(racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate)
+          motor3ren_raw: toNullableDebugNumber(racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate),
+          lane1stRate_debug: fieldDebugMaps.lane1stRate[String(racer?.lane)] || null,
+          lane2renRate_debug: fieldDebugMaps.lane2renRate[String(racer?.lane)] || null,
+          lane3renRate_debug: fieldDebugMaps.lane3renRate[String(racer?.lane)] || null,
+          lapTime_debug: fieldDebugMaps.lapTime[String(racer?.lane)] || null,
+          exhibitionST_debug: fieldDebugMaps.exhibitionST[String(racer?.lane)] || null,
+          motor2ren_debug: fieldDebugMaps.motor2ren[String(racer?.lane)] || null,
+          motor3ren_debug: fieldDebugMaps.motor3ren[String(racer?.lane)] || null
         }))
         .sort((a, b) => Number(a?.lane || 0) - Number(b?.lane || 0))
     : [];
@@ -168,6 +205,13 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     exhibitionST_raw: byField("exhibitionST_raw"),
     motor2ren_raw: byField("motor2ren_raw"),
     motor3ren_raw: byField("motor3ren_raw"),
+    lane1stRate: fieldDebugMaps.lane1stRate,
+    lane2renRate: fieldDebugMaps.lane2renRate,
+    lane3renRate: fieldDebugMaps.lane3renRate,
+    lapTime: fieldDebugMaps.lapTime,
+    exhibitionST: fieldDebugMaps.exhibitionST,
+    motor2ren: fieldDebugMaps.motor2ren,
+    motor3ren: fieldDebugMaps.motor3ren,
     fetch_success: !!kyoteiBiyori?.ok,
     fallback_reason: kyoteiBiyori?.fallbackReason || kyoteiBiyori?.error || null,
     extracted_hrefs: kyoteiBiyori?.diagnostics?.extracted_hrefs || {},

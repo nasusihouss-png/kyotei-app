@@ -277,6 +277,533 @@ function extractTableMaps(html) {
     .filter((table) => table.headers.length > 0);
 }
 
+const FIELD_DEBUG_NAME_MAP = {
+  laneFirstRate: "lane1stRate",
+  lane2RenRate: "lane2renRate",
+  lane3RenRate: "lane3renRate",
+  lapTimeRaw: "lapTime",
+  exhibitionSt: "exhibitionST",
+  motor2Rate: "motor2ren",
+  motor3Rate: "motor3ren"
+};
+
+const LANE_STAT_PERIODS = {
+  season: {
+    labels: ["今季", "今期"],
+    canonical: "今季",
+    debugKey: "season",
+    weight: 0.2
+  },
+  m6: {
+    labels: ["直近6か月", "直近6ヶ月"],
+    canonical: "直近6か月",
+    debugKey: "m6",
+    weight: 0.2
+  },
+  m3: {
+    labels: ["直近3か月", "直近3ヶ月"],
+    canonical: "直近3か月",
+    debugKey: "m3",
+    weight: 0.35
+  },
+  m1: {
+    labels: ["直近1か月", "直近1ヶ月"],
+    canonical: "直近1か月",
+    debugKey: "m1",
+    weight: 0.25
+  }
+};
+
+const LANE_STAT_FIELD_CONFIG = {
+  laneFirstRate: {
+    debugField: "lane1stRate",
+    metricLabel: "1着率",
+    periodsKey: "lane1stRate_raw",
+    periodFields: {
+      season: "lane1stRate_season",
+      m6: "lane1stRate_6m",
+      m3: "lane1stRate_3m",
+      m1: "lane1stRate_1m"
+    },
+    sumField: "lane1stRate_sum",
+    avgField: "lane1stRate_avg",
+    weightedField: "lane1stRate_weighted"
+  },
+  lane2RenRate: {
+    debugField: "lane2renRate",
+    metricLabel: "2連率",
+    periodsKey: "lane2renRate_raw",
+    periodFields: {
+      season: "lane2renRate_season",
+      m6: "lane2renRate_6m",
+      m3: "lane2renRate_3m",
+      m1: "lane2renRate_1m"
+    },
+    sumField: "lane2renRate_sum",
+    avgField: "lane2renRate_avg",
+    weightedField: "lane2renRate_weighted"
+  },
+  lane3RenRate: {
+    debugField: "lane3renRate",
+    metricLabel: "3連率",
+    periodsKey: "lane3renRate_raw",
+    periodFields: {
+      season: "lane3renRate_season",
+      m6: "lane3renRate_6m",
+      m3: "lane3renRate_3m",
+      m1: "lane3renRate_1m"
+    },
+    sumField: "lane3renRate_sum",
+    avgField: "lane3renRate_avg",
+    weightedField: "lane3renRate_weighted"
+  }
+};
+
+function compactJapaneseLabel(value) {
+  return normalizeDigits(normalizeSpace(value))
+    .replace(/\s+/g, "")
+    .replace(/[：:]/g, "")
+    .trim();
+}
+
+function canonicalizeExplicitSectionLabel(value) {
+  const text = compactJapaneseLabel(value);
+  if (!text) return null;
+  if (text.includes("枠別勝率") || text.includes("枠別情報")) return "枠別勝率";
+  if (text.includes("直前情報")) return "直前情報";
+  if (text.includes("モーター2連率") || text.includes("モーター2連対率")) return "モーター2連率";
+  if (text.includes("モーター3連率") || text.includes("モーター3連対率")) return "モーター3連率";
+  if (text.includes("モーター")) return "モーター";
+  return null;
+}
+
+function canonicalizeExplicitMetricLabel(value) {
+  const text = compactJapaneseLabel(value);
+  if (!text) return null;
+  if (/^周回(?:タイム)?$/.test(text)) return "周回";
+  if (/^(?:展示)?ST$/.test(text)) return "ST";
+  if (/^展示(?:タイム)?$/.test(text)) return "展示";
+  if (/^周り足$/.test(text)) return "周り足";
+  if (/^直線$/.test(text)) return "直線";
+  if (/^モーター?2(?:連率|連対率)$/.test(text)) return "モーター2連率";
+  if (/^モーター?3(?:連率|連対率)$/.test(text)) return "モーター3連率";
+  if (/^1着率$/.test(text)) return "1着率";
+  if (/^(?:2連率|2連対率)$/.test(text)) return "2連率";
+  if (/^(?:3連率|3連対率)$/.test(text)) return "3連率";
+  return null;
+}
+
+function canonicalizeExplicitTimeWindowLabel(value) {
+  const text = compactJapaneseLabel(value);
+  if (!text) return null;
+  for (const [periodKey, config] of Object.entries(LANE_STAT_PERIODS)) {
+    if (config.labels.map((label) => compactJapaneseLabel(label)).includes(text)) return periodKey;
+  }
+  if (text === "当地") return "当地";
+  if (text === "一般戦") return "一般戦";
+  return null;
+}
+
+function normalizeLaneStatPeriodValues(periods = {}) {
+  const normalized = {};
+  for (const key of Object.keys(LANE_STAT_PERIODS)) {
+    const value = toFiniteNumberOrNull(periods?.[key]);
+    normalized[key] = value;
+  }
+  return normalized;
+}
+
+function aggregateLaneStatPeriods(periods = {}) {
+  const normalized = normalizeLaneStatPeriodValues(periods);
+  const available = Object.entries(normalized).filter(([, value]) => value !== null);
+  if (!available.length) {
+    return {
+      raw: normalized,
+      sum: null,
+      avg: null,
+      weighted: null
+    };
+  }
+
+  const sum = Number(available.reduce((acc, [, value]) => acc + Number(value), 0).toFixed(4));
+  const avg = Number((sum / available.length).toFixed(4));
+  const totalWeight = available.reduce((acc, [periodKey]) => acc + Number(LANE_STAT_PERIODS[periodKey]?.weight || 0), 0);
+  const weighted =
+    totalWeight > 0
+      ? Number(
+          (
+            available.reduce(
+              (acc, [periodKey, value]) => acc + Number(value) * Number(LANE_STAT_PERIODS[periodKey]?.weight || 0),
+              0
+            ) / totalWeight
+          ).toFixed(4)
+        )
+      : null;
+
+  return {
+    raw: normalized,
+    sum,
+    avg,
+    weighted
+  };
+}
+
+function hydrateLaneStatAggregateFields(row = {}) {
+  const next = { ...row };
+  for (const [baseField, config] of Object.entries(LANE_STAT_FIELD_CONFIG)) {
+    const periods = {};
+    for (const [periodKey, fieldName] of Object.entries(config.periodFields)) {
+      periods[periodKey] = toFiniteNumberOrNull(next?.[fieldName]);
+    }
+    const aggregate = aggregateLaneStatPeriods(periods);
+    next[config.periodsKey] = aggregate.raw;
+    next[config.sumField] = aggregate.sum;
+    next[config.avgField] = aggregate.avg;
+    next[config.weightedField] = aggregate.weighted;
+    next[baseField] = aggregate.weighted;
+  }
+  return next;
+}
+
+function normalizeLaneStatAggregateFields(row = {}) {
+  const next = { ...row };
+  for (const [baseField, config] of Object.entries(LANE_STAT_FIELD_CONFIG)) {
+    for (const [periodKey, fieldName] of Object.entries(config.periodFields)) {
+      next[fieldName] = toFiniteNumberOrNull(next?.[fieldName]);
+    }
+    const normalizedPeriods = normalizeLaneStatPeriodValues(next?.[config.periodsKey] || {});
+    for (const [periodKey, fieldName] of Object.entries(config.periodFields)) {
+      if (next[fieldName] === null && normalizedPeriods[periodKey] !== null) {
+        next[fieldName] = normalizedPeriods[periodKey];
+      }
+    }
+    const aggregate = aggregateLaneStatPeriods(
+      Object.fromEntries(
+        Object.entries(config.periodFields).map(([periodKey, fieldName]) => [periodKey, next?.[fieldName]])
+      )
+    );
+    next[config.periodsKey] = aggregate.raw;
+    next[config.sumField] = aggregate.sum;
+    next[config.avgField] = aggregate.avg;
+    next[config.weightedField] = aggregate.weighted;
+    next[baseField] = aggregate.weighted ?? toFiniteNumberOrNull(next?.[baseField]);
+  }
+  return next;
+}
+
+function detectExplicitBoatHeaderLane(text) {
+  const normalized = compactJapaneseLabel(text);
+  const exact = normalized.match(/^([1-6])号艇$/);
+  if (exact) return Number(exact[1]);
+  return null;
+}
+
+function findExplicitBoatColumnHeader(table) {
+  for (const row of table.rows || []) {
+    const laneColumns = new Map();
+    const laneHeaders = {};
+    for (const cell of row.cells || []) {
+      const lane = detectExplicitBoatHeaderLane(cell?.rawText);
+      if (!Number.isInteger(lane)) continue;
+      laneColumns.set(lane, cell.cellIndex);
+      laneHeaders[lane] = normalizeSpace(cell.rawText) || `${lane}号艇`;
+    }
+    if (laneColumns.size === 6) {
+      return {
+        headerRowIndex: row.rowIndex,
+        laneColumns,
+        laneHeaders
+      };
+    }
+  }
+  return null;
+}
+
+function collectTableContextLabels(table) {
+  const labels = [];
+  const captionText = normalizeSpace(table.$table.find("caption").first().text());
+  if (captionText) labels.push(captionText);
+  const tableText = normalizeSpace(table.text);
+  if (tableText) labels.push(tableText);
+  return labels;
+}
+
+function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextLabels = [] }) {
+  const sectionCandidates = [...rowLabels, ...tableContextLabels]
+    .map(canonicalizeExplicitSectionLabel)
+    .filter(Boolean);
+  const metricCandidates = rowLabels
+    .map(canonicalizeExplicitMetricLabel)
+    .filter(Boolean);
+  const timeWindowCandidates = rowLabels
+    .map(canonicalizeExplicitTimeWindowLabel)
+    .filter(Boolean);
+
+  const section = sectionCandidates[0] || null;
+  const metric = metricCandidates[0] || null;
+  const timeWindow = timeWindowCandidates[0] || null;
+
+  if (mode === "lane_stats") {
+    if (section !== "枠別勝率") return null;
+    if (!Object.prototype.hasOwnProperty.call(LANE_STAT_PERIODS, timeWindow)) return null;
+    const period = timeWindow;
+    const periodLabel = LANE_STAT_PERIODS[period]?.canonical || period;
+    if (metric === "1着率") return { field: "laneFirstRate", section, row: metric, period, periodLabel };
+    if (metric === "2連率") return { field: "lane2RenRate", section, row: metric, period, periodLabel };
+    if (metric === "3連率") return { field: "lane3RenRate", section, row: metric, period, periodLabel };
+    return null;
+  }
+
+  if (mode === "pre_race") {
+    if (metric === "周回") return { field: "lapTimeRaw", section: section || "直前情報", row: "周回" };
+    if (metric === "ST") return { field: "exhibitionSt", section: section || "直前情報", row: "ST" };
+
+    if (metric === "モーター2連率") {
+      return { field: "motor2Rate", section: section || "モーター2連率", row: "モーター2連率" };
+    }
+    if (metric === "モーター3連率") {
+      return { field: "motor3Rate", section: section || "モーター3連率", row: "モーター3連率" };
+    }
+    if (section === "モーター" && metric === "2連率") {
+      return { field: "motor2Rate", section: "モーター", row: "2連率" };
+    }
+    if (section === "モーター" && metric === "3連率") {
+      return { field: "motor3Rate", section: "モーター", row: "3連率" };
+    }
+    return null;
+  }
+
+  return null;
+}
+
+function parseExplicitTargetCell(field, rawText) {
+  if (field === "lapTimeRaw") {
+    const lapTimeRaw = parseDecimal(rawText);
+    return {
+      fields: {
+        lapTimeRaw,
+        lapTime: lapTimeRaw !== null ? normalizeLapTimeForModel(lapTimeRaw) : null
+      },
+      value: lapTimeRaw
+    };
+  }
+
+  if (field === "exhibitionSt") {
+    const parsed = parseStartTimingRaw(rawText);
+    const value = parsed.type === "normal" ? parsed.numeric : null;
+    return {
+      fields: { exhibitionSt: value },
+      value
+    };
+  }
+
+  if (field === "motor2Rate") {
+    const value = parsePercent(rawText);
+    return {
+      fields: { motor2Rate: value },
+      value
+    };
+  }
+
+  if (field === "motor3Rate") {
+    const value = parsePercent(rawText);
+    return {
+      fields: { motor3Rate: value },
+      value
+    };
+  }
+
+  if (field === "laneFirstRate") {
+    const value = parsePercent(rawText);
+    return {
+      fields: { laneFirstRate: value },
+      value
+    };
+  }
+
+  if (field === "lane2RenRate") {
+    const value = parsePercent(rawText);
+    return {
+      fields: { lane2RenRate: value },
+      value
+    };
+  }
+
+  if (field === "lane3RenRate") {
+    const value = parsePercent(rawText);
+    return {
+      fields: { lane3RenRate: value },
+      value
+    };
+  }
+
+  return {
+    fields: {},
+    value: null
+  };
+}
+
+function buildLaneStatPeriodFields(field, period, value) {
+  const config = LANE_STAT_FIELD_CONFIG[field];
+  if (!config || !period || !Object.prototype.hasOwnProperty.call(config.periodFields, period)) {
+    return { fields: {}, value };
+  }
+  return {
+    fields: {
+      [config.periodFields[period]]: value
+    },
+    value
+  };
+}
+
+function setLaneFieldDebug(fieldDebugs, lane, field, debugEntry) {
+  if (!fieldDebugs[lane]) fieldDebugs[lane] = {};
+  fieldDebugs[lane][field] = debugEntry;
+}
+
+function parseHtmlSupplementExplicit(html, options = {}) {
+  const byLane = new Map();
+  const fieldSources = {};
+  const fieldDebugs = {};
+  const tableDiagnostics = [];
+  const tables = extractTableMaps(html);
+
+  for (const table of tables) {
+    const boatHeader = findExplicitBoatColumnHeader(table);
+    if (!boatHeader) continue;
+
+    const tableContextLabels = collectTableContextLabels(table);
+    const matchedTargets = [];
+    const cellMatches = [];
+
+    for (const row of table.rows || []) {
+      if (row.rowIndex === boatHeader.headerRowIndex) continue;
+      const firstBoatColumn = Math.min(...boatHeader.laneColumns.values());
+      const rowLabels = row.cells
+        .filter((cell) => cell.cellIndex < firstBoatColumn)
+        .map((cell) => normalizeSpace(cell.rawText))
+        .filter(Boolean);
+
+      if (!rowLabels.length) continue;
+
+      const target = resolveExplicitFieldMatch({
+        mode: options?.mode || "all",
+        rowLabels,
+        tableContextLabels
+      });
+      if (!target) continue;
+
+      matchedTargets.push({
+        row_index: row.rowIndex,
+        section_label: target.section,
+        row_labels: rowLabels,
+        matched_field: FIELD_DEBUG_NAME_MAP[target.field] || target.field
+      });
+
+      for (let lane = 1; lane <= 6; lane += 1) {
+        const columnIndex = boatHeader.laneColumns.get(lane);
+        const columnHeader = boatHeader.laneHeaders[lane] || `${lane}号艇`;
+        const cell = row.cells.find((candidate) => candidate.cellIndex === columnIndex);
+        const rawCellText = normalizeSpace(cell?.rawText);
+        const parsedBase = parseExplicitTargetCell(target.field, rawCellText);
+        const parsed =
+          options?.mode === "lane_stats"
+            ? buildLaneStatPeriodFields(target.field, target.period, parsedBase.value)
+            : parsedBase;
+        const current = byLane.get(lane) || {};
+
+        byLane.set(lane, {
+          ...current,
+          ...parsed.fields
+        });
+
+        if (parsed.value !== null) {
+          const laneFieldSources = fieldSources[lane] || {};
+          laneFieldSources[target.field] = options?.sourceLabel || "race_shusso_html";
+          fieldSources[lane] = laneFieldSources;
+        }
+
+        const debugEntry = {
+          section: target.section,
+          metric: target.row,
+          period: target.period ? LANE_STAT_PERIODS[target.period]?.canonical || target.period : null,
+          row: target.period ? LANE_STAT_PERIODS[target.period]?.canonical || target.period : target.row,
+          column: columnHeader,
+          raw: rawCellText || null,
+          value: parsed.value
+        };
+        if (options?.mode === "lane_stats") {
+          const laneField = FIELD_DEBUG_NAME_MAP[target.field] || target.field;
+          if (!fieldDebugs[lane]) fieldDebugs[lane] = {};
+          if (!fieldDebugs[lane][laneField] || typeof fieldDebugs[lane][laneField] !== "object") {
+            fieldDebugs[lane][laneField] = {};
+          }
+          fieldDebugs[lane][laneField][LANE_STAT_PERIODS[target.period]?.debugKey || target.period] = debugEntry;
+        } else {
+          setLaneFieldDebug(fieldDebugs, lane, FIELD_DEBUG_NAME_MAP[target.field] || target.field, debugEntry);
+        }
+        cellMatches.push({
+          lane,
+          field: FIELD_DEBUG_NAME_MAP[target.field] || target.field,
+          section_label: debugEntry.section,
+          metric_label: debugEntry.metric || debugEntry.row,
+          period_label: debugEntry.period,
+          row_label: debugEntry.row,
+          column_header: debugEntry.column,
+          raw_cell_text: debugEntry.raw,
+          normalized_value: debugEntry.value
+        });
+      }
+    }
+
+    if ((options?.mode || "all") === "lane_stats") {
+      for (const [lane, row] of byLane.entries()) {
+        const hydrated = hydrateLaneStatAggregateFields(row);
+        byLane.set(lane, hydrated);
+        const laneDebug = fieldDebugs?.[lane] || {};
+        for (const config of Object.values(LANE_STAT_FIELD_CONFIG)) {
+          const fieldDebug = laneDebug?.[config.debugField];
+          if (!fieldDebug || typeof fieldDebug !== "object") continue;
+          const aggregate = aggregateLaneStatPeriods(
+            Object.fromEntries(
+              Object.keys(LANE_STAT_PERIODS).map((periodKey) => [periodKey, fieldDebug?.[periodKey]?.value ?? null])
+            )
+          );
+          laneDebug[config.debugField] = {
+            season: fieldDebug?.season || null,
+            m6: fieldDebug?.m6 || null,
+            m3: fieldDebug?.m3 || null,
+            m1: fieldDebug?.m1 || null,
+            sum: aggregate.sum,
+            avg: aggregate.avg,
+            weighted: aggregate.weighted
+          };
+        }
+        fieldDebugs[lane] = laneDebug;
+      }
+    }
+
+    tableDiagnostics.push({
+      mode: options?.mode || "all",
+      context_labels: tableContextLabels,
+      header_row_index: boatHeader.headerRowIndex,
+      boat_columns: Object.fromEntries(
+        [...boatHeader.laneColumns.entries()].map(([lane, columnIndex]) => [
+          String(lane),
+          {
+            column_index: columnIndex,
+            header_text: boatHeader.laneHeaders[lane] || `${lane}号艇`
+          }
+        ])
+      ),
+      matched_targets: matchedTargets,
+      cell_matches: cellMatches
+    });
+  }
+
+  return { byLane, fieldSources, fieldDebugs, tableDiagnostics };
+}
+
 function detectLaneText(text) {
   const normalized = normalizeText(text);
   const direct = normalized.match(/^(?:艇番|コース|枠)?\s*([1-6])$/);
@@ -706,12 +1233,35 @@ function mergeLaneMaps(target, source, fieldSources, sourceLabel) {
 }
 
 export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
-  const supplement = parseHtmlSupplementStrict(html, options);
+  const baseSupplement = parseHtmlSupplement(html);
+  const supplement = parseHtmlSupplementExplicit(html, options);
+  const targetFields = new Set([
+    "laneFirstRate",
+    "lane2RenRate",
+    "lane3RenRate",
+    "lapTime",
+    "lapTimeRaw",
+    "exhibitionSt",
+    "motor2Rate",
+    "motor3Rate"
+  ]);
+  const byLane = new Map();
+  const fieldSources = {};
+
+  mergeLaneMaps(byLane, baseSupplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
+  for (const [lane, row] of byLane.entries()) {
+    const cleaned = { ...(row || {}) };
+    for (const field of targetFields) delete cleaned[field];
+    byLane.set(lane, cleaned);
+  }
+  mergeLaneMaps(byLane, supplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
+
   return {
-    byLane: supplement.byLane,
-    fieldSources: supplement.fieldSources,
-    tableDiagnostics: supplement.tableDiagnostics,
-    fieldDiagnostics: buildFieldDiagnostics(supplement.byLane, supplement.fieldSources)
+    byLane,
+    fieldSources,
+    fieldDebugs: supplement.fieldDebugs,
+    tableDiagnostics: [...(baseSupplement.tableDiagnostics || []), ...(supplement.tableDiagnostics || [])],
+    fieldDiagnostics: buildFieldDiagnostics(byLane, fieldSources)
   };
 }
 
@@ -719,7 +1269,7 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
   const normalizedByLane = new Map();
   const fieldSources = parsed?.fieldSources || {};
   for (const [lane, row] of parsed?.byLane || []) {
-    normalizedByLane.set(Number(lane), {
+    const normalizedRow = normalizeLaneStatAggregateFields({
       playerName: row?.playerName || null,
       fCount: toFiniteNumberOrNull(row?.fCount),
       lapTime: toFiniteNumberOrNull(row?.lapTime),
@@ -732,12 +1282,38 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       motor3Rate: toFiniteNumberOrNull(row?.motor3Rate),
       laneFirstRate: toFiniteNumberOrNull(row?.laneFirstRate),
       lane2RenRate: toFiniteNumberOrNull(row?.lane2RenRate),
-      lane3RenRate: toFiniteNumberOrNull(row?.lane3RenRate)
+      lane3RenRate: toFiniteNumberOrNull(row?.lane3RenRate),
+      lane1stRate_raw: row?.lane1stRate_raw || null,
+      lane1stRate_season: row?.lane1stRate_season,
+      lane1stRate_6m: row?.lane1stRate_6m,
+      lane1stRate_3m: row?.lane1stRate_3m,
+      lane1stRate_1m: row?.lane1stRate_1m,
+      lane1stRate_sum: row?.lane1stRate_sum,
+      lane1stRate_avg: row?.lane1stRate_avg,
+      lane1stRate_weighted: row?.lane1stRate_weighted,
+      lane2renRate_raw: row?.lane2renRate_raw || null,
+      lane2renRate_season: row?.lane2renRate_season,
+      lane2renRate_6m: row?.lane2renRate_6m,
+      lane2renRate_3m: row?.lane2renRate_3m,
+      lane2renRate_1m: row?.lane2renRate_1m,
+      lane2renRate_sum: row?.lane2renRate_sum,
+      lane2renRate_avg: row?.lane2renRate_avg,
+      lane2renRate_weighted: row?.lane2renRate_weighted,
+      lane3renRate_raw: row?.lane3renRate_raw || null,
+      lane3renRate_season: row?.lane3renRate_season,
+      lane3renRate_6m: row?.lane3renRate_6m,
+      lane3renRate_3m: row?.lane3renRate_3m,
+      lane3renRate_1m: row?.lane3renRate_1m,
+      lane3renRate_sum: row?.lane3renRate_sum,
+      lane3renRate_avg: row?.lane3renRate_avg,
+      lane3renRate_weighted: row?.lane3renRate_weighted
     });
+    normalizedByLane.set(Number(lane), normalizedRow);
   }
   return {
     byLane: normalizedByLane,
     fieldSources,
+    fieldDebugs: parsed?.fieldDebugs || {},
     tableDiagnostics: parsed?.tableDiagnostics || [],
     fieldDiagnostics: parsed?.fieldDiagnostics || buildFieldDiagnostics(normalizedByLane, fieldSources),
     diagnostics: parsed?.diagnostics || {}
@@ -773,7 +1349,31 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         motor3Rate: extra?.motor3Rate ?? racer?.motor3Rate ?? null,
         laneFirstRate: extra?.laneFirstRate ?? racer?.laneFirstRate ?? null,
         lane2RenRate: extra?.lane2RenRate ?? racer?.lane2RenRate ?? null,
-        lane3RenRate: extra?.lane3RenRate ?? racer?.lane3RenRate ?? null
+        lane3RenRate: extra?.lane3RenRate ?? racer?.lane3RenRate ?? null,
+        lane1stRate_raw: extra?.lane1stRate_raw ?? racer?.lane1stRate_raw ?? null,
+        lane1stRate_season: extra?.lane1stRate_season ?? racer?.lane1stRate_season ?? null,
+        lane1stRate_6m: extra?.lane1stRate_6m ?? racer?.lane1stRate_6m ?? null,
+        lane1stRate_3m: extra?.lane1stRate_3m ?? racer?.lane1stRate_3m ?? null,
+        lane1stRate_1m: extra?.lane1stRate_1m ?? racer?.lane1stRate_1m ?? null,
+        lane1stRate_sum: extra?.lane1stRate_sum ?? racer?.lane1stRate_sum ?? null,
+        lane1stRate_avg: extra?.lane1stRate_avg ?? racer?.lane1stRate_avg ?? null,
+        lane1stRate_weighted: extra?.lane1stRate_weighted ?? racer?.lane1stRate_weighted ?? null,
+        lane2renRate_raw: extra?.lane2renRate_raw ?? racer?.lane2renRate_raw ?? null,
+        lane2renRate_season: extra?.lane2renRate_season ?? racer?.lane2renRate_season ?? null,
+        lane2renRate_6m: extra?.lane2renRate_6m ?? racer?.lane2renRate_6m ?? null,
+        lane2renRate_3m: extra?.lane2renRate_3m ?? racer?.lane2renRate_3m ?? null,
+        lane2renRate_1m: extra?.lane2renRate_1m ?? racer?.lane2renRate_1m ?? null,
+        lane2renRate_sum: extra?.lane2renRate_sum ?? racer?.lane2renRate_sum ?? null,
+        lane2renRate_avg: extra?.lane2renRate_avg ?? racer?.lane2renRate_avg ?? null,
+        lane2renRate_weighted: extra?.lane2renRate_weighted ?? racer?.lane2renRate_weighted ?? null,
+        lane3renRate_raw: extra?.lane3renRate_raw ?? racer?.lane3renRate_raw ?? null,
+        lane3renRate_season: extra?.lane3renRate_season ?? racer?.lane3renRate_season ?? null,
+        lane3renRate_6m: extra?.lane3renRate_6m ?? racer?.lane3renRate_6m ?? null,
+        lane3renRate_3m: extra?.lane3renRate_3m ?? racer?.lane3renRate_3m ?? null,
+        lane3renRate_1m: extra?.lane3renRate_1m ?? racer?.lane3renRate_1m ?? null,
+        lane3renRate_sum: extra?.lane3renRate_sum ?? racer?.lane3renRate_sum ?? null,
+        lane3renRate_avg: extra?.lane3renRate_avg ?? racer?.lane3renRate_avg ?? null,
+        lane3renRate_weighted: extra?.lane3renRate_weighted ?? racer?.lane3renRate_weighted ?? null
       };
     } catch {
       return {
@@ -927,13 +1527,14 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
           ok: true,
           error: null
         };
-        diagnostics.parse_results[label] = {
+      diagnostics.parse_results[label] = {
           ok: parsed.byLane.size > 0,
           parsed_lanes: parsed.byLane.size,
           populated_fields: parsed.fieldDiagnostics?.populated_fields || [],
           failed_fields: parsed.fieldDiagnostics?.failed_fields || EXPECTED_FIELDS,
           required_fields: buildRequiredFieldParseStatus(parsed.byLane),
-          table_diagnostics: parsed.tableDiagnostics || []
+          table_diagnostics: parsed.tableDiagnostics || [],
+          field_debugs: parsed.fieldDebugs || {}
         };
       } catch (error) {
         lastError = error;
@@ -967,6 +1568,10 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       url: indexUrl,
       triedUrls: [indexUrl, laneStatsUrl, preRaceUrl],
       byLane: mergedByLane,
+      fieldDebugs: {
+        lane_stats_tab: diagnostics.parse_results?.lane_stats_tab?.field_debugs || {},
+        pre_race_tab: diagnostics.parse_results?.pre_race_tab?.field_debugs || {}
+      },
       tableDiagnostics,
       fieldDiagnostics,
       fieldSources,
@@ -1041,6 +1646,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       url: null,
       triedUrls: [],
       byLane: new Map(),
+      fieldDebugs: {},
       tableDiagnostics: [],
       fieldDiagnostics: buildFieldDiagnostics(new Map(), {}),
       fieldSources: {},

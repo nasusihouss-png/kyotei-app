@@ -514,23 +514,26 @@ function firstFiniteValue(...values) {
 function normalizeLaneStats(source = {}) {
   return {
     laneFirstRate: firstFiniteValue(
+      source?.lane1stRate_weighted,
       source?.laneFirstRate,
       source?.lane1stRate,
       source?.lane_first_rate,
       source?.lane_1st_rate,
-      source?.lane1stRate_raw
+      source?.lane1stRate_raw?.weighted
     ),
     lane2RenRate: firstFiniteValue(
+      source?.lane2renRate_weighted,
       source?.lane2RenRate,
       source?.lane2renRate,
       source?.lane_2ren_rate,
-      source?.lane2renRate_raw
+      source?.lane2renRate_raw?.weighted
     ),
     lane3RenRate: firstFiniteValue(
+      source?.lane3renRate_weighted,
       source?.lane3RenRate,
       source?.lane3renRate,
       source?.lane_3ren_rate,
-      source?.lane3renRate_raw
+      source?.lane3renRate_raw?.weighted
     )
   };
 }
@@ -561,13 +564,20 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
       ? debug.lane_rows
       : (Array.isArray(data?.racers) ? data.racers : []).map((racer) => ({
           lane: racer?.lane ?? null,
-          lane1stRate_raw: racer?.laneFirstRate ?? null,
-          lane2renRate_raw: racer?.lane2RenRate ?? null,
-          lane3renRate_raw: racer?.lane3RenRate ?? null,
+          lane1stRate_raw: racer?.lane1stRate_raw ?? racer?.laneFirstRate ?? null,
+          lane2renRate_raw: racer?.lane2renRate_raw ?? racer?.lane2RenRate ?? null,
+          lane3renRate_raw: racer?.lane3renRate_raw ?? racer?.lane3RenRate ?? null,
           lapTime_raw: racer?.kyoteiBiyoriLapTimeRaw ?? racer?.kyoteiBiyoriLapTime ?? racer?.lapTime ?? null,
           exhibitionST_raw: racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt ?? null,
           motor2ren_raw: racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate ?? null,
-          motor3ren_raw: racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate ?? null
+          motor3ren_raw: racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate ?? null,
+          lane1stRate_debug: null,
+          lane2renRate_debug: null,
+          lane3renRate_debug: null,
+          lapTime_debug: null,
+          exhibitionST_debug: null,
+          motor2ren_debug: null,
+          motor3ren_debug: null
         })),
     lane1stRate_raw: debug?.lane1stRate_raw || {},
     lane2renRate_raw: debug?.lane2renRate_raw || {},
@@ -576,6 +586,13 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
     exhibitionST_raw: debug?.exhibitionST_raw || {},
     motor2ren_raw: debug?.motor2ren_raw || {},
     motor3ren_raw: debug?.motor3ren_raw || {},
+    lane1stRate_debug: debug?.lane1stRate || {},
+    lane2renRate_debug: debug?.lane2renRate || {},
+    lane3renRate_debug: debug?.lane3renRate || {},
+    lapTime_debug: debug?.lapTime || {},
+    exhibitionST_debug: debug?.exhibitionST || {},
+    motor2ren_debug: debug?.motor2ren || {},
+    motor3ren_debug: debug?.motor3ren || {},
     rendered_rows: (Array.isArray(playerComparisonRows) ? playerComparisonRows : []).map((row) => ({
       lane: row?.lane ?? null,
       lane1stRate_raw: row?.laneFirstRate ?? null,
@@ -3677,12 +3694,19 @@ export default function App() {
                         <tr>
                           <th>Lane</th>
                           <th>lane1stRate</th>
+                          <th>lane1stRate source</th>
                           <th>lane2renRate</th>
+                          <th>lane2renRate source</th>
                           <th>lane3renRate</th>
+                          <th>lane3renRate source</th>
                           <th>lapTime</th>
+                          <th>lapTime source</th>
                           <th>exhibitionST</th>
+                          <th>exhibitionST source</th>
                           <th>motor2ren</th>
+                          <th>motor2ren source</th>
                           <th>motor3ren</th>
+                          <th>motor3ren source</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3690,12 +3714,19 @@ export default function App() {
                           <tr key={`kyotei-raw-${row?.lane ?? "unknown"}`}>
                             <td>{row?.lane ?? "-"}</td>
                             <td><code>{formatDebugRawValue(row?.lane1stRate_raw)}</code></td>
+                            <td><code>{formatDebugRawValue(row?.lane1stRate_debug)}</code></td>
                             <td><code>{formatDebugRawValue(row?.lane2renRate_raw)}</code></td>
+                            <td><code>{formatDebugRawValue(row?.lane2renRate_debug)}</code></td>
                             <td><code>{formatDebugRawValue(row?.lane3renRate_raw)}</code></td>
+                            <td><code>{formatDebugRawValue(row?.lane3renRate_debug)}</code></td>
                             <td><code>{formatDebugRawValue(row?.lapTime_raw)}</code></td>
+                            <td><code>{formatDebugRawValue(row?.lapTime_debug)}</code></td>
                             <td><code>{formatDebugRawValue(row?.exhibitionST_raw)}</code></td>
+                            <td><code>{formatDebugRawValue(row?.exhibitionST_debug)}</code></td>
                             <td><code>{formatDebugRawValue(row?.motor2ren_raw)}</code></td>
+                            <td><code>{formatDebugRawValue(row?.motor2ren_debug)}</code></td>
                             <td><code>{formatDebugRawValue(row?.motor3ren_raw)}</code></td>
+                            <td><code>{formatDebugRawValue(row?.motor3ren_debug)}</code></td>
                           </tr>
                         ))}
                       </tbody>
