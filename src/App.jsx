@@ -782,6 +782,10 @@ function normalizeExactaCombo(value) {
   return lanes.join("-");
 }
 
+function isBoat1HeadCombo(combo) {
+  return typeof combo === "string" && combo.trim().startsWith("1-");
+}
+
 function getSavedFinalRecommendedBets(row) {
   const snapshot = Array.isArray(row?.final_recommended_bets_snapshot)
     ? row.final_recommended_bets_snapshot
@@ -2444,6 +2448,22 @@ export default function App() {
   const safeTopRecommendedTickets = Array.isArray(predictionViewModel?.topRecommendedTickets)
     ? predictionViewModel.topRecommendedTickets
     : [];
+  const visibleTopRecommendedTickets = useMemo(
+    () => safeTopRecommendedTickets.filter((row) => !isBoat1HeadCombo(row?.ticket)),
+    [safeTopRecommendedTickets]
+  );
+  const visibleMainTrifectaTickets = useMemo(
+    () => (Array.isArray(predictionViewModel?.tickets?.mainTrifecta) ? predictionViewModel.tickets.mainTrifecta : []).filter((bet) => !isBoat1HeadCombo(bet?.combo)),
+    [predictionViewModel]
+  );
+  const visibleExactaCoverTickets = useMemo(
+    () => (Array.isArray(predictionViewModel?.tickets?.exactaCover) ? predictionViewModel.tickets.exactaCover : []).filter((bet) => !isBoat1HeadCombo(bet?.combo)),
+    [predictionViewModel]
+  );
+  const visibleBackupUrasujiTickets = useMemo(
+    () => (Array.isArray(predictionViewModel?.tickets?.backupUrasuji) ? predictionViewModel.tickets.backupUrasuji : []).filter((bet) => !isBoat1HeadCombo(bet?.combo)),
+    [predictionViewModel]
+  );
   const recommendedShapeSource =
     data?.recommendedShape && typeof data.recommendedShape === "object"
       ? data.recommendedShape
@@ -2468,6 +2488,7 @@ export default function App() {
   const recommendedShapeLabel = typeof recommendedShape?.shape === "string" && recommendedShape.shape
     ? recommendedShape.shape
     : null;
+  const boat1HeadVisibleSectionShown = false;
   const hitRateEnhancementDebug = useMemo(() => {
     if (prediction?.hit_rate_enhancement_json && typeof prediction.hit_rate_enhancement_json === "object") {
       return prediction.hit_rate_enhancement_json;
@@ -4059,8 +4080,76 @@ export default function App() {
                         : sourceMeta?.cache?.hit
                           ? "official pre-race from backend cache"
                           : "official pre-race info"}
-                  </p>
+                    </p>
                 </section>
+
+                <article className={`card summary-card premium-ticket-card top-ranked-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                  <h2>Top Recommended Tickets</h2>
+                  <div className="summary-inline-meta">
+                    <span>{visibleTopRecommendedTickets.length} / 10</span>
+                    <span>sorted by estimated hit rate</span>
+                  </div>
+                  {recommendedShapeLabel ? (
+                    <p className="muted strategy-line">
+                      Recommended Shape: {recommendedShapeLabel}
+                    </p>
+                  ) : null}
+                  {hitRateEnhancementDebug ? (
+                    <details style={{ marginBottom: 12 }}>
+                      <summary>hit-rate enhancement debug</summary>
+                      <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
+                    </details>
+                  ) : null}
+                  {predictionDataUsageDebug ? (
+                    <details style={{ marginBottom: 12 }}>
+                      <summary>prediction data usage</summary>
+                      <pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre>
+                    </details>
+                  ) : null}
+                  <div className="ticket-stack compact-list">
+                    {visibleTopRecommendedTickets.map((row, idx) => (
+                      <div key={`top-ticket-${row?.ticket_type || "trifecta"}-${row?.ticket || idx}`} className="premium-ticket-row primary">
+                        <div className="ticket-mainline">
+                          <span className="rank-pill">#{row?.rank ?? idx + 1}</span>
+                          <span className="ticket-type ticket-type-inline ttype-main">3連単</span>
+                          <strong><ComboBadge combo={row?.ticket || "--"} /></strong>
+                        </div>
+                        <div className="ticket-meta">
+                          <span className={`ticket-type ${getTicketTypeClass(row?.recommendation_tier === "cover" ? "backup" : row?.recommendation_tier)}`}>
+                            {row?.recommendation_tier || "main"}
+                          </span>
+                          <span>hit {formatMaybeNumber((Number(row?.estimated_hit_rate) || 0) * 100, 1)}%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {!isRecommendedRace ? (
+                    <p className="muted strategy-line">Low-confidence race. Treat this order as reference only.</p>
+                  ) : null}
+                </article>
+
+                <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                  <h2>Main Trifecta</h2>
+                  <div className="summary-inline-meta">
+                    <span>{visibleMainTrifectaTickets.length}件</span>
+                    <span>{attackScenarioLabel || formationPatternLabel || data.racePattern || "-"}</span>
+                  </div>
+                  <div className="list-stack compact-list">
+                    {visibleMainTrifectaTickets.map((bet, idx) => (
+                      <div key={`${bet.combo}-${idx}`} className="list-stack">
+                        <div className="list-row list-row-actions premium-ticket-row primary">
+                          <strong><ComboBadge combo={bet.combo} /></strong>
+                          <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
+                          <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
+                          <span>JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
+                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
+                            記録に追加
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
 
                 <section className={`card premium-hero ${predictionViewModel.semanticStyles.recommendationTone || ""}`}>
                   <div className="premium-hero-top">
@@ -4173,75 +4262,7 @@ export default function App() {
                   </section>
                 ) : null}
 
-                <article className={`card summary-card premium-ticket-card top-ranked-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
-                  <h2>Top Recommended Tickets</h2>
-                  <div className="summary-inline-meta">
-                    <span>{safeTopRecommendedTickets.length} / 10</span>
-                    <span>sorted by estimated hit rate</span>
-                  </div>
-                  {recommendedShapeLabel ? (
-                    <p className="muted strategy-line">
-                      Recommended Shape: {recommendedShapeLabel}
-                    </p>
-                  ) : null}
-                  {hitRateEnhancementDebug ? (
-                    <details style={{ marginBottom: 12 }}>
-                      <summary>hit-rate enhancement debug</summary>
-                      <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
-                    </details>
-                  ) : null}
-                  {predictionDataUsageDebug ? (
-                    <details style={{ marginBottom: 12 }}>
-                      <summary>prediction data usage</summary>
-                      <pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre>
-                    </details>
-                  ) : null}
-                  <div className="ticket-stack compact-list">
-                    {safeTopRecommendedTickets.map((row, idx) => (
-                      <div key={`top-ticket-${row?.ticket_type || "trifecta"}-${row?.ticket || idx}`} className="premium-ticket-row primary">
-                        <div className="ticket-mainline">
-                          <span className="rank-pill">#{row?.rank ?? idx + 1}</span>
-                          <span className="ticket-type ticket-type-inline ttype-main">3連単</span>
-                          <strong><ComboBadge combo={row?.ticket || "--"} /></strong>
-                        </div>
-                        <div className="ticket-meta">
-                          <span className={`ticket-type ${getTicketTypeClass(row?.recommendation_tier === "cover" ? "backup" : row?.recommendation_tier)}`}>
-                            {row?.recommendation_tier || "main"}
-                          </span>
-                          <span>hit {formatMaybeNumber((Number(row?.estimated_hit_rate) || 0) * 100, 1)}%</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  {!isRecommendedRace ? (
-                    <p className="muted strategy-line">Low-confidence race. Treat this order as reference only.</p>
-                  ) : null}
-                </article>
-
-                <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
-                  <h2>Main Trifecta</h2>
-                  <div className="summary-inline-meta">
-                    <span>{predictionViewModel.tickets.mainTrifecta.length}件</span>
-                    <span>{attackScenarioLabel || formationPatternLabel || data.racePattern || "-"}</span>
-                  </div>
-                  <div className="list-stack compact-list">
-                    {predictionViewModel.tickets.mainTrifecta.map((bet, idx) => (
-                      <div key={`${bet.combo}-${idx}`} className="list-stack">
-                        <div className="list-row list-row-actions premium-ticket-row primary">
-                          <strong><ComboBadge combo={bet.combo} /></strong>
-                          <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
-                          <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                          <span>JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
-                            記録に追加
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-
-                {boat1HeadSectionShown ? (
+                {boat1HeadVisibleSectionShown && boat1HeadSectionShown ? (
                   <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
                     <h2>Boat 1 Head Predictions</h2>
                     <div className="summary-inline-meta">
@@ -4282,11 +4303,11 @@ export default function App() {
                   </article>
                 ) : null}
 
-                {exactaSectionShown ? (
+                {exactaSectionShown && visibleExactaCoverTickets.length > 0 ? (
                   <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
                     <h2>Exacta Cover</h2>
                     <div className="summary-inline-meta">
-                      <span>{predictionViewModel.tickets.exactaCover.length}件</span>
+                      <span>{visibleExactaCoverTickets.length}件</span>
                       <span>head {formatMaybeNumber(exactaHeadScore, 1)} / partner {formatMaybeNumber(exactaPartnerScore, 1)}</span>
                     </div>
                     {exactaReasonTags.length > 0 ? (
@@ -4295,7 +4316,7 @@ export default function App() {
                       </div>
                     ) : null}
                     <div className="list-stack compact-list">
-                      {predictionViewModel.tickets.exactaCover.map((bet, idx) => (
+                      {visibleExactaCoverTickets.map((bet, idx) => (
                         <div key={`exacta-${bet.combo}-${idx}`} className="list-stack">
                           <div className="list-row list-row-actions premium-ticket-row support">
                             <strong><ComboBadge combo={bet.combo} /></strong>
@@ -4310,11 +4331,11 @@ export default function App() {
                   </article>
                 ) : null}
 
-                {backupUrasujiShown ? (
+                {backupUrasujiShown && visibleBackupUrasujiTickets.length > 0 ? (
                   <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
                     <h2>Backup / Urasuji</h2>
                     <div className="summary-inline-meta">
-                      <span>{predictionViewModel.tickets.backupUrasuji.length}件</span>
+                      <span>{visibleBackupUrasujiTickets.length}件</span>
                       <span>backup only when justified</span>
                     </div>
                     {backupUrasujiReasonTags.length > 0 ? (
@@ -4323,7 +4344,7 @@ export default function App() {
                       </div>
                     ) : null}
                     <div className="list-stack compact-list">
-                      {predictionViewModel.tickets.backupUrasuji.map((bet, idx) => (
+                      {visibleBackupUrasujiTickets.map((bet, idx) => (
                         <div key={`backup-${bet.combo}-${idx}`} className="list-stack">
                           <div className="list-row list-row-actions premium-ticket-row backup">
                             <strong><ComboBadge combo={bet.combo} /></strong>
