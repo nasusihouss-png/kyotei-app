@@ -10436,6 +10436,37 @@ raceRouter.get("/race", async (req, res, next) => {
       predictionBeforeEntryChange: prediction_before_entry_change,
       predictionAfterEntryChange: prediction_after_entry_change
     });
+    const safeScenarioSuggestions =
+      scenarioSuggestions && typeof scenarioSuggestions === "object"
+        ? scenarioSuggestions
+        : {};
+    const safeRecommendedShape = shapeRecommendation?.selected_shape
+      ? {
+          shape: shapeRecommendation.selected_shape,
+          expanded_tickets: Array.isArray(shapeRecommendation.expanded_tickets)
+            ? shapeRecommendation.expanded_tickets
+            : [],
+          reason_tags: Array.isArray(shapeRecommendation.reason_tags)
+            ? shapeRecommendation.reason_tags
+            : [],
+          concentration_metrics: shapeRecommendation.concentration_metrics || null,
+          shape_generation_error: shapeGenerationError
+        }
+      : shapeGenerationError
+        ? {
+            shape: null,
+            expanded_tickets: [],
+            reason_tags: [],
+            concentration_metrics: null,
+            shape_generation_error: shapeGenerationError
+          }
+        : null;
+    const safeFinishProbabilitiesByScenario = Array.isArray(headScenarioBalanceAnalysis?.finish_probabilities_by_scenario_json)
+      ? headScenarioBalanceAnalysis.finish_probabilities_by_scenario_json
+      : Array.isArray(candidateDistributions?.finish_probabilities_by_scenario_json)
+        ? candidateDistributions.finish_probabilities_by_scenario_json
+        : [];
+
     return res.json({
       source: data.source || {},
       race: data.race,
@@ -10500,17 +10531,7 @@ raceRouter.get("/race", async (req, res, next) => {
         exacta_cover_tickets: roleBasedExactaCoverTickets,
         backup_urasuji_tickets: roleBasedBackupUrasujiTickets
       },
-      recommendedShape: shapeRecommendation?.selected_shape
-        ? {
-            shape: shapeRecommendation.selected_shape,
-            expanded_tickets: shapeRecommendation.expanded_tickets,
-            reason_tags: shapeRecommendation.reason_tags,
-            concentration_metrics: shapeRecommendation.concentration_metrics,
-            shape_generation_error: shapeGenerationError
-          }
-        : shapeGenerationError
-          ? { shape: null, expanded_tickets: [], reason_tags: [], concentration_metrics: null, shape_generation_error: shapeGenerationError }
-          : null,
+      recommendedShape: safeRecommendedShape,
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,
@@ -10518,7 +10539,7 @@ raceRouter.get("/race", async (req, res, next) => {
       entry_change_type: entryMeta.entry_change_type,
       startSignalAnalysis: startSignals,
       recommendation_score,
-      scenarioSuggestions,
+      scenarioSuggestions: safeScenarioSuggestions,
       contenderSignals: contenderAdjusted.contenderSignals,
       explainability: raceExplainability,
       learningWeights,
@@ -10559,13 +10580,13 @@ raceRouter.get("/race", async (req, res, next) => {
       ticketGenerationV2,
       aiEnhancement,
       ticketOptimization: ticketOptimizationWithStake,
-      scenarioSuggestions,
+      scenarioSuggestions: safeScenarioSuggestions,
       raceDecision,
       valueDetection,
       marketTrap,
       raceFlow,
       fetchedSignalDiagnostics,
-      finishProbabilitiesByScenario,
+      finishProbabilitiesByScenario: safeFinishProbabilitiesByScenario,
       startDisplay: startDisplay || null,
       startDisplayDebug: Array.isArray(startDisplay?.start_display_debug)
         ? startDisplay.start_display_debug

@@ -1959,7 +1959,12 @@ export default function App() {
   const ticketGenerationV2 = data?.ticketGenerationV2 || {};
   const ticketOptimization = data?.ticketOptimization || {};
   const valueDetection = data?.valueDetection || {};
-  const scenarioSuggestions = data?.scenarioSuggestions || {};
+  const scenarioSuggestions =
+    data?.scenarioSuggestions && typeof data.scenarioSuggestions === "object"
+      ? data.scenarioSuggestions
+      : prediction?.scenarioSuggestions && typeof prediction.scenarioSuggestions === "object"
+        ? prediction.scenarioSuggestions
+        : {};
   const explainability = data?.explainability || {};
   const manualLapEvaluation = data?.manualLapEvaluation || null;
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
@@ -2312,8 +2317,26 @@ export default function App() {
   const safeTopRecommendedTickets = Array.isArray(predictionViewModel?.topRecommendedTickets)
     ? predictionViewModel.topRecommendedTickets
     : [];
-  const recommendedShape = data?.recommendedShape && typeof data.recommendedShape === "object"
-    ? data.recommendedShape
+  const recommendedShapeSource =
+    data?.recommendedShape && typeof data.recommendedShape === "object"
+      ? data.recommendedShape
+      : prediction?.recommended_shape_debug && typeof prediction.recommended_shape_debug === "object"
+        ? prediction.recommended_shape_debug
+        : prediction?.snapshot_context?.recommended_shape_debug && typeof prediction.snapshot_context.recommended_shape_debug === "object"
+          ? prediction.snapshot_context.recommended_shape_debug
+          : null;
+  const recommendedShape = recommendedShapeSource
+    ? {
+        shape: typeof recommendedShapeSource?.shape === "string" ? recommendedShapeSource.shape : null,
+        expanded_tickets: Array.isArray(recommendedShapeSource?.expanded_tickets)
+          ? recommendedShapeSource.expanded_tickets
+          : [],
+        reason_tags: Array.isArray(recommendedShapeSource?.reason_tags)
+          ? recommendedShapeSource.reason_tags
+          : [],
+        concentration_metrics: recommendedShapeSource?.concentration_metrics || null,
+        shape_generation_error: recommendedShapeSource?.shape_generation_error || null
+      }
     : null;
   const recommendedShapeLabel = typeof recommendedShape?.shape === "string" && recommendedShape.shape
     ? recommendedShape.shape
