@@ -2433,7 +2433,6 @@ export default function App() {
     exhibitionTime: buildTopMetricLaneSet(playerComparisonRows, "exhibitionTime", "asc"),
     lapScore: buildTopMetricLaneSet(playerComparisonRows, "lapScore", "desc"),
     motor2Rate: buildTopMetricLaneSet(playerComparisonRows, "motor2Rate", "desc"),
-    motor3Rate: buildTopMetricLaneSet(playerComparisonRows, "motor3Rate", "desc"),
     laneFirstRate: buildTopMetricLaneSet(playerComparisonRows, "laneFirstRate", "desc"),
     lane2RenRate: buildTopMetricLaneSet(playerComparisonRows, "lane2RenRate", "desc"),
     lane3RenRate: buildTopMetricLaneSet(playerComparisonRows, "lane3RenRate", "desc")
@@ -3812,7 +3811,6 @@ export default function App() {
                             <th>Ex Time</th>
                             <th>Lap Ex / Stretch</th>
                             <th>Motor 2-ren</th>
-                            <th>Motor 3-ren</th>
                             <th>Lane 1st Avg</th>
                             <th>Lane 2-ren Avg</th>
                             <th>Lane 3-ren Avg</th>
@@ -3842,7 +3840,6 @@ export default function App() {
                                 {row.stretchFootLabel ? <div className="muted small-inline">{row.stretchFootLabel}</div> : null}
                               </td>
                               <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor2ren, 2)}</td>
-                              <td className={playerMetricLeaders.motor3Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor3ren, 2)}</td>
                               <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane1stAvg, 2)}</td>
                               <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane2renAvg, 2)}</td>
                               <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane3renAvg, 2)}</td>
