@@ -37,7 +37,8 @@ function toRate(raw, nationwideWinRate, classScore, laneType) {
 }
 
 function calcCourseFitScore(f) {
-  switch (f.lane) {
+  const actualLane = Number.isFinite(Number(f.actual_lane)) ? Number(f.actual_lane) : Number(f.lane || 0);
+  switch (actualLane) {
     case 1:
       return f.course1_win_rate * 0.5 + f.course1_2rate * 0.2;
     case 2:

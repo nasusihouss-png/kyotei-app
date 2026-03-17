@@ -70,6 +70,7 @@ export function buildFeatures(racer) {
   const entry_course_raw = racer?.entryCourse;
   const entry_course =
     Number.isFinite(Number(entry_course_raw)) ? Number(entry_course_raw) : null;
+  const actual_lane = entry_course || lane || null;
   const tilt_raw = racer?.tilt;
   const tilt = Number.isFinite(Number(tilt_raw)) ? Number(tilt_raw) : null;
   const wind_speed_raw = racer?.windSpeed;
@@ -98,11 +99,14 @@ export function buildFeatures(racer) {
   const local_minus_nation = local_win_rate - nationwide_win_rate;
   const motor_boat_avg = ((Number.isFinite(motor2_rate) ? motor2_rate : 0) + boat2_rate) / 2;
   const st_inv = avg_st && avg_st > 0 ? 1 / avg_st : 0;
-  const is_inner = lane >= 1 && lane <= 3 ? 1 : 0;
-  const is_outer = lane >= 5 && lane <= 6 ? 1 : 0;
+  const is_inner = actual_lane >= 1 && actual_lane <= 3 ? 1 : 0;
+  const is_outer = actual_lane >= 5 && actual_lane <= 6 ? 1 : 0;
 
   return {
     lane,
+    original_lane: lane || null,
+    boat_number: lane || null,
+    actual_lane,
     class_score,
     nationwide_win_rate,
     local_win_rate,
@@ -204,7 +208,8 @@ export function buildFeatures(racer) {
     lane_fit_2ren: lane2RenRate,
     lane_fit_3ren: lane3RenRate,
     lane_fit_local: local_win_rate,
-    lane_fit_grade: class_score * 20
+    lane_fit_grade: class_score * 20,
+    lane_reassignment_applied: Number.isInteger(actual_lane) && actual_lane !== lane ? 1 : 0
   };
 }
 
@@ -235,16 +240,16 @@ export function buildRaceFeatures(racers, raceContext = {}) {
     Number.POSITIVE_INFINITY
   );
   const exhibitionRanks = buildAscendingRanks(
-    base.map((x) => ({ lane: x.features.lane, value: x.features.exhibition_time }))
+    base.map((x) => ({ lane: toNumber(x.features.actual_lane, x.features.lane), value: x.features.exhibition_time }))
   );
   const stRanks = buildAscendingRanks(
-    base.map((x) => ({ lane: x.features.lane, value: x.features.exhibition_st }))
+    base.map((x) => ({ lane: toNumber(x.features.actual_lane, x.features.lane), value: x.features.exhibition_st }))
   );
   const avgStRanks = buildAscendingRanks(
-    base.map((x) => ({ lane: x.features.lane, value: x.features.avg_st }))
+    base.map((x) => ({ lane: toNumber(x.features.actual_lane, x.features.lane), value: x.features.avg_st }))
   );
   const expectedActualStByLane = base.map((item) => {
-    const lane = item.features.lane;
+    const lane = toNumber(item.features.actual_lane, item.features.lane);
     const fHoldMeta = item.features?.prediction_field_meta?.fCount || {};
     const fHoldCount = fHoldMeta?.is_usable
       ? Math.max(0, toNumber(item.features?.f_hold_count ?? item.racer?.fHoldCount, 0))
@@ -269,7 +274,7 @@ export function buildRaceFeatures(racers, raceContext = {}) {
     expectedActualStByLane.map((row) => ({ lane: row.lane, value: row.expectedActualSt }))
   );
   const lapTimeRanks = buildAscendingRanks(
-    base.map((x) => ({ lane: x.features.lane, value: x.features.lap_time }))
+    base.map((x) => ({ lane: toNumber(x.features.actual_lane, x.features.lane), value: x.features.lap_time }))
   );
   const bestLapTime = Math.min(
     ...base
@@ -278,22 +283,41 @@ export function buildRaceFeatures(racers, raceContext = {}) {
     Number.POSITIVE_INFINITY
   );
   const expectedActualStByLaneMap = new Map(expectedActualStByLane.map((row) => [row.lane, row]));
-  const byLane = new Map(base.map((item) => [item.features.lane, item]));
+  const byLane = new Map(
+    base.map((item) => [toNumber(item.features.actual_lane, item.features.lane), item])
+  );
   const byCourse = new Map(
     base
       .map((item) => [toNumber(item.features.entry_course, null), item])
       .filter((row) => Number.isInteger(row[0]) && row[0] >= 1)
   );
+  const laneFitSourceByOriginalLane = new Map(
+    base.map((item) => [
+      toNumber(item.features.original_lane, null),
+      {
+        laneFirstRate: item.features.laneFirstRate,
+        lane2RenRate: item.features.lane2RenRate,
+        lane3RenRate: item.features.lane3RenRate,
+        course1_win_rate: item.features.course1_win_rate,
+        course1_2rate: item.features.course1_2rate,
+        course2_2rate: item.features.course2_2rate,
+        course3_3rate: item.features.course3_3rate,
+        course4_3rate: item.features.course4_3rate
+      }
+    ])
+  );
 
   return base.map((item) => {
     const f = item.features;
-    const leftLane = Number.isFinite(f.lane) ? f.lane - 1 : null;
+    const actualLane = toNumber(f.actual_lane, f.lane);
+    const reassignedLaneContext = laneFitSourceByOriginalLane.get(actualLane) || {};
+    const leftLane = Number.isFinite(actualLane) ? actualLane - 1 : null;
     const leftItem = Number.isFinite(leftLane) && leftLane >= 1 ? byLane.get(leftLane) : null;
     const leftFeatures = leftItem?.features || {};
     const selfExhibitionTime = Number.isFinite(f.exhibition_time) ? f.exhibition_time : null;
     const leftExhibitionTime = Number.isFinite(leftFeatures?.exhibition_time) ? leftFeatures.exhibition_time : null;
-    const selfAvgStRank = avgStRanks.get(f.lane) ?? null;
-    const expectedActualStMeta = expectedActualStByLaneMap.get(f.lane) || {};
+    const selfAvgStRank = avgStRanks.get(actualLane) ?? null;
+    const expectedActualStMeta = expectedActualStByLaneMap.get(actualLane) || {};
     const leftAvgStRank = Number.isFinite(leftLane) ? (avgStRanks.get(leftLane) ?? null) : null;
     const displayTimeDeltaVsLeft =
       Number.isFinite(selfExhibitionTime) && Number.isFinite(leftExhibitionTime)
@@ -310,7 +334,7 @@ export function buildRaceFeatures(racers, raceContext = {}) {
       avgStRankDeltaVsLeft > 0
         ? 1
         : 0;
-    const frontCourse = Number.isFinite(f.entry_course) && f.entry_course > 1 ? f.entry_course - 1 : null;
+    const frontCourse = Number.isFinite(actualLane) && actualLane > 1 ? actualLane - 1 : null;
     const frontItem = Number.isFinite(frontCourse) && frontCourse >= 1
       ? byCourse.get(frontCourse) || leftItem
       : leftItem;
@@ -338,7 +362,7 @@ export function buildRaceFeatures(racers, raceContext = {}) {
       (
         toNumber(f.slit_alert_flag, 0) === 1 ||
         (Number.isFinite(avgStRankDeltaVsLeft) && avgStRankDeltaVsLeft >= 0) ||
-        (expectedActualStRanks.get(f.lane) ?? 6) <= ((frontItem && expectedActualStRanks.get(frontItem.features.lane)) ?? 6)
+        (expectedActualStRanks.get(actualLane) ?? 6) <= ((frontItem && expectedActualStRanks.get(toNumber(frontItem.features.actual_lane, frontItem.features.lane))) ?? 6)
       )
         ? 1
         : 0;
@@ -346,11 +370,12 @@ export function buildRaceFeatures(racers, raceContext = {}) {
       ...item,
       features: {
         ...f,
-        exhibition_rank: exhibitionRanks.get(f.lane) ?? null,
-        st_rank: stRanks.get(f.lane) ?? null,
+        actual_lane: actualLane,
+        exhibition_rank: exhibitionRanks.get(actualLane) ?? null,
+        st_rank: stRanks.get(actualLane) ?? null,
         avg_st_rank: selfAvgStRank,
         lane_st_rank: selfAvgStRank,
-        expected_actual_st_rank: expectedActualStRanks.get(f.lane) ?? null,
+        expected_actual_st_rank: expectedActualStRanks.get(actualLane) ?? null,
         exhibition_gap_from_best:
           Number.isFinite(bestExhibition) && Number.isFinite(f.exhibition_time)
             ? f.exhibition_time - bestExhibition
@@ -364,7 +389,7 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         slit_alert_flag: slitAlertFlag,
         front_boat_exists: frontItem ? 1 : 0,
         lap_time_delta_vs_front: lapTimeDeltaVsFront,
-        lap_time_rank: lapTimeRanks.get(f.lane) ?? null,
+        lap_time_rank: lapTimeRanks.get(actualLane) ?? null,
         lap_attack_flag: lapAttackFlag,
         lap_attack_strength: lapAttackStrength,
         lap_time_gap_from_best:
@@ -399,11 +424,29 @@ export function buildRaceFeatures(racers, raceContext = {}) {
           lapExStretch: Number.isFinite(f.lap_exhibition_score) ? f.lap_exhibition_score : null,
           exhibitionTime: Number.isFinite(f.exhibition_time) ? f.exhibition_time : null
         },
-        lane_fit_1st: Number.isFinite(f.laneFirstRate) ? f.laneFirstRate : null,
-        lane_fit_2ren: Number.isFinite(f.lane2RenRate) ? f.lane2RenRate : null,
-        lane_fit_3ren: Number.isFinite(f.lane3RenRate) ? f.lane3RenRate : null,
+        laneFirstRate: Number.isFinite(reassignedLaneContext.laneFirstRate) ? reassignedLaneContext.laneFirstRate : f.laneFirstRate,
+        lane2RenRate: Number.isFinite(reassignedLaneContext.lane2RenRate) ? reassignedLaneContext.lane2RenRate : f.lane2RenRate,
+        lane3RenRate: Number.isFinite(reassignedLaneContext.lane3RenRate) ? reassignedLaneContext.lane3RenRate : f.lane3RenRate,
+        course1_win_rate: Number.isFinite(reassignedLaneContext.course1_win_rate) ? reassignedLaneContext.course1_win_rate : f.course1_win_rate,
+        course1_2rate: Number.isFinite(reassignedLaneContext.course1_2rate) ? reassignedLaneContext.course1_2rate : f.course1_2rate,
+        course2_2rate: Number.isFinite(reassignedLaneContext.course2_2rate) ? reassignedLaneContext.course2_2rate : f.course2_2rate,
+        course3_3rate: Number.isFinite(reassignedLaneContext.course3_3rate) ? reassignedLaneContext.course3_3rate : f.course3_3rate,
+        course4_3rate: Number.isFinite(reassignedLaneContext.course4_3rate) ? reassignedLaneContext.course4_3rate : f.course4_3rate,
+        lane_fit_1st: Number.isFinite(reassignedLaneContext.laneFirstRate) ? reassignedLaneContext.laneFirstRate : (Number.isFinite(f.laneFirstRate) ? f.laneFirstRate : null),
+        lane_fit_2ren: Number.isFinite(reassignedLaneContext.lane2RenRate) ? reassignedLaneContext.lane2RenRate : (Number.isFinite(f.lane2RenRate) ? f.lane2RenRate : null),
+        lane_fit_3ren: Number.isFinite(reassignedLaneContext.lane3RenRate) ? reassignedLaneContext.lane3RenRate : (Number.isFinite(f.lane3RenRate) ? f.lane3RenRate : null),
         lane_fit_local: Number.isFinite(f.local_win_rate) ? f.local_win_rate : null,
-        lane_fit_grade: Number.isFinite(f.class_score) ? f.class_score * 20 : null
+        lane_fit_grade: Number.isFinite(f.class_score) ? f.class_score * 20 : null,
+        lane_assignment_debug: {
+          original_lane: f.original_lane ?? null,
+          actual_lane: actualLane,
+          course_change_occurred: Number.isInteger(actualLane) && Number.isInteger(f.original_lane) ? actualLane !== f.original_lane : false,
+          lane_scores_reassigned: !!(
+            Number.isFinite(reassignedLaneContext.laneFirstRate) ||
+            Number.isFinite(reassignedLaneContext.lane2RenRate) ||
+            Number.isFinite(reassignedLaneContext.lane3RenRate)
+          )
+        }
       }
     };
   });

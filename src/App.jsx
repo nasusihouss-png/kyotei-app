@@ -1593,6 +1593,9 @@ function getPlayerComparisonRows({ prediction, data }) {
             : null);
         return {
           lane,
+          boatNumber: lane,
+          actualLane: Number(row?.entryCourse ?? snapshotRow?.entry_course ?? lane) || lane,
+          courseChanged: Number(row?.entryCourse ?? snapshotRow?.entry_course ?? lane) !== lane,
           name: row?.name || snapshotRow?.name || `Boat ${lane || "-"}`,
           fCount: row?.fHoldCount === null || row?.fHoldCount === undefined
             ? (snapshotRow?.f_hold_count === null || snapshotRow?.f_hold_count === undefined ? null : Number(snapshotRow.f_hold_count))
@@ -1610,22 +1613,25 @@ function getPlayerComparisonRows({ prediction, data }) {
           motor3ren: liveMotor3Rate,
           motor2Rate: liveMotor2Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_2rate),
           motor3Rate: liveMotor3Rate,
-          lane1stScore: debugLaneStats.laneFirstRate ?? liveLaneStats.laneFirstRate ?? snapshotLaneStats.laneFirstRate,
-          lane2renScore: debugLaneStats.lane2RenRate ?? liveLaneStats.lane2RenRate ?? snapshotLaneStats.lane2RenRate,
-          lane3renScore: debugLaneStats.lane3RenRate ?? liveLaneStats.lane3RenRate ?? snapshotLaneStats.lane3RenRate,
-          lane1stAvg: debugLaneStats.laneFirstRate ?? liveLaneStats.laneFirstRate ?? snapshotLaneStats.laneFirstRate,
-          lane2renAvg: debugLaneStats.lane2RenRate ?? liveLaneStats.lane2RenRate ?? snapshotLaneStats.lane2RenRate,
-          lane3renAvg: debugLaneStats.lane3RenRate ?? liveLaneStats.lane3RenRate ?? snapshotLaneStats.lane3RenRate,
-          laneFirstRate: debugLaneStats.laneFirstRate ?? liveLaneStats.laneFirstRate ?? snapshotLaneStats.laneFirstRate,
-          lane2RenRate: debugLaneStats.lane2RenRate ?? liveLaneStats.lane2RenRate ?? snapshotLaneStats.lane2RenRate,
-          lane3RenRate: debugLaneStats.lane3RenRate ?? liveLaneStats.lane3RenRate ?? snapshotLaneStats.lane3RenRate
+          lane1stScore: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
+          lane2renScore: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
+          lane3renScore: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate),
+          lane1stAvg: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
+          lane2renAvg: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
+          lane3renAvg: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate),
+          laneFirstRate: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
+          lane2RenRate: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
+          lane3RenRate: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate)
         };
       })
-      .sort((a, b) => a.lane - b.lane);
+      .sort((a, b) => (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber));
   }
   return snapshotPlayers
     .map((row) => ({
       lane: Number(row?.lane || 0),
+      boatNumber: Number(row?.lane || 0),
+      actualLane: Number(row?.entry_course || row?.lane || 0),
+      courseChanged: Number(row?.entry_course || row?.lane || 0) !== Number(row?.lane || 0),
       name: row?.name || `Boat ${row?.lane || "-"}`,
       fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
       kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched) === 1,
@@ -1639,17 +1645,17 @@ function getPlayerComparisonRows({ prediction, data }) {
       motor3ren: toFiniteComparisonNumber(row?.motor_3rate),
       motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
       motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
-      lane1stScore: normalizeLaneStats(row).laneFirstRate,
-      lane2renScore: normalizeLaneStats(row).lane2RenRate,
-      lane3renScore: normalizeLaneStats(row).lane3RenRate,
-      lane1stAvg: normalizeLaneStats(row).laneFirstRate,
-      lane2renAvg: normalizeLaneStats(row).lane2RenRate,
-      lane3renAvg: normalizeLaneStats(row).lane3RenRate,
-      laneFirstRate: normalizeLaneStats(row).laneFirstRate,
-      lane2RenRate: normalizeLaneStats(row).lane2RenRate,
-      lane3RenRate: normalizeLaneStats(row).lane3RenRate
+      lane1stScore: firstFiniteValue(row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+      lane2renScore: firstFiniteValue(row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+      lane3renScore: firstFiniteValue(row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
+      lane1stAvg: firstFiniteValue(row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+      lane2renAvg: firstFiniteValue(row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+      lane3renAvg: firstFiniteValue(row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
+      laneFirstRate: firstFiniteValue(row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+      lane2RenRate: firstFiniteValue(row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+      lane3RenRate: firstFiniteValue(row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate)
     }))
-    .sort((a, b) => a.lane - b.lane);
+    .sort((a, b) => (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber));
 }
 
 function buildTopMetricLaneSet(rows, key, direction = "desc") {
@@ -1664,7 +1670,7 @@ function buildTopMetricLaneSet(rows, key, direction = "desc") {
   return new Set(
     ranked
       .filter((row) => topValues.includes(Number(row?.[key])))
-      .map((row) => Number(row?.lane))
+      .map((row) => Number(row?.actualLane ?? row?.lane))
   );
 }
 
@@ -3930,6 +3936,7 @@ export default function App() {
                         <thead>
                           <tr>
                             <th>Boat</th>
+                            <th>Entry</th>
                             <th>Player</th>
                             <th>F</th>
                             <th>Lap Time</th>
@@ -3943,34 +3950,40 @@ export default function App() {
                         </thead>
                         <tbody>
                           {safeArray(playerComparisonRows).map((row, idx) => (
-                            <tr key={`player-compare-${row?.lane ?? idx}`}>
+                            <tr key={`player-compare-${row?.boatNumber ?? row?.lane ?? idx}`}>
                               <td>
                                 <div className="player-boat-cell">
-                                  <span className={`combo-dot ${BOAT_META[row?.lane]?.className || ""}`}>{row?.lane ?? "--"}</span>
+                                  <span className={`combo-dot ${BOAT_META[row?.boatNumber ?? row?.lane]?.className || ""}`}>{row?.boatNumber ?? row?.lane ?? "--"}</span>
+                                </div>
+                              </td>
+                              <td>
+                                <div className="player-boat-cell">
+                                  <span className={`combo-dot ${BOAT_META[row?.actualLane]?.className || ""}`}>{row?.actualLane ?? "--"}</span>
                                 </div>
                               </td>
                               <td>
                                 <div className="player-name-cell">
                                   <strong>{row?.name || "-"}</strong>
+                                  {row?.courseChanged ? <div className="muted">moved from {row?.boatNumber}</div> : null}
                                 </div>
                               </td>
                               <td>
                                 <span className={`f-count-badge ${Number(row?.fCount) > 0 ? "has-f" : ""}`}>F{row?.fCount ?? "--"}</span>
                               </td>
-                              <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.lapTime, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionSt, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionTime, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.laneFirstRate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane1st"), 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.lane2RenRate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane2ren"), 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.lane3RenRate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane3ren"), 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.lapTime, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionSt, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionTime, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.laneFirstRate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane1st"), 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.lane2RenRate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane2ren"), 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.lane3RenRate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane3ren"), 2)}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                     <p className="muted strategy-line">
-                      Lap time is ranked as lower-is-better. Lane scores use the weighted kyoteibiyori lane-stat score over available verified periods only.
+                      Rows are ordered by actual entry lane when course movement occurs. Lane scores shown here follow the reassigned actual lane when available.
                     </p>
                     {!data?.source?.kyotei_biyori?.ok ? (
                       <p className="muted strategy-line">

@@ -15,7 +15,7 @@ function rankQuality(rank, maxRank = 6) {
 export function analyzePlayerStartProfiles({ ranking }) {
   const rows = Array.isArray(ranking) ? ranking : [];
   const profiles = rows.map((row) => {
-    const lane = toNum(row?.racer?.lane, 0);
+    const lane = toNum(row?.features?.actual_lane ?? row?.racer?.entryCourse ?? row?.racer?.lane, 0);
     const f = row?.features || {};
     const racer = row?.racer || {};
 

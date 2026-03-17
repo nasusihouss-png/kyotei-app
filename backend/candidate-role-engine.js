@@ -38,6 +38,7 @@ export function analyzeRoleCandidates({
 
   const roleRows = rows.map((row) => {
     const lane = toNum(row?.racer?.lane);
+    const actualLane = toNum(row?.features?.actual_lane ?? row?.racer?.entryCourse ?? row?.racer?.lane);
     const score = toNum(row?.score);
     const f = row?.features || {};
     const p = toNum(winProb?.[lane], 0);
@@ -57,30 +58,30 @@ export function analyzeRoleCandidates({
       (backupPartners.includes(lane) ? 8 : 0) +
       (mainPartners.includes(lane) ? 4 : 0);
 
-    if (lane === toNum(exhibitionAI?.top_exhibition_lane, 0)) headScore += 10;
-    if (lane === toNum(exhibitionAI?.stable_st_lane, 0)) secondScore += 8;
-    if (lane === toNum(exhibitionAI?.breakout_lane, 0)) {
+    if (actualLane === toNum(exhibitionAI?.top_exhibition_lane, 0)) headScore += 10;
+    if (actualLane === toNum(exhibitionAI?.stable_st_lane, 0)) secondScore += 8;
+    if (actualLane === toNum(exhibitionAI?.breakout_lane, 0)) {
       secondScore += 5;
       thirdScore += 6;
     }
-    if (lane === toNum(exhibitionAI?.weak_lane, 0)) {
+    if (actualLane === toNum(exhibitionAI?.weak_lane, 0)) {
       headScore -= 7;
       secondScore -= 4;
       thirdScore -= 4;
     }
 
     if (flowMode === "nige") {
-      if (lane === 1) headScore += 10 * Math.max(0.4, nigeProb);
-      if (lane === 2) secondScore += 8 * Math.max(0.35, nigeProb);
-      if (lane === 3) thirdScore += 5 * Math.max(0.3, nigeProb);
+      if (actualLane === 1) headScore += 10 * Math.max(0.4, nigeProb);
+      if (actualLane === 2) secondScore += 8 * Math.max(0.35, nigeProb);
+      if (actualLane === 3) thirdScore += 5 * Math.max(0.3, nigeProb);
     } else if (flowMode === "sashi") {
-      if (lane === 2) headScore += 9 * Math.max(0.35, sashiProb);
-      if (lane === 1) secondScore += 6 * Math.max(0.3, sashiProb);
-      if (lane === 3 || lane === 4) thirdScore += 5 * Math.max(0.25, sashiProb);
+      if (actualLane === 2) headScore += 9 * Math.max(0.35, sashiProb);
+      if (actualLane === 1) secondScore += 6 * Math.max(0.3, sashiProb);
+      if (actualLane === 3 || actualLane === 4) thirdScore += 5 * Math.max(0.25, sashiProb);
     } else if (flowMode === "makuri" || flowMode === "makurizashi") {
-      if (lane === 3 || lane === 4) headScore += 9 * Math.max(0.35, makuriProb);
-      if (lane === 1 || lane === 2) secondScore += 4 * Math.max(0.25, makuriProb);
-      if (lane >= 4) thirdScore += 5 * Math.max(0.25, makuriProb);
+      if (actualLane === 3 || actualLane === 4) headScore += 9 * Math.max(0.35, makuriProb);
+      if (actualLane === 1 || actualLane === 2) secondScore += 4 * Math.max(0.25, makuriProb);
+      if (actualLane >= 4) thirdScore += 5 * Math.max(0.25, makuriProb);
     }
 
     headScore += toNum(sp.start_stability_score, 50) * 0.06;

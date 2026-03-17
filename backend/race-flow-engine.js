@@ -16,7 +16,7 @@ function softmax(values) {
 }
 
 function laneRow(ranking, lane) {
-  return (ranking || []).find((r) => toNum(r?.racer?.lane, 0) === lane) || {
+  return (ranking || []).find((r) => toNum(r?.features?.actual_lane ?? r?.racer?.entryCourse ?? r?.racer?.lane, 0) === lane) || {
     score: 0,
     features: {},
     racer: { lane }

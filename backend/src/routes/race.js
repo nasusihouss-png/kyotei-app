@@ -9967,6 +9967,9 @@ raceRouter.get("/race", async (req, res, next) => {
             }
           : {}),
         lane,
+        original_lane: lane,
+        actual_lane: toInt(racer?.entryCourse, lane),
+        course_change_occurred: toInt(racer?.entryCourse, lane) !== lane ? 1 : 0,
         registration_no: toInt(racer?.registrationNo, null),
         name: racer?.name || null,
         class: racer?.class || null,

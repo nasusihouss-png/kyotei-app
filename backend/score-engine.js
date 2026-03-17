@@ -55,7 +55,8 @@ function buildFetchedSignalScoreBreakdown(f) {
 
 export function calcRacerScore(f) {
   let score = 0;
-  score += LANE_BONUS[f.lane] ?? 0;
+  const actualLane = Number.isFinite(Number(f?.actual_lane)) ? Number(f.actual_lane) : Number(f?.lane || 0);
+  score += LANE_BONUS[actualLane] ?? 0;
   score += f.class_score * 4.0;
   score += f.nationwide_win_rate * 1.8;
   score += f.local_win_rate * 2.2;
@@ -122,7 +123,7 @@ export function rankRace(racersWithFeatures) {
     .sort((a, b) => b.score - a.score);
   const signalOnlyRanks = [...ranked]
     .sort((a, b) => b.fetchedSignalBreakdown.total - a.fetchedSignalBreakdown.total)
-    .map((item, idx) => [item.racer?.lane, idx + 1]);
+    .map((item, idx) => [Number.isFinite(Number(item?.features?.actual_lane)) ? Number(item.features.actual_lane) : item.racer?.lane, idx + 1]);
   const signalRankMap = new Map(signalOnlyRanks);
   return ranked
     .map((item, idx) => ({
@@ -133,7 +134,7 @@ export function rankRace(racersWithFeatures) {
         ...item.features,
         fetched_signal_score_breakdown: {
           ...item.fetchedSignalBreakdown,
-          signal_only_rank: signalRankMap.get(item.racer?.lane) ?? null,
+          signal_only_rank: signalRankMap.get(Number.isFinite(Number(item?.features?.actual_lane)) ? Number(item.features.actual_lane) : item.racer?.lane) ?? null,
           final_rank: idx + 1
         }
       }
