@@ -3887,7 +3887,7 @@ export default function App() {
                       </table>
                     </div>
                     <p className="muted strategy-line">
-                      Lap time is ranked as lower-is-better. Lane stats use a simple average of season, 6m, 3m, and 1m over available periods only.
+                      Lap time is ranked as lower-is-better. Lane scores use the weighted kyoteibiyori lane-stat score over available verified periods only.
                     </p>
                     {!data?.source?.kyotei_biyori?.ok ? (
                       <p className="muted strategy-line">
