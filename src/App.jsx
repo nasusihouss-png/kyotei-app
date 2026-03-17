@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+﻿import { Component, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
@@ -495,6 +495,56 @@ function safePrettyJson(value) {
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function safeObject(value) {
+  return value && typeof value === "object" ? value : {};
+}
+
+function safeEntries(value) {
+  return value && typeof value === "object" ? Object.entries(value) : [];
+}
+
+function safeSetHas(setLike, value) {
+  return !!setLike && typeof setLike.has === "function" ? setLike.has(value) : false;
+}
+
+function getLaneScoreDisplayValue(row, key) {
+  const safeRow = safeObject(row);
+  switch (key) {
+    case "lane1st":
+      return safeRow?.lane1stScore ?? safeRow?.lane1stAvg ?? safeRow?.laneFirstRate ?? null;
+    case "lane2ren":
+      return safeRow?.lane2renScore ?? safeRow?.lane2renAvg ?? safeRow?.lane2RenRate ?? null;
+    case "lane3ren":
+      return safeRow?.lane3renScore ?? safeRow?.lane3renAvg ?? safeRow?.lane3RenRate ?? null;
+    default:
+      return null;
+  }
+}
+
+class UiErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch() {
+    // fail-open on UI rendering errors
+  }
+
+  render() {
+    if (this.state.hasError) return this.props.fallback ?? null;
+    return this.props.children ?? null;
+  }
+}
+
+function RenderGuard({ children, fallback = null }) {
+  return <UiErrorBoundary fallback={fallback}>{children ?? null}</UiErrorBoundary>;
 }
 
 function formatDebugRawValue(value) {
@@ -3858,7 +3908,8 @@ export default function App() {
                   </div>
                 </section>
 
-                {playerComparisonRows.length > 0 ? (
+                {safeArray(playerComparisonRows).length > 0 ? (
+                  <RenderGuard>
                   <section className="card summary-card premium-player-panel">
                     <div className="premium-card-head">
                       <div>
@@ -3883,28 +3934,28 @@ export default function App() {
                           </tr>
                         </thead>
                         <tbody>
-                          {playerComparisonRows.map((row) => (
-                            <tr key={`player-compare-${row.lane}`}>
+                          {safeArray(playerComparisonRows).map((row, idx) => (
+                            <tr key={`player-compare-${row?.lane ?? idx}`}>
                               <td>
                                 <div className="player-boat-cell">
-                                  <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+                                  <span className={`combo-dot ${BOAT_META[row?.lane]?.className || ""}`}>{row?.lane ?? "--"}</span>
                                 </div>
                               </td>
                               <td>
                                 <div className="player-name-cell">
-                                  <strong>{row.name || "-"}</strong>
+                                  <strong>{row?.name || "-"}</strong>
                                 </div>
                               </td>
                               <td>
-                                <span className={`f-count-badge ${Number(row.fCount) > 0 ? "has-f" : ""}`}>F{row.fCount ?? "--"}</span>
+                                <span className={`f-count-badge ${Number(row?.fCount) > 0 ? "has-f" : ""}`}>F{row?.fCount ?? "--"}</span>
                               </td>
-                              <td className={playerMetricLeaders.lapTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lapTime, 2)}</td>
-                              <td className={playerMetricLeaders.exhibitionSt.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionSt, 2)}</td>
-                              <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionTime, 2)}</td>
-                              <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor2ren, 2)}</td>
-                              <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane1stScore ?? row.lane1stAvg, 2)}</td>
-                              <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane2renScore ?? row.lane2renAvg, 2)}</td>
-                              <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane3renScore ?? row.lane3renAvg, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.lapTime, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionSt, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionTime, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.laneFirstRate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane1st"), 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.lane2RenRate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane2ren"), 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.lane3RenRate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane3ren"), 2)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -3919,8 +3970,10 @@ export default function App() {
                       </p>
                     ) : null}
                   </section>
+                  </RenderGuard>
                 ) : null}
 
+                <RenderGuard>
                 <section className="card summary-card premium-start-top-card">
                   <div className="premium-card-head">
                     <div>
@@ -3946,7 +3999,9 @@ export default function App() {
                           : "official pre-race info"}
                   </p>
                 </section>
+                </RenderGuard>
 
+                <RenderGuard>
                 <article className={`card summary-card premium-ticket-card top-ranked-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
                   <div className="premium-card-head">
                     <div>
@@ -3982,7 +4037,9 @@ export default function App() {
                     <p className="muted strategy-line">Low-confidence race. Treat this order as reference only.</p>
                   ) : null}
                 </article>
+                </RenderGuard>
 
+                <RenderGuard>
                 <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
                   <div className="premium-card-head">
                     <div>
@@ -4009,8 +4066,10 @@ export default function App() {
                     ))}
                   </div>
                 </article>
+                </RenderGuard>
 
                 {topExactaFour.length > 0 ? (
+                  <RenderGuard>
                   <article className="card summary-card premium-ticket-card subtle">
                     <div className="premium-card-head">
                       <div>
@@ -4038,9 +4097,11 @@ export default function App() {
                       ))}
                     </div>
                   </article>
+                  </RenderGuard>
                 ) : null}
 
                 {upsetSupport?.mediumUpset?.shown ? (
+                  <RenderGuard>
                   <article className="card summary-card premium-ticket-card subtle">
                     <div className="premium-card-head">
                       <div>
@@ -4053,7 +4114,7 @@ export default function App() {
                       <span>compact backup coverage only</span>
                     </div>
                     <div className="ticket-stack compact-list" style={{ marginBottom: 10 }}>
-                      {safeArray(upsetSupport.mediumUpset.trifecta_tickets).map((combo, idx) => (
+                      {safeArray(upsetSupport?.mediumUpset?.trifecta_tickets).map((combo, idx) => (
                         <div key={`medium-upset-tri-${combo}-${idx}`} className="premium-ticket-row">
                           <div className="ticket-mainline">
                             <span className="ticket-type ticket-type-inline">3連単</span>
@@ -4062,9 +4123,9 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-                    {safeArray(upsetSupport.mediumUpset.exacta_pairs).length > 0 ? (
+                    {safeArray(upsetSupport?.mediumUpset?.exacta_pairs).length > 0 ? (
                       <div className="ticket-stack compact-list">
-                        {upsetSupport.mediumUpset.exacta_pairs.map((row, idx) => (
+                        {safeArray(upsetSupport?.mediumUpset?.exacta_pairs).map((row, idx) => (
                           <div key={`medium-upset-ex-${row?.combo || idx}`} className="premium-ticket-row">
                             <div className="ticket-mainline">
                               <span className="ticket-type ticket-type-inline">2連単</span>
@@ -4078,9 +4139,11 @@ export default function App() {
                       </div>
                     ) : null}
                   </article>
+                  </RenderGuard>
                 ) : null}
 
                 {upsetSupport?.bigUpset?.shown ? (
+                  <RenderGuard>
                   <article className="card summary-card premium-ticket-card subtle">
                     <div className="premium-card-head">
                       <div>
@@ -4093,7 +4156,7 @@ export default function App() {
                       <span>strong upset warning, compact hedge only</span>
                     </div>
                     <div className="ticket-stack compact-list" style={{ marginBottom: 10 }}>
-                      {safeArray(upsetSupport.bigUpset.trifecta_tickets).map((combo, idx) => (
+                      {safeArray(upsetSupport?.bigUpset?.trifecta_tickets).map((combo, idx) => (
                         <div key={`big-upset-tri-${combo}-${idx}`} className="premium-ticket-row">
                           <div className="ticket-mainline">
                             <span className="ticket-type ticket-type-inline">3連単</span>
@@ -4102,9 +4165,9 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-                    {safeArray(upsetSupport.bigUpset.exacta_pairs).length > 0 ? (
+                    {safeArray(upsetSupport?.bigUpset?.exacta_pairs).length > 0 ? (
                       <div className="ticket-stack compact-list">
-                        {upsetSupport.bigUpset.exacta_pairs.map((row, idx) => (
+                        {safeArray(upsetSupport?.bigUpset?.exacta_pairs).map((row, idx) => (
                           <div key={`big-upset-ex-${row?.combo || idx}`} className="premium-ticket-row">
                             <div className="ticket-mainline">
                               <span className="ticket-type ticket-type-inline">2連単</span>
@@ -4118,8 +4181,10 @@ export default function App() {
                       </div>
                     ) : null}
                   </article>
+                  </RenderGuard>
                 ) : null}
 
+                <RenderGuard>
                 <div className="prediction-summary-grid premium-layout">
                   {adminMode ? (
                     <section className="card">
@@ -4216,7 +4281,7 @@ export default function App() {
                         <details style={{ marginBottom: 12 }}>
                           <summary>hit-rate enhancement debug</summary>
                           <div style={{ marginTop: 10 }}>
-                            {roleSpecificBonusRows.length > 0 ? (
+                            {safeArray(roleSpecificBonusRows).length > 0 ? (
                               <details style={{ marginBottom: 12 }}>
                                 <summary>role-specific finish bonuses</summary>
                                 <div className="table-wrap" style={{ marginTop: 10 }}>
@@ -4234,18 +4299,18 @@ export default function App() {
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {roleSpecificBonusRows.map((row) => (
-                                        <tr key={`role-bonus-${row.lane}`}>
+                                      {safeArray(roleSpecificBonusRows).map((row, idx) => (
+                                        <tr key={`role-bonus-${row?.lane ?? idx}`}>
                                           <td>
-                                            <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+                                            <span className={`combo-dot ${BOAT_META[row?.lane]?.className || ""}`}>{row?.lane ?? "--"}</span>
                                           </td>
-                                          <td>{formatMaybeNumber(row.firstPlaceBonus, 3)}</td>
-                                          <td>{formatMaybeNumber(row.secondPlaceBonus, 3)}</td>
-                                          <td>{formatMaybeNumber(row.thirdPlaceBonus, 3)}</td>
-                                          <td>{formatMaybeNumber(row.exTimeLeftGapBonus, 3)}</td>
-                                          <td>{formatMaybeNumber(row.turningBonus, 3)}</td>
-                                          <td>{formatMaybeNumber(row.straightBonus, 3)}</td>
-                                          <td><span className="muted">{row.styleBonus}</span></td>
+                                          <td>{formatMaybeNumber(row?.firstPlaceBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.secondPlaceBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.thirdPlaceBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.exTimeLeftGapBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.turningBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.straightBonus, 3)}</td>
+                                          <td><span className="muted">{row?.styleBonus ?? "--"}</span></td>
                                         </tr>
                                       ))}
                                     </tbody>
@@ -4253,7 +4318,7 @@ export default function App() {
                                 </div>
                               </details>
                             ) : null}
-                            {finishRoleScoreRows.length > 0 ? (
+                            {safeArray(finishRoleScoreRows).length > 0 ? (
                               <details style={{ marginBottom: 12 }}>
                                 <summary>finish-role scores + head compatibility</summary>
                                 <div className="table-wrap" style={{ marginTop: 10 }}>
@@ -4272,34 +4337,34 @@ export default function App() {
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {finishRoleScoreRows.map((row) => (
-                                        <tr key={`finish-role-score-${row.lane}`}>
+                                      {safeArray(finishRoleScoreRows).map((row, idx) => (
+                                        <tr key={`finish-role-score-${row?.lane ?? idx}`}>
                                           <td>
-                                            <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+                                            <span className={`combo-dot ${BOAT_META[row?.lane]?.className || ""}`}>{row?.lane ?? "--"}</span>
                                           </td>
-                                          <td>{formatMaybeNumber(row.firstPlaceScore, 3)}</td>
-                                          <td>{formatMaybeNumber(row.secondPlaceScore, 3)}</td>
-                                          <td>{formatMaybeNumber(row.thirdPlaceScore, 3)}</td>
-                                          <td>{formatMaybeNumber(row.secondCompatibility, 3)}</td>
-                                          <td>{formatMaybeNumber(row.thirdCompatibility, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.firstPlaceScore, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.secondPlaceScore, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.thirdPlaceScore, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.secondCompatibility, 3)}</td>
+                                          <td>{formatMaybeNumber(row?.thirdCompatibility, 3)}</td>
                                           <td>
                                             <span className="muted">
-                                              {row.secondBreakdown
-                                                ? `L2 ${formatMaybeNumber(row.secondBreakdown.lane2renScore, 2)} / M2 ${formatMaybeNumber(row.secondBreakdown.motor2ren, 2)} / compat ${formatMaybeNumber(row.secondBreakdown.compatibility_with_head, 2)}`
+                                              {row?.secondBreakdown
+                                                ? `L2 ${formatMaybeNumber(row?.secondBreakdown?.lane2renScore, 2)} / M2 ${formatMaybeNumber(row?.secondBreakdown?.motor2ren, 2)} / compat ${formatMaybeNumber(row?.secondBreakdown?.compatibility_with_head, 2)}`
                                                 : "--"}
                                             </span>
                                           </td>
                                           <td>
                                             <span className="muted">
-                                              {row.thirdBreakdown
-                                                ? `L3 ${formatMaybeNumber(row.thirdBreakdown.lane3renScore, 2)} / flow ${formatMaybeNumber(row.thirdBreakdown.flow_in_bonus, 2)} / excl ${formatMaybeNumber(row.thirdBreakdown.exclusion_penalty, 2)}`
+                                              {row?.thirdBreakdown
+                                                ? `L3 ${formatMaybeNumber(row?.thirdBreakdown?.lane3renScore, 2)} / flow ${formatMaybeNumber(row?.thirdBreakdown?.flow_in_bonus, 2)} / excl ${formatMaybeNumber(row?.thirdBreakdown?.exclusion_penalty, 2)}`
                                                 : "--"}
                                             </span>
                                           </td>
                                           <td>
                                             <span className="muted">
-                                              {row.thirdExclusionReasons.length > 0
-                                                ? `${row.thirdExclusionReasons.join(", ")} (${formatMaybeNumber(row.thirdExclusionPenalty, 2)})`
+                                              {safeArray(row?.thirdExclusionReasons).length > 0
+                                                ? `${safeArray(row?.thirdExclusionReasons).join(", ")} (${formatMaybeNumber(row?.thirdExclusionPenalty, 2)})`
                                                 : "--"}
                                             </span>
                                           </td>
@@ -4374,7 +4439,7 @@ export default function App() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {kyoteiBiyoriFrontendDebug.lane_rows.map((row) => (
+                                {safeArray(kyoteiBiyoriFrontendDebug?.lane_rows).map((row) => (
                                   <tr key={`kyotei-raw-${row?.lane ?? "unknown"}`}>
                                     <td>{row?.lane ?? "-"}</td>
                                     <td><code>{formatDebugRawValue(row?.lane1stRate_raw)}</code></td>
@@ -4403,7 +4468,9 @@ export default function App() {
                     </div>
                   </details>
                 </div>
+                </RenderGuard>
 
+                <RenderGuard>
                 <details className="card">
                   <summary>展示・進入の詳細</summary>
                   <div style={{ marginTop: 10 }}>
@@ -4452,7 +4519,7 @@ export default function App() {
                           </tr>
                         </thead>
                         <tbody>
-                          {racers.map((racer, idx) => (
+                          {safeArray(racers).map((racer, idx) => (
                             <tr key={`auto-lap-${racer.lane}-${idx}`}>
                               <td>{racer.lane ?? "-"}</td>
                               <td>{racer.name || "-"}</td>
@@ -4467,7 +4534,9 @@ export default function App() {
                     </div>
                   </div>
                 </details>
+                </RenderGuard>
 
+                <RenderGuard>
                 <details className="card">
                   <summary>選手・左隣比較・F持ちの詳細</summary>
                   <div style={{ marginTop: 10 }}>
@@ -4475,7 +4544,7 @@ export default function App() {
                       <table>
                         <thead><tr><th>艇番</th><th>左隣あり</th><th>展示差</th><th>平均ST順位差</th><th>slit_alert</th><th>F caution</th><th>actual ST補正</th></tr></thead>
                         <tbody>
-                          {laneInsightRows.map((row) => (
+                          {safeArray(laneInsightRows).map((row) => (
                             <tr key={`insight-${row.lane}`}>
                               <td>{row.lane}</td>
                               <td>{row.left_neighbor_exists ? "あり" : "-"}</td>
@@ -4489,18 +4558,18 @@ export default function App() {
                         </tbody>
                       </table>
                     </div>
-                    {fHoldNoteRows.length > 0 ? (
-                      <p className="muted strategy-line">
-                        F-hold caution:
-                        {" "}
-                        {fHoldNoteRows.map((row) => `${row.lane}号艇(+${formatMaybeNumber(row.expected_actual_st_adjustment, 3)})`).join(", ")}
-                      </p>
-                    ) : null}
+                        {safeArray(fHoldNoteRows).length > 0 ? (
+                          <p className="muted strategy-line">
+                            F-hold caution:
+                            {" "}
+                            {safeArray(fHoldNoteRows).map((row) => `${row?.lane ?? "-"}号艇(+${formatMaybeNumber(row?.expected_actual_st_adjustment, 3)})`).join(", ")}
+                          </p>
+                        ) : null}
                     <section className="card ranking-card" style={{ marginTop: 10 }}>
                       <h3>AI総合評価ランキング</h3>
                       <p className="top3">予想される上位着順: {top3.length ? top3.join("-") : "-"}</p>
                       <div className="list-stack">
-                        {normalizedRanking.map((racer, idx) => (
+                        {safeArray(normalizedRanking).map((racer, idx) => (
                           <div key={`${racer.lane}-${idx}`} className="list-row ranking-row">
                             <span>#{racer.rank ?? idx + 1}</span>
                             <span className={`combo-dot ${BOAT_META[racer.lane]?.className || ""}`}>{racer.lane ?? "-"}</span>
@@ -4515,13 +4584,15 @@ export default function App() {
                       <table>
                         <thead><tr><th>艇番</th><th>選手名</th><th>級別</th><th>全国勝率</th><th>当地勝率</th><th>モーター2連率</th><th>展示タイム</th><th>展示ST</th><th>進入</th></tr></thead>
                         <tbody>
-                          {racers.map((racer, idx) => <tr key={`${racer.lane}-${idx}`}><td>{racer.lane ?? "-"}</td><td>{racer.name || "-"}</td><td>{racer.class || "-"}</td><td>{formatMaybeNumber(racer.nationwideWinRate, 2)}</td><td>{formatMaybeNumber(racer.localWinRate, 2)}</td><td>{formatMaybeNumber(racer.motor2Rate, 2)}</td><td>{formatMaybeNumber(racer.exhibitionTime, 2)}</td><td>{formatMaybeNumber(racer.exhibitionST, 2)}</td><td>{racer.entryCourse ?? "-"}</td></tr>)}
+                          {safeArray(racers).map((racer, idx) => <tr key={`${racer?.lane ?? "x"}-${idx}`}><td>{racer?.lane ?? "-"}</td><td>{racer?.name || "-"}</td><td>{racer?.class || "-"}</td><td>{formatMaybeNumber(racer?.nationwideWinRate, 2)}</td><td>{formatMaybeNumber(racer?.localWinRate, 2)}</td><td>{formatMaybeNumber(racer?.motor2Rate, 2)}</td><td>{formatMaybeNumber(racer?.exhibitionTime, 2)}</td><td>{formatMaybeNumber(racer?.exhibitionST, 2)}</td><td>{racer?.entryCourse ?? "-"}</td></tr>)}
                         </tbody>
                       </table>
                     </div>
                   </div>
                 </details>
+                </RenderGuard>
 
+                <RenderGuard>
                 <details className="card">
                   <summary>シナリオ・分析の詳細</summary>
                   <div style={{ marginTop: 10 }}>
@@ -4601,7 +4672,7 @@ export default function App() {
                       <div className="kv-row"><span>危険タイプ</span><strong>{raceRisk.danger_type || "-"}</strong></div>
                     </div>
                     <div className="chips-wrap">
-                      {skipReasonCodes.length === 0 ? <span className="chip">特記事項なし</span> : skipReasonCodes.map((code) => <span className="chip" key={code}>{code}</span>)}
+                      {safeArray(skipReasonCodes).length === 0 ? <span className="chip">特記事項なし</span> : safeArray(skipReasonCodes).map((code) => <span className="chip" key={code}>{code}</span>)}
                     </div>
                     <p className="muted strategy-line">{raceRisk.skip_summary || "-"}</p>
                   </article>
@@ -4626,9 +4697,9 @@ export default function App() {
                       <div className="kv-row"><span>race_select_score</span><strong>{formatMaybeNumber(raceDecision.race_select_score, 2)}</strong></div>
                     </div>
                     <div className="chips-wrap">
-                      {(raceDecision.reason_codes || []).length === 0
+                      {safeArray(raceDecision?.reason_codes).length === 0
                         ? <span className="chip">NO_REASON</span>
-                        : (raceDecision.reason_codes || []).map((code) => <span className="chip" key={`rd-${code}`}>{code}</span>)}
+                        : safeArray(raceDecision?.reason_codes).map((code) => <span className="chip" key={`rd-${code}`}>{code}</span>)}
                     </div>
                     <p className="muted strategy-line">{raceDecision.summary || "-"}</p>
                   </article>
@@ -4667,7 +4738,7 @@ export default function App() {
                       </div>
                     </div>
                     <div className="win-prob-list">
-                      {Object.entries(headSelection?.win_prob_by_lane || {})
+                      {safeEntries(headSelection?.win_prob_by_lane)
                         .map(([lane, prob]) => ({ lane: Number(lane), prob: Number(prob) }))
                         .sort((a, b) => a.lane - b.lane)
                         .map((row) => (
@@ -4709,10 +4780,10 @@ export default function App() {
                   <article className="card analysis-card">
                     <h2>選手スタートプロファイル</h2>
                     <div className="list-stack">
-                      {startProfileRows.length === 0 ? (
+                      {safeArray(startProfileRows).length === 0 ? (
                         <p className="muted">データなし</p>
                       ) : (
-                        startProfileRows.map((row) => (
+                        safeArray(startProfileRows).map((row) => (
                           <div key={`sp-${row.lane}`} className="list-row">
                             <strong><LanePills lanes={[Number(row.lane)]} /></strong>
                             <span>attack {formatMaybeNumber(row.start_attack_score, 1)}</span>
@@ -4735,7 +4806,7 @@ export default function App() {
                     <p className="muted strategy-line">{roleCandidates.summary || "-"}</p>
                   </article>
 
-                  {Object.keys(evidenceGroupRankings).length > 0 ? (
+                  {Object.keys(safeObject(evidenceGroupRankings)).length > 0 ? (
                     <article className="card analysis-card">
                       <h2>Evidence Bias Table</h2>
                       <div className="kv-list">
@@ -4744,9 +4815,9 @@ export default function App() {
                         <div className="kv-row"><span>counter 2nd</span><strong><LanePills lanes={evidenceConfirmationFlags?.counter_second_candidate ? [evidenceConfirmationFlags.counter_second_candidate] : []} /></strong></div>
                         <div className="kv-row"><span>3rd survivors</span><strong><LanePills lanes={Array.isArray(evidenceConfirmationFlags?.third_place_survivors) ? evidenceConfirmationFlags.third_place_survivors : []} /></strong></div>
                       </div>
-                      {evidenceInterpretation.length > 0 ? (
+                      {safeArray(evidenceInterpretation).length > 0 ? (
                         <div className="list-stack" style={{ marginTop: 8 }}>
-                          {evidenceInterpretation.map((line, idx) => (
+                          {safeArray(evidenceInterpretation).map((line, idx) => (
                             <p key={`evidence-line-${idx}`} className="muted strategy-line">{line}</p>
                           ))}
                         </div>
@@ -4760,7 +4831,7 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody>
-                            {Object.entries(evidenceGroupRankings).map(([groupKey, rows]) => (
+                            {safeEntries(evidenceGroupRankings).map(([groupKey, rows]) => (
                               <tr key={`evidence-group-${groupKey}`}>
                                 <td>{EVIDENCE_GROUP_LABELS[groupKey] || groupKey}</td>
                                 <td>
@@ -4798,7 +4869,7 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody>
-                            {evidenceBoatSummaryRows.map((row) => (
+                            {safeArray(evidenceBoatSummaryRows).map((row) => (
                               <tr key={`evidence-boat-${row.lane}`}>
                                 <td><LanePills lanes={[row.lane]} /></td>
                                 <td>{formatMaybeNumber(row.head_support_score, 3)}</td>
@@ -5110,12 +5181,14 @@ export default function App() {
                 </section>
                   </div>
                 </details>
+                </RenderGuard>
               </>
             )}
           </>
         )}
 
         {screen === "rankings" && (
+          <RenderGuard>
           <>
             {rankingsError && <div className="error-banner">{rankingsError}</div>}
             <section className="card">
@@ -5167,9 +5240,11 @@ export default function App() {
               )}
             </section>
           </>
+          </RenderGuard>
         )}
 
         {screen === "results" && (
+          <RenderGuard>
           <>
             {perfError && <div className="error-banner">{perfError}</div>}
             {verificationNotice && <div className="notice-banner">{verificationNotice}</div>}
@@ -6692,6 +6767,7 @@ export default function App() {
               )}
             </section>
           </>
+          </RenderGuard>
         )}
 
         {screen === "journal" && (
