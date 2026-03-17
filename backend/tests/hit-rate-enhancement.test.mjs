@@ -159,6 +159,10 @@ assert.equal(enhancement.topExactaCandidates.length <= 4, true);
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].firstPlaceBonus, "number");
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].secondPlaceBonus, "number");
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].thirdPlaceBonus, "number");
+assert.equal(typeof enhancement.stage2_dynamic.finish_role_scores_by_lane["2"].second_place_score, "number");
+assert.equal(typeof enhancement.stage2_dynamic.finish_role_scores_by_lane["3"].third_place_score, "number");
+assert.equal(typeof enhancement.stage4_opponents.compatibility_with_head["2"]["1"].second_bonus, "number");
+assert.equal(Array.isArray(enhancement.stage2_dynamic.third_place_exclusion_by_lane["4"].reasons), true);
 assert.notEqual(
   enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].firstPlaceBonus,
   enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].secondPlaceBonus,
@@ -168,6 +172,8 @@ assert.equal(
   typeof enhancement.finishProbabilitiesByScenario[0]?.role_bonus_by_lane?.["2"]?.secondPlaceBonus,
   "number"
 );
+assert.equal(enhancement.stage4_opponents.second_candidate_set.length > 0, true);
+assert.equal(enhancement.stage4_opponents.third_candidate_set.length > 0, true);
 
 const enhanced = applyHitRateEnhancementToProbabilities({
   firstProbs: roleProbabilityLayers.first_place_probability_json,

@@ -2562,6 +2562,37 @@ export default function App() {
       .filter(Boolean)
       .sort((a, b) => a.lane - b.lane);
   }, [hitRateEnhancementDebug]);
+  const finishRoleScoreRows = useMemo(() => {
+    const byLane = hitRateEnhancementDebug?.by_lane && typeof hitRateEnhancementDebug.by_lane === "object"
+      ? hitRateEnhancementDebug.by_lane
+      : {};
+    const primaryHeadLane =
+      Number(hitRateEnhancementDebug?.stage4_opponents?.primary_head_lane) ||
+      Number(Object.keys(byLane)[0] || 1);
+    return Object.keys(byLane)
+      .map((laneKey) => {
+        const lane = Number(laneKey);
+        if (!Number.isInteger(lane)) return null;
+        const laneRow = byLane[laneKey] || {};
+        const scores = laneRow.finish_role_scores || {};
+        const compatibility = laneRow.compatibility_with_head?.[String(primaryHeadLane)] || {};
+        const thirdExclusion = laneRow.third_place_exclusion || {};
+        return {
+          lane,
+          firstPlaceScore: scores?.first_place_score ?? null,
+          secondPlaceScore: scores?.second_place_score ?? null,
+          thirdPlaceScore: scores?.third_place_score ?? null,
+          secondCompatibility: compatibility?.second_bonus ?? null,
+          thirdCompatibility: compatibility?.third_bonus ?? null,
+          secondBreakdown: laneRow.second_place_bonus_breakdown || null,
+          thirdBreakdown: laneRow.third_place_bonus_breakdown || null,
+          thirdExclusionReasons: Array.isArray(thirdExclusion?.reasons) ? thirdExclusion.reasons : [],
+          thirdExclusionPenalty: thirdExclusion?.penalty ?? null
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.lane - b.lane);
+  }, [hitRateEnhancementDebug]);
 
   const currentRaceKey = useMemo(
     () =>
@@ -4115,12 +4146,71 @@ export default function App() {
                                 </div>
                               </details>
                             ) : null}
+                            {finishRoleScoreRows.length > 0 ? (
+                              <details style={{ marginBottom: 12 }}>
+                                <summary>finish-role scores + head compatibility</summary>
+                                <div className="table-wrap" style={{ marginTop: 10 }}>
+                                  <table className="premium-player-table">
+                                    <thead>
+                                      <tr>
+                                        <th>Boat</th>
+                                        <th>1st score</th>
+                                        <th>2nd score</th>
+                                        <th>3rd score</th>
+                                        <th>2nd compat</th>
+                                        <th>3rd compat</th>
+                                        <th>2nd factors</th>
+                                        <th>3rd factors</th>
+                                        <th>3rd exclude</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {finishRoleScoreRows.map((row) => (
+                                        <tr key={`finish-role-score-${row.lane}`}>
+                                          <td>
+                                            <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+                                          </td>
+                                          <td>{formatMaybeNumber(row.firstPlaceScore, 3)}</td>
+                                          <td>{formatMaybeNumber(row.secondPlaceScore, 3)}</td>
+                                          <td>{formatMaybeNumber(row.thirdPlaceScore, 3)}</td>
+                                          <td>{formatMaybeNumber(row.secondCompatibility, 3)}</td>
+                                          <td>{formatMaybeNumber(row.thirdCompatibility, 3)}</td>
+                                          <td>
+                                            <span className="muted">
+                                              {row.secondBreakdown
+                                                ? `L2 ${formatMaybeNumber(row.secondBreakdown.lane2renScore, 2)} / M2 ${formatMaybeNumber(row.secondBreakdown.motor2ren, 2)} / compat ${formatMaybeNumber(row.secondBreakdown.compatibility_with_head, 2)}`
+                                                : "--"}
+                                            </span>
+                                          </td>
+                                          <td>
+                                            <span className="muted">
+                                              {row.thirdBreakdown
+                                                ? `L3 ${formatMaybeNumber(row.thirdBreakdown.lane3renScore, 2)} / flow ${formatMaybeNumber(row.thirdBreakdown.flow_in_bonus, 2)} / excl ${formatMaybeNumber(row.thirdBreakdown.exclusion_penalty, 2)}`
+                                                : "--"}
+                                            </span>
+                                          </td>
+                                          <td>
+                                            <span className="muted">
+                                              {row.thirdExclusionReasons.length > 0
+                                                ? `${row.thirdExclusionReasons.join(", ")} (${formatMaybeNumber(row.thirdExclusionPenalty, 2)})`
+                                                : "--"}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </details>
+                            ) : null}
                             {hitRateEnhancementDebug?.stage1_static?.lane_finish_priors ? (
                               <details style={{ marginBottom: 12 }}>
                                 <summary>lane finish priors + exacta support</summary>
                                 <pre className="json-preview">{safePrettyJson({
                                   boat1PriorBoost: hitRateEnhancementDebug?.stage1_static?.boat1_prior_boost,
                                   laneFinishPriors: hitRateEnhancementDebug?.stage1_static?.lane_finish_priors,
+                                  headCandidates: hitRateEnhancementDebug?.stage4_opponents?.head_candidate_set,
+                                  compatibilityWithHead: hitRateEnhancementDebug?.stage4_opponents?.compatibility_with_head,
                                   selectedShape: recommendedShape,
                                   topExactaCandidates: topExactaFour
                                 })}</pre>
