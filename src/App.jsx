@@ -2500,6 +2500,38 @@ export default function App() {
     }
     return null;
   }, [prediction]);
+  const roleSpecificBonusRows = useMemo(() => {
+    const byLane = hitRateEnhancementDebug?.by_lane && typeof hitRateEnhancementDebug.by_lane === "object"
+      ? hitRateEnhancementDebug.by_lane
+      : {};
+    const bonusByLane =
+      hitRateEnhancementDebug?.stage2_dynamic?.finish_role_bonuses_by_lane &&
+      typeof hitRateEnhancementDebug.stage2_dynamic.finish_role_bonuses_by_lane === "object"
+        ? hitRateEnhancementDebug.stage2_dynamic.finish_role_bonuses_by_lane
+        : {};
+    return Object.keys({ ...byLane, ...bonusByLane })
+      .map((laneKey) => {
+        const lane = Number(laneKey);
+        if (!Number.isInteger(lane)) return null;
+        const laneRow = byLane[laneKey] || {};
+        const bonuses = bonusByLane[laneKey] || laneRow.finish_role_bonuses || {};
+        return {
+          lane,
+          firstPlaceBonus: bonuses?.firstPlaceBonus ?? null,
+          secondPlaceBonus: bonuses?.secondPlaceBonus ?? null,
+          thirdPlaceBonus: bonuses?.thirdPlaceBonus ?? null,
+          exTimeLeftGapBonus: bonuses?.leftGapAttackSupport ?? laneRow?.ex_time_left_gap_advantage ?? null,
+          turningBonus: bonuses?.turningAbilityDelta ?? null,
+          straightBonus: bonuses?.straightLineDelta ?? null,
+          styleBonus:
+            bonuses?.styleRoleFit && typeof bonuses.styleRoleFit === "object"
+              ? `1st ${formatMaybeNumber(bonuses.styleRoleFit.first, 2)} / 2nd ${formatMaybeNumber(bonuses.styleRoleFit.second, 2)} / 3rd ${formatMaybeNumber(bonuses.styleRoleFit.third, 2)}`
+              : "--"
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.lane - b.lane);
+  }, [hitRateEnhancementDebug]);
 
   const currentRaceKey = useMemo(
     () =>
@@ -3982,7 +4014,51 @@ export default function App() {
                   <details className="card">
                     <summary>Debug Data</summary>
                     <div style={{ marginTop: 10 }}>
-                      {hitRateEnhancementDebug ? <details style={{ marginBottom: 12 }}><summary>hit-rate enhancement debug</summary><pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre></details> : null}
+                      {hitRateEnhancementDebug ? (
+                        <details style={{ marginBottom: 12 }}>
+                          <summary>hit-rate enhancement debug</summary>
+                          <div style={{ marginTop: 10 }}>
+                            {roleSpecificBonusRows.length > 0 ? (
+                              <details style={{ marginBottom: 12 }}>
+                                <summary>role-specific finish bonuses</summary>
+                                <div className="table-wrap" style={{ marginTop: 10 }}>
+                                  <table className="premium-player-table">
+                                    <thead>
+                                      <tr>
+                                        <th>Boat</th>
+                                        <th>1st bonus</th>
+                                        <th>2nd bonus</th>
+                                        <th>3rd bonus</th>
+                                        <th>Ex left-gap</th>
+                                        <th>Turning</th>
+                                        <th>Straight</th>
+                                        <th>Style</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {roleSpecificBonusRows.map((row) => (
+                                        <tr key={`role-bonus-${row.lane}`}>
+                                          <td>
+                                            <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+                                          </td>
+                                          <td>{formatMaybeNumber(row.firstPlaceBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row.secondPlaceBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row.thirdPlaceBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row.exTimeLeftGapBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row.turningBonus, 3)}</td>
+                                          <td>{formatMaybeNumber(row.straightBonus, 3)}</td>
+                                          <td><span className="muted">{row.styleBonus}</span></td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </details>
+                            ) : null}
+                            <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
+                          </div>
+                        </details>
+                      ) : null}
                       {predictionDataUsageDebug ? <details style={{ marginBottom: 12 }}><summary>prediction data usage</summary><pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre></details> : null}
                       <details>
                         <summary>kyoteibiyori debug</summary>
