@@ -3738,67 +3738,6 @@ export default function App() {
                   </div>
                 </section>
 
-                <section className="card summary-card">
-                  <div className="premium-card-head">
-                    <div>
-                      <p className="eyebrow">Debug</p>
-                      <h2>kyoteibiyori Raw Payload</h2>
-                    </div>
-                  </div>
-                  <div className="kv-list">
-                    <div className="kv-row"><span>kyoteibiyori_fetch_success</span><strong>{kyoteiBiyoriFrontendDebug.fetch_success ? "true" : "false"}</strong></div>
-                    <div className="kv-row"><span>fallback_reason</span><strong>{formatDebugRawValue(kyoteiBiyoriFrontendDebug.fallback_reason)}</strong></div>
-                    <div className="kv-row"><span>extracted_hrefs</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.extracted_hrefs)}</strong></div>
-                    <div className="kv-row"><span>actual_fetch_paths</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.actual_fetch_paths)}</strong></div>
-                    <div className="kv-row"><span>populated_fields</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.populated_fields)}</strong></div>
-                    <div className="kv-row"><span>failed_fields</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.failed_fields)}</strong></div>
-                  </div>
-                  <div className="table-wrap" style={{ marginTop: 10 }}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Lane</th>
-                          <th>lane1stRate</th>
-                          <th>lane1stRate source</th>
-                          <th>lane2renRate</th>
-                          <th>lane2renRate source</th>
-                          <th>lane3renRate</th>
-                          <th>lane3renRate source</th>
-                          <th>lapTime</th>
-                          <th>lapTime source</th>
-                          <th>exhibitionST</th>
-                          <th>exhibitionST source</th>
-                          <th>motor2ren</th>
-                          <th>motor2ren source</th>
-                          <th>motor3ren</th>
-                          <th>motor3ren source</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {kyoteiBiyoriFrontendDebug.lane_rows.map((row) => (
-                          <tr key={`kyotei-raw-${row?.lane ?? "unknown"}`}>
-                            <td>{row?.lane ?? "-"}</td>
-                            <td><code>{formatDebugRawValue(row?.lane1stRate_raw)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.lane1stRate_debug)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.lane2renRate_raw)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.lane2renRate_debug)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.lane3renRate_raw)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.lane3renRate_debug)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.lapTime_raw)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.lapTime_debug)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.exhibitionST_raw)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.exhibitionST_debug)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.motor2ren_raw)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.motor2ren_debug)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.motor3ren_raw)}</code></td>
-                            <td><code>{formatDebugRawValue(row?.motor3ren_debug)}</code></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-
                 {playerComparisonRows.length > 0 ? (
                   <section className="card summary-card premium-player-panel">
                     <div className="premium-card-head">
@@ -4046,8 +3985,59 @@ export default function App() {
                       {hitRateEnhancementDebug ? <details style={{ marginBottom: 12 }}><summary>hit-rate enhancement debug</summary><pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre></details> : null}
                       {predictionDataUsageDebug ? <details style={{ marginBottom: 12 }}><summary>prediction data usage</summary><pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre></details> : null}
                       <details>
-                        <summary>kyoteibiyori Raw Payload</summary>
+                        <summary>kyoteibiyori debug</summary>
                         <div style={{ marginTop: 10 }}>
+                          <div className="kv-list" style={{ marginBottom: 10 }}>
+                            <div className="kv-row"><span>kyoteibiyori_fetch_success</span><strong>{kyoteiBiyoriFrontendDebug.fetch_success ? "true" : "false"}</strong></div>
+                            <div className="kv-row"><span>fallback_reason</span><strong>{formatDebugRawValue(kyoteiBiyoriFrontendDebug.fallback_reason)}</strong></div>
+                            <div className="kv-row"><span>actual_fetch_paths</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.actual_fetch_paths)}</strong></div>
+                            <div className="kv-row"><span>populated_fields</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.populated_fields)}</strong></div>
+                            <div className="kv-row"><span>failed_fields</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.failed_fields)}</strong></div>
+                          </div>
+                          <div className="table-wrap" style={{ marginBottom: 10 }}>
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Lane</th>
+                                  <th>lane1stRate</th>
+                                  <th>lane1stRate source</th>
+                                  <th>lane2renRate</th>
+                                  <th>lane2renRate source</th>
+                                  <th>lane3renRate</th>
+                                  <th>lane3renRate source</th>
+                                  <th>lapTime</th>
+                                  <th>lapTime source</th>
+                                  <th>exhibitionST</th>
+                                  <th>exhibitionST source</th>
+                                  <th>motor2ren</th>
+                                  <th>motor2ren source</th>
+                                  <th>motor3ren</th>
+                                  <th>motor3ren source</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {kyoteiBiyoriFrontendDebug.lane_rows.map((row) => (
+                                  <tr key={`kyotei-raw-${row?.lane ?? "unknown"}`}>
+                                    <td>{row?.lane ?? "-"}</td>
+                                    <td><code>{formatDebugRawValue(row?.lane1stRate_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.lane1stRate_debug)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.lane2renRate_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.lane2renRate_debug)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.lane3renRate_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.lane3renRate_debug)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.lapTime_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.lapTime_debug)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.exhibitionST_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.exhibitionST_debug)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.motor2ren_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.motor2ren_debug)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.motor3ren_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.motor3ren_debug)}</code></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                           <pre className="json-preview">{safePrettyJson(kyoteiBiyoriFrontendDebug)}</pre>
                           <pre className="json-preview">{safePrettyJson(data?.kyoteibiyori_debug || data?.source?.kyotei_biyori?.kyoteibiyori_debug || {})}</pre>
                         </div>
