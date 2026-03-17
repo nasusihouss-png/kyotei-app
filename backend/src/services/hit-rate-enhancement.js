@@ -264,15 +264,15 @@ function buildCompatibilityWithHead(headBoat, row, headRow, escapeScore) {
     thirdBonus += laneFit3 * 0.08 + straight * 0.05 + safeRunBias * 0.12;
 
     if (lane === 3) {
-      if (!collapseRisk) {
+      if (!collapseRisk && toNum(row?.lane3_survival_flag, 0) === 1) {
         secondBonus += 0.055 + actualFourSecondCarryover * 0.95 + Math.max(0, turning) * 0.04;
         reasons.push("head4_lane3_second_flow");
       } else {
-        reasons.push("head4_lane3_second_blocked_by_collapse");
+        reasons.push(collapseRisk ? "head4_lane3_second_blocked_by_collapse" : "head4_lane3_second_not_stable");
       }
     }
     if (lane === 2) {
-      if (laneFit3 >= 0.34 && !collapseRisk) {
+      if (laneFit3 >= 0.34 && !collapseRisk && toNum(row?.lane2_flow_in_flag, 0) === 1) {
         thirdBonus += 0.05 + actualFourThirdCarryover * 0.95 + safeRunBias * 0.05;
         reasons.push("head4_lane2_third_residual");
       } else {
@@ -1407,6 +1407,30 @@ export function buildHitRateEnhancementContext({
       Math.max(0, toNum(actualLane4Row?.attack_readiness_bonus, 0)) * 0.12
     ) * actualFourAttackGate
   );
+  const isStrongCado =
+    actualFourAttackCaseStrength >= 0.11 &&
+    actualFourStartReady >= 0.03 &&
+    actualFourExTimeReady >= 0.02 &&
+    actualFourMotorSupport >= 0.015;
+  const lane3SurvivalFlag =
+    toNum(actualLane3Row?.lane_fit_3ren, 0) >= 40 &&
+    (toNum(actualLane3Row?.turning_ability, 0) >= 5.2 || Math.max(0, toNum(actualLane3Row?.finish_role_bonuses?.turningAbilityDelta, 0)) >= 0.08) &&
+    toNum(actualLane3Row?.late_risk, 0) < 0.18;
+  const lane2FlowInFlag =
+    toNum(actualLane2Row?.lane_fit_3ren, 0) >= 34 &&
+    toNum(actualLane2Row?.lane_fit_2ren, 0) < 46 &&
+    (toNum(actualLane2Row?.safe_run_bias, 0) >= 0.02 || Math.max(0, toNum(actualLane2Row?.finish_role_bonuses?.turningAbilityDelta, 0)) >= 0.05) &&
+    toNum(actualLane2Row?.late_risk, 0) < 0.2;
+  const boat1StrongSurvivalFlag =
+    toNum(actualLane1Row?.start_edge, 0) >= 0.02 &&
+    toNum(boat1Row?.motor_true, 0) >= 52 &&
+    toNum(actualLane1Row?.late_risk, 0) < 0.16 &&
+    toNum(actualLane1Row?.hidden_F_flag, 0) === 0;
+  const head4FinalDecision = isStrongCado && lane3SurvivalFlag && lane2FlowInFlag
+    ? "4-3-2"
+    : boat1StrongSurvivalFlag
+      ? "4-1-3"
+      : "4-1-3";
   const escapeScoreBeforeActualEntryAdjust = clamp(
     0,
     1,
@@ -1491,14 +1515,17 @@ export function buildHitRateEnhancementContext({
   const actualFourPartnerThirdCarryover = clamp(0, 0.07, actualFourAttackCaseStrength * 0.28);
   if (actualLane4Row && typeof actualLane4Row === "object") {
     actualLane4Row.actual_four_attack_case_strength = round(actualFourAttackCaseStrength, 4);
+    actualLane4Row.is_strong_cado = isStrongCado ? 1 : 0;
     actualLane4Row.actual_four_self_second_carryover = round(clamp(0, 0.08, actualFourAttackCaseStrength * 0.2), 4);
     actualLane4Row.actual_four_self_third_carryover = round(clamp(0, 0.06, actualFourAttackCaseStrength * 0.16), 4);
   }
   if (actualLane3Row && typeof actualLane3Row === "object") {
+    actualLane3Row.lane3_survival_flag = lane3SurvivalFlag ? 1 : 0;
     actualLane3Row.actual_four_partner_second_carryover = round(actualFourPartnerSecondCarryover, 4);
     actualLane3Row.actual_four_partner_third_carryover = round(clamp(0, 0.05, actualFourAttackCaseStrength * 0.12), 4);
   }
   if (actualLane2Row && typeof actualLane2Row === "object") {
+    actualLane2Row.lane2_flow_in_flag = lane2FlowInFlag ? 1 : 0;
     actualLane2Row.actual_four_partner_second_carryover = round(clamp(0, 0.05, actualFourAttackCaseStrength * 0.12), 4);
     actualLane2Row.actual_four_partner_third_carryover = round(actualFourPartnerThirdCarryover, 4);
   }
@@ -1801,6 +1828,11 @@ export function buildHitRateEnhancementContext({
       compatibility_with_head: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.compatibility_with_head])),
       head4_partner_debug: {
         head4_boat: boatNumberOf(actualLane4Row),
+        is_strong_cado: isStrongCado,
+        lane3_survival_flag: lane3SurvivalFlag,
+        lane2_flow_in_flag: lane2FlowInFlag,
+        boat1_survival_flag: boat1StrongSurvivalFlag,
+        final_decision: head4FinalDecision,
         lane3_for_second: {
           boat: boatNumberOf(actualLane3Row),
           second_bonus: round(toNum(actualLane3Row?.compatibility_with_head?.["4"]?.second_bonus, 0), 4),
@@ -2009,6 +2041,10 @@ export function buildEnhancedTrifectaShapeRecommendation({
   const preTuningScoreMap = enhancement?.stage2_dynamic?.finish_role_scores_before_tuning_by_lane || {};
   const preEscapePriority = toNum(enhancement?.stage3_scenarios?.recalculated_priorities?.boat1_escape?.before_adjustment, 0);
   const preActualFourPriority = toNum(enhancement?.stage3_scenarios?.recalculated_priorities?.actual_four_course_cado?.before_adjustment, 0);
+  const head4Decision = enhancement?.stage4_opponents?.head4_partner_debug?.final_decision || null;
+  const isStrongCado = !!enhancement?.stage4_opponents?.head4_partner_debug?.is_strong_cado;
+  const lane3SurvivalFlag = !!enhancement?.stage4_opponents?.head4_partner_debug?.lane3_survival_flag;
+  const lane2FlowInFlag = !!enhancement?.stage4_opponents?.head4_partner_debug?.lane2_flow_in_flag;
   const topExacta = safeArray(enhancement?.topExactaCandidates || enhancement?.stage5_ticketing?.top_exacta_candidates);
 
   const templates = [];
@@ -2085,7 +2121,7 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: [3],
       third: [1, 2, 5],
       why: "actual lane4 attack with 3-2 residual carryover",
-      score: 0.4 + lane4HeadWeight * 0.5 + toNum(laneRows["3"]?.finish_role_scores?.second_place_score, 0) * 0.24 + toNum(laneRows["2"]?.finish_role_scores?.third_place_score, 0) * 0.18
+      score: 0.4 + lane4HeadWeight * 0.5 + toNum(laneRows["3"]?.finish_role_scores?.second_place_score, 0) * 0.24 + toNum(laneRows["2"]?.finish_role_scores?.third_place_score, 0) * 0.18 + (head4Decision === "4-3-2" ? 0.1 : -0.06)
     });
     templates.push({
       shape: "4-3-12",
@@ -2093,7 +2129,7 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: [3],
       third: [1, 2],
       why: "head4 with lane3 second and lane2 residual third",
-      score: 0.46 + lane4HeadWeight * 0.52 + toNum(laneRows["3"]?.compatibility_with_head?.["4"]?.second_bonus, 0) * 0.34 + toNum(laneRows["2"]?.compatibility_with_head?.["4"]?.third_bonus, 0) * 0.28
+      score: 0.46 + lane4HeadWeight * 0.52 + toNum(laneRows["3"]?.compatibility_with_head?.["4"]?.second_bonus, 0) * 0.34 + toNum(laneRows["2"]?.compatibility_with_head?.["4"]?.third_bonus, 0) * 0.28 + (isStrongCado && lane3SurvivalFlag && lane2FlowInFlag ? 0.14 : -0.1)
     });
     templates.push({
       shape: "4-13-123",
@@ -2101,7 +2137,7 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: [1, 3],
       third: [1, 2, 3],
       why: "head4 spread with lane3 second emphasis and lane2 third retention",
-      score: 0.42 + lane4HeadWeight * 0.44 + toNum(laneRows["3"]?.finish_role_scores?.second_place_score, 0) * 0.2 + toNum(laneRows["2"]?.finish_role_scores?.third_place_score, 0) * 0.16
+      score: 0.42 + lane4HeadWeight * 0.44 + toNum(laneRows["3"]?.finish_role_scores?.second_place_score, 0) * 0.2 + toNum(laneRows["2"]?.finish_role_scores?.third_place_score, 0) * 0.16 + (head4Decision === "4-1-3" ? 0.12 : -0.06)
     });
     templates.push({
       shape: "4-1-235",
@@ -2109,7 +2145,7 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: [1],
       third: [2, 3, 5],
       why: "4-cado alert support, controlled head hedge",
-      score: 0.34 + lane4HeadWeight * 0.45 + toNum(laneRows["1"]?.finish_role_scores?.second_place_score, 0) * 0.12
+      score: 0.34 + lane4HeadWeight * 0.45 + toNum(laneRows["1"]?.finish_role_scores?.second_place_score, 0) * 0.12 + (head4Decision === "4-1-3" ? 0.14 : -0.05)
     });
     templates.push({
       shape: "1-4-235",
