@@ -74,7 +74,7 @@ const ACTUAL_ENTRY_TUNING = {
   weak_wall_penalty: 0.028,
   stable_inner_bonus: 0.028,
   actual_two_sashi_boost: 0.18,
-  actual_four_cado_boost: 0.22
+  actual_four_cado_boost: 0.18
 };
 
 function normalizeAgainstPeers(value, values) {
@@ -370,6 +370,20 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       0.22,
       survivalAfterAttackBonus + (actualLane === 4 ? actualFourCaseStrength * 0.14 : 0)
     );
+    const insideSecondThirdRecoveryBefore = {
+      second: 0,
+      third: 0
+    };
+    const insideSecondThirdRecoveryAfter = {
+      second:
+        actualLane === 2 && primaryHeadLane === 1
+          ? clamp(0, 0.06, laneFit2 * 0.05 + Math.max(0, turning) * 0.03 + Math.max(0, 0.5 - escapeScore) * 0.015)
+          : 0,
+      third:
+        actualLane === 3 && primaryHeadLane === 1
+          ? clamp(0, 0.055, laneFit3 * 0.045 + Math.max(0, turning) * 0.025 + Math.max(0, straight) * 0.015)
+          : 0
+    };
     const flowInBonus = clamp(0, 0.16, (actualLane >= 4 ? 0.025 : 0) + Math.max(0, turning) * 0.06 + safeRunBias * 0.18);
     const outerSurvivalBonus = clamp(0, 0.14, (actualLane >= 4 ? 0.03 : 0) + Math.max(0, straight) * 0.05 + thirdStyle * 0.06);
     const residualTendency = clamp(
@@ -432,8 +446,8 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       toNum(primaryCompatibility?.third_bonus, 0) * 0.18 +
       toNum(row?.finish_role_bonuses?.thirdPlaceBonus, 0) * 0.18 -
       toNum(thirdExclusion?.penalty, 0);
-    const secondPlaceScore = secondPlaceScoreBeforeTuning + actualFourSecondCarryover;
-    const thirdPlaceScore = thirdPlaceScoreBeforeTuning + actualFourThirdCarryover;
+    const secondPlaceScore = secondPlaceScoreBeforeTuning + actualFourSecondCarryover + insideSecondThirdRecoveryAfter.second;
+    const thirdPlaceScore = thirdPlaceScoreBeforeTuning + actualFourThirdCarryover + insideSecondThirdRecoveryAfter.third;
 
     row.finish_role_scores_before_tuning = {
       second_place_score: round(Math.max(0.0001, secondPlaceScoreBeforeTuning), 4),
@@ -450,6 +464,8 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       outer_survival_bonus: round(outerSurvivalBonus, 4),
       residual_tendency: round(residualTendency, 4),
       actual_four_second_carryover: round(actualFourSecondCarryover, 4),
+      inside_second_recovery: round(insideSecondThirdRecoveryAfter.second, 4),
+      inside_third_recovery: round(insideSecondThirdRecoveryAfter.third, 4),
       actual_four_third_carryover: round(actualFourThirdCarryover, 4),
       third_place_proxy_used: motor3 > 0 ? "motor3ren" : "survival_proxy",
       primary_head_lane: primaryHeadLane
@@ -463,7 +479,9 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       likely_head_survival_context: round(likelyHeadSurvivalContext, 4),
       attack_but_not_win_carryover: round(tunedAttackButNotWinCarryover, 4),
       survival_after_attack_bonus: round(tunedSurvivalAfterAttackBonus, 4),
-      actual_four_second_carryover: round(actualFourSecondCarryover, 4)
+      actual_four_second_carryover: round(actualFourSecondCarryover, 4),
+      inside_second_recovery_before: round(insideSecondThirdRecoveryBefore.second, 4),
+      inside_second_recovery_after: round(insideSecondThirdRecoveryAfter.second, 4)
     };
     row.third_place_bonus_breakdown = {
       lane3renScore: round(laneFit3, 4),
@@ -476,6 +494,11 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       outer_survival_bonus: round(outerSurvivalBonus, 4),
       residual_tendency: round(residualTendency, 4),
       actual_four_third_carryover: round(actualFourThirdCarryover, 4),
+      inside_second_third_recovery_before: insideSecondThirdRecoveryBefore,
+      inside_second_third_recovery_after: {
+        second: round(insideSecondThirdRecoveryAfter.second, 4),
+        third: round(insideSecondThirdRecoveryAfter.third, 4)
+      },
       compatibility_with_head: round(toNum(primaryCompatibility?.third_bonus, 0), 4),
       exclusion_penalty: round(toNum(thirdExclusion?.penalty, 0), 4)
     };
@@ -1408,10 +1431,11 @@ export function buildHitRateEnhancementContext({
     ) * actualFourAttackGate
   );
   const isStrongCado =
-    actualFourAttackCaseStrength >= 0.11 &&
-    actualFourStartReady >= 0.03 &&
-    actualFourExTimeReady >= 0.02 &&
-    actualFourMotorSupport >= 0.015;
+    actualFourAttackCaseStrength >= 0.13 &&
+    actualFourStartReady >= 0.032 &&
+    actualFourExTimeReady >= 0.024 &&
+    actualFourMotorSupport >= 0.018 &&
+    toNum(actualLane4Row?.finish_role_bonuses?.straightLineDelta, 0) >= 0.03;
   const lane3SurvivalFlag =
     toNum(actualLane3Row?.lane_fit_3ren, 0) >= 40 &&
     (toNum(actualLane3Row?.turning_ability, 0) >= 5.2 || Math.max(0, toNum(actualLane3Row?.finish_role_bonuses?.turningAbilityDelta, 0)) >= 0.08) &&
@@ -1448,14 +1472,28 @@ export function buildHitRateEnhancementContext({
     toNum(boat1Row.hidden_F_flag, 0) * 0.08 -
     toNum(actualLane1Row.late_risk, 0) * 0.12
   );
+  const boat1FinalSurvivalBonusBefore = clamp(
+    0,
+    0.08,
+    Math.max(0, toNum(actualLane1Row?.start_edge, 0)) * 0.18 +
+      (boat1Row?.prediction_data_usage?.motor2ren?.used ? (toNum(boat1Row?.motor_raw?.motor2ren, 0) / 100) * 0.035 : 0) +
+      (boat1Row?.prediction_data_usage?.lapTime?.used ? Math.max(0, 6.82 - toNum(boat1Row?.motor_form?.lapTime, 6.82)) * 0.12 : 0) +
+      stableInnerBonus * 0.45
+  );
+  const boat1FinalSurvivalBonusAfter = clamp(
+    0,
+    0.1,
+    boat1FinalSurvivalBonusBefore + (isStrongCado ? 0.008 : 0.016)
+  );
   const escapeScore = clamp(
     0,
     1,
     escapeScoreBeforeActualEntryAdjust -
       deepInEscapePenalty -
-      clamp(0, 0.07, actualFourAttackCaseStrength * 0.42) -
+      clamp(0, 0.055, actualFourAttackCaseStrength * 0.34) -
       weakWallPenalty +
-      stableInnerBonus * 0.4
+      stableInnerBonus * 0.4 +
+      boat1FinalSurvivalBonusAfter * 0.45
   );
   const actualTwoSashiBasePriority = clamp(
     0,
@@ -1496,7 +1534,7 @@ export function buildHitRateEnhancementContext({
       toNum(actualLane4Row?.late_risk, 0) * 0.16 -
       toNum(actualLane4Row?.hidden_F_flag, 0) * 0.08
   );
-  const actualFourBoostGate = entryStructureChanged || boatNumberOf(actualLane4Row) !== 4 || startPatternContext.outer_attack_window ? 1 : 0.22;
+  const actualFourBoostGate = entryStructureChanged || boatNumberOf(actualLane4Row) !== 4 || startPatternContext.outer_attack_window ? 1 : 0.18;
   const actualFourCadoBoost = clamp(
     0,
     ACTUAL_ENTRY_TUNING.actual_four_cado_boost,
@@ -1759,6 +1797,8 @@ export function buildHitRateEnhancementContext({
           actual_lane: boat1Row.actual_lane || 1,
           before_adjustment: round(escapeScoreBeforeActualEntryAdjust, 4),
           after_adjustment: round(escapeScore, 4),
+          boat1_final_survival_bonus_before: round(boat1FinalSurvivalBonusBefore, 4),
+          boat1_final_survival_bonus_after: round(boat1FinalSurvivalBonusAfter, 4),
           deep_in_depth_risk: round(deepInDepthRisk, 4),
           deep_in_escape_penalty: round(deepInEscapePenalty, 4),
           weak_wall_penalty: round(weakWallPenalty, 4),
@@ -1800,6 +1840,7 @@ export function buildHitRateEnhancementContext({
           actual_lane: actualLaneOf(actualLane4Row),
           before_adjustment: round(actualFourCadoBasePriority, 4),
           actual_four_course_boat: boatNumberOf(actualLane4Row),
+          actual_four_cado_boost_before: 0,
           actual_four_cado_boost: round(actualFourCadoBoost, 4),
           tuning_cap: round(ACTUAL_ENTRY_TUNING.actual_four_cado_boost, 4),
           structure_gate: round(actualFourBoostGate, 4),
@@ -2223,15 +2264,17 @@ export function buildEnhancedTrifectaShapeRecommendation({
         chaos_probability: round(chaosProb, 4),
         confidence: round(confidence, 2)
       },
-      tuning_debug: {
-        before_shape_hint: deriveShapeHintFromRoleMaps({
-          firstLane: preActualFourPriority > preEscapePriority ? 4 : topFirst.lane,
-          secondWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.second_place_score, 0)])),
-          thirdWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.third_place_score, 0)]))
-        }),
-        after_shape: null
-      }
-    };
+    tuning_debug: {
+      before_shape_hint: deriveShapeHintFromRoleMaps({
+        firstLane: preActualFourPriority > preEscapePriority ? 4 : topFirst.lane,
+        secondWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.second_place_score, 0)])),
+        thirdWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.third_place_score, 0)]))
+      }),
+      before_top_ticket_hints: [],
+      after_shape: null,
+      after_top_ticket_hints: []
+    }
+  };
   }
   return {
     shape: chosen.shape,
@@ -2262,7 +2305,17 @@ export function buildEnhancedTrifectaShapeRecommendation({
         secondWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.second_place_score, 0)])),
         thirdWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.third_place_score, 0)]))
       }),
-      after_shape: chosen.shape
+      before_top_ticket_hints: deriveShapeHintFromRoleMaps({
+        firstLane: preActualFourPriority > preEscapePriority ? 4 : topFirst.lane,
+        secondWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.second_place_score, 0)])),
+        thirdWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.third_place_score, 0)]))
+      }) ? [deriveShapeHintFromRoleMaps({
+        firstLane: preActualFourPriority > preEscapePriority ? 4 : topFirst.lane,
+        secondWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.second_place_score, 0)])),
+        thirdWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.third_place_score, 0)]))
+      })] : [],
+      after_shape: chosen.shape,
+      after_top_ticket_hints: safeArray(chosen.expandedTickets).slice(0, 3)
     }
   };
 }
