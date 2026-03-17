@@ -516,6 +516,7 @@ function normalizeLaneStats(source = {}) {
     laneFirstRate: firstFiniteValue(
       source?.lane1stScore,
       source?.lane1stAvg,
+      source?.lane1st_score,
       source?.laneFirstRate,
       source?.lane1stDebug?.final_score,
       source?.lane1stRate_avg,
@@ -527,6 +528,7 @@ function normalizeLaneStats(source = {}) {
     lane2RenRate: firstFiniteValue(
       source?.lane2renScore,
       source?.lane2renAvg,
+      source?.lane2ren_score,
       source?.lane2RenRate,
       source?.lane2renDebug?.final_score,
       source?.lane2renRate_avg,
@@ -537,6 +539,7 @@ function normalizeLaneStats(source = {}) {
     lane3RenRate: firstFiniteValue(
       source?.lane3renScore,
       source?.lane3renAvg,
+      source?.lane3ren_score,
       source?.lane3RenRate,
       source?.lane3renDebug?.final_score,
       source?.lane3renRate_avg,

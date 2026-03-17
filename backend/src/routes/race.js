@@ -210,6 +210,7 @@ function toNum(value, fallback = 0) {
 }
 
 function toNullableNum(value) {
+  if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -10002,9 +10003,12 @@ raceRouter.get("/race", async (req, res, next) => {
         kyoteibiyori_exhibition_st: toNullableNum(racer?.kyoteiBiyoriExhibitionSt),
         entry_course: toInt(racer?.entryCourse, null),
         tilt: toNullableNum(racer?.tilt),
-        lane_first_rate: toNullableNum(racer?.lane1stAvg ?? racer?.laneFirstRate),
-        lane_2ren_rate: toNullableNum(racer?.lane2renAvg ?? racer?.lane2RenRate),
-        lane_3ren_rate: toNullableNum(racer?.lane3renAvg ?? racer?.lane3RenRate)
+        lane1st_score: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
+        lane2ren_score: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
+        lane3ren_score: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
+        lane_first_rate: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
+        lane_2ren_rate: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
+        lane_3ren_rate: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate)
       };
     });
     const fetchedSignalDiagnostics = snapshotPlayers.map((row) => ({
