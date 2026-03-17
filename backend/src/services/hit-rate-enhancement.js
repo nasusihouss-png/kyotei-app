@@ -55,6 +55,14 @@ function average(values) {
   return valid.reduce((sum, value) => sum + value, 0) / valid.length;
 }
 
+function actualLaneOf(row) {
+  return toInt(row?.actual_lane ?? row?.lane, null);
+}
+
+function boatNumberOf(row) {
+  return toInt(row?.boat_number ?? row?.lane, null);
+}
+
 const LANE_FINISH_PRIORS = {
   first: { 1: 1.22, 2: 1.08, 3: 1.01, 4: 0.94, 5: 0.86, 6: 0.8 },
   second: { 1: 1.1, 2: 1.08, 3: 1.02, 4: 0.95, 5: 0.9, 6: 0.86 },
@@ -72,17 +80,18 @@ function normalizeAgainstPeers(value, values) {
   return clamp(-1, 1, (value - avg) / spread);
 }
 
-function buildRoleSpecificFinishBonuses(lane, row, laneMap) {
-  const leftLane = lane > 1 ? laneMap.get(lane - 1) || null : null;
+function buildRoleSpecificFinishBonuses(row, actualLaneMap) {
+  const actualLane = actualLaneOf(row);
+  const leftLane = actualLane > 1 ? actualLaneMap.get(actualLane - 1) || null : null;
   const leftGap = Number.isFinite(row?.ex_time_left_gap_advantage) ? row.ex_time_left_gap_advantage : 0;
   const positiveLeftGap = Math.max(0, leftGap);
   const turningNorm = normalizeAgainstPeers(
     row?.turning_ability,
-    [...laneMap.values()].map((entry) => entry?.turning_ability)
+    [...actualLaneMap.values()].map((entry) => entry?.turning_ability)
   );
   const straightNorm = normalizeAgainstPeers(
     row?.straight_line_power,
-    [...laneMap.values()].map((entry) => entry?.straight_line_power)
+    [...actualLaneMap.values()].map((entry) => entry?.straight_line_power)
   );
   const styleProfile = row?.style_profile || {};
   const makuriHeadStyle = clamp(
@@ -131,6 +140,7 @@ function buildRoleSpecificFinishBonuses(lane, row, laneMap) {
 
   return {
     left_boat_lane: leftLane?.lane ?? null,
+    left_boat_number: boatNumberOf(leftLane),
     leftGapAttackSupport: round(positiveLeftGap, 4),
     turningAbilityDelta: round(turningNorm, 4),
     straightLineDelta: round(straightNorm, 4),
@@ -162,7 +172,7 @@ function buildThirdPlaceExclusion(row, laneMap) {
   if (Number.isFinite(straightAvg) && straight <= straightAvg - 0.4) reasons.push("weak_straight_retention");
   if (lateRisk >= 0.22) reasons.push("late_risk");
   if (hiddenF === 1) reasons.push("hidden_f");
-  if (safeRunBias <= 0.025 && nuki < 18 && toInt(row?.lane, 0) >= 5) reasons.push("poor_flow_in_profile");
+  if (safeRunBias <= 0.025 && nuki < 18 && actualLaneOf(row) >= 5) reasons.push("poor_flow_in_profile");
 
   const penalty = clamp(0, 0.28, reasons.length * 0.045 + (reasons.includes("weak_lane3ren") ? 0.05 : 0));
   return {
@@ -171,27 +181,31 @@ function buildThirdPlaceExclusion(row, laneMap) {
   };
 }
 
-function inferScenarioHeadLane(scenario, escapeScore) {
+function inferScenarioHeadBoat(scenario, escapeScore, actualLaneMap) {
+  const lane1Boat = boatNumberOf(actualLaneMap.get(1)) || 1;
+  const lane2Boat = boatNumberOf(actualLaneMap.get(2)) || 2;
+  const lane3Boat = boatNumberOf(actualLaneMap.get(3)) || 3;
+  const lane4Boat = boatNumberOf(actualLaneMap.get(4)) || 4;
   switch (scenario) {
     case "boat2_direct_makuri":
-      return escapeScore >= 0.34 ? 1 : 2;
+      return escapeScore >= 0.34 ? lane1Boat : lane2Boat;
     case "boat3_makuri":
-      return escapeScore >= 0.36 ? 1 : 3;
+      return escapeScore >= 0.36 ? lane1Boat : lane3Boat;
     case "boat3_makuri_sashi":
-      return 1;
+      return lane1Boat;
     case "boat4_cado_attack":
-      return escapeScore >= 0.37 ? 1 : 4;
+      return escapeScore >= 0.37 ? lane1Boat : lane4Boat;
     case "outer_mix_chaos":
-      return 1;
+      return lane1Boat;
     case "boat2_sashi":
     case "boat1_escape":
     default:
-      return 1;
+      return lane1Boat;
   }
 }
 
-function buildCompatibilityWithHead(headLane, row, headRow, escapeScore) {
-  if (!Number.isInteger(headLane) || row?.lane === headLane) {
+function buildCompatibilityWithHead(headBoat, row, headRow, escapeScore) {
+  if (!Number.isInteger(headBoat) || boatNumberOf(row) === headBoat) {
     return {
       second_bonus: 0,
       third_bonus: 0,
@@ -199,8 +213,9 @@ function buildCompatibilityWithHead(headLane, row, headRow, escapeScore) {
     };
   }
 
-  const lane = toInt(row?.lane, 0);
+  const lane = actualLaneOf(row);
   const head = headRow || {};
+  const headActualLane = actualLaneOf(head);
   const sashi = toNum(row?.style_profile?.sashi, 0) / 100;
   const makuriSashi = toNum(row?.style_profile?.makuri_sashi, 0) / 100;
   const nuki = toNum(row?.style_profile?.nuki, 0) / 100;
@@ -216,7 +231,7 @@ function buildCompatibilityWithHead(headLane, row, headRow, escapeScore) {
   let secondBonus = 0;
   let thirdBonus = 0;
 
-  if (headLane === 1) {
+  if (headActualLane === 1) {
     secondBonus += laneFit2 * 0.1 + sashi * 0.12 + makuriSashi * 0.09 + startEdge * 0.35;
     thirdBonus += laneFit3 * 0.08 + nuki * 0.08 + safeRunBias * 0.18;
     if (lane === 2 || lane === 3) {
@@ -232,16 +247,16 @@ function buildCompatibilityWithHead(headLane, row, headRow, escapeScore) {
       reasons.push("outer_residual_third");
     }
   } else {
-    const distance = Math.abs(lane - headLane);
+    const distance = Math.abs(lane - headActualLane);
     secondBonus += laneFit2 * 0.08 + turning * 0.06 + Math.max(0, 0.045 - distance * 0.01);
     thirdBonus += laneFit3 * 0.08 + straight * 0.05 + safeRunBias * 0.12;
-    if (lane < headLane) reasons.push("inside_of_head");
-    if (lane > headLane) reasons.push("outside_residual");
+    if (lane < headActualLane) reasons.push("inside_of_head");
+    if (lane > headActualLane) reasons.push("outside_residual");
   }
 
   secondBonus += Math.min(0.08, attackReadiness * 0.5);
   thirdBonus += Math.min(0.07, attackReadiness * 0.28 + nuki * 0.04);
-  if (toNum(head?.lane_fit_1st, 0) >= 55 && headLane === 1) reasons.push("stable_head_shape");
+  if (toNum(head?.lane_fit_1st, 0) >= 55 && headActualLane === 1) reasons.push("stable_head_shape");
 
   return {
     second_bonus: round(clamp(-0.04, 0.24, secondBonus), 4),
@@ -250,11 +265,11 @@ function buildCompatibilityWithHead(headLane, row, headRow, escapeScore) {
   };
 }
 
-function buildFinishRoleScores(laneContexts, laneMap, baseRoleProbabilities, scenarioRows, escapeScore, laneFinishPriors) {
+function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRoleProbabilities, scenarioRows, escapeScore, laneFinishPriors) {
   const headScenarioSupport = new Map();
   for (const scenarioRow of safeArray(scenarioRows)) {
-    const headLane = inferScenarioHeadLane(String(scenarioRow?.scenario || ""), escapeScore);
-    headScenarioSupport.set(headLane, toNum(headScenarioSupport.get(headLane), 0) + toNum(scenarioRow?.probability, 0));
+    const headBoat = inferScenarioHeadBoat(String(scenarioRow?.scenario || ""), escapeScore, actualLaneMap);
+    headScenarioSupport.set(headBoat, toNum(headScenarioSupport.get(headBoat), 0) + toNum(scenarioRow?.probability, 0));
   }
   const sortedHeadCandidates = [...headScenarioSupport.entries()]
     .sort((a, b) => b[1] - a[1] || a[0] - b[0])
@@ -299,17 +314,18 @@ function buildFinishRoleScores(laneContexts, laneMap, baseRoleProbabilities, sce
         Math.max(0, turning) * 0.03
     ) * (1 - attackHeadabilityProxy);
     const survivalAfterAttackBonus = clamp(0, 0.16, attackReadiness * 0.42 + Math.max(0, turning) * 0.05 + Math.max(0, straight) * 0.04);
-    const flowInBonus = clamp(0, 0.16, (lane >= 4 ? 0.025 : 0) + Math.max(0, turning) * 0.06 + safeRunBias * 0.18);
-    const outerSurvivalBonus = clamp(0, 0.14, (lane >= 4 ? 0.03 : 0) + Math.max(0, straight) * 0.05 + thirdStyle * 0.06);
+    const actualLane = actualLaneOf(row);
+    const flowInBonus = clamp(0, 0.16, (actualLane >= 4 ? 0.025 : 0) + Math.max(0, turning) * 0.06 + safeRunBias * 0.18);
+    const outerSurvivalBonus = clamp(0, 0.14, (actualLane >= 4 ? 0.03 : 0) + Math.max(0, straight) * 0.05 + thirdStyle * 0.06);
     const residualTendency = clamp(
       0,
       0.16,
-      (lane >= 5 ? 0.03 : lane === 4 ? 0.02 : 0) +
+      (actualLane >= 5 ? 0.03 : actualLane === 4 ? 0.02 : 0) +
         thirdStyle * 0.08 +
         safeRunBias * 0.16 +
         Math.max(0, turning) * 0.03
     );
-    const thirdExclusion = buildThirdPlaceExclusion(row, laneMap);
+    const thirdExclusion = buildThirdPlaceExclusion(row, actualLaneMap);
     row.third_place_exclusion = thirdExclusion;
 
     const compatibility = {};
@@ -734,11 +750,11 @@ function normalizeScenarioRows(rows) {
     .sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0));
 }
 
-function buildIntermediateEvents(laneMap, escapeScore, outerAttackPressure) {
-  const lane1 = laneMap.get(1) || {};
-  const lane2 = laneMap.get(2) || {};
-  const lane3 = laneMap.get(3) || {};
-  const lane4 = laneMap.get(4) || {};
+function buildIntermediateEvents(actualLaneMap, escapeScore, outerAttackPressure) {
+  const lane1 = actualLaneMap.get(1) || {};
+  const lane2 = actualLaneMap.get(2) || {};
+  const lane3 = actualLaneMap.get(3) || {};
+  const lane4 = actualLaneMap.get(4) || {};
   const boat1Out = toNum(lane1.start_edge, 0) < 0.015 || toNum(lane1.hidden_F_flag, 0) === 1 ? 1 : 0;
   const boat1Hollow = toNum(lane1.late_risk, 0) >= 0.16 || escapeScore < 0.24 ? 1 : 0;
   const boat2Out = toNum(lane2.start_edge, 0) >= 0.045 ? 1 : 0;
@@ -758,6 +774,9 @@ function buildIntermediateEvents(laneMap, escapeScore, outerAttackPressure) {
   const innerCollapse = boat1Out === 1 || boat1Hollow === 1 || outerAttackPressure >= 0.18 ? 1 : 0;
   const outerPressure = outerAttackPressure >= 0.14 || boat3AttackReady === 1 || boat4CadoReady === 1 ? 1 : 0;
   return {
+    actual_lane1_boat: boatNumberOf(lane1),
+    actual_lane2_boat: boatNumberOf(lane2),
+    actual_lane4_boat: boatNumberOf(lane4),
     boat1_out: boat1Out,
     boat1_hollow: boat1Hollow,
     boat2_out: boat2Out,
@@ -770,10 +789,11 @@ function buildIntermediateEvents(laneMap, escapeScore, outerAttackPressure) {
   };
 }
 
-function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore) {
+function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, actualLaneMap) {
   let first = 1;
   let second = 1;
   let third = 1;
+  const actualLane = actualLaneOf(row);
   const laneFit1 = toNum(row?.lane_fit_1st, 0) / 100;
   const laneFit2 = toNum(row?.lane_fit_2ren, 0) / 100;
   const laneFit3 = toNum(row?.lane_fit_3ren, 0) / 100;
@@ -795,8 +815,8 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore) {
     thirdPlaceBonus: 0
   };
   const finishRoleScores = row?.finish_role_scores || {};
-  const headLane = inferScenarioHeadLane(scenario, escapeScore);
-  const compatibility = row?.compatibility_with_head?.[String(headLane)] || {
+  const headBoat = inferScenarioHeadBoat(scenario, escapeScore, actualLaneMap);
+  const compatibility = row?.compatibility_with_head?.[String(headBoat)] || {
     second_bonus: 0,
     third_bonus: 0
   };
@@ -814,71 +834,71 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore) {
   second += toNum(finishRoleScores.second_place_score, 0) * 0.3 + toNum(compatibility.second_bonus, 0) + attackCarryoverSecond;
   third += toNum(finishRoleScores.third_place_score, 0) * 0.34 + toNum(compatibility.third_bonus, 0) + attackCarryoverThird - thirdExclusionPenalty;
 
-  if (lane === 1) first += 0.18 + escapeScore * 0.14;
+  if (actualLane === 1) first += 0.18 + escapeScore * 0.14;
 
   switch (scenario) {
     case "boat1_escape":
-      if (lane === 1) first += 0.32;
-      if (lane === 2 || lane === 3) second += 0.12;
-      if (lane >= 2 && lane <= 4) third += 0.12;
+      if (actualLane === 1) first += 0.32;
+      if (actualLane === 2 || actualLane === 3) second += 0.12;
+      if (actualLane >= 2 && actualLane <= 4) third += 0.12;
       break;
     case "boat2_sashi":
-      if (lane === 2) {
+      if (actualLane === 2) {
         second += 0.26;
         first += events.boat1_hollow ? 0.06 : -0.04;
       }
-      if (lane === 1) {
+      if (actualLane === 1) {
         first += 0.16;
         second += 0.08;
       }
-      if (lane === 3 || lane === 4) third += 0.1;
+      if (actualLane === 3 || actualLane === 4) third += 0.1;
       break;
     case "boat2_direct_makuri":
-      if (lane === 2) first += 0.22;
-      if (lane === 1) {
+      if (actualLane === 2) first += 0.22;
+      if (actualLane === 1) {
         first -= 0.16;
         second += 0.14;
       }
-      if (lane === 3 || lane === 4) second += 0.1;
+      if (actualLane === 3 || actualLane === 4) second += 0.1;
       break;
     case "boat3_makuri":
-      if (lane === 3) first += 0.26;
-      if (lane === 1) {
+      if (actualLane === 3) first += 0.26;
+      if (actualLane === 1) {
         first -= 0.12;
         second += 0.15;
       }
-      if (lane === 2) {
+      if (actualLane === 2) {
         second += 0.06;
         third += 0.12;
       }
-      if (lane === 3) second += attackCarryoverSecond * 0.8;
+      if (actualLane === 3) second += attackCarryoverSecond * 0.8;
       break;
     case "boat3_makuri_sashi":
-      if (lane === 3) {
+      if (actualLane === 3) {
         second += 0.22;
         first += events.boat1_hollow ? 0.08 : -0.02;
       }
-      if (lane === 1) {
+      if (actualLane === 1) {
         first += 0.1;
         second += 0.05;
       }
-      if (lane === 2 || lane === 4) third += 0.1;
+      if (actualLane === 2 || actualLane === 4) third += 0.1;
       break;
     case "boat4_cado_attack":
-      if (lane === 4) first += 0.24;
-      if (lane === 1) {
+      if (actualLane === 4) first += 0.24;
+      if (actualLane === 1) {
         first -= 0.09;
         second += 0.14;
       }
-      if (lane === 3) third += 0.1;
-      if (lane === 4) {
+      if (actualLane === 3) third += 0.1;
+      if (actualLane === 4) {
         second += attackCarryoverSecond * 0.65;
         third += attackCarryoverThird * 0.55;
       }
       break;
     case "outer_mix_chaos":
-      if (lane >= 3) first += 0.08;
-      if (lane === 1) {
+      if (actualLane >= 3) first += 0.08;
+      if (actualLane === 1) {
         first -= 0.08;
         second += 0.04;
         third += 0.06;
@@ -895,7 +915,7 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore) {
   };
 }
 
-function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, events, escapeScore, laneFinishPriors = LANE_FINISH_PRIORS) {
+function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, actualLaneMap, baseProbs, events, escapeScore, laneFinishPriors = LANE_FINISH_PRIORS) {
   const finishProbabilitiesByScenario = [];
   const laneSet = [...new Set([
     ...Object.keys(baseProbs?.first || {}).map((lane) => toInt(lane, null)),
@@ -918,7 +938,7 @@ function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, 
     const roleBonusByLane = {};
     for (const lane of laneSet) {
       const row = laneMap.get(lane) || {};
-      const roleWeights = roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore);
+      const roleWeights = roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, actualLaneMap);
       roleBonusByLane[String(lane)] = row?.finish_role_bonuses || {
         firstPlaceBonus: 0,
         secondPlaceBonus: 0,
@@ -1017,8 +1037,8 @@ function buildVenueBiasContext({ race, raceFlow, laneContexts }) {
   const windSpeed = Math.max(0, toNum(race?.windSpeed, 0));
   const waveHeight = Math.max(0, toNum(race?.waveHeight, 0));
   const entryChanged = !!raceFlow?.entry_changed;
-  const insideLocal = average(safeArray([1, 2, 3]).map((lane) => toNum(laneContexts.find((row) => row.lane === lane)?.lane_fit_local, NaN)));
-  const outerLocal = average(safeArray([4, 5, 6]).map((lane) => toNum(laneContexts.find((row) => row.lane === lane)?.lane_fit_local, NaN)));
+  const insideLocal = average(safeArray([1, 2, 3]).map((lane) => toNum(laneContexts.find((row) => actualLaneOf(row) === lane)?.lane_fit_local, NaN)));
+  const outerLocal = average(safeArray([4, 5, 6]).map((lane) => toNum(laneContexts.find((row) => actualLaneOf(row) === lane)?.lane_fit_local, NaN)));
   const insideStrengthDelta = Number.isFinite(insideLocal) && Number.isFinite(outerLocal) ? insideLocal - outerLocal : 0;
   const venueEscapeBias = clamp(-0.04, 0.08, insideStrengthDelta * 0.012 + (entryChanged ? -0.015 : 0.02) - windSpeed * 0.003);
   const venueOuterAttackBias = clamp(0, 0.08, Math.max(0, -insideStrengthDelta) * 0.01 + Math.max(0, windSpeed - 4) * 0.006 + (String(raceFlow?.formation_pattern || "").includes("outside") ? 0.018 : 0));
@@ -1034,11 +1054,11 @@ function buildVenueBiasContext({ race, raceFlow, laneContexts }) {
   };
 }
 
-function buildStartPatternContext(laneMap) {
-  const lane1 = laneMap.get(1) || {};
-  const lane2 = laneMap.get(2) || {};
-  const lane3 = laneMap.get(3) || {};
-  const lane4 = laneMap.get(4) || {};
+function buildStartPatternContext(actualLaneMap) {
+  const lane1 = actualLaneMap.get(1) || {};
+  const lane2 = actualLaneMap.get(2) || {};
+  const lane3 = actualLaneMap.get(3) || {};
+  const lane4 = actualLaneMap.get(4) || {};
   const lane12Ahead = toNum(lane1.start_edge, 0) >= 0.03 && toNum(lane2.start_edge, 0) >= 0.02 ? 1 : 0;
   const middleDent = toNum(lane2.late_risk, 0) >= 0.16 && toNum(lane3.start_edge, 0) >= 0.03 ? 1 : 0;
   const twoThreeLate = toNum(lane2.late_risk, 0) >= 0.18 && toNum(lane3.late_risk, 0) >= 0.16 ? 1 : 0;
@@ -1063,8 +1083,9 @@ export function buildHitRateEnhancementContext({
   const profileByLane = playerStartProfile?.by_lane || {};
   const laneContexts = rows.map((row) => {
     const lane = toInt(row?.racer?.lane, null);
+    const actualLane = toInt(row?.features?.actual_lane ?? row?.racer?.entryCourse ?? lane, lane);
     const features = row?.features || {};
-    const profile = profileByLane[String(lane)] || {};
+    const profile = profileByLane[String(actualLane)] || {};
     const styleProfile = profile?.style_profile || {};
     const laneAvgSt = Number.isFinite(features?.avg_st) ? features.avg_st : null;
     const laneStRank = Number.isFinite(features?.avg_st_rank) ? features.avg_st_rank : null;
@@ -1141,10 +1162,13 @@ export function buildHitRateEnhancementContext({
         : 0;
     const windStartInstability = clamp(0, 0.12, Math.max(0, toNum(race?.windSpeed, 0) - 4) * 0.015);
     const boardStartCaution = clamp(0, 0.1, toNum(race?.waveHeight, 0) * 0.012);
-    const stylePressure = buildStylePressure(lane, profile);
+    const stylePressure = buildStylePressure(actualLane, profile);
     const motivation = buildMotivation(row, race);
     return {
       lane,
+      boat_number: lane,
+      actual_lane: actualLane,
+      course_change_occurred: actualLane !== lane,
       style_profile: styleProfile,
       player_start_profile: profile?.player_start_profile || null,
       lane_avgST: laneAvgSt,
@@ -1186,6 +1210,7 @@ export function buildHitRateEnhancementContext({
   }).filter((row) => Number.isInteger(row.lane));
 
   const laneMap = new Map(laneContexts.map((row) => [row.lane, row]));
+  const actualLaneMap = new Map(laneContexts.map((row) => [row.actual_lane, row]));
   const venueBias = buildVenueBiasContext({ race, raceFlow, laneContexts });
   const bestAdjustedExTime = Math.min(
     ...laneContexts
@@ -1194,7 +1219,7 @@ export function buildHitRateEnhancementContext({
   laneContexts.forEach((row) => {
     const exTime = row?.motor_form?.exhibitionTime;
     const windAdjusted = Number.isFinite(exTime) ? round(exTime + venueBias.strong_wind_caution * 0.08, 3) : null;
-    const leftLaneRow = row.lane > 1 ? laneMap.get(row.lane - 1) || null : null;
+    const leftLaneRow = row.actual_lane > 1 ? actualLaneMap.get(row.actual_lane - 1) || null : null;
     row.wind_adjusted_ex_time = windAdjusted;
     row.ex_time_relative_gap = Number.isFinite(windAdjusted) && Number.isFinite(bestAdjustedExTime)
       ? round(windAdjusted - bestAdjustedExTime, 3)
@@ -1203,11 +1228,11 @@ export function buildHitRateEnhancementContext({
       leftLaneRow && Number.isFinite(windAdjusted) && Number.isFinite(leftLaneRow?.wind_adjusted_ex_time ?? leftLaneRow?.motor_form?.exhibitionTime)
         ? round((leftLaneRow.wind_adjusted_ex_time ?? leftLaneRow.motor_form.exhibitionTime) - windAdjusted, 3)
         : null;
-    row.boat1_ex_time_warning = row.lane === 1 && Number.isFinite(row.ex_time_relative_gap) && row.ex_time_relative_gap >= 0.07 ? 1 : 0;
+    row.boat1_ex_time_warning = row.actual_lane === 1 && Number.isFinite(row.ex_time_relative_gap) && row.ex_time_relative_gap >= 0.07 ? 1 : 0;
     row.venue_specific_ex_time_mode = venueBias.strong_wind_caution >= 0.05 ? "wind_sensitive" : "standard";
   });
   laneContexts.forEach((row) => {
-    row.finish_role_bonuses = buildRoleSpecificFinishBonuses(row.lane, row, laneMap);
+    row.finish_role_bonuses = buildRoleSpecificFinishBonuses(row, actualLaneMap);
     row.attack_readiness_bonus = round(
       clamp(
         0,
@@ -1223,63 +1248,89 @@ export function buildHitRateEnhancementContext({
       4
     );
   });
-  const lane1 = laneMap.get(1) || {};
-  const startPatternContext = buildStartPatternContext(laneMap);
+  const boat1Row = laneMap.get(1) || {};
+  const actualLane1Row = actualLaneMap.get(1) || {};
+  const actualLane2Row = actualLaneMap.get(2) || {};
+  const actualLane3Row = actualLaneMap.get(3) || {};
+  const actualLane4Row = actualLaneMap.get(4) || {};
+  const startPatternContext = buildStartPatternContext(actualLaneMap);
   const outerAttackPressure = safeArray([3, 4, 5, 6]).reduce((sum, lane) => {
-    const row = laneMap.get(lane);
+    const row = actualLaneMap.get(lane);
     if (!row) return sum;
     return sum +
       toNum(row.style_pressure, 0) * (lane === 3 || lane === 4 ? 0.0035 : 0.0024) +
       Math.max(0, toNum(row.start_edge, 0)) * (lane === 3 || lane === 4 ? 0.24 : 0.16) +
       toNum(row.hidden_F_flag, 0) * 0.025;
   }, 0);
-  const lane2AllowNige = laneMap.get(2)
-    ? clamp(0, 0.2, (toNum(laneMap.get(2)?.style_profile?.sashi, 0) / 100) * 0.08 - (toNum(laneMap.get(2)?.style_profile?.makuri, 0) / 100) * 0.04)
+  const lane2AllowNige = actualLane2Row
+    ? clamp(0, 0.2, (toNum(actualLane2Row?.style_profile?.sashi, 0) / 100) * 0.08 - (toNum(actualLane2Row?.style_profile?.makuri, 0) / 100) * 0.04)
     : 0;
+  const deepInPenalty = boat1Row.actual_lane > 1 ? clamp(0, 0.12, (boat1Row.actual_lane - 1) * 0.035) : 0;
+  const weakWallPenalty = actualLane2Row && actualLane2Row.boat_number !== 2 ? 0.028 : 0;
+  const stableInnerBonus = actualLane2Row && actualLane3Row && toNum(actualLane2Row.late_risk, 0) < 0.15 && toNum(actualLane3Row.late_risk, 0) < 0.16 ? 0.028 : 0;
   const escapeScore = clamp(
     0,
     1,
     0.18 +
-    toNum(lane1.lane_fit_1st, 0) / 100 * 0.34 +
-    toNum(lane1.motor_true, 0) / 100 * 0.12 +
-    Math.max(0, toNum(lane1.start_edge, 0)) * 0.24 +
+    toNum(actualLane1Row.lane_fit_1st, 0) / 100 * 0.34 +
+    toNum(boat1Row.motor_true, 0) / 100 * 0.12 +
+    Math.max(0, toNum(actualLane1Row.start_edge, 0)) * 0.24 +
     venueBias.venue_escape_bias +
     venueBias.stability_board_bias +
+    stableInnerBonus +
     lane2AllowNige -
     outerAttackPressure * (0.55 + venueBias.venue_outer_attack_bias) -
     venueBias.turn1_narrow_penalty -
-    toNum(lane1.boat1_ex_time_warning, 0) * 0.08 -
-    toNum(lane1.hidden_F_flag, 0) * 0.08 -
-    toNum(lane1.late_risk, 0) * 0.12
+    toNum(actualLane1Row.boat1_ex_time_warning, 0) * 0.08 -
+    toNum(boat1Row.hidden_F_flag, 0) * 0.08 -
+    toNum(actualLane1Row.late_risk, 0) * 0.12 -
+    deepInPenalty -
+    weakWallPenalty
+  );
+  const actualLane2SashiPriority = clamp(
+    0,
+    1,
+    (toNum(actualLane2Row?.lane_fit_2ren, 0) / 100) * 0.28 +
+      (toNum(actualLane2Row?.style_profile?.sashi, 0) / 100) * 0.32 +
+      (toNum(actualLane2Row?.style_profile?.makuri_sashi, 0) / 100) * 0.14 +
+      Math.max(0, toNum(actualLane2Row?.start_edge, 0)) * 0.42 +
+      Math.max(0, toNum(actualLane2Row?.ex_time_left_gap_advantage, 0)) * 0.38 +
+      (deepInPenalty > 0 ? 0.06 : 0) +
+      Math.max(0, 0.42 - escapeScore) * 0.18 -
+      toNum(actualLane2Row?.late_risk, 0) * 0.24
+  );
+  const actualLane4CadoPriority = clamp(
+    0,
+    1,
+    (toNum(actualLane4Row?.style_profile?.makuri, 0) / 100) * 0.34 +
+      (toNum(actualLane4Row?.lane_fit_1st, 0) / 100) * 0.18 +
+      Math.max(0, toNum(actualLane4Row?.start_edge, 0)) * 0.34 +
+      Math.max(0, toNum(actualLane4Row?.ex_time_left_gap_advantage, 0)) * 0.24 +
+      Math.max(0, toNum(actualLane4Row?.finish_role_bonuses?.straightLineDelta, 0)) * 0.08 +
+      venueBias.venue_outer_attack_bias +
+      (startPatternContext.outer_attack_window ? 0.05 : 0) -
+      toNum(actualLane4Row?.late_risk, 0) * 0.16 -
+      toNum(actualLane4Row?.hidden_F_flag, 0) * 0.08
   );
 
   const scenarioProbabilities = [
     {
       scenario: "boat1_escape",
-      probability: round(clamp(0, 1, escapeScore + Math.max(0, toNum(lane1.safe_run_bias, 0) - 0.02)), 4)
+      probability: round(clamp(0, 1, escapeScore + Math.max(0, toNum(boat1Row.safe_run_bias, 0) - 0.02)), 4)
     },
     {
       scenario: "boat2_sashi",
-      probability: round(clamp(
-        0,
-        1,
-        (toNum(laneMap.get(2)?.style_profile?.sashi, 0) / 100) * 0.54 +
-        Math.max(0, toNum(laneMap.get(2)?.start_edge, 0)) * 0.55 -
-        toNum(laneMap.get(2)?.late_risk, 0) * 0.28 +
-        toNum(laneMap.get(2)?.attack_readiness_bonus, 0) * 0.36 +
-        (startPatternContext.lane12_ahead ? 0.04 : 0) +
-        (1 - escapeScore) * 0.24
-      ), 4)
+      probability: round(actualLane2SashiPriority, 4)
     },
     {
       scenario: "boat2_direct_makuri",
       probability: round(clamp(
         0,
         1,
-        (toNum(laneMap.get(2)?.style_profile?.makuri, 0) / 100) * 0.56 +
-        Math.max(0, toNum(laneMap.get(2)?.start_edge, 0)) * 0.62 -
-        toNum(laneMap.get(2)?.hidden_F_flag, 0) * 0.12 +
-        toNum(laneMap.get(2)?.attack_readiness_bonus, 0) * 0.44 +
+        (toNum(actualLane2Row?.style_profile?.makuri, 0) / 100) * 0.56 +
+        Math.max(0, toNum(actualLane2Row?.start_edge, 0)) * 0.62 -
+        toNum(actualLane2Row?.hidden_F_flag, 0) * 0.12 +
+        toNum(actualLane2Row?.attack_readiness_bonus, 0) * 0.44 +
         (startPatternContext.middle_dent ? 0.06 : 0) +
         Math.max(0, 0.42 - escapeScore) * 0.55
       ), 4)
@@ -1289,10 +1340,10 @@ export function buildHitRateEnhancementContext({
       probability: round(clamp(
         0,
         1,
-        (toNum(laneMap.get(3)?.style_profile?.makuri, 0) / 100) * 0.56 +
-        Math.max(0, toNum(laneMap.get(3)?.start_edge, 0)) * 0.6 -
-        toNum(laneMap.get(3)?.late_risk, 0) * 0.26 +
-        toNum(laneMap.get(3)?.attack_readiness_bonus, 0) * 0.42 +
+        (toNum(actualLane3Row?.style_profile?.makuri, 0) / 100) * 0.56 +
+        Math.max(0, toNum(actualLane3Row?.start_edge, 0)) * 0.6 -
+        toNum(actualLane3Row?.late_risk, 0) * 0.26 +
+        toNum(actualLane3Row?.attack_readiness_bonus, 0) * 0.42 +
         (startPatternContext.outer_attack_window ? 0.05 : 0) +
         Math.max(0, 0.45 - escapeScore) * 0.36
       ), 4)
@@ -1302,26 +1353,16 @@ export function buildHitRateEnhancementContext({
       probability: round(clamp(
         0,
         1,
-        (toNum(laneMap.get(3)?.style_profile?.makuri_sashi, 0) / 100) * 0.6 +
-        Math.max(0, toNum(laneMap.get(3)?.start_edge, 0)) * 0.42 -
-        toNum(laneMap.get(3)?.late_risk, 0) * 0.18 +
-        toNum(laneMap.get(3)?.attack_readiness_bonus, 0) * 0.28 +
+        (toNum(actualLane3Row?.style_profile?.makuri_sashi, 0) / 100) * 0.6 +
+        Math.max(0, toNum(actualLane3Row?.start_edge, 0)) * 0.42 -
+        toNum(actualLane3Row?.late_risk, 0) * 0.18 +
+        toNum(actualLane3Row?.attack_readiness_bonus, 0) * 0.28 +
         (startPatternContext.two_three_late ? 0.04 : 0)
       ), 4)
     },
     {
       scenario: "boat4_cado_attack",
-      probability: round(clamp(
-        0,
-        1,
-        (toNum(laneMap.get(4)?.style_profile?.makuri, 0) / 100) * 0.64 +
-        (toNum(laneMap.get(4)?.lane_fit_1st, 0) / 100) * 0.24 +
-        Math.max(0, toNum(laneMap.get(4)?.start_edge, 0)) * 0.55 -
-        toNum(laneMap.get(4)?.hidden_F_flag, 0) * 0.1 +
-        toNum(laneMap.get(4)?.attack_readiness_bonus, 0) * 0.4 +
-        venueBias.venue_outer_attack_bias +
-        Math.max(0, 0.44 - escapeScore) * 0.28
-      ), 4)
+      probability: round(actualLane4CadoPriority, 4)
     },
     {
       scenario: "outer_mix_chaos",
@@ -1329,14 +1370,14 @@ export function buildHitRateEnhancementContext({
         0,
         1,
         outerAttackPressure * 0.34 +
-        safeArray([2, 3, 4, 5, 6]).reduce((sum, lane) => sum + toNum(laneMap.get(lane)?.late_risk, 0), 0) * 0.12 +
+        safeArray([2, 3, 4, 5, 6]).reduce((sum, lane) => sum + toNum(actualLaneMap.get(lane)?.late_risk, 0), 0) * 0.12 +
         venueBias.strong_wind_caution +
         Math.max(0, 0.34 - escapeScore) * 0.46
       ), 4)
     }
   ];
   const normalizedScenarioProbabilities = normalizeScenarioRows(scenarioProbabilities);
-  const intermediateEvents = buildIntermediateEvents(laneMap, escapeScore, outerAttackPressure);
+  const intermediateEvents = buildIntermediateEvents(actualLaneMap, escapeScore, outerAttackPressure);
   const laneFinishPriors = {
     first: { ...LANE_FINISH_PRIORS.first },
     second: { ...LANE_FINISH_PRIORS.second },
@@ -1362,6 +1403,7 @@ export function buildHitRateEnhancementContext({
   const finishRoleFramework = buildFinishRoleScores(
     laneContexts,
     laneMap,
+    actualLaneMap,
     baseRoleProbabilities,
     normalizedScenarioProbabilities,
     escapeScore,
@@ -1370,6 +1412,7 @@ export function buildHitRateEnhancementContext({
   const treeAggregation = aggregateScenarioFinishProbabilities(
     normalizedScenarioProbabilities,
     laneMap,
+    actualLaneMap,
     baseRoleProbabilities,
     intermediateEvents,
     escapeScore,
@@ -1394,20 +1437,25 @@ export function buildHitRateEnhancementContext({
   });
 
   const darkHorseAlerts = [
-    toNum(laneMap.get(4)?.lane_fit_1st, 0) >= 46 && String(rows.find((row) => toInt(row?.racer?.lane, null) === 4)?.racer?.class || "") === "B1"
-      ? { lane: 4, type: "4_HEAD_CAUTION", reason: "B1 x 4-course x lane_fit_1st" }
+    toNum(actualLane4Row?.lane_fit_1st, 0) >= 46 && String(rows.find((row) => toInt(row?.racer?.lane, null) === boatNumberOf(actualLane4Row))?.racer?.class || "") === "B1"
+      ? { lane: boatNumberOf(actualLane4Row) || 4, type: "4_HEAD_CAUTION", reason: "B1 x actual 4-course x lane_fit_1st" }
       : null,
-    toNum(laneMap.get(6)?.lane_fit_3ren, 0) >= 42
-      ? { lane: 6, type: "6_THIRD_CAUTION", reason: "6-course x lane_fit_3ren" }
+    toNum(actualLaneMap.get(6)?.lane_fit_3ren, 0) >= 42
+      ? { lane: boatNumberOf(actualLaneMap.get(6)) || 6, type: "6_THIRD_CAUTION", reason: "actual 6-course x lane_fit_3ren" }
       : null,
-    toNum(laneMap.get(2)?.style_profile?.makuri, 0) >= 58 && toNum(laneMap.get(2)?.start_edge, 0) >= 0.05
-      ? { lane: 2, type: "1_COLLAPSE_CAUTION", reason: "2-course direct makuri tendency" }
+    toNum(actualLane2Row?.style_profile?.makuri, 0) >= 58 && toNum(actualLane2Row?.start_edge, 0) >= 0.05
+      ? { lane: boatNumberOf(actualLane2Row) || 2, type: "1_COLLAPSE_CAUTION", reason: "actual 2-course direct makuri tendency" }
       : null
   ].filter(Boolean);
 
   return {
     stage1_static: {
       style_profile_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.style_profile])),
+      actual_lane_assignment: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
+        boat_number: row.boat_number,
+        actual_lane: row.actual_lane,
+        course_change_occurred: row.course_change_occurred
+      }])),
       escape_score: round(escapeScore, 4),
       lane2_allow_nige: round(lane2AllowNige, 4),
       outer_attack_pressure: round(outerAttackPressure, 4),
@@ -1476,7 +1524,33 @@ export function buildHitRateEnhancementContext({
     stage3_scenarios: {
       selected_scenario_probabilities: normalizedScenarioProbabilities,
       intermediate_events: intermediateEvents,
-      start_pattern_context: startPatternContext
+      start_pattern_context: startPatternContext,
+      actual_lane_reassignment: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
+        original_boat_number: row.boat_number,
+        actual_lane: row.actual_lane,
+        course_change_occurred: row.course_change_occurred
+      }])),
+      recalculated_priorities: {
+        boat1_escape: {
+          boat_number: boat1Row.boat_number || 1,
+          actual_lane: boat1Row.actual_lane || 1,
+          deep_in_penalty: round(deepInPenalty, 4),
+          weak_wall_penalty: round(weakWallPenalty, 4),
+          stable_inner_bonus: round(stableInnerBonus, 4),
+          actual_escape_score: round(escapeScore, 4),
+          actual_lane_pressure_from_outside: round(outerAttackPressure, 4)
+        },
+        actual_two_course_sashi: {
+          boat_number: boatNumberOf(actualLane2Row),
+          actual_lane: actualLaneOf(actualLane2Row),
+          priority: round(actualLane2SashiPriority, 4)
+        },
+        actual_four_course_cado: {
+          boat_number: boatNumberOf(actualLane4Row),
+          actual_lane: actualLaneOf(actualLane4Row),
+          priority: round(actualLane4CadoPriority, 4)
+        }
+      }
     },
     stage4_opponents: {
       head_candidate_set: finishRoleFramework.headCandidates.map((row) => row.lane),

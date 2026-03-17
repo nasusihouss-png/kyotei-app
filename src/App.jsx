@@ -1904,6 +1904,10 @@ function getStartDisplayRows(startDisplay) {
       st: Number.isFinite(Number(st)) ? Number(st) : null,
       stDisplay: timingDisplay
     };
+  }).sort((a, b) => {
+    const orderA = Number.isInteger(a.order) ? a.order : 99;
+    const orderB = Number.isInteger(b.order) ? b.order : 99;
+    return orderA - orderB || a.lane - b.lane;
   });
 }
 
