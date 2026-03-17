@@ -3817,7 +3817,6 @@ export default function App() {
                             <th>Lap Time</th>
                             <th>Ex ST</th>
                             <th>Ex Time</th>
-                            <th>Lap Ex / Stretch</th>
                             <th>Motor 2-ren</th>
                             <th>Lane 1st Avg</th>
                             <th>Lane 2-ren Avg</th>
@@ -3843,9 +3842,6 @@ export default function App() {
                               <td className={playerMetricLeaders.lapTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lapTime, 2)}</td>
                               <td className={playerMetricLeaders.exhibitionSt.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionSt, 2)}</td>
                               <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionTime, 2)}</td>
-                              <td className={playerMetricLeaders.lapScore.has(row.lane) ? "metric-hot" : ""}>
-                                {Number.isFinite(Number(row.lapExStretch)) ? formatComparisonValue(row.lapExStretch, 2) : "--"}
-                              </td>
                               <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor2ren, 2)}</td>
                               <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane1stAvg, 2)}</td>
                               <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane2renAvg, 2)}</td>
@@ -3856,7 +3852,7 @@ export default function App() {
                       </table>
                     </div>
                     <p className="muted strategy-line">
-                      Lap time is ranked as lower-is-better. Lap Ex / Stretch is ranked as higher-is-better. Lane stats use a simple average of season, 6m, 3m, and 1m over available periods only.
+                      Lap time is ranked as lower-is-better. Lane stats use a simple average of season, 6m, 3m, and 1m over available periods only.
                     </p>
                     {!data?.source?.kyotei_biyori?.ok ? (
                       <p className="muted strategy-line">
