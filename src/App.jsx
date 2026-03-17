@@ -2664,6 +2664,10 @@ export default function App() {
     if (!support) return null;
     return {
       classification: support?.classification || "stable",
+      bigUpsetProbability: Number(support?.big_upset_probability ?? 0),
+      upsetFormation: support?.upset_formation && typeof support.upset_formation === "object"
+        ? support.upset_formation
+        : { first_candidates: [], second_candidates: [], third_candidates: [], formation_string: null },
       mediumUpset: support?.medium_upset || { shown: false, exacta_pairs: [], trifecta_tickets: [] },
       bigUpset: support?.big_upset || { shown: false, exacta_pairs: [], trifecta_tickets: [] },
       chosenHeads: Array.isArray(support?.chosen_upset_heads) ? support.chosen_upset_heads : [],
@@ -4104,75 +4108,45 @@ export default function App() {
                   </RenderGuard>
                 ) : null}
 
-                {upsetSupport?.mediumUpset?.shown ? (
+                {upsetSupport && upsetSupport.bigUpsetProbability > 0 ? (
                   <RenderGuard>
                   <article className="card summary-card premium-ticket-card subtle">
                     <div className="premium-card-head">
                       <div>
-                        <p className="eyebrow">Backup</p>
-                        <h2>Medium Upset (中穴)</h2>
+                        <p className="eyebrow">Supplemental</p>
+                        <h2>Big Upset Probability</h2>
                       </div>
                     </div>
                     <div className="summary-inline-meta">
                       <span>{upsetSupport.classification}</span>
-                      <span>compact backup coverage only</span>
+                      <span>compact upset formation view</span>
                     </div>
-                    <div className="ticket-stack compact-list" style={{ marginBottom: 10 }}>
-                      {safeArray(upsetSupport?.mediumUpset?.trifecta_tickets).map((combo, idx) => (
-                        <div key={`medium-upset-tri-${combo}-${idx}`} className="premium-ticket-row">
-                          <div className="ticket-mainline">
-                            <span className="ticket-type ticket-type-inline">3連単</span>
-                            <strong><ComboBadge combo={combo || "--"} /></strong>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {safeArray(upsetSupport?.mediumUpset?.exacta_pairs).length > 0 ? (
-                      <div className="ticket-stack compact-list">
-                        {safeArray(upsetSupport?.mediumUpset?.exacta_pairs).map((row, idx) => (
-                          <div key={`medium-upset-ex-${row?.combo || idx}`} className="premium-ticket-row">
-                            <div className="ticket-mainline">
-                              <span className="ticket-type ticket-type-inline">2連単</span>
-                              <strong><ComboBadge combo={row?.combo || "--"} /></strong>
-                            </div>
-                            <div className="ticket-meta">
-                              <span>{Number.isFinite(Number(row?.probability)) ? `hit ${formatMaybeNumber(Number(row.probability) * 100, 1)}%` : "--"}</span>
-                            </div>
-                          </div>
-                        ))}
+                    <div className="kv-list" style={{ marginTop: 8 }}>
+                      <div className="kv-row">
+                        <span>大穴発生確率</span>
+                        <strong>{formatMaybeNumber(upsetSupport?.bigUpsetProbability * 100, 1)}%</strong>
                       </div>
-                    ) : null}
-                  </article>
-                  </RenderGuard>
-                ) : null}
-
-                {upsetSupport?.bigUpset?.shown ? (
-                  <RenderGuard>
-                  <article className="card summary-card premium-ticket-card subtle">
-                    <div className="premium-card-head">
-                      <div>
-                        <p className="eyebrow">Backup</p>
-                        <h2>Big Upset (大穴)</h2>
+                      <div className="kv-row">
+                        <span>1着候補</span>
+                        <strong><LanePills lanes={upsetSupport?.upsetFormation?.first_candidates || []} /></strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>2着候補</span>
+                        <strong><LanePills lanes={upsetSupport?.upsetFormation?.second_candidates || []} /></strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>3着候補</span>
+                        <strong><LanePills lanes={upsetSupport?.upsetFormation?.third_candidates || []} /></strong>
+                      </div>
+                      <div className="kv-row">
+                        <span>Formation</span>
+                        <strong>{upsetSupport?.upsetFormation?.formation_string || "--"}</strong>
                       </div>
                     </div>
-                    <div className="summary-inline-meta">
-                      <span>{upsetSupport.classification}</span>
-                      <span>strong upset warning, compact hedge only</span>
-                    </div>
-                    <div className="ticket-stack compact-list" style={{ marginBottom: 10 }}>
-                      {safeArray(upsetSupport?.bigUpset?.trifecta_tickets).map((combo, idx) => (
-                        <div key={`big-upset-tri-${combo}-${idx}`} className="premium-ticket-row">
-                          <div className="ticket-mainline">
-                            <span className="ticket-type ticket-type-inline">3連単</span>
-                            <strong><ComboBadge combo={combo || "--"} /></strong>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {safeArray(upsetSupport?.bigUpset?.exacta_pairs).length > 0 ? (
-                      <div className="ticket-stack compact-list">
-                        {safeArray(upsetSupport?.bigUpset?.exacta_pairs).map((row, idx) => (
-                          <div key={`big-upset-ex-${row?.combo || idx}`} className="premium-ticket-row">
+                    {safeArray(upsetSupport?.chosenExactaPairs).length > 0 ? (
+                      <div className="ticket-stack compact-list" style={{ marginTop: 10 }}>
+                        {safeArray(upsetSupport?.chosenExactaPairs).slice(0, 4).map((row, idx) => (
+                          <div key={`upset-exacta-${row?.combo || idx}`} className="premium-ticket-row">
                             <div className="ticket-mainline">
                               <span className="ticket-type ticket-type-inline">2連単</span>
                               <strong><ComboBadge combo={row?.combo || "--"} /></strong>
@@ -4397,6 +4371,8 @@ export default function App() {
                                 <summary>upset detection + backup coverage</summary>
                                 <pre className="json-preview">{safePrettyJson({
                                   classification: upsetSupport.classification,
+                                  bigUpsetProbability: upsetSupport.bigUpsetProbability,
+                                  upsetFormation: upsetSupport.upsetFormation,
                                   weakBoat1Factors: upsetSupport.weakBoat1Factors,
                                   strongAttackerFactors: upsetSupport.strongAttackerFactors,
                                   chaosFactors: upsetSupport.chaosFactors,

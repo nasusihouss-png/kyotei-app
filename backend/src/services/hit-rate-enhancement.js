@@ -583,6 +583,7 @@ function buildUpsetSupport({ laneMap, enhancementBase, scenarioRows, aggregatedF
     .slice(0, classification === "chaotic" ? 4 : classification === "semi-chaotic" ? 3 : 0);
 
   const upsetTrifectaTickets = [];
+  const upsetThirdCandidateScores = new Map();
   for (const scenario of upsetScenarios) {
     const thirdCandidates = [1, 2, 3, 4, 5, 6]
       .filter((lane) => lane !== scenario.head_lane && !scenario.partner_lanes.includes(lane))
@@ -599,6 +600,13 @@ function buildUpsetSupport({ laneMap, enhancementBase, scenarioRows, aggregatedF
       .sort((a, b) => b.score - a.score || a.lane - b.lane)
       .slice(0, classification === "chaotic" ? 2 : 1);
 
+    for (const thirdRow of thirdCandidates) {
+      upsetThirdCandidateScores.set(
+        thirdRow.lane,
+        round(Math.max(toNum(upsetThirdCandidateScores.get(thirdRow.lane), 0), toNum(thirdRow.score, 0)), 4)
+      );
+    }
+
     for (const secondLane of scenario.partner_lanes) {
       for (const thirdLane of thirdCandidates.map((row) => row.lane)) {
         const combo = normalizeCombo(`${scenario.head_lane}-${secondLane}-${thirdLane}`);
@@ -607,9 +615,34 @@ function buildUpsetSupport({ laneMap, enhancementBase, scenarioRows, aggregatedF
     }
   }
   const compactUpsetTrifecta = [...new Set(upsetTrifectaTickets)].slice(0, classification === "chaotic" ? 5 : classification === "semi-chaotic" ? 3 : 0);
+  const bigUpsetProbability = round(clamp(0, 0.65, upsetScore * 0.24 + (classification === "chaotic" ? 0.14 : classification === "semi-chaotic" ? 0.06 : 0.01)), 4);
+  const firstCandidates = upsetHeadPool.map((row) => row.lane).slice(0, classification === "chaotic" ? 3 : classification === "semi-chaotic" ? 2 : 1);
+  const secondCandidates = [...new Set(
+    upsetScenarios
+      .flatMap((row) => safeArray(row?.partner_lanes))
+      .concat(toNum(secondMap.get(1), 0) >= 0.12 ? [1] : [])
+  )]
+    .slice(0, classification === "chaotic" ? 4 : classification === "semi-chaotic" ? 3 : 2);
+  const thirdCandidates = [...new Set(
+    [...upsetThirdCandidateScores.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+      .map(([lane]) => lane)
+      .concat(
+        normalizeRows(aggregatedFinishProbabilities?.third)
+          .map((row) => row.lane)
+      )
+  )]
+    .filter((lane) => !firstCandidates.includes(lane) || lane === 1)
+    .slice(0, classification === "chaotic" ? 5 : classification === "semi-chaotic" ? 4 : 3);
+  const formationString =
+    firstCandidates.length && secondCandidates.length && thirdCandidates.length
+      ? `${firstCandidates.join("")}-${secondCandidates.join("")}-${thirdCandidates.join("")}`
+      : null;
 
   return {
     classification,
+    upset_score: upsetScore,
+    big_upset_probability: bigUpsetProbability,
     weak_boat1_factors: weakBoat1Factors,
     strong_attacker_factors: strongAttackerFactors,
     chaos_factors: chaosFactors,
@@ -629,6 +662,12 @@ function buildUpsetSupport({ laneMap, enhancementBase, scenarioRows, aggregatedF
       shown: classification === "chaotic",
       exacta_pairs: classification === "chaotic" ? upsetExactaPairs.slice(0, 4) : [],
       trifecta_tickets: classification === "chaotic" ? compactUpsetTrifecta.slice(0, 5) : []
+    },
+    upset_formation: {
+      first_candidates: firstCandidates,
+      second_candidates: secondCandidates,
+      third_candidates: thirdCandidates,
+      formation_string: formationString
     }
   };
 }
