@@ -2643,6 +2643,10 @@ export default function App() {
           thirdCompatibility: compatibility?.third_bonus ?? null,
           secondBreakdown: laneRow.second_place_bonus_breakdown || null,
           thirdBreakdown: laneRow.third_place_bonus_breakdown || null,
+          likelyHeadSurvivalContext: scores?.likely_head_survival_context ?? null,
+          attackCarryover: scores?.attack_but_not_win_carryover ?? null,
+          thirdProxyUsed: scores?.third_place_proxy_used ?? null,
+          residualTendency: scores?.residual_tendency ?? null,
           thirdExclusionReasons: Array.isArray(thirdExclusion?.reasons) ? thirdExclusion.reasons : [],
           thirdExclusionPenalty: thirdExclusion?.penalty ?? null
         };
@@ -4350,14 +4354,14 @@ export default function App() {
                                           <td>
                                             <span className="muted">
                                               {row?.secondBreakdown
-                                                ? `L2 ${formatMaybeNumber(row?.secondBreakdown?.lane2renScore, 2)} / M2 ${formatMaybeNumber(row?.secondBreakdown?.motor2ren, 2)} / compat ${formatMaybeNumber(row?.secondBreakdown?.compatibility_with_head, 2)}`
+                                                ? `L2 ${formatMaybeNumber(row?.secondBreakdown?.lane2renScore, 2)} / M2 ${formatMaybeNumber(row?.secondBreakdown?.motor2ren, 2)} / compat ${formatMaybeNumber(row?.secondBreakdown?.compatibility_with_head, 2)} / carry ${formatMaybeNumber(row?.attackCarryover, 2)} / 1-surv ${formatMaybeNumber(row?.likelyHeadSurvivalContext, 2)}`
                                                 : "--"}
                                             </span>
                                           </td>
                                           <td>
                                             <span className="muted">
                                               {row?.thirdBreakdown
-                                                ? `L3 ${formatMaybeNumber(row?.thirdBreakdown?.lane3renScore, 2)} / flow ${formatMaybeNumber(row?.thirdBreakdown?.flow_in_bonus, 2)} / excl ${formatMaybeNumber(row?.thirdBreakdown?.exclusion_penalty, 2)}`
+                                                ? `L3 ${formatMaybeNumber(row?.thirdBreakdown?.lane3renScore, 2)} / flow ${formatMaybeNumber(row?.thirdBreakdown?.flow_in_bonus, 2)} / resid ${formatMaybeNumber(row?.residualTendency, 2)} / proxy ${row?.thirdProxyUsed || "--"} / excl ${formatMaybeNumber(row?.thirdBreakdown?.exclusion_penalty, 2)}`
                                                 : "--"}
                                             </span>
                                           </td>

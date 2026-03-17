@@ -166,6 +166,14 @@ assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].thirdPlaceBonus, "number");
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_scores_by_lane["2"].second_place_score, "number");
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_scores_by_lane["3"].third_place_score, "number");
+assert.equal(typeof enhancement.stage2_dynamic.finish_role_scores_by_lane["2"].likely_head_survival_context, "number");
+assert.equal(typeof enhancement.stage2_dynamic.finish_role_scores_by_lane["2"].attack_but_not_win_carryover, "number");
+assert.equal(typeof enhancement.stage2_dynamic.finish_role_scores_by_lane["4"].residual_tendency, "number");
+assert.equal(
+  enhancement.stage2_dynamic.finish_role_scores_by_lane["4"].third_place_proxy_used === "motor3ren" ||
+    enhancement.stage2_dynamic.finish_role_scores_by_lane["4"].third_place_proxy_used === "survival_proxy",
+  true
+);
 assert.equal(typeof enhancement.stage4_opponents.compatibility_with_head["2"]["1"].second_bonus, "number");
 assert.equal(Array.isArray(enhancement.stage2_dynamic.third_place_exclusion_by_lane["4"].reasons), true);
 assert.notEqual(
@@ -202,6 +210,8 @@ const shape = buildEnhancedTrifectaShapeRecommendation({
 assert.equal(typeof shape.selected_shape, "string");
 assert.equal(shape.expanded_tickets.every((combo) => combo.split("-").length === 3), true);
 assert.equal(shape.expanded_tickets.length >= 6 && shape.expanded_tickets.length <= 9, true);
+assert.equal(typeof shape.concentration_metrics.second_role_concentration, "number");
+assert.equal(typeof shape.concentration_metrics.third_role_concentration, "number");
 
 const tickets = buildEnhancedShapeBasedTrifectaTickets({
   shapeRecommendation: shape,

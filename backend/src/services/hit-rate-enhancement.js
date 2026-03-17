@@ -278,9 +278,37 @@ function buildFinishRoleScores(laneContexts, laneMap, baseRoleProbabilities, sce
     const attackReadiness = toNum(row?.attack_readiness_bonus, 0);
     const hiddenF = toNum(row?.hidden_F_flag, 0);
     const lateRisk = toNum(row?.late_risk, 0);
+    const startEdge = Math.max(0, toNum(row?.start_edge, 0));
+    const safeRunBias = Math.max(0, toNum(row?.safe_run_bias, 0));
+    const likelyHeadSurvivalContext = primaryHeadLane === 1
+      ? clamp(0, 0.14, Math.max(0, 0.5 - escapeScore) * 0.12 + laneFit2 * 0.04 + (lane > 1 && lane < 5 ? 0.015 : 0))
+      : clamp(0, 0.08, Math.max(0, 0.34 - toNum(headScenarioSupport.get(primaryHeadLane), 0)) * 0.18);
+    const attackHeadabilityProxy = clamp(
+      0,
+      0.86,
+      laneFit1 * 0.48 +
+        firstStyle * 0.24 +
+        startEdge * 0.18 +
+        Math.max(0, straight) * 0.08
+    );
+    const attackButNotWinCarryover = clamp(
+      0,
+      0.14,
+      attackReadiness * 0.48 +
+        Math.max(0, straight) * 0.04 +
+        Math.max(0, turning) * 0.03
+    ) * (1 - attackHeadabilityProxy);
     const survivalAfterAttackBonus = clamp(0, 0.16, attackReadiness * 0.42 + Math.max(0, turning) * 0.05 + Math.max(0, straight) * 0.04);
-    const flowInBonus = clamp(0, 0.16, (lane >= 4 ? 0.025 : 0) + Math.max(0, turning) * 0.06 + Math.max(0, toNum(row?.safe_run_bias, 0)) * 0.18);
+    const flowInBonus = clamp(0, 0.16, (lane >= 4 ? 0.025 : 0) + Math.max(0, turning) * 0.06 + safeRunBias * 0.18);
     const outerSurvivalBonus = clamp(0, 0.14, (lane >= 4 ? 0.03 : 0) + Math.max(0, straight) * 0.05 + thirdStyle * 0.06);
+    const residualTendency = clamp(
+      0,
+      0.16,
+      (lane >= 5 ? 0.03 : lane === 4 ? 0.02 : 0) +
+        thirdStyle * 0.08 +
+        safeRunBias * 0.16 +
+        Math.max(0, turning) * 0.03
+    );
     const thirdExclusion = buildThirdPlaceExclusion(row, laneMap);
     row.third_place_exclusion = thirdExclusion;
 
@@ -300,7 +328,7 @@ function buildFinishRoleScores(laneContexts, laneMap, baseRoleProbabilities, sce
       toNum(baseRoleProbabilities?.first?.[lane], 0) * 0.44 +
       laneFit1 * 0.24 +
       (toNum(row?.motor_true, 0) / 100) * 0.14 +
-      Math.max(0, toNum(row?.start_edge, 0)) * 0.18 +
+      startEdge * 0.18 +
       toNum(row?.finish_role_bonuses?.firstPlaceBonus, 0) * 0.34 +
       firstStyle * 0.08 +
       toNum(laneFinishPriors?.first?.[lane], 1) * 0.08 -
@@ -312,6 +340,8 @@ function buildFinishRoleScores(laneContexts, laneMap, baseRoleProbabilities, sce
       motor2 * 0.18 +
       Math.max(0, turning) * 0.12 +
       secondStyle * 0.13 +
+      likelyHeadSurvivalContext * 0.16 +
+      attackButNotWinCarryover * 0.22 +
       survivalAfterAttackBonus * 0.18 +
       toNum(primaryCompatibility?.second_bonus, 0) * 0.26 +
       toNum(row?.finish_role_bonuses?.secondPlaceBonus, 0) * 0.22 -
@@ -325,6 +355,8 @@ function buildFinishRoleScores(laneContexts, laneMap, baseRoleProbabilities, sce
       Math.max(0, straight) * 0.09 +
       flowInBonus * 0.16 +
       outerSurvivalBonus * 0.14 +
+      residualTendency * 0.16 +
+      attackButNotWinCarryover * 0.1 +
       thirdStyle * 0.08 +
       toNum(primaryCompatibility?.third_bonus, 0) * 0.18 +
       toNum(row?.finish_role_bonuses?.thirdPlaceBonus, 0) * 0.18 -
@@ -335,8 +367,11 @@ function buildFinishRoleScores(laneContexts, laneMap, baseRoleProbabilities, sce
       second_place_score: round(Math.max(0.0001, secondPlaceScore), 4),
       third_place_score: round(Math.max(0.0001, thirdPlaceScore), 4),
       survival_after_attack_bonus: round(survivalAfterAttackBonus, 4),
+      likely_head_survival_context: round(likelyHeadSurvivalContext, 4),
+      attack_but_not_win_carryover: round(attackButNotWinCarryover, 4),
       flow_in_bonus: round(flowInBonus, 4),
       outer_survival_bonus: round(outerSurvivalBonus, 4),
+      residual_tendency: round(residualTendency, 4),
       third_place_proxy_used: motor3 > 0 ? "motor3ren" : "survival_proxy",
       primary_head_lane: primaryHeadLane
     };
@@ -346,15 +381,20 @@ function buildFinishRoleScores(laneContexts, laneMap, baseRoleProbabilities, sce
       turning_bonus: round(Math.max(0, turning), 4),
       style_bonus: round(secondStyle, 4),
       compatibility_with_head: round(toNum(primaryCompatibility?.second_bonus, 0), 4),
+      likely_head_survival_context: round(likelyHeadSurvivalContext, 4),
+      attack_but_not_win_carryover: round(attackButNotWinCarryover, 4),
       survival_after_attack_bonus: round(survivalAfterAttackBonus, 4)
     };
     row.third_place_bonus_breakdown = {
       lane3renScore: round(laneFit3, 4),
       motor3ren_or_proxy: round(motor3Proxy, 4),
+      third_place_proxy_used: motor3 > 0 ? "motor3ren" : "survival_proxy",
       turning_bonus: round(Math.max(0, turning), 4),
       straight_retention_bonus: round(Math.max(0, straight), 4),
+      attack_but_not_win_carryover: round(attackButNotWinCarryover, 4),
       flow_in_bonus: round(flowInBonus, 4),
       outer_survival_bonus: round(outerSurvivalBonus, 4),
+      residual_tendency: round(residualTendency, 4),
       compatibility_with_head: round(toNum(primaryCompatibility?.third_bonus, 0), 4),
       exclusion_penalty: round(toNum(thirdExclusion?.penalty, 0), 4)
     };
@@ -1489,7 +1529,7 @@ export function applyHitRateEnhancementToProbabilities({
       if (lane === 4) {
         multiplier += scenarioMap.get("boat4_cado_attack") * 0.17;
       }
-        toNum(row.finish_role_scores?.first_place_score, 0) * 0.2;
+      multiplier += toNum(row.finish_role_scores?.first_place_score, 0) * 0.2;
     } else if (role === "second") {
       const compatibility = row?.compatibility_with_head?.[String(primaryHeadLane)] || { second_bonus: 0 };
       multiplier +=
@@ -1500,6 +1540,8 @@ export function applyHitRateEnhancementToProbabilities({
         toNum(row.finish_role_scores?.second_place_score, 0) * 0.26 +
         toNum(row.finish_role_bonuses?.secondPlaceBonus, 0) * 0.7 +
         toNum(compatibility.second_bonus, 0) * 0.6 +
+        toNum(row.finish_role_scores?.likely_head_survival_context, 0) * 0.22 +
+        toNum(row.finish_role_scores?.attack_but_not_win_carryover, 0) * 0.18 +
         toNum(row.second_place_bonus_breakdown?.survival_after_attack_bonus, 0) * 0.18 +
         toNum(row.safe_run_bias, 0) * 0.06 -
         toNum(row.late_risk, 0) * 0.18 -
@@ -1515,8 +1557,10 @@ export function applyHitRateEnhancementToProbabilities({
         toNum(row.finish_role_scores?.third_place_score, 0) * 0.28 +
         toNum(row.finish_role_bonuses?.thirdPlaceBonus, 0) * 0.7 +
         toNum(compatibility.third_bonus, 0) * 0.55 +
+        toNum(row.finish_role_scores?.attack_but_not_win_carryover, 0) * 0.08 +
         toNum(row.third_place_bonus_breakdown?.flow_in_bonus, 0) * 0.2 +
         toNum(row.third_place_bonus_breakdown?.outer_survival_bonus, 0) * 0.16 +
+        toNum(row.third_place_bonus_breakdown?.residual_tendency, 0) * 0.18 +
         toNum(row.safe_run_bias, 0) * 0.1 +
         (toNum(row.style_profile?.nuki, 0) / 100) * 0.04 -
         toNum(row.third_place_exclusion?.penalty, 0) * 0.8 -
@@ -1699,12 +1743,22 @@ export function buildEnhancedTrifectaShapeRecommendation({
         const exactaRow = topExacta.find((item) => item?.combo === exacta);
         return sum + toNum(exactaRow?.probability, 0);
       }, 0);
+      const secondRoleConcentration = safeArray(row.second).reduce(
+        (sum, lane) => sum + toNum(laneRows[String(lane)]?.finish_role_scores?.second_place_score, 0),
+        0
+      );
+      const thirdRoleConcentration = safeArray(row.third).reduce(
+        (sum, lane) => sum + toNum(laneRows[String(lane)]?.finish_role_scores?.third_place_score, 0),
+        0
+      );
       const countPenalty = Math.abs(ticketCount - targetTicketCount) * 0.035;
       return {
         ...row,
         expandedTickets,
         ticketCount,
-        score: row.score + exactaSupport * 0.18 - countPenalty
+        secondRoleConcentration: round(secondRoleConcentration, 4),
+        thirdRoleConcentration: round(thirdRoleConcentration, 4),
+        score: row.score + exactaSupport * 0.18 + secondRoleConcentration * 0.08 + thirdRoleConcentration * 0.06 - countPenalty
       };
     })
     .sort((a, b) => b.score - a.score)[0] || null;
@@ -1742,7 +1796,9 @@ export function buildEnhancedTrifectaShapeRecommendation({
       chaos_probability: round(chaosProb, 4),
       confidence: round(confidence, 2),
       target_ticket_count: targetTicketCount,
-      actual_ticket_count: chosen.ticketCount
+      actual_ticket_count: chosen.ticketCount,
+      second_role_concentration: round(chosen.secondRoleConcentration, 4),
+      third_role_concentration: round(chosen.thirdRoleConcentration, 4)
     }
   };
 }
