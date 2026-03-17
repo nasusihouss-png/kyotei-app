@@ -234,6 +234,10 @@ function buildCompatibilityWithHead(headBoat, row, headRow, escapeScore) {
   const turning = Math.max(0, toNum(row?.finish_role_bonuses?.turningAbilityDelta, 0));
   const attackReadiness = Math.max(0, toNum(row?.attack_readiness_bonus, 0));
   const safeRunBias = toNum(row?.safe_run_bias, 0);
+  const lateRisk = toNum(row?.late_risk, 0);
+  const hiddenF = toNum(row?.hidden_F_flag, 0);
+  const actualFourSecondCarryover = toNum(row?.actual_four_partner_second_carryover, 0) + toNum(row?.actual_four_self_second_carryover, 0);
+  const actualFourThirdCarryover = toNum(row?.actual_four_partner_third_carryover, 0) + toNum(row?.actual_four_self_third_carryover, 0);
   const reasons = [];
 
   let secondBonus = 0;
@@ -253,6 +257,36 @@ function buildCompatibilityWithHead(headBoat, row, headRow, escapeScore) {
     if (lane >= 5) {
       thirdBonus += 0.02 + nuki * 0.05;
       reasons.push("outer_residual_third");
+    }
+  } else if (headActualLane === 4) {
+    const collapseRisk = lateRisk >= 0.18 || hiddenF === 1;
+    secondBonus += laneFit2 * 0.08 + turning * 0.06 + Math.max(0, 0.04 - Math.abs(lane - 4) * 0.01);
+    thirdBonus += laneFit3 * 0.08 + straight * 0.05 + safeRunBias * 0.12;
+
+    if (lane === 3) {
+      if (!collapseRisk) {
+        secondBonus += 0.055 + actualFourSecondCarryover * 0.95 + Math.max(0, turning) * 0.04;
+        reasons.push("head4_lane3_second_flow");
+      } else {
+        reasons.push("head4_lane3_second_blocked_by_collapse");
+      }
+    }
+    if (lane === 2) {
+      if (laneFit3 >= 0.34 && !collapseRisk) {
+        thirdBonus += 0.05 + actualFourThirdCarryover * 0.95 + safeRunBias * 0.05;
+        reasons.push("head4_lane2_third_residual");
+      } else {
+        reasons.push("head4_lane2_third_not_strong_enough");
+      }
+    }
+    if (lane === 1) {
+      secondBonus += 0.018;
+      thirdBonus += 0.022;
+      reasons.push("head4_inside_survival");
+    }
+    if (lane >= 5) {
+      thirdBonus += 0.018 + nuki * 0.03;
+      reasons.push("head4_outer_residual");
     }
   } else {
     const distance = Math.abs(lane - headActualLane);
@@ -1765,6 +1799,21 @@ export function buildHitRateEnhancementContext({
       second_candidate_set: normalizeRows(laneContexts.map((row) => ({ lane: row.lane, weight: toNum(row?.finish_role_scores?.second_place_score, 0) }))).slice(0, 4).map((row) => row.lane),
       third_candidate_set: normalizeRows(laneContexts.map((row) => ({ lane: row.lane, weight: toNum(row?.finish_role_scores?.third_place_score, 0) }))).slice(0, 5).map((row) => row.lane),
       compatibility_with_head: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.compatibility_with_head])),
+      head4_partner_debug: {
+        head4_boat: boatNumberOf(actualLane4Row),
+        lane3_for_second: {
+          boat: boatNumberOf(actualLane3Row),
+          second_bonus: round(toNum(actualLane3Row?.compatibility_with_head?.["4"]?.second_bonus, 0), 4),
+          promoted: toNum(actualLane3Row?.compatibility_with_head?.["4"]?.second_bonus, 0) >= 0.08,
+          reasons: safeArray(actualLane3Row?.compatibility_with_head?.["4"]?.reasons)
+        },
+        lane2_for_third: {
+          boat: boatNumberOf(actualLane2Row),
+          third_bonus: round(toNum(actualLane2Row?.compatibility_with_head?.["4"]?.third_bonus, 0), 4),
+          promoted: toNum(actualLane2Row?.compatibility_with_head?.["4"]?.third_bonus, 0) >= 0.07,
+          reasons: safeArray(actualLane2Row?.compatibility_with_head?.["4"]?.reasons)
+        }
+      },
       primary_head_lane: finishRoleFramework.primaryHeadLane,
       escape_sim_support: roleProbabilityLayers?.boat1_escape_probability || null
     },
@@ -2037,6 +2086,22 @@ export function buildEnhancedTrifectaShapeRecommendation({
       third: [1, 2, 5],
       why: "actual lane4 attack with 3-2 residual carryover",
       score: 0.4 + lane4HeadWeight * 0.5 + toNum(laneRows["3"]?.finish_role_scores?.second_place_score, 0) * 0.24 + toNum(laneRows["2"]?.finish_role_scores?.third_place_score, 0) * 0.18
+    });
+    templates.push({
+      shape: "4-3-12",
+      first: [4],
+      second: [3],
+      third: [1, 2],
+      why: "head4 with lane3 second and lane2 residual third",
+      score: 0.46 + lane4HeadWeight * 0.52 + toNum(laneRows["3"]?.compatibility_with_head?.["4"]?.second_bonus, 0) * 0.34 + toNum(laneRows["2"]?.compatibility_with_head?.["4"]?.third_bonus, 0) * 0.28
+    });
+    templates.push({
+      shape: "4-13-123",
+      first: [4],
+      second: [1, 3],
+      third: [1, 2, 3],
+      why: "head4 spread with lane3 second emphasis and lane2 third retention",
+      score: 0.42 + lane4HeadWeight * 0.44 + toNum(laneRows["3"]?.finish_role_scores?.second_place_score, 0) * 0.2 + toNum(laneRows["2"]?.finish_role_scores?.third_place_score, 0) * 0.16
     });
     templates.push({
       shape: "4-1-235",
