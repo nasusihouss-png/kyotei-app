@@ -10000,6 +10000,7 @@ raceRouter.get("/race", async (req, res, next) => {
         exhibition_st_raw: racer?.exhibitionStRaw || null,
         kyoteibiyori_fetched: toInt(racer?.kyoteiBiyoriFetched, 0),
         kyoteibiyori_lap_time: toNullableNum(racer?.kyoteiBiyoriLapTime),
+        kyoteibiyori_lap_time_raw: toNullableNum(racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw),
         kyoteibiyori_lap_ex_stretch: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch),
         kyoteibiyori_lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore),
         kyoteibiyori_stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel || null,

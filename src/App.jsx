@@ -565,6 +565,19 @@ function firstFiniteValue(...values) {
   return null;
 }
 
+function getLapTimeDisplayValue(source = {}) {
+  return firstFiniteValue(
+    source?.lapTime,
+    source?.lapTimeRaw,
+    source?.kyoteiBiyoriLapTimeRaw,
+    source?.kyoteiBiyoriLapTime,
+    source?.kyoteibiyori_lap_time_raw,
+    source?.kyoteibiyori_lap_time,
+    source?.feature_snapshot?.lap_time,
+    source?.lap_time
+  );
+}
+
 function normalizeLaneStats(source = {}) {
   return {
     laneFirstRate: firstFiniteValue(
@@ -1569,7 +1582,7 @@ function getPlayerComparisonRows({ prediction, data }) {
         const debugLaneStats = normalizeLaneStats(debugRow);
         const liveLaneStats = normalizeLaneStats(row);
         const snapshotLaneStats = normalizeLaneStats(snapshotRow);
-        const liveLapTime = toFiniteComparisonNumber(row?.kyoteiBiyoriLapTimeRaw ?? row?.kyoteiBiyoriLapTime ?? row?.lapTime);
+        const liveLapTime = getLapTimeDisplayValue(row);
         const liveExhibitionSt = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt);
         const liveExhibitionTime = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime);
         const liveLapExStretch = toFiniteComparisonNumber(
@@ -1603,7 +1616,10 @@ function getPlayerComparisonRows({ prediction, data }) {
           kyoteiBiyoriFetched:
             Number(row?.kyoteiBiyoriFetched) === 1 ||
             Number(snapshotRow?.kyoteibiyori_fetched) === 1,
-          lapTime: liveLapTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_lap_time_raw ?? snapshotRow?.kyoteibiyori_lap_time ?? snapshotRow?.lap_time),
+          lapTime: firstFiniteValue(
+            liveLapTime,
+            getLapTimeDisplayValue(snapshotRow)
+          ),
           exhibitionSt: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_st ?? snapshotRow?.exhibition_st),
           exhibitionTime: liveExhibitionTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_time ?? snapshotRow?.exhibition_time),
           lapExStretch: liveLapExStretch ?? snapshotLapExStretch,
@@ -1635,7 +1651,7 @@ function getPlayerComparisonRows({ prediction, data }) {
       name: row?.name || `Boat ${row?.lane || "-"}`,
       fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
       kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched) === 1,
-      lapTime: toFiniteComparisonNumber(row?.kyoteibiyori_lap_time_raw ?? row?.kyoteibiyori_lap_time ?? row?.lap_time),
+      lapTime: getLapTimeDisplayValue(row),
       exhibitionSt: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_st ?? row?.exhibition_st),
       exhibitionTime: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_time ?? row?.exhibition_time),
       lapExStretch: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
@@ -1899,6 +1915,8 @@ function getStartDisplayRows(startDisplay) {
     return {
       lane,
       order: entryOrderByLane.get(lane) || null,
+      actualLane: entryOrderByLane.get(lane) || lane,
+      moved: (entryOrderByLane.get(lane) || lane) !== lane,
       leftPct,
       xUnit: Number.isFinite(axisClamped) ? Number(axisClamped.toFixed(2)) : null,
       st: Number.isFinite(Number(st)) ? Number(st) : null,
@@ -1947,7 +1965,13 @@ function StartExhibitionDisplay({ startDisplay, compact = false }) {
       {rows.map((row) => (
         <div key={`start-${row.lane}`} className="start-row">
           <div className="start-lane">
-            <span className={`combo-dot ${BOAT_META[row.lane]?.className || ""}`}>{row.lane}</span>
+            <div className="player-name-cell">
+              <span className={`combo-dot ${BOAT_META[row.actualLane]?.className || ""}`}>{row.actualLane ?? "--"}</span>
+              <strong>Boat {row.lane}</strong>
+              <div className="muted">
+                {row.moved ? `Moved from ${row.lane} to entry ${row.actualLane}` : "No course change"}
+              </div>
+            </div>
           </div>
           <div className="start-layout">
             <div className="start-track start-track-120" />
@@ -3968,7 +3992,7 @@ export default function App() {
                               <td>
                                 <div className="player-name-cell">
                                   <strong>{row?.name || "-"}</strong>
-                                  {row?.courseChanged ? <div className="muted">moved from {row?.boatNumber}</div> : null}
+                                  {row?.courseChanged ? <div className="muted">Moved from boat {row?.boatNumber} to entry {row?.actualLane}</div> : null}
                                 </div>
                               </td>
                               <td>
@@ -4006,6 +4030,11 @@ export default function App() {
                       <h2>Start / Entry Layout</h2>
                     </div>
                   </div>
+                  <div className="kv-list" style={{ marginBottom: 12 }}>
+                    <div className="kv-row"><span>Actual entry flow</span><strong><LanePills lanes={actualEntryOrder} /></strong></div>
+                    <div className="kv-row"><span>Base / predicted order</span><strong><LanePills lanes={predictedEntryOrder} /></strong></div>
+                    <div className="kv-row"><span>Course movement</span><strong>{entryChanged ? "reordered by actual entry" : "none"}</strong></div>
+                  </div>
                   <StartExhibitionDisplay startDisplay={startDisplay} />
                   <div className="kv-list" style={{ marginTop: 12 }}>
                     <div className="kv-row"><span>Predicted entry</span><strong><LanePills lanes={predictedEntryOrder} /></strong></div>
@@ -4016,7 +4045,7 @@ export default function App() {
                   </div>
                   <p className="muted strategy-line">
                     {data?.source?.kyotei_biyori?.ok
-                      ? "official pre-race + kyoteibiyori merged"
+                      ? "official pre-race + kyoteibiyori merged; rows above follow actual entry when course movement occurs"
                       : sourceMeta?.cache?.fallback === "db_snapshot"
                         ? "official fetch unavailable; using saved snapshot"
                         : sourceMeta?.cache?.hit

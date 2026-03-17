@@ -69,6 +69,14 @@ const LANE_FINISH_PRIORS = {
   third: { 1: 1.04, 2: 1.03, 3: 1.01, 4: 0.97, 5: 0.93, 6: 0.9 }
 };
 
+const ACTUAL_ENTRY_TUNING = {
+  deep_in_escape_penalty: 0.035,
+  weak_wall_penalty: 0.028,
+  stable_inner_bonus: 0.028,
+  actual_two_sashi_boost: 0.18,
+  actual_four_cado_boost: 0.16
+};
+
 function normalizeAgainstPeers(value, values) {
   if (!Number.isFinite(value)) return 0;
   const valid = values.filter((entry) => Number.isFinite(entry));
@@ -1265,9 +1273,15 @@ export function buildHitRateEnhancementContext({
   const lane2AllowNige = actualLane2Row
     ? clamp(0, 0.2, (toNum(actualLane2Row?.style_profile?.sashi, 0) / 100) * 0.08 - (toNum(actualLane2Row?.style_profile?.makuri, 0) / 100) * 0.04)
     : 0;
-  const deepInPenalty = boat1Row.actual_lane > 1 ? clamp(0, 0.12, (boat1Row.actual_lane - 1) * 0.035) : 0;
-  const weakWallPenalty = actualLane2Row && actualLane2Row.boat_number !== 2 ? 0.028 : 0;
-  const stableInnerBonus = actualLane2Row && actualLane3Row && toNum(actualLane2Row.late_risk, 0) < 0.15 && toNum(actualLane3Row.late_risk, 0) < 0.16 ? 0.028 : 0;
+  const deepInDepthRisk = Math.max(0, toNum(boat1Row.actual_lane, 1) - 1);
+  const deepInPenalty = deepInDepthRisk > 0
+    ? clamp(0, 0.12, deepInDepthRisk * ACTUAL_ENTRY_TUNING.deep_in_escape_penalty)
+    : 0;
+  const weakWallPenalty = actualLane2Row && actualLane2Row.boat_number !== 2 ? ACTUAL_ENTRY_TUNING.weak_wall_penalty : 0;
+  const stableInnerBonus =
+    actualLane2Row && actualLane3Row && toNum(actualLane2Row.late_risk, 0) < 0.15 && toNum(actualLane3Row.late_risk, 0) < 0.16
+      ? ACTUAL_ENTRY_TUNING.stable_inner_bonus
+      : 0;
   const escapeScore = clamp(
     0,
     1,
@@ -1295,6 +1309,7 @@ export function buildHitRateEnhancementContext({
       (toNum(actualLane2Row?.style_profile?.makuri_sashi, 0) / 100) * 0.14 +
       Math.max(0, toNum(actualLane2Row?.start_edge, 0)) * 0.42 +
       Math.max(0, toNum(actualLane2Row?.ex_time_left_gap_advantage, 0)) * 0.38 +
+      ACTUAL_ENTRY_TUNING.actual_two_sashi_boost +
       (deepInPenalty > 0 ? 0.06 : 0) +
       Math.max(0, 0.42 - escapeScore) * 0.18 -
       toNum(actualLane2Row?.late_risk, 0) * 0.24
@@ -1307,6 +1322,7 @@ export function buildHitRateEnhancementContext({
       Math.max(0, toNum(actualLane4Row?.start_edge, 0)) * 0.34 +
       Math.max(0, toNum(actualLane4Row?.ex_time_left_gap_advantage, 0)) * 0.24 +
       Math.max(0, toNum(actualLane4Row?.finish_role_bonuses?.straightLineDelta, 0)) * 0.08 +
+      ACTUAL_ENTRY_TUNING.actual_four_cado_boost +
       venueBias.venue_outer_attack_bias +
       (startPatternContext.outer_attack_window ? 0.05 : 0) -
       toNum(actualLane4Row?.late_risk, 0) * 0.16 -
@@ -1530,10 +1546,16 @@ export function buildHitRateEnhancementContext({
         actual_lane: row.actual_lane,
         course_change_occurred: row.course_change_occurred
       }])),
+      actual_lane_map: Object.fromEntries(
+        [...actualLaneMap.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([actualLane, row]) => [String(actualLane), boatNumberOf(row)])
+      ),
       recalculated_priorities: {
         boat1_escape: {
           boat_number: boat1Row.boat_number || 1,
           actual_lane: boat1Row.actual_lane || 1,
+          deep_in_depth_risk: round(deepInDepthRisk, 4),
           deep_in_penalty: round(deepInPenalty, 4),
           weak_wall_penalty: round(weakWallPenalty, 4),
           stable_inner_bonus: round(stableInnerBonus, 4),
@@ -1543,11 +1565,13 @@ export function buildHitRateEnhancementContext({
         actual_two_course_sashi: {
           boat_number: boatNumberOf(actualLane2Row),
           actual_lane: actualLaneOf(actualLane2Row),
+          tuning_boost: round(ACTUAL_ENTRY_TUNING.actual_two_sashi_boost, 4),
           priority: round(actualLane2SashiPriority, 4)
         },
         actual_four_course_cado: {
           boat_number: boatNumberOf(actualLane4Row),
           actual_lane: actualLaneOf(actualLane4Row),
+          tuning_boost: round(ACTUAL_ENTRY_TUNING.actual_four_cado_boost, 4),
           priority: round(actualLane4CadoPriority, 4)
         }
       }
@@ -1590,7 +1614,8 @@ export function buildHitRateEnhancementContext({
     }])),
     intermediateEvents,
     venueBias,
-    startPatternContext
+    startPatternContext,
+    actualEntryTuning: ACTUAL_ENTRY_TUNING
   };
 }
 
