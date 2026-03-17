@@ -3864,190 +3864,6 @@ export default function App() {
                         Supplemental kyoteibiyori data unavailable. Base race data is still loaded.
                       </p>
                     ) : null}
-                    <details style={{ marginTop: 12 }}>
-                      <summary>kyoteibiyori debug</summary>
-                      <div className="history-grid" style={{ marginTop: 8 }}>
-                        <div>
-                          race_ichiran href:
-                          {" "}
-                          {kyoteiBiyoriFrontendDebug.extracted_hrefs?.raceNumberHref || "-"}
-                        </div>
-                        <div>
-                          枠別勝率 href:
-                          {" "}
-                          {kyoteiBiyoriFrontendDebug.extracted_hrefs?.laneStatsHref || "-"}
-                        </div>
-                        <div>
-                          直前情報 href:
-                          {" "}
-                          {kyoteiBiyoriFrontendDebug.extracted_hrefs?.preRaceHref || "-"}
-                        </div>
-                        <div>
-                          fetch paths:
-                          {" "}
-                          {kyoteiBiyoriFrontendDebug.actual_fetch_paths.length
-                            ? kyoteiBiyoriFrontendDebug.actual_fetch_paths.join(", ")
-                            : "-"}
-                        </div>
-                        <div>
-                          populated fields:
-                          {" "}
-                          {kyoteiBiyoriFrontendDebug.populated_fields.length
-                            ? kyoteiBiyoriFrontendDebug.populated_fields.join(", ")
-                            : "-"}
-                        </div>
-                        <div>
-                          failed fields:
-                          {" "}
-                          {kyoteiBiyoriFrontendDebug.failed_fields.length
-                            ? kyoteiBiyoriFrontendDebug.failed_fields.join(", ")
-                            : "-"}
-                        </div>
-                        <div>
-                          fallback reason:
-                          {" "}
-                          {kyoteiBiyoriFrontendDebug.fallback_reason || "-"}
-                        </div>
-                      </div>
-                      <div className="table-wrap" style={{ marginTop: 10 }}>
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Step</th>
-                              <th>Status</th>
-                              <th>lane1stRate</th>
-                              <th>lane2renRate</th>
-                              <th>lane3renRate</th>
-                              <th>lapTime</th>
-                              <th>exhibitionST</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {Object.entries(kyoteiBiyoriFrontendDebug.backend_parse_results).map(([key, value]) => (
-                              <tr key={`kyotei-debug-parse-${key}`}>
-                                <td>{key}</td>
-                                <td>{value?.ok ? "ok" : "failed"}</td>
-                                <td>{value?.required_fields?.lane1stRate ? "yes" : "no"}</td>
-                                <td>{value?.required_fields?.lane2renRate ? "yes" : "no"}</td>
-                                <td>{value?.required_fields?.lane3renRate ? "yes" : "no"}</td>
-                                <td>{value?.required_fields?.lapTime ? "yes" : "no"}</td>
-                                <td>{value?.required_fields?.exhibitionST ? "yes" : "no"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div style={{ marginTop: 10 }}>
-                        {Object.entries(kyoteiBiyoriFrontendDebug.backend_parse_results).map(([key, value]) => (
-                          <details key={`kyotei-debug-table-diag-${key}`} style={{ marginBottom: 8 }}>
-                            <summary>{key} row/column debug</summary>
-                            {Array.isArray(value?.table_diagnostics) && value.table_diagnostics.length ? (
-                              value.table_diagnostics.map((diag, diagIdx) => (
-                                <div key={`kyotei-debug-table-diag-${key}-${diagIdx}`} className="table-wrap" style={{ marginTop: 8 }}>
-                                  <table>
-                                    <thead>
-                                      <tr>
-                                        <th>mode</th>
-                                        <th>row label</th>
-                                        <th>lane</th>
-                                        <th>column header</th>
-                                        <th>raw cell</th>
-                                        <th>parsed</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {Array.isArray(diag?.cell_matches) && diag.cell_matches.length ? (
-                                        diag.cell_matches.map((match, matchIdx) => (
-                                          <tr key={`kyotei-cell-match-${key}-${diagIdx}-${matchIdx}`}>
-                                            <td>{diag?.mode || "-"}</td>
-                                            <td>{match?.row_label || "-"}</td>
-                                            <td>{match?.lane ?? "-"}</td>
-                                            <td>{match?.column_header || "-"}</td>
-                                            <td><code>{match?.raw_cell_text || "-"}</code></td>
-                                            <td>{formatDebugRawValue(match?.parsed_value)}</td>
-                                          </tr>
-                                        ))
-                                      ) : (
-                                        <tr>
-                                          <td colSpan="6">no matched cells</td>
-                                        </tr>
-                                      )}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              ))
-                            ) : (
-                              <p className="muted">no table diagnostics</p>
-                            )}
-                          </details>
-                        ))}
-                      </div>
-                      <div className="table-wrap" style={{ marginTop: 10 }}>
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Fetch</th>
-                              <th>Status</th>
-                              <th>Path / URL</th>
-                              <th>Error</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {Object.entries(kyoteiBiyoriFrontendDebug.backend_fetch_results).map(([key, value]) => (
-                              <tr key={`kyotei-debug-fetch-${key}`}>
-                                <td>{key}</td>
-                                <td>{value?.ok ? "ok" : "failed"}</td>
-                                <td>{value?.url || value?.endpoint || "-"}</td>
-                                <td>{value?.error || "-"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="table-wrap" style={{ marginTop: 10 }}>
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Rendered lane</th>
-                              <th>lapExStretch raw</th>
-                              <th>lapExStretch display</th>
-                              <th>motor2ren raw</th>
-                              <th>motor2ren display</th>
-                              <th>lane1st raw</th>
-                              <th>lane1st display</th>
-                              <th>lane2ren raw</th>
-                              <th>lane2ren display</th>
-                              <th>lane3ren raw</th>
-                              <th>lane3ren display</th>
-                              <th>motor3ren raw</th>
-                              <th>motor3ren display</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {kyoteiBiyoriFrontendDebug.rendered_rows.map((row) => (
-                              <tr key={`kyotei-debug-render-${row.lane}`}>
-                                <td>{row.lane ?? "-"}</td>
-                                <td><code>{formatDebugRawValue(row.lapExStretch_raw)}</code></td>
-                                <td>{row.display_lapExStretch}</td>
-                                <td><code>{formatDebugRawValue(row.motor2ren_raw)}</code></td>
-                                <td>{row.display_motor2ren}</td>
-                                <td><code>{formatDebugRawValue(row.lane1stRate_raw)}</code></td>
-                                <td>{row.display_lane1stRate}</td>
-                                <td><code>{formatDebugRawValue(row.lane2renRate_raw)}</code></td>
-                                <td>{row.display_lane2renRate}</td>
-                                <td><code>{formatDebugRawValue(row.lane3renRate_raw)}</code></td>
-                                <td>{row.display_lane3renRate}</td>
-                                <td><code>{formatDebugRawValue(row.motor3ren_raw)}</code></td>
-                                <td>{row.display_motor3ren}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <pre style={{ marginTop: 10, whiteSpace: "pre-wrap", fontSize: 12 }}>
-                        {safePrettyJson(data?.kyoteibiyori_debug || data?.source?.kyotei_biyori?.kyoteibiyori_debug || {})}
-                      </pre>
-                    </details>
                   </section>
                 ) : null}
 
@@ -4074,7 +3890,7 @@ export default function App() {
                         : sourceMeta?.cache?.hit
                           ? "official pre-race from backend cache"
                           : "official pre-race info"}
-                    </p>
+                  </p>
                 </section>
 
                 <article className={`card summary-card premium-ticket-card top-ranked-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
@@ -4089,9 +3905,7 @@ export default function App() {
                     <span>sorted by estimated hit rate</span>
                   </div>
                   {recommendedShapeLabel ? (
-                    <p className="muted strategy-line">
-                      Recommended Shape: {recommendedShapeLabel}
-                    </p>
+                    <p className="muted strategy-line">Recommended Shape: {recommendedShapeLabel}</p>
                   ) : null}
                   <div className="ticket-stack compact-list">
                     {topRecommendedTop10.map((row, idx) => (
@@ -4136,318 +3950,115 @@ export default function App() {
                           </span>
                           <span>hit {formatMaybeNumber((Number(row?.estimated_hit_rate) || 0) * 100, 1)}%</span>
                           <span>#{row?.rank ?? idx + 1}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket({
-                            ticket: row?.ticket,
-                            combo: row?.ticket,
-                            recommended_bet: row?.recommended_bet,
-                            ticket_type: row?.recommendation_tier || "main"
-                          })} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
-                            記録に追加
-                          </button>
                         </div>
                       </div>
                     ))}
                   </div>
                 </article>
-
-                <section className={`card premium-hero ${predictionViewModel.semanticStyles.recommendationTone || ""}`}>
-                  <div className="premium-hero-top">
-                    <div>
-                      <p className="eyebrow">Decision First</p>
-                      <h2>{predictionViewModel.raceTitle}</h2>
-                      <p className="muted strategy-line">{predictionViewModel.raceSubtitle}</p>
-                    </div>
-                  </div>
-                  <div className="hero-metrics-grid">
-                    <article className="hero-metric">
-                      <span>Head Confidence</span>
-                      <strong>{formatMaybeNumber(predictionViewModel.summary.headConfidence.value, 1)}%</strong>
-                      <small>{predictionViewModel.summary.headConfidence.label} / {predictionViewModel.summary.headConfidence.meaning}</small>
-                    </article>
-                    <article className="hero-metric">
-                      <span>Opponent Stability</span>
-                      <strong>{formatMaybeNumber(predictionViewModel.summary.opponentStability.value, 1)}</strong>
-                      <small>{predictionViewModel.summary.opponentStability.label} / {predictionViewModel.summary.opponentStability.meaning}</small>
-                    </article>
-                    <article className="hero-metric">
-                      <span>Chaos Risk</span>
-                      <strong>{formatMaybeNumber(predictionViewModel.summary.chaosRisk.value, 1)}</strong>
-                      <small>{predictionViewModel.summary.chaosRisk.label} / {predictionViewModel.summary.chaosRisk.meaning}</small>
-                    </article>
-                    <article className="hero-metric">
-                      <span>Main Head</span>
-                      <strong><LanePills lanes={predictionViewModel.summary.structure.mainHead ? [predictionViewModel.summary.structure.mainHead] : []} /></strong>
-                      <small>boat1 escape {formatMaybeNumber(predictionViewModel.summary.boat1EscapeProbability * 100, 1)}%</small>
-                    </article>
-                    <article className="hero-metric">
-                      <span>Main 2nd / 3rd</span>
-                      <strong><LanePills lanes={[
-                        predictionViewModel.summary.structure.mainSecond,
-                        ...(predictionViewModel.summary.structure.thirdSurvivors || [])
-                      ].filter(Boolean)} /></strong>
-                      <small>finish order summary</small>
-                    </article>
-                  </div>
-                  <div className="hero-support-grid">
-                    <div className="hero-role-block">
-                      <span className="hero-role-label">Final Finish Prediction</span>
-                      <div className="hero-role-row"><span>1st</span><strong><LanePills lanes={predictionViewModel.summary.structure.mainHead ? [predictionViewModel.summary.structure.mainHead] : []} /></strong></div>
-                      <div className="hero-role-row"><span>2nd</span><strong><LanePills lanes={predictionViewModel.summary.structure.mainSecond ? [predictionViewModel.summary.structure.mainSecond] : []} /></strong></div>
-                      <div className="hero-role-row"><span>3rd survivors</span><strong><LanePills lanes={predictionViewModel.summary.structure.thirdSurvivors || []} /></strong></div>
-                    </div>
-                    <div className="hero-role-block attack-block">
-                      <span className="hero-role-label">Attack Scenario</span>
-                      <div className="hero-role-row"><span>attack</span><strong>{predictionViewModel.summary.structure.attackScenarioLabel || "-"}</strong></div>
-                      <div className="hero-role-row"><span>formation</span><strong>{formationPatternLabel}</strong></div>
-                      <div className="hero-role-row"><span>policy</span><strong>attacker != head by default</strong></div>
-                    </div>
-                    <div className="hero-role-block">
-                      <span className="hero-role-label">Decision Notes</span>
-                      <div className="chips-wrap">
-                        {defaultReasonTags.map((tag) => <span className="chip chip-status" key={`pd-tag-${tag}`}>{tag}</span>)}
-                        {predictionQualityLabels.map((tag) => <span className="chip chip-quality" key={`pd-quality-${tag}`}>{tag}</span>)}
-                        {skipReasonCodes.slice(0, 3).map((tag) => <span className="chip chip-warning" key={`pd-skip-${tag}`}>{tag}</span>)}
-                      </div>
-                    </div>
-                  </div>
-                </section>
 
                 <div className="prediction-summary-grid premium-layout">
-                {adminMode ? (
-                  <section className="card">
-                    <h2>手動周回展示評価（管理用）</h2>
-                    <p className="muted strategy-line">
-                      本番ワークフローでは無効化されています。自動取得の展示データのみ予想に使用します。
-                    </p>
-                    <div className="manual-lap-grid">
-                      {Array.from({ length: 6 }, (_, idx) => idx + 1).map((lane) => (
-                        <div key={`lap-${lane}`} className="manual-lap-row">
-                          <div className="manual-lap-lane">
-                            <span className={`combo-dot ${BOAT_META[lane]?.className || ""}`}>{lane}</span>
+                  {adminMode ? (
+                    <section className="card">
+                      <h2>手動周回展示評価（管理用）</h2>
+                      <p className="muted strategy-line">本番ワークフローでは無効化されています。自動取得の展示データのみ予想に使用します。</p>
+                      <div className="manual-lap-grid">
+                        {Array.from({ length: 6 }, (_, idx) => idx + 1).map((lane) => (
+                          <div key={`lap-${lane}`} className="manual-lap-row">
+                            <div className="manual-lap-lane">
+                              <span className={`combo-dot ${BOAT_META[lane]?.className || ""}`}>{lane}</span>
+                            </div>
+                            {MANUAL_LAP_FIELDS.map((field) => (
+                              <label key={`lap-${lane}-${field.key}`} className="manual-lap-field">
+                                <span>{field.label}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="2"
+                                  step="1"
+                                  value={manualLapScores?.[String(lane)]?.[field.key] ?? ""}
+                                  onChange={(e) => onManualLapScoreChange(lane, field.key, e.target.value)}
+                                />
+                              </label>
+                            ))}
                           </div>
-                          {MANUAL_LAP_FIELDS.map((field) => (
-                            <label key={`lap-${lane}-${field.key}`} className="manual-lap-field">
-                              <span>{field.label}</span>
-                              <input
-                                type="number"
-                                min="0"
-                                max="2"
-                                step="1"
-                                value={manualLapScores?.[String(lane)]?.[field.key] ?? ""}
-                                onChange={(e) => onManualLapScoreChange(lane, field.key, e.target.value)}
-                              />
-                            </label>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                    <label className="manual-lap-memo">
-                      <span>メモ（任意）</span>
-                      <textarea
-                        value={manualLapMemo}
-                        onChange={(e) => setManualLapMemo(e.target.value)}
-                        rows={2}
-                      />
-                    </label>
-                    <div className="row-actions">
-                      <button className="fetch-btn" onClick={onSaveManualLapEvaluation} disabled={manualLapSaving}>
-                        {manualLapSaving ? "保存中..." : "保存（管理用）"}
-                      </button>
-                      {manualLapEvaluation?.updated_at ? (
-                        <span className="muted">最終更新: {new Date(manualLapEvaluation.updated_at).toLocaleString()}</span>
-                      ) : null}
-                    </div>
-                    {manualLapNotice ? <div className="notice-banner">{manualLapNotice}</div> : null}
-                  </section>
-                ) : null}
-
-                {hitRateEnhancementDebug || predictionDataUsageDebug ? (
-                  <details className="card">
-                    <summary>Recommendation debug</summary>
-                    <div style={{ marginTop: 10 }}>
-                      {hitRateEnhancementDebug ? (
-                        <details style={{ marginBottom: 12 }}>
-                          <summary>hit-rate enhancement debug</summary>
-                          <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
-                        </details>
-                      ) : null}
-                      {predictionDataUsageDebug ? (
-                        <details style={{ marginBottom: 12 }}>
-                          <summary>prediction data usage</summary>
-                          <pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre>
-                        </details>
-                      ) : null}
-                    </div>
-                  </details>
-                ) : null}
-
-                <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
-                  <h2>Main Trifecta</h2>
-                  <div className="summary-inline-meta">
-                    <span>{Array.isArray(predictionViewModel?.tickets?.mainTrifecta) ? predictionViewModel.tickets.mainTrifecta.length : 0}件</span>
-                    <span>{attackScenarioLabel || formationPatternLabel || data.racePattern || "-"}</span>
-                  </div>
-                  <div className="list-stack compact-list">
-                    {(Array.isArray(predictionViewModel?.tickets?.mainTrifecta) ? predictionViewModel.tickets.mainTrifecta : []).map((bet, idx) => (
-                      <div key={`${bet.combo}-${idx}`} className="list-stack">
-                        <div className="list-row list-row-actions premium-ticket-row primary">
-                          <strong><ComboBadge combo={bet.combo} /></strong>
-                          <span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span>
-                          <span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                          <span>JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span>
-                          <button className="fetch-btn secondary" onClick={() => onUsePredictedTicket(bet)} disabled={disableBetActions} title={disableBetActions ? "Not Recommended race" : ""}>
-                            記録に追加
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-
-                {boat1HeadSectionShown ? (
-                  <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
-                    <h2>Boat 1 Head Predictions</h2>
-                    <div className="summary-inline-meta">
-                      <span>{boat1HeadBets.length}件</span>
-                      <span>
-                        score {formatMaybeNumber(boat1HeadScore, 1)}
-                        {" / "}
-                        residual {formatMaybeNumber(boat1SurvivalResidualScore, 1)}
-                        {boat1PriorityModeApplied ? ` / ratio ${formatMaybeNumber(boat1HeadRatioInFinalBets * 100, 1)}%` : ""}
-                        {boat1HeadTop8Generated ? " / top8" : ""}
-                      </span>
-                    </div>
-                    {boat1HeadReasonTags.length > 0 ? (
-                      <div className="chips-wrap" style={{ marginBottom: 8 }}>
-                        {boat1HeadReasonTags.map((tag) => <span className="chip chip-quality" key={`b1-tag-${tag}`}>{tag}</span>)}
-                      </div>
-                    ) : null}
-                    <div className="list-stack compact-list">
-                      {compactTicketRows(boat1HeadBets, 6).map((bet, idx) => (
-                        <div key={`b1-${bet.combo}-${idx}`} className="list-stack">
-                          <div className="list-row list-row-actions premium-ticket-row support">
-                            <strong><ComboBadge combo={bet.combo} /></strong>
-                            <span>p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                            <span>score {formatMaybeNumber(bet?.boat1_head_score, 1)}</span>
-                            <span>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</span>
-                            <button
-                              className="fetch-btn secondary"
-                              onClick={() => onUsePredictedTicket(bet)}
-                              disabled={disableBetActions}
-                              title={disableBetActions ? "Not Recommended race" : ""}
-                            >
-                              記録に追加
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </article>
-                ) : null}
-
-                {exactaSectionShown ? (
-                  <article className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
-                    <h2>Exacta Cover</h2>
-                    <div className="summary-inline-meta">
-                      <span>{Array.isArray(predictionViewModel?.tickets?.exactaCover) ? predictionViewModel.tickets.exactaCover.length : 0}件</span>
-                      <span>head {formatMaybeNumber(exactaHeadScore, 1)} / partner {formatMaybeNumber(exactaPartnerScore, 1)}</span>
-                    </div>
-                    {exactaReasonTags.length > 0 ? (
-                      <div className="chips-wrap" style={{ marginBottom: 8 }}>
-                        {exactaReasonTags.map((tag) => <span className="chip chip-scenario" key={`exacta-tag-${tag}`}>{tag}</span>)}
-                      </div>
-                    ) : null}
-                    <div className="list-stack compact-list">
-                      {(Array.isArray(predictionViewModel?.tickets?.exactaCover) ? predictionViewModel.tickets.exactaCover : []).map((bet, idx) => (
-                        <div key={`exacta-${bet.combo}-${idx}`} className="list-stack">
-                          <div className="list-row list-row-actions premium-ticket-row support">
-                            <strong><ComboBadge combo={bet.combo} /></strong>
-                            <span>p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                            <span>head {formatMaybeNumber(bet?.exacta_head_score, 1)}</span>
-                            <span>partner {formatMaybeNumber(bet?.exacta_partner_score, 1)}</span>
-                            <span>JPY {Number(bet?.recommended_bet ?? bet?.bet ?? 0).toLocaleString()}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </article>
-                ) : null}
-
-                {backupUrasujiShown ? (
-                  <article className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
-                    <h2>Backup / Urasuji</h2>
-                    <div className="summary-inline-meta">
-                      <span>{Array.isArray(predictionViewModel?.tickets?.backupUrasuji) ? predictionViewModel.tickets.backupUrasuji.length : 0}件</span>
-                      <span>backup only when justified</span>
-                    </div>
-                    {backupUrasujiReasonTags.length > 0 ? (
-                      <div className="chips-wrap" style={{ marginBottom: 8 }}>
-                        {backupUrasujiReasonTags.slice(0, 4).map((tag) => <span className="chip chip-warning" key={`backup-tag-${tag}`}>{tag}</span>)}
-                      </div>
-                    ) : null}
-                    <div className="list-stack compact-list">
-                      {(Array.isArray(predictionViewModel?.tickets?.backupUrasuji) ? predictionViewModel.tickets.backupUrasuji : []).map((bet, idx) => (
-                        <div key={`backup-${bet.combo}-${idx}`} className="list-stack">
-                          <div className="list-row list-row-actions premium-ticket-row backup">
-                            <strong><ComboBadge combo={bet.combo} /></strong>
-                            <span>p {Number.isFinite(Number(bet?.prob)) ? formatMaybeNumber(bet.prob, 3) : "-"}</span>
-                            <span>{bet?.ticket_type ? getTicketTypeLabel(bet.ticket_type) : "backup"}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </article>
-                ) : null}
-
-                {Object.keys(evidenceGroupRankings).length > 0 ? (
-                  <article className="card summary-card premium-bias-card">
-                    <h2>Premium Evidence Bias</h2>
-                    <div className="kv-list">
-                      <div className="kv-row"><span>Main head candidate</span><strong><LanePills lanes={predictionViewModel.biasPanel.mainHead ? [predictionViewModel.biasPanel.mainHead] : []} /></strong></div>
-                      <div className="kv-row"><span>Main second candidate</span><strong><LanePills lanes={predictionViewModel.biasPanel.mainSecond ? [predictionViewModel.biasPanel.mainSecond] : []} /></strong></div>
-                      <div className="kv-row"><span>Counter second</span><strong><LanePills lanes={predictionViewModel.biasPanel.counterSecond ? [predictionViewModel.biasPanel.counterSecond] : []} /></strong></div>
-                      <div className="kv-row"><span>Third survivors</span><strong><LanePills lanes={predictionViewModel.biasPanel.thirdSurvivors || []} /></strong></div>
-                    </div>
-                    <div className="bias-support-grid">
-                      {predictionViewModel.biasPanel.strongestBoats.map((row) => (
-                        <div key={`bias-summary-${row.lane}`} className="bias-support-card">
-                          <div className="bias-support-head">
-                            <LanePills lanes={[row.lane]} />
-                            <span>{row.independent_evidence_count ?? 0} groups</span>
-                          </div>
-                          <div className="bias-score-row"><span>1st</span><strong>{formatMaybeNumber(row.head_support_score, 2)}</strong></div>
-                          <div className="bias-score-row"><span>2nd</span><strong>{formatMaybeNumber(row.second_support_score, 2)}</strong></div>
-                          <div className="bias-score-row"><span>3rd</span><strong>{formatMaybeNumber(row.third_support_score, 2)}</strong></div>
-                        </div>
-                      ))}
-                    </div>
-                    {predictionViewModel.biasPanel.interpretation.length > 0 ? (
-                      <div className="premium-interpretation-list">
-                        {predictionViewModel.biasPanel.interpretation.map((line, idx) => (
-                          <p key={`bias-interpret-${idx}`} className="muted strategy-line">{line}</p>
                         ))}
                       </div>
-                    ) : null}
-                  </article>
-                ) : null}
+                      <label className="manual-lap-memo">
+                        <span>メモ（任意）</span>
+                        <textarea value={manualLapMemo} onChange={(e) => setManualLapMemo(e.target.value)} rows={2} />
+                      </label>
+                      <div className="row-actions">
+                        <button className="fetch-btn" onClick={onSaveManualLapEvaluation} disabled={manualLapSaving}>
+                          {manualLapSaving ? "保存中..." : "保存（管理用）"}
+                        </button>
+                        {manualLapEvaluation?.updated_at ? (
+                          <span className="muted">最終更新: {new Date(manualLapEvaluation.updated_at).toLocaleString()}</span>
+                        ) : null}
+                      </div>
+                      {manualLapNotice ? <div className="notice-banner">{manualLapNotice}</div> : null}
+                    </section>
+                  ) : null}
 
-                {similarHistoryRows.length > 0 ? (
-                  <article className="card summary-card premium-compare-card">
-                    <h2>Recent Similar Verified</h2>
-                    <div className="list-stack compact-list">
-                      {similarHistoryRows.map((row) => (
-                        <div key={`similar-${row.race_id}-${row.prediction_snapshot_id || "x"}`} className="premium-compare-row">
-                          <div>
-                            <strong>{formatHistoryRaceTitle(row)}</strong>
-                            <small>{row?.formation_pattern || "-"} / {row?.verification_status || "-"}</small>
-                          </div>
-                          <div><span className={getVerifyStatusBadgeClass(row?.verification_status)}>{getVerifyStatusLabel(row?.verification_status)}</span></div>
-                          <div><strong>{row?.confirmed_result || "-"}</strong></div>
-                        </div>
-                      ))}
+                  <details className={`card summary-card premium-ticket-card ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                    <summary>Main Trifecta</summary>
+                    <div style={{ marginTop: 10 }}>
+                      <div className="summary-inline-meta">
+                        <span>{Array.isArray(predictionViewModel?.tickets?.mainTrifecta) ? predictionViewModel.tickets.mainTrifecta.length : 0}件</span>
+                        <span>{attackScenarioLabel || formationPatternLabel || data.racePattern || "-"}</span>
+                      </div>
+                      <div className="list-stack compact-list">
+                        {(Array.isArray(predictionViewModel?.tickets?.mainTrifecta) ? predictionViewModel.tickets.mainTrifecta : []).map((bet, idx) => (
+                          <div key={`${bet.combo}-${idx}`} className="list-stack"><div className="list-row list-row-actions premium-ticket-row primary"><strong><ComboBadge combo={bet.combo} /></strong><span className={`ticket-type ${getTicketTypeClass(bet.ticket_type)}`}>{getTicketTypeLabel(bet.ticket_type)}</span><span>p {Number.isFinite(bet.prob) ? formatMaybeNumber(bet.prob, 3) : "-"}</span><span>JPY {(bet.recommended_bet ?? bet.roundedBet).toLocaleString()}</span></div></div>
+                        ))}
+                      </div>
                     </div>
-                  </article>
-                ) : null}
+                  </details>
+
+                  {boat1HeadSectionShown ? (
+                    <details className={`card summary-card premium-ticket-card subtle ${!isRecommendedRace ? "deemphasized" : ""}`}>
+                      <summary>Boat 1 Head Predictions</summary>
+                      <div style={{ marginTop: 10 }}>
+                        <pre className="json-preview">{safePrettyJson({ boat1HeadBets, boat1HeadReasonTags, boat1HeadScore, boat1SurvivalResidualScore, boat1PriorityModeApplied, boat1HeadTop8Generated, boat1HeadRatioInFinalBets })}</pre>
+                      </div>
+                    </details>
+                  ) : null}
+
+                  {(exactaSectionShown || backupUrasujiShown) ? (
+                    <details className="card summary-card premium-ticket-card subtle">
+                      <summary>Supplemental Recommendations</summary>
+                      <div style={{ marginTop: 10 }}>
+                        {exactaSectionShown ? <pre className="json-preview">{safePrettyJson({ tickets: predictionViewModel?.tickets?.exactaCover || [], exactaHeadScore, exactaPartnerScore, exactaReasonTags })}</pre> : null}
+                        {backupUrasujiShown ? <pre className="json-preview">{safePrettyJson({ tickets: predictionViewModel?.tickets?.backupUrasuji || [], backupUrasujiReasonTags })}</pre> : null}
+                      </div>
+                    </details>
+                  ) : null}
+
+                  <details className="card summary-card premium-bias-card">
+                    <summary>Supplemental Diagnostics</summary>
+                    <div style={{ marginTop: 10 }}>
+                      <details style={{ marginBottom: 12 }}>
+                        <summary>Prediction Overview</summary>
+                        <pre className="json-preview">{safePrettyJson({ summary: predictionViewModel.summary, raceTitle: predictionViewModel.raceTitle, raceSubtitle: predictionViewModel.raceSubtitle, defaultReasonTags, predictionQualityLabels })}</pre>
+                      </details>
+                      {Object.keys(evidenceGroupRankings).length > 0 ? <details style={{ marginBottom: 12 }}><summary>Premium Evidence Bias</summary><pre className="json-preview">{safePrettyJson(predictionViewModel.biasPanel)}</pre></details> : null}
+                      {similarHistoryRows.length > 0 ? <details><summary>Recent Similar Verified</summary><pre className="json-preview">{safePrettyJson(similarHistoryRows)}</pre></details> : null}
+                    </div>
+                  </details>
+
+                  <details className="card">
+                    <summary>Debug Data</summary>
+                    <div style={{ marginTop: 10 }}>
+                      {hitRateEnhancementDebug ? <details style={{ marginBottom: 12 }}><summary>hit-rate enhancement debug</summary><pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre></details> : null}
+                      {predictionDataUsageDebug ? <details style={{ marginBottom: 12 }}><summary>prediction data usage</summary><pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre></details> : null}
+                      <details>
+                        <summary>kyoteibiyori Raw Payload</summary>
+                        <div style={{ marginTop: 10 }}>
+                          <pre className="json-preview">{safePrettyJson(kyoteiBiyoriFrontendDebug)}</pre>
+                          <pre className="json-preview">{safePrettyJson(data?.kyoteibiyori_debug || data?.source?.kyotei_biyori?.kyoteibiyori_debug || {})}</pre>
+                        </div>
+                      </details>
+                    </div>
+                  </details>
                 </div>
 
                 <details className="card">
@@ -7187,5 +6798,6 @@ export default function App() {
     </div>
   );
 }
+
 
 
