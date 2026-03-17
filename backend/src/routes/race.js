@@ -8682,6 +8682,9 @@ function buildPredictionDataUsageSummary(ranking) {
     exhibitionTime: { required: true, penalty: 4 },
     lapExStretch: { required: true, penalty: 5 },
     motor2ren: { required: true, penalty: 5 },
+    lane1stScore: { required: true, penalty: 4 },
+    lane2renScore: { required: true, penalty: 4 },
+    lane3renScore: { required: true, penalty: 4 },
     lane1stAvg: { required: true, penalty: 4 },
     lane2renAvg: { required: true, penalty: 4 },
     lane3renAvg: { required: true, penalty: 4 },
@@ -8736,9 +8739,9 @@ function buildPredictionDataUsageSummary(ranking) {
     if (!(metaMap?.exhibitionTime?.is_usable)) penaltyHead += fieldConfig.exhibitionTime.penalty * 0.65;
     if (!(metaMap?.lapExStretch?.is_usable)) penaltyHead += fieldConfig.lapExStretch.penalty * 0.75;
     if (!(metaMap?.motor2ren?.is_usable)) penaltyTop2 += fieldConfig.motor2ren.penalty;
-    if (!(metaMap?.lane1stAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane1stAvg.penalty * 0.8;
-    if (!(metaMap?.lane2renAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane2renAvg.penalty * 0.8;
-    if (!(metaMap?.lane3renAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane3renAvg.penalty * 0.8;
+    if (!(metaMap?.lane1stScore?.is_usable || metaMap?.lane1stAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane1stScore.penalty * 0.8;
+    if (!(metaMap?.lane2renScore?.is_usable || metaMap?.lane2renAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane2renScore.penalty * 0.8;
+    if (!(metaMap?.lane3renScore?.is_usable || metaMap?.lane3renAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane3renScore.penalty * 0.8;
   }
 
   return {

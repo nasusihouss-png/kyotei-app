@@ -26,6 +26,9 @@ const PREDICTION_FIELD_META_CONFIG = {
   lapExStretch: { key: "lapExStretch", minConfidence: 0.6, required: true },
   motor2ren: { key: "motor2ren", minConfidence: 0.6, required: true },
   motor3ren: { key: "motor3ren", minConfidence: 0.5, required: false },
+  lane1stScore: { key: "lane1stScore", minConfidence: 0.6, required: true },
+  lane2renScore: { key: "lane2renScore", minConfidence: 0.6, required: true },
+  lane3renScore: { key: "lane3renScore", minConfidence: 0.6, required: true },
   lane1stAvg: { key: "lane1stAvg", minConfidence: 0.6, required: true },
   lane2renAvg: { key: "lane2renAvg", minConfidence: 0.6, required: true },
   lane3renAvg: { key: "lane3renAvg", minConfidence: 0.6, required: true },
@@ -138,20 +141,35 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
       source: laneSources.motor3Rate || (Number.isFinite(Number(racer?.motor3Rate ?? racer?.motor3ren)) ? "boatrace_official" : null),
       debugEntry: laneDebug?.motor3ren || null
     }),
-    lane1stAvg: getFieldMeta("lane1stAvg", {
-      value: extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
+    lane1stScore: getFieldMeta("lane1stScore", {
+      value: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
       source: laneSources.laneFirstRate || (Number.isFinite(Number(racer?.lane1stAvg ?? racer?.laneFirstRate)) ? "boatrace_profile_lane_stats" : null),
-      debugEntry: laneDebug?.lane1stRate || null
+      debugEntry: laneDebug?.lane1stRate || extra?.lane1stDebug || null
+    }),
+    lane2renScore: getFieldMeta("lane2renScore", {
+      value: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
+      source: laneSources.lane2RenRate || (Number.isFinite(Number(racer?.lane2renAvg ?? racer?.lane2RenRate)) ? "boatrace_profile_lane_stats" : null),
+      debugEntry: laneDebug?.lane2renRate || extra?.lane2renDebug || null
+    }),
+    lane3renScore: getFieldMeta("lane3renScore", {
+      value: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
+      source: laneSources.lane3RenRate || (Number.isFinite(Number(racer?.lane3renAvg ?? racer?.lane3RenRate)) ? "boatrace_profile_lane_stats" : null),
+      debugEntry: laneDebug?.lane3renRate || extra?.lane3renDebug || null
+    }),
+    lane1stAvg: getFieldMeta("lane1stAvg", {
+      value: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
+      source: laneSources.laneFirstRate || (Number.isFinite(Number(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate)) ? "boatrace_profile_lane_stats" : null),
+      debugEntry: laneDebug?.lane1stRate || extra?.lane1stDebug || null
     }),
     lane2renAvg: getFieldMeta("lane2renAvg", {
-      value: extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
-      source: laneSources.lane2RenRate || (Number.isFinite(Number(racer?.lane2renAvg ?? racer?.lane2RenRate)) ? "boatrace_profile_lane_stats" : null),
-      debugEntry: laneDebug?.lane2renRate || null
+      value: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
+      source: laneSources.lane2RenRate || (Number.isFinite(Number(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate)) ? "boatrace_profile_lane_stats" : null),
+      debugEntry: laneDebug?.lane2renRate || extra?.lane2renDebug || null
     }),
     lane3renAvg: getFieldMeta("lane3renAvg", {
-      value: extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
-      source: laneSources.lane3RenRate || (Number.isFinite(Number(racer?.lane3renAvg ?? racer?.lane3RenRate)) ? "boatrace_profile_lane_stats" : null),
-      debugEntry: laneDebug?.lane3renRate || null
+      value: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
+      source: laneSources.lane3RenRate || (Number.isFinite(Number(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate)) ? "boatrace_profile_lane_stats" : null),
+      debugEntry: laneDebug?.lane3renRate || extra?.lane3renDebug || null
     }),
     fCount: getFieldMeta("fCount", {
       value: extra?.fCount ?? racer?.fHoldCount ?? null,
@@ -444,49 +462,119 @@ const FIELD_DEBUG_NAME_MAP = {
 };
 
 const JAPANESE_LABELS = {
-  laneStatsSection: "枠別勝率",
-  preRaceSection: "直前情報",
-  motorSection: "モーター",
-  motor2: "モーター2連率",
-  motor3: "モーター3連率",
-  mawariashi: "周り足",
-  nobiashi: "伸び足",
-  lapTime: "周回",
-  exhibition: "展示",
+  laneStatsSection: "\u67a0\u5225\u60c5\u5831",
+  preRaceSection: "\u76f4\u524d\u60c5\u5831",
+  motorSection: "\u30e2\u30fc\u30bf\u30fc",
+  motor2: "\u30e2\u30fc\u30bf\u30fc2\u9023\u7387",
+  motor3: "\u30e2\u30fc\u30bf\u30fc3\u9023\u7387",
+  mawariashi: "\u5468\u308a\u8db3",
+  nobiashi: "\u76f4\u7dda",
+  lapTime: "\u5468\u56de",
+  exhibition: "\u5c55\u793a",
   st: "ST",
-  lane1st: "1着率",
-  lane2ren: "2連率",
-  lane3ren: "3連率",
-  season: "今季",
-  m6: "直近6か月",
-  m3: "直近3か月",
-  m1: "直近1か月"
+  lane1st: "1\u7740\u7387",
+  lane2ren: "2\u9023\u7387",
+  lane3ren: "3\u9023\u7387",
+  season: "\u4eca\u671f",
+  m6: "\u76f4\u8fd16\u304b\u6708",
+  m3: "\u76f4\u8fd13\u304b\u6708",
+  m1: "\u76f4\u8fd11\u304b\u6708",
+  local: "\u5f53\u5730",
+  ippansen: "\u4e00\u822c\u6226",
+  sgG1: "SG\uff0fG1"
+};
+
+const LABEL_ALIASES = {
+  laneStatsSection: ["\u8b6b\uf8f0\u86fb\uff65\u870d\u6649\u7d2b"],
+  preRaceSection: ["\u9016\uff74\u8711\u80b4\u30e5\u8763\uff71"],
+  motor2: ["\u7e5d\uff62\u7e5d\uff7c\u7e67\uff7f\u7e5d\uff7c2\u9a3e\uff63\u9087\u30fb"],
+  motor3: ["\u7e5d\uff62\u7e5d\uff7c\u7e67\uff7f\u7e5d\uff7c3\u9a3e\uff63\u9087\u30fb"],
+  mawariashi: ["\u873b\uff68\u7e67\u9858\uff76\uff73"],
+  nobiashi: ["\u83a8\uff78\u7e3a\uff73\u96dc\uff73"],
+  lapTime: ["\u873b\uff68\u8757\u30fb"],
+  exhibition: ["\u87bb\u6155\uff64\uff7a"],
+  lane1st: ["1\u9039\u0080\u9087\u30fb"],
+  lane2ren: ["2\u9a3e\uff63\u9087\u30fb"],
+  lane3ren: ["3\u9a3e\uff63\u9087\u30fb"],
+  season: ["\u8389\u96e9\uff6d\uff63", "\u8389\u982d\u6084", "\u8389\u96c1\uff6d\uff63", "\u8389\u9811\u6084"],
+  m6: ["\u9036\uff74\u9711\uff65\u7e3a\u533a\u6026", "\u9036\uff74\u9711\uff65\u86df\u533a\u6026"],
+  m3: ["\u9036\uff74\u9711\uff65\u7e5d\uff76\u8b5b\u30fb"],
+  m1: ["\u9036\uff74\u9711\uff65\u7e3a\u533a\u6026"],
+  local: [],
+  ippansen: [],
+  sgG1: []
 };
 
 const LANE_STAT_PERIODS = {
   season: {
-    labels: [JAPANESE_LABELS.season, "今期"],
+    labels: [JAPANESE_LABELS.season, "\u4eca\u5b63", ...LABEL_ALIASES.season],
     canonical: JAPANESE_LABELS.season,
     debugKey: "season",
-    weight: 0.2
+    defaultWeights: {
+      laneFirstRate: 0.18,
+      lane2RenRate: 0.18,
+      lane3RenRate: 0.18
+    }
   },
   m6: {
-    labels: [JAPANESE_LABELS.m6, "直近6ヶ月", "直近6個月"],
+    labels: [JAPANESE_LABELS.m6, "\u76f4\u8fd1\uff16\u304b\u6708", "\u6700\u8fd16\u304b\u6708", ...LABEL_ALIASES.m6],
     canonical: JAPANESE_LABELS.m6,
     debugKey: "m6",
-    weight: 0.2
+    defaultWeights: {
+      laneFirstRate: 0.22,
+      lane2RenRate: 0.22,
+      lane3RenRate: 0.2
+    }
   },
   m3: {
-    labels: [JAPANESE_LABELS.m3, "直近3ヶ月", "直近3個月"],
+    labels: [JAPANESE_LABELS.m3, "\u76f4\u8fd1\uff13\u304b\u6708", "\u6700\u8fd13\u304b\u6708", ...LABEL_ALIASES.m3],
     canonical: JAPANESE_LABELS.m3,
     debugKey: "m3",
-    weight: 0.35
+    defaultWeights: {
+      laneFirstRate: 0.32,
+      lane2RenRate: 0.28,
+      lane3RenRate: 0.24
+    }
   },
   m1: {
-    labels: [JAPANESE_LABELS.m1, "直近1ヶ月", "直近1個月"],
+    labels: [JAPANESE_LABELS.m1, "\u76f4\u8fd1\uff11\u304b\u6708", "\u6700\u8fd11\u304b\u6708", ...LABEL_ALIASES.m1],
     canonical: JAPANESE_LABELS.m1,
     debugKey: "m1",
-    weight: 0.25
+    defaultWeights: {
+      laneFirstRate: 0.06,
+      lane2RenRate: 0.06,
+      lane3RenRate: 0.06
+    }
+  },
+  local: {
+    labels: [JAPANESE_LABELS.local, "\u5730\u5143", "\u5f53\u5730\u6210\u7e3e"],
+    canonical: JAPANESE_LABELS.local,
+    debugKey: "local",
+    defaultWeights: {
+      laneFirstRate: 0.12,
+      lane2RenRate: 0.16,
+      lane3RenRate: 0.18
+    }
+  },
+  ippansen: {
+    labels: [JAPANESE_LABELS.ippansen, "\u4e00\u822c", "\u4e00\u822c\u6226\u6210\u7e3e"],
+    canonical: JAPANESE_LABELS.ippansen,
+    debugKey: "ippansen",
+    defaultWeights: {
+      laneFirstRate: 0.1,
+      lane2RenRate: 0.1,
+      lane3RenRate: 0.14
+    }
+  },
+  sg_g1: {
+    labels: [JAPANESE_LABELS.sgG1, "SG/G1", "SG\uff65G1", "SG\u30fbG1"],
+    canonical: JAPANESE_LABELS.sgG1,
+    debugKey: "sg_g1",
+    defaultWeights: {
+      laneFirstRate: 0,
+      lane2RenRate: 0,
+      lane3RenRate: 0
+    }
   }
 };
 
@@ -494,12 +582,17 @@ const LANE_STAT_FIELD_CONFIG = {
   laneFirstRate: {
     debugField: "lane1stRate",
     metricLabel: JAPANESE_LABELS.lane1st,
-    periodsKey: "lane1stRate_raw",
+    periodsKey: "lane1st_raw",
+    scoreField: "lane1stScore",
+    debugScoreField: "lane1stDebug",
     periodFields: {
       season: "lane1stRate_season",
       m6: "lane1stRate_6m",
       m3: "lane1stRate_3m",
-      m1: "lane1stRate_1m"
+      m1: "lane1stRate_1m",
+      local: "lane1stRate_local",
+      ippansen: "lane1stRate_ippansen",
+      sg_g1: "lane1stRate_sg_g1"
     },
     sumField: "lane1stRate_sum",
     avgField: "lane1stRate_avg",
@@ -508,12 +601,17 @@ const LANE_STAT_FIELD_CONFIG = {
   lane2RenRate: {
     debugField: "lane2renRate",
     metricLabel: JAPANESE_LABELS.lane2ren,
-    periodsKey: "lane2renRate_raw",
+    periodsKey: "lane2ren_raw",
+    scoreField: "lane2renScore",
+    debugScoreField: "lane2renDebug",
     periodFields: {
       season: "lane2renRate_season",
       m6: "lane2renRate_6m",
       m3: "lane2renRate_3m",
-      m1: "lane2renRate_1m"
+      m1: "lane2renRate_1m",
+      local: "lane2renRate_local",
+      ippansen: "lane2renRate_ippansen",
+      sg_g1: "lane2renRate_sg_g1"
     },
     sumField: "lane2renRate_sum",
     avgField: "lane2renRate_avg",
@@ -522,12 +620,17 @@ const LANE_STAT_FIELD_CONFIG = {
   lane3RenRate: {
     debugField: "lane3renRate",
     metricLabel: JAPANESE_LABELS.lane3ren,
-    periodsKey: "lane3renRate_raw",
+    periodsKey: "lane3ren_raw",
+    scoreField: "lane3renScore",
+    debugScoreField: "lane3renDebug",
     periodFields: {
       season: "lane3renRate_season",
       m6: "lane3renRate_6m",
       m3: "lane3renRate_3m",
-      m1: "lane3renRate_1m"
+      m1: "lane3renRate_1m",
+      local: "lane3renRate_local",
+      ippansen: "lane3renRate_ippansen",
+      sg_g1: "lane3renRate_sg_g1"
     },
     sumField: "lane3renRate_sum",
     avgField: "lane3renRate_avg",
@@ -538,39 +641,44 @@ const LANE_STAT_FIELD_CONFIG = {
 function compactJapaneseLabel(value) {
   return normalizeDigits(normalizeSpace(value))
     .replace(/\s+/g, "")
-    .replace(/[：:]/g, "")
+    .replace(/[\u30fb\uff65]/g, "")
     .trim();
+}
+
+function matchesLabel(text, label, aliases = []) {
+  if (!text || !label) return false;
+  const compactText = compactJapaneseLabel(text);
+  if (!compactText) return false;
+  const candidates = [label, ...(Array.isArray(aliases) ? aliases : [])]
+    .map((entry) => compactJapaneseLabel(entry))
+    .filter(Boolean);
+  return candidates.some((candidate) => compactText.includes(candidate) || compactText === candidate);
 }
 
 function canonicalizeExplicitSectionLabel(value) {
   const text = compactJapaneseLabel(value);
   if (!text) return null;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.laneStatsSection))) return JAPANESE_LABELS.laneStatsSection;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.preRaceSection))) return JAPANESE_LABELS.preRaceSection;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motor2))) return JAPANESE_LABELS.motor2;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motor3))) return JAPANESE_LABELS.motor3;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motorSection))) return JAPANESE_LABELS.motorSection;
+  if (matchesLabel(text, JAPANESE_LABELS.laneStatsSection, LABEL_ALIASES.laneStatsSection)) return JAPANESE_LABELS.laneStatsSection;
+  if (matchesLabel(text, JAPANESE_LABELS.preRaceSection, LABEL_ALIASES.preRaceSection)) return JAPANESE_LABELS.preRaceSection;
+  if (matchesLabel(text, JAPANESE_LABELS.motor2, LABEL_ALIASES.motor2)) return JAPANESE_LABELS.motor2;
+  if (matchesLabel(text, JAPANESE_LABELS.motor3, LABEL_ALIASES.motor3)) return JAPANESE_LABELS.motor3;
+  if (matchesLabel(text, JAPANESE_LABELS.motorSection)) return JAPANESE_LABELS.motorSection;
   return null;
 }
 
 function canonicalizeExplicitMetricLabel(value) {
   const text = compactJapaneseLabel(value);
   if (!text) return null;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.lapTime))) return JAPANESE_LABELS.lapTime;
-  if (text.includes(compactJapaneseLabel("蜻ｨ蝗・"))) return JAPANESE_LABELS.lapTime;
+  if (matchesLabel(text, JAPANESE_LABELS.lapTime, LABEL_ALIASES.lapTime)) return JAPANESE_LABELS.lapTime;
   if (text === compactJapaneseLabel(JAPANESE_LABELS.st)) return JAPANESE_LABELS.st;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.exhibition))) return JAPANESE_LABELS.exhibition;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.mawariashi))) return JAPANESE_LABELS.mawariashi;
-  if (text.includes(compactJapaneseLabel("蜻ｨ繧願ｶｳ"))) return JAPANESE_LABELS.mawariashi;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.nobiashi))) return JAPANESE_LABELS.nobiashi;
-  if (text.includes(compactJapaneseLabel("逶ｴ邱・"))) return JAPANESE_LABELS.nobiashi;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motor2)) || (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motorSection)) && text.includes("2"))) return JAPANESE_LABELS.motor2;
-  if (text.includes(compactJapaneseLabel("繝｢繝ｼ繧ｿ繝ｼ2騾｣邇・"))) return JAPANESE_LABELS.motor2;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motor3)) || (text.includes(compactJapaneseLabel(JAPANESE_LABELS.motorSection)) && text.includes("3"))) return JAPANESE_LABELS.motor3;
-  if (text.includes(compactJapaneseLabel("繝｢繝ｼ繧ｿ繝ｼ3騾｣邇・"))) return JAPANESE_LABELS.motor3;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.lane1st))) return JAPANESE_LABELS.lane1st;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.lane2ren)) || (text.includes("2") && text.includes(compactJapaneseLabel("連対")))) return JAPANESE_LABELS.lane2ren;
-  if (text.includes(compactJapaneseLabel(JAPANESE_LABELS.lane3ren)) || (text.includes("3") && text.includes(compactJapaneseLabel("連対")))) return JAPANESE_LABELS.lane3ren;
+  if (matchesLabel(text, JAPANESE_LABELS.exhibition, LABEL_ALIASES.exhibition)) return JAPANESE_LABELS.exhibition;
+  if (matchesLabel(text, JAPANESE_LABELS.mawariashi, LABEL_ALIASES.mawariashi)) return JAPANESE_LABELS.mawariashi;
+  if (matchesLabel(text, JAPANESE_LABELS.nobiashi, LABEL_ALIASES.nobiashi)) return JAPANESE_LABELS.nobiashi;
+  if (matchesLabel(text, JAPANESE_LABELS.motor2, LABEL_ALIASES.motor2) || (matchesLabel(text, JAPANESE_LABELS.motorSection) && text.includes("2"))) return JAPANESE_LABELS.motor2;
+  if (matchesLabel(text, JAPANESE_LABELS.motor3, LABEL_ALIASES.motor3) || (matchesLabel(text, JAPANESE_LABELS.motorSection) && text.includes("3"))) return JAPANESE_LABELS.motor3;
+  if (matchesLabel(text, JAPANESE_LABELS.lane1st, LABEL_ALIASES.lane1st)) return JAPANESE_LABELS.lane1st;
+  if (matchesLabel(text, JAPANESE_LABELS.lane2ren, LABEL_ALIASES.lane2ren)) return JAPANESE_LABELS.lane2ren;
+  if (matchesLabel(text, JAPANESE_LABELS.lane3ren, LABEL_ALIASES.lane3ren)) return JAPANESE_LABELS.lane3ren;
   return null;
 }
 
@@ -578,7 +686,7 @@ function canonicalizeExplicitTimeWindowLabel(value) {
   const text = compactJapaneseLabel(value);
   if (!text) return null;
   for (const [periodKey, config] of Object.entries(LANE_STAT_PERIODS)) {
-    if (config.labels.some((label) => compactJapaneseLabel(label) === text)) return periodKey;
+    if ((config.labels || []).some((label) => matchesLabel(text, label))) return periodKey;
   }
   return null;
 }
@@ -592,7 +700,11 @@ function normalizeLaneStatPeriodValues(periods = {}) {
   return normalized;
 }
 
-function aggregateLaneStatPeriods(periods = {}) {
+function getLaneStatWeight(field, periodKey) {
+  return Number(LANE_STAT_PERIODS?.[periodKey]?.defaultWeights?.[field] || 0);
+}
+
+function aggregateLaneStatPeriods(field, periods = {}) {
   const normalized = normalizeLaneStatPeriodValues(periods);
   const available = Object.entries(normalized).filter(([, value]) => value !== null);
   const availablePeriods = available.map(([periodKey]) => periodKey);
@@ -602,6 +714,9 @@ function aggregateLaneStatPeriods(periods = {}) {
       sum: null,
       avg: null,
       weighted: null,
+      score: null,
+      weightsUsed: {},
+      hotFormBonus: 0,
       availablePeriods,
       count: 0
     };
@@ -609,24 +724,52 @@ function aggregateLaneStatPeriods(periods = {}) {
 
   const sum = Number(available.reduce((acc, [, value]) => acc + Number(value), 0).toFixed(4));
   const avg = Number((sum / available.length).toFixed(4));
-  const totalWeight = available.reduce((acc, [periodKey]) => acc + Number(LANE_STAT_PERIODS[periodKey]?.weight || 0), 0);
+  const rawWeights = Object.fromEntries(
+    available.map(([periodKey]) => [periodKey, getLaneStatWeight(field, periodKey)])
+  );
+  const totalWeight = Object.values(rawWeights).reduce((acc, value) => acc + Number(value || 0), 0);
   const weighted =
     totalWeight > 0
       ? Number(
           (
             available.reduce(
-              (acc, [periodKey, value]) => acc + Number(value) * Number(LANE_STAT_PERIODS[periodKey]?.weight || 0),
+              (acc, [periodKey, value]) => acc + Number(value) * Number(rawWeights[periodKey] || 0),
               0
             ) / totalWeight
           ).toFixed(4)
         )
       : null;
+  const weightsUsed =
+    totalWeight > 0
+      ? Object.fromEntries(
+          Object.entries(rawWeights).map(([periodKey, value]) => [periodKey, Number((Number(value || 0) / totalWeight).toFixed(4))])
+        )
+      : {};
+  const recentStrong =
+    Number.isFinite(normalized.m1) &&
+    Number.isFinite(normalized.m3) &&
+    normalized.m1 >= 60 &&
+    normalized.m3 >= 60;
+  const recentConsistency =
+    recentStrong && Math.abs(Number(normalized.m1) - Number(normalized.m3)) <= 8;
+  const hotFormBonus = recentConsistency
+    ? Number(
+        Math.min(
+          2.2,
+          ((Number(normalized.m1) - 55) * 0.03) + ((Number(normalized.m3) - 55) * 0.02)
+        ).toFixed(4)
+      )
+    : 0;
+  const score = weighted === null ? null : Number((weighted + hotFormBonus).toFixed(4));
 
   return {
     raw: normalized,
     sum,
     avg,
     weighted,
+    score,
+    weightsUsed,
+    hotFormBonus,
     availablePeriods,
     count: available.length
   };
@@ -639,12 +782,22 @@ function hydrateLaneStatAggregateFields(row = {}) {
     for (const [periodKey, fieldName] of Object.entries(config.periodFields)) {
       periods[periodKey] = toFiniteNumberOrNull(next?.[fieldName]);
     }
-    const aggregate = aggregateLaneStatPeriods(periods);
+    const aggregate = aggregateLaneStatPeriods(baseField, periods);
     next[config.periodsKey] = aggregate.raw;
     next[config.sumField] = aggregate.sum;
     next[config.avgField] = aggregate.avg;
     next[config.weightedField] = aggregate.weighted;
-    next[baseField] = aggregate.avg;
+    next[config.scoreField] = aggregate.score;
+    next[baseField] = aggregate.score;
+    next[config.debugScoreField] = {
+      raw: aggregate.raw,
+      available: aggregate.availablePeriods,
+      weights_used: aggregate.weightsUsed,
+      hot_form_bonus: aggregate.hotFormBonus,
+      final_score: aggregate.score,
+      default_score_without_hot_bonus: aggregate.weighted,
+      sg_g1_reference: aggregate.raw.sg_g1
+    };
     next[`${config.debugField}_available_periods`] = aggregate.availablePeriods;
     next[`${config.debugField}_period_count`] = aggregate.count;
   }
@@ -664,6 +817,7 @@ function normalizeLaneStatAggregateFields(row = {}) {
       }
     }
     const aggregate = aggregateLaneStatPeriods(
+      baseField,
       Object.fromEntries(
         Object.entries(config.periodFields).map(([periodKey, fieldName]) => [periodKey, next?.[fieldName]])
       )
@@ -672,7 +826,17 @@ function normalizeLaneStatAggregateFields(row = {}) {
     next[config.sumField] = aggregate.sum;
     next[config.avgField] = aggregate.avg;
     next[config.weightedField] = aggregate.weighted;
-    next[baseField] = aggregate.avg ?? toFiniteNumberOrNull(next?.[baseField]);
+    next[config.scoreField] = aggregate.score ?? toFiniteNumberOrNull(next?.[config.scoreField]);
+    next[config.debugScoreField] = {
+      raw: aggregate.raw,
+      available: aggregate.availablePeriods,
+      weights_used: aggregate.weightsUsed,
+      hot_form_bonus: aggregate.hotFormBonus,
+      final_score: aggregate.score,
+      default_score_without_hot_bonus: aggregate.weighted,
+      sg_g1_reference: aggregate.raw.sg_g1
+    };
+    next[baseField] = aggregate.score ?? toFiniteNumberOrNull(next?.[baseField]);
     next[`${config.debugField}_available_periods`] = aggregate.availablePeriods;
     next[`${config.debugField}_period_count`] = aggregate.count;
   }
@@ -719,7 +883,10 @@ function collectTableContextLabels(table) {
 }
 
 function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextLabels = [] }) {
-  const sectionCandidates = [...rowLabels, ...tableContextLabels]
+  const rowSectionCandidates = rowLabels
+    .map(canonicalizeExplicitSectionLabel)
+    .filter(Boolean);
+  const tableSectionCandidates = tableContextLabels
     .map(canonicalizeExplicitSectionLabel)
     .filter(Boolean);
   const metricCandidates = rowLabels
@@ -729,7 +896,7 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
     .map(canonicalizeExplicitTimeWindowLabel)
     .filter(Boolean);
 
-  const section = sectionCandidates[0] || null;
+  const section = rowSectionCandidates[0] || tableSectionCandidates[0] || null;
   const joinedRowLabels = normalizeSpace(rowLabels.join(" "));
   const metric =
     metricCandidates[0] ||
@@ -752,7 +919,12 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
   }
 
   if (mode === "pre_race") {
-    const resolvedSection = section || JAPANESE_LABELS.preRaceSection;
+    const resolvedSection =
+      metric === JAPANESE_LABELS.motor2
+        ? JAPANESE_LABELS.motor2
+        : metric === JAPANESE_LABELS.motor3
+          ? JAPANESE_LABELS.motor3
+          : rowSectionCandidates[0] || JAPANESE_LABELS.preRaceSection;
     if (metric === JAPANESE_LABELS.lapTime) return { field: "lapTimeRaw", section: resolvedSection, row: JAPANESE_LABELS.lapTime };
     if (metric === JAPANESE_LABELS.st) return { field: "exhibitionSt", section: resolvedSection, row: JAPANESE_LABELS.st };
     if (metric === JAPANESE_LABELS.exhibition) return { field: "exhibitionTime", section: resolvedSection, row: JAPANESE_LABELS.exhibition };
@@ -989,10 +1161,11 @@ function parseHtmlSupplementExplicit(html, options = {}) {
         const hydrated = hydrateLaneStatAggregateFields(row);
         byLane.set(lane, hydrated);
         const laneDebug = fieldDebugs?.[lane] || {};
-        for (const config of Object.values(LANE_STAT_FIELD_CONFIG)) {
+        for (const [baseField, config] of Object.entries(LANE_STAT_FIELD_CONFIG)) {
           const fieldDebug = laneDebug?.[config.debugField];
           if (!fieldDebug || typeof fieldDebug !== "object") continue;
           const aggregate = aggregateLaneStatPeriods(
+            baseField,
             Object.fromEntries(
               Object.keys(LANE_STAT_PERIODS).map((periodKey) => [periodKey, fieldDebug?.[periodKey]?.value ?? null])
             )
@@ -1002,12 +1175,18 @@ function parseHtmlSupplementExplicit(html, options = {}) {
             m6: fieldDebug?.m6 || null,
             m3: fieldDebug?.m3 || null,
             m1: fieldDebug?.m1 || null,
+            local: fieldDebug?.local || null,
+            ippansen: fieldDebug?.ippansen || null,
+            sg_g1: fieldDebug?.sg_g1 || null,
             sum: aggregate.sum,
             avg: aggregate.avg,
             weighted: aggregate.weighted,
+            weights_used: aggregate.weightsUsed,
+            hot_form_bonus: aggregate.hotFormBonus,
             availablePeriods: aggregate.availablePeriods,
             count: aggregate.count,
-            finalValue: aggregate.avg
+            finalValue: aggregate.score,
+            final_score: aggregate.score
           };
         }
         fieldDebugs[lane] = laneDebug;
@@ -1532,6 +1711,9 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       motor3ren: toFiniteNumberOrNull(row?.motor3ren ?? row?.motor3Rate),
       motor2Rate: toFiniteNumberOrNull(row?.motor2Rate),
       motor3Rate: toFiniteNumberOrNull(row?.motor3Rate),
+      lane1stScore: toFiniteNumberOrNull(row?.lane1stScore ?? row?.laneFirstRate),
+      lane2renScore: toFiniteNumberOrNull(row?.lane2renScore ?? row?.lane2RenRate),
+      lane3renScore: toFiniteNumberOrNull(row?.lane3renScore ?? row?.lane3RenRate),
       lane1stAvg: toFiniteNumberOrNull(row?.lane1stAvg ?? row?.laneFirstRate ?? row?.lane1stRate_avg),
       lane2renAvg: toFiniteNumberOrNull(row?.lane2renAvg ?? row?.lane2RenRate ?? row?.lane2renRate_avg),
       lane3renAvg: toFiniteNumberOrNull(row?.lane3renAvg ?? row?.lane3RenRate ?? row?.lane3renRate_avg),
@@ -1543,6 +1725,9 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       lane1stRate_6m: row?.lane1stRate_6m,
       lane1stRate_3m: row?.lane1stRate_3m,
       lane1stRate_1m: row?.lane1stRate_1m,
+      lane1stRate_local: row?.lane1stRate_local,
+      lane1stRate_ippansen: row?.lane1stRate_ippansen,
+      lane1stRate_sg_g1: row?.lane1stRate_sg_g1,
       lane1stRate_sum: row?.lane1stRate_sum,
       lane1stRate_avg: row?.lane1stRate_avg,
       lane1stRate_weighted: row?.lane1stRate_weighted,
@@ -1551,6 +1736,9 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       lane2renRate_6m: row?.lane2renRate_6m,
       lane2renRate_3m: row?.lane2renRate_3m,
       lane2renRate_1m: row?.lane2renRate_1m,
+      lane2renRate_local: row?.lane2renRate_local,
+      lane2renRate_ippansen: row?.lane2renRate_ippansen,
+      lane2renRate_sg_g1: row?.lane2renRate_sg_g1,
       lane2renRate_sum: row?.lane2renRate_sum,
       lane2renRate_avg: row?.lane2renRate_avg,
       lane2renRate_weighted: row?.lane2renRate_weighted,
@@ -1559,18 +1747,30 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       lane3renRate_6m: row?.lane3renRate_6m,
       lane3renRate_3m: row?.lane3renRate_3m,
       lane3renRate_1m: row?.lane3renRate_1m,
+      lane3renRate_local: row?.lane3renRate_local,
+      lane3renRate_ippansen: row?.lane3renRate_ippansen,
+      lane3renRate_sg_g1: row?.lane3renRate_sg_g1,
       lane3renRate_sum: row?.lane3renRate_sum,
       lane3renRate_avg: row?.lane3renRate_avg,
-      lane3renRate_weighted: row?.lane3renRate_weighted
+      lane3renRate_weighted: row?.lane3renRate_weighted,
+      lane1stDebug: row?.lane1stDebug,
+      lane2renDebug: row?.lane2renDebug,
+      lane3renDebug: row?.lane3renDebug
     });
     normalizedRow.motor2Rate = normalizedRow.motor2ren;
     normalizedRow.motor3Rate = normalizedRow.motor3ren;
     normalizedRow.lapExhibitionScore = normalizedRow.lapExStretch;
+    normalizedRow.lane1stScore = normalizedRow.lane1stScore ?? normalizedRow.laneFirstRate;
+    normalizedRow.lane2renScore = normalizedRow.lane2renScore ?? normalizedRow.lane2RenRate;
+    normalizedRow.lane3renScore = normalizedRow.lane3renScore ?? normalizedRow.lane3RenRate;
     normalizedRow.mawariashi = toFiniteNumberOrNull(row?.mawariashi ?? row?.__mawariashi);
     normalizedRow.nobiashi = toFiniteNumberOrNull(row?.nobiashi ?? row?.__nobiashi);
-    normalizedRow.laneFirstRate = normalizedRow.lane1stAvg;
-    normalizedRow.lane2RenRate = normalizedRow.lane2renAvg;
-    normalizedRow.lane3RenRate = normalizedRow.lane3renAvg;
+    normalizedRow.laneFirstRate = normalizedRow.lane1stScore;
+    normalizedRow.lane2RenRate = normalizedRow.lane2renScore;
+    normalizedRow.lane3RenRate = normalizedRow.lane3renScore;
+    normalizedRow.lane1stAvg = normalizedRow.lane1stScore;
+    normalizedRow.lane2renAvg = normalizedRow.lane2renScore;
+    normalizedRow.lane3renAvg = normalizedRow.lane3renScore;
     normalizedByLane.set(Number(lane), normalizedRow);
   }
   return {
@@ -1619,9 +1819,12 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         nobiashi: extra?.nobiashi ?? racer?.nobiashi ?? null,
         motor2ren: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2ren ?? racer?.motor2Rate ?? null,
         motor3ren: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3ren ?? racer?.motor3Rate ?? null,
-        lane1stAvg: extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
-        lane2renAvg: extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
-        lane3renAvg: extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
+        lane1stScore: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
+        lane2renScore: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
+        lane3renScore: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
+        lane1stAvg: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
+        lane2renAvg: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
+        lane3renAvg: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
         lapTime: extra?.lapTime ?? racer?.lapTime ?? null,
         lapTimeRaw: extra?.lapTimeRaw ?? racer?.lapTimeRaw ?? null,
         lapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
@@ -1630,33 +1833,45 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         exhibitionTime: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
         motor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2Rate ?? null,
         motor3Rate: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3Rate ?? null,
-        laneFirstRate: extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.laneFirstRate ?? null,
-        lane2RenRate: extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2RenRate ?? null,
-        lane3RenRate: extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3RenRate ?? null,
+        laneFirstRate: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.laneFirstRate ?? null,
+        lane2RenRate: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2RenRate ?? null,
+        lane3RenRate: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3RenRate ?? null,
         lane1stRate_raw: extra?.lane1stRate_raw ?? racer?.lane1stRate_raw ?? null,
         lane1stRate_season: extra?.lane1stRate_season ?? racer?.lane1stRate_season ?? null,
         lane1stRate_6m: extra?.lane1stRate_6m ?? racer?.lane1stRate_6m ?? null,
         lane1stRate_3m: extra?.lane1stRate_3m ?? racer?.lane1stRate_3m ?? null,
         lane1stRate_1m: extra?.lane1stRate_1m ?? racer?.lane1stRate_1m ?? null,
+        lane1stRate_local: extra?.lane1stRate_local ?? racer?.lane1stRate_local ?? null,
+        lane1stRate_ippansen: extra?.lane1stRate_ippansen ?? racer?.lane1stRate_ippansen ?? null,
+        lane1stRate_sg_g1: extra?.lane1stRate_sg_g1 ?? racer?.lane1stRate_sg_g1 ?? null,
         lane1stRate_sum: extra?.lane1stRate_sum ?? racer?.lane1stRate_sum ?? null,
         lane1stRate_avg: extra?.lane1stRate_avg ?? racer?.lane1stRate_avg ?? null,
         lane1stRate_weighted: extra?.lane1stRate_weighted ?? racer?.lane1stRate_weighted ?? null,
+        lane1stDebug: extra?.lane1stDebug ?? racer?.lane1stDebug ?? null,
         lane2renRate_raw: extra?.lane2renRate_raw ?? racer?.lane2renRate_raw ?? null,
         lane2renRate_season: extra?.lane2renRate_season ?? racer?.lane2renRate_season ?? null,
         lane2renRate_6m: extra?.lane2renRate_6m ?? racer?.lane2renRate_6m ?? null,
         lane2renRate_3m: extra?.lane2renRate_3m ?? racer?.lane2renRate_3m ?? null,
         lane2renRate_1m: extra?.lane2renRate_1m ?? racer?.lane2renRate_1m ?? null,
+        lane2renRate_local: extra?.lane2renRate_local ?? racer?.lane2renRate_local ?? null,
+        lane2renRate_ippansen: extra?.lane2renRate_ippansen ?? racer?.lane2renRate_ippansen ?? null,
+        lane2renRate_sg_g1: extra?.lane2renRate_sg_g1 ?? racer?.lane2renRate_sg_g1 ?? null,
         lane2renRate_sum: extra?.lane2renRate_sum ?? racer?.lane2renRate_sum ?? null,
         lane2renRate_avg: extra?.lane2renRate_avg ?? racer?.lane2renRate_avg ?? null,
         lane2renRate_weighted: extra?.lane2renRate_weighted ?? racer?.lane2renRate_weighted ?? null,
+        lane2renDebug: extra?.lane2renDebug ?? racer?.lane2renDebug ?? null,
         lane3renRate_raw: extra?.lane3renRate_raw ?? racer?.lane3renRate_raw ?? null,
         lane3renRate_season: extra?.lane3renRate_season ?? racer?.lane3renRate_season ?? null,
         lane3renRate_6m: extra?.lane3renRate_6m ?? racer?.lane3renRate_6m ?? null,
         lane3renRate_3m: extra?.lane3renRate_3m ?? racer?.lane3renRate_3m ?? null,
         lane3renRate_1m: extra?.lane3renRate_1m ?? racer?.lane3renRate_1m ?? null,
+        lane3renRate_local: extra?.lane3renRate_local ?? racer?.lane3renRate_local ?? null,
+        lane3renRate_ippansen: extra?.lane3renRate_ippansen ?? racer?.lane3renRate_ippansen ?? null,
+        lane3renRate_sg_g1: extra?.lane3renRate_sg_g1 ?? racer?.lane3renRate_sg_g1 ?? null,
         lane3renRate_sum: extra?.lane3renRate_sum ?? racer?.lane3renRate_sum ?? null,
         lane3renRate_avg: extra?.lane3renRate_avg ?? racer?.lane3renRate_avg ?? null,
         lane3renRate_weighted: extra?.lane3renRate_weighted ?? racer?.lane3renRate_weighted ?? null,
+        lane3renDebug: extra?.lane3renDebug ?? racer?.lane3renDebug ?? null,
         predictionFieldMeta
       };
     } catch {
@@ -1675,6 +1890,9 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         lapExStretch: null,
         motor2ren: null,
         motor3ren: null,
+        lane1stScore: null,
+        lane2renScore: null,
+        lane3renScore: null,
         lane1stAvg: null,
         lane2renAvg: null,
         lane3renAvg: null,

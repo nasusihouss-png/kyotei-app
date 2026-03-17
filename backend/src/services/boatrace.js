@@ -184,9 +184,9 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
           exhibitionTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriExhibitionTime ?? racer?.exhibitionTime),
           motor2ren_raw: toNullableDebugNumber(racer?.motor2ren ?? racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate),
           motor3ren_raw: toNullableDebugNumber(racer?.motor3ren ?? racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate),
-          lane1stAvg: toNullableDebugNumber(racer?.lane1stAvg ?? racer?.laneFirstRate),
-          lane2renAvg: toNullableDebugNumber(racer?.lane2renAvg ?? racer?.lane2RenRate),
-          lane3renAvg: toNullableDebugNumber(racer?.lane3renAvg ?? racer?.lane3RenRate),
+          lane1stScore: toNullableDebugNumber(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
+          lane2renScore: toNullableDebugNumber(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
+          lane3renScore: toNullableDebugNumber(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
           lane1stRate_debug: fieldDebugMaps.lane1stRate[String(racer?.lane)] || null,
           lane2renRate_debug: fieldDebugMaps.lane2renRate[String(racer?.lane)] || null,
           lane3renRate_debug: fieldDebugMaps.lane3renRate[String(racer?.lane)] || null,
@@ -217,9 +217,9 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     exhibitionTime_raw: byField("exhibitionTime_raw"),
     motor2ren_raw: byField("motor2ren_raw"),
     motor3ren_raw: byField("motor3ren_raw"),
-    lane1stAvg_raw: byField("lane1stAvg"),
-    lane2renAvg_raw: byField("lane2renAvg"),
-    lane3renAvg_raw: byField("lane3renAvg"),
+    lane1stScore_raw: byField("lane1stScore"),
+    lane2renScore_raw: byField("lane2renScore"),
+    lane3renScore_raw: byField("lane3renScore"),
     lane1stRate: fieldDebugMaps.lane1stRate,
     lane2renRate: fieldDebugMaps.lane2renRate,
     lane3renRate: fieldDebugMaps.lane3renRate,
@@ -227,17 +227,17 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     lane1st: Object.fromEntries(
       laneRows
         .filter((row) => Number.isInteger(row?.lane))
-        .map((row) => [String(row.lane), { ...(row?.lane1stRate_debug || {}), avg: row?.lane1stAvg ?? null }])
+        .map((row) => [String(row.lane), { ...(row?.lane1stRate_debug || {}), score: row?.lane1stScore ?? null }])
     ),
     lane2ren: Object.fromEntries(
       laneRows
         .filter((row) => Number.isInteger(row?.lane))
-        .map((row) => [String(row.lane), { ...(row?.lane2renRate_debug || {}), avg: row?.lane2renAvg ?? null }])
+        .map((row) => [String(row.lane), { ...(row?.lane2renRate_debug || {}), score: row?.lane2renScore ?? null }])
     ),
     lane3ren: Object.fromEntries(
       laneRows
         .filter((row) => Number.isInteger(row?.lane))
-        .map((row) => [String(row.lane), { ...(row?.lane3renRate_debug || {}), avg: row?.lane3renAvg ?? null }])
+        .map((row) => [String(row.lane), { ...(row?.lane3renRate_debug || {}), score: row?.lane3renScore ?? null }])
     ),
     lapTime: fieldDebugMaps.lapTime,
     exhibitionST: fieldDebugMaps.exhibitionST,

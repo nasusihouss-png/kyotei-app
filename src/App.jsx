@@ -514,35 +514,35 @@ function firstFiniteValue(...values) {
 function normalizeLaneStats(source = {}) {
   return {
     laneFirstRate: firstFiniteValue(
+      source?.lane1stScore,
       source?.lane1stAvg,
       source?.laneFirstRate,
+      source?.lane1stDebug?.final_score,
       source?.lane1stRate_avg,
       source?.lane1stRate_weighted,
       source?.lane1stRate,
       source?.lane_first_rate,
-      source?.lane_1st_rate,
-      source?.lane1stRate_raw?.avg,
-      source?.lane1stRate_raw?.weighted
+      source?.lane_1st_rate
     ),
     lane2RenRate: firstFiniteValue(
+      source?.lane2renScore,
       source?.lane2renAvg,
       source?.lane2RenRate,
+      source?.lane2renDebug?.final_score,
       source?.lane2renRate_avg,
       source?.lane2renRate_weighted,
       source?.lane2renRate,
-      source?.lane_2ren_rate,
-      source?.lane2renRate_raw?.avg,
-      source?.lane2renRate_raw?.weighted
+      source?.lane_2ren_rate
     ),
     lane3RenRate: firstFiniteValue(
+      source?.lane3renScore,
       source?.lane3renAvg,
       source?.lane3RenRate,
+      source?.lane3renDebug?.final_score,
       source?.lane3renRate_avg,
       source?.lane3renRate_weighted,
       source?.lane3renRate,
-      source?.lane_3ren_rate,
-      source?.lane3renRate_raw?.avg,
-      source?.lane3renRate_raw?.weighted
+      source?.lane_3ren_rate
     )
   };
 }
@@ -608,22 +608,22 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
     motor3ren_debug: debug?.motor3ren || {},
     rendered_rows: (Array.isArray(playerComparisonRows) ? playerComparisonRows : []).map((row) => ({
       lane: row?.lane ?? null,
-      lane1stRate_raw: row?.lane1stAvg ?? row?.laneFirstRate ?? null,
-      lane2renRate_raw: row?.lane2renAvg ?? row?.lane2RenRate ?? null,
-      lane3renRate_raw: row?.lane3renAvg ?? row?.lane3RenRate ?? null,
+      lane1stRate_raw: row?.lane1stScore ?? row?.lane1stAvg ?? row?.laneFirstRate ?? null,
+      lane2renRate_raw: row?.lane2renScore ?? row?.lane2renAvg ?? row?.lane2RenRate ?? null,
+      lane3renRate_raw: row?.lane3renScore ?? row?.lane3renAvg ?? row?.lane3RenRate ?? null,
       lapExStretch_raw: row?.lapExStretch ?? row?.lapScore ?? null,
       motor2ren_raw: row?.motor2ren ?? row?.motor2Rate ?? null,
       motor3ren_raw: row?.motor3ren ?? row?.motor3Rate ?? null,
-      lane1stRate: Number.isFinite(Number(row?.lane1stAvg ?? row?.laneFirstRate)),
-      lane2renRate: Number.isFinite(Number(row?.lane2renAvg ?? row?.lane2RenRate)),
-      lane3renRate: Number.isFinite(Number(row?.lane3renAvg ?? row?.lane3RenRate)),
+      lane1stRate: Number.isFinite(Number(row?.lane1stScore ?? row?.lane1stAvg ?? row?.laneFirstRate)),
+      lane2renRate: Number.isFinite(Number(row?.lane2renScore ?? row?.lane2renAvg ?? row?.lane2RenRate)),
+      lane3renRate: Number.isFinite(Number(row?.lane3renScore ?? row?.lane3renAvg ?? row?.lane3RenRate)),
       lapTime: Number.isFinite(Number(row?.lapTime)),
       exhibitionST: Number.isFinite(Number(row?.exhibitionSt)),
       display_lapExStretch: formatComparisonValue(row?.lapExStretch ?? row?.lapScore, 2),
       display_motor2ren: formatComparisonValue(row?.motor2ren ?? row?.motor2Rate, 2),
-      display_lane1stRate: formatComparisonValue(row?.lane1stAvg ?? row?.laneFirstRate, 2),
-      display_lane2renRate: formatComparisonValue(row?.lane2renAvg ?? row?.lane2RenRate, 2),
-      display_lane3renRate: formatComparisonValue(row?.lane3renAvg ?? row?.lane3RenRate, 2),
+      display_lane1stRate: formatComparisonValue(row?.lane1stScore ?? row?.lane1stAvg ?? row?.laneFirstRate, 2),
+      display_lane2renRate: formatComparisonValue(row?.lane2renScore ?? row?.lane2renAvg ?? row?.lane2RenRate, 2),
+      display_lane3renRate: formatComparisonValue(row?.lane3renScore ?? row?.lane3renAvg ?? row?.lane3RenRate, 2),
       display_motor3ren: formatComparisonValue(row?.motor3ren ?? row?.motor3Rate, 2)
     }))
   };
@@ -1553,6 +1553,9 @@ function getPlayerComparisonRows({ prediction, data }) {
           motor3ren: liveMotor3Rate,
           motor2Rate: liveMotor2Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_2rate),
           motor3Rate: liveMotor3Rate,
+          lane1stScore: debugLaneStats.laneFirstRate ?? liveLaneStats.laneFirstRate ?? snapshotLaneStats.laneFirstRate,
+          lane2renScore: debugLaneStats.lane2RenRate ?? liveLaneStats.lane2RenRate ?? snapshotLaneStats.lane2RenRate,
+          lane3renScore: debugLaneStats.lane3RenRate ?? liveLaneStats.lane3RenRate ?? snapshotLaneStats.lane3RenRate,
           lane1stAvg: debugLaneStats.laneFirstRate ?? liveLaneStats.laneFirstRate ?? snapshotLaneStats.laneFirstRate,
           lane2renAvg: debugLaneStats.lane2RenRate ?? liveLaneStats.lane2RenRate ?? snapshotLaneStats.lane2RenRate,
           lane3renAvg: debugLaneStats.lane3RenRate ?? liveLaneStats.lane3RenRate ?? snapshotLaneStats.lane3RenRate,
@@ -1579,6 +1582,9 @@ function getPlayerComparisonRows({ prediction, data }) {
       motor3ren: toFiniteComparisonNumber(row?.motor_3rate),
       motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
       motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
+      lane1stScore: normalizeLaneStats(row).laneFirstRate,
+      lane2renScore: normalizeLaneStats(row).lane2RenRate,
+      lane3renScore: normalizeLaneStats(row).lane3RenRate,
       lane1stAvg: normalizeLaneStats(row).laneFirstRate,
       lane2renAvg: normalizeLaneStats(row).lane2RenRate,
       lane3renAvg: normalizeLaneStats(row).lane3RenRate,
@@ -3813,9 +3819,9 @@ export default function App() {
                             <th>Ex ST</th>
                             <th>Ex Time</th>
                             <th>Motor 2-ren</th>
-                            <th>Lane 1st Avg</th>
-                            <th>Lane 2-ren Avg</th>
-                            <th>Lane 3-ren Avg</th>
+                            <th>Lane 1st Score</th>
+                            <th>Lane 2-ren Score</th>
+                            <th>Lane 3-ren Score</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3838,9 +3844,9 @@ export default function App() {
                               <td className={playerMetricLeaders.exhibitionSt.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionSt, 2)}</td>
                               <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionTime, 2)}</td>
                               <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor2ren, 2)}</td>
-                              <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane1stAvg, 2)}</td>
-                              <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane2renAvg, 2)}</td>
-                              <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane3renAvg, 2)}</td>
+                              <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane1stScore ?? row.lane1stAvg, 2)}</td>
+                              <td className={playerMetricLeaders.lane2RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane2renScore ?? row.lane2renAvg, 2)}</td>
+                              <td className={playerMetricLeaders.lane3RenRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane3renScore ?? row.lane3renAvg, 2)}</td>
                             </tr>
                           ))}
                         </tbody>

@@ -319,25 +319,30 @@ const preRaceStrictHtml = `
 const strictLaneStats = normalizeKyoteiBiyoriPreRaceFields(
   parseKyoteiBiyoriPreRaceData(laneStatsHtml, { mode: "lane_stats", sourceLabel: "lane_stats_tab" })
 );
-assert.equal(strictLaneStats.byLane.get(1)?.laneFirstRate, 63.05);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stAvg, 63.05);
+assert.equal(strictLaneStats.byLane.get(1)?.laneFirstRate, 64.9083);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stScore, 64.9083);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stAvg, 64.9083);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_season, 55.5);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_6m, 60);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_6m, 70);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_3m, 66.7);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_1m, 70);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_sum, 252.2);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_avg, 63.05);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_weighted, 63.945);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_1m, null);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_sum, 192.2);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_avg, 64.0667);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_weighted, 64.9083);
 assert.equal(strictLaneStats.byLane.get(5)?.lane2renRate_3m, 30.8);
 assert.equal(strictLaneStats.byLane.get(3)?.lane3renRate_3m, 66.7);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2RenRate, 69.7);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renAvg, 69.7);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_sum, 278.8);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_avg, 69.7);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_weighted, 69.78);
-assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.avg, 63.05);
-assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.availablePeriods, ["season", "m6", "m3", "m1"]);
-assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.finalValue, 63.05);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2RenRate, 69.9471);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renScore, 69.9471);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renAvg, 69.9471);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_sum, 209.8);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_avg, 69.9333);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_weighted, 69.9471);
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.avg, 64.0667);
+assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.availablePeriods, ["season", "m6", "m3"]);
+assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.weights_used, { season: 0.25, m6: 0.3056, m3: 0.4444 });
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.hot_form_bonus, 0);
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.finalValue, 64.9083);
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.final_score, 64.9083);
 
 const strictPreRace = normalizeKyoteiBiyoriPreRaceFields(
   parseKyoteiBiyoriPreRaceData(preRaceStrictHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })

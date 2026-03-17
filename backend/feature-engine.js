@@ -55,6 +55,9 @@ export function buildFeatures(racer) {
     lapExStretch: getPredictionFieldMeta(racer, "lapExStretch"),
     motor2ren: getPredictionFieldMeta(racer, "motor2ren"),
     motor3ren: getPredictionFieldMeta(racer, "motor3ren"),
+    lane1stScore: getPredictionFieldMeta(racer, "lane1stScore"),
+    lane2renScore: getPredictionFieldMeta(racer, "lane2renScore"),
+    lane3renScore: getPredictionFieldMeta(racer, "lane3renScore"),
     lane1stAvg: getPredictionFieldMeta(racer, "lane1stAvg"),
     lane2renAvg: getPredictionFieldMeta(racer, "lane2renAvg"),
     lane3renAvg: getPredictionFieldMeta(racer, "lane3renAvg"),
@@ -79,9 +82,9 @@ export function buildFeatures(racer) {
   const course4_3rate = toNullableNumber(racer?.course4_3rate ?? racer?.course4_3Rate);
   const course_change = entry_course && lane ? (entry_course !== lane ? 1 : 0) : 0;
   const tilt_bonus = tilt === 0.5 ? 2 : 0;
-  const laneFirstRate = getUsablePredictionValue(racer, "lane1stAvg", null);
-  const lane2RenRate = getUsablePredictionValue(racer, "lane2renAvg", null);
-  const lane3RenRate = getUsablePredictionValue(racer, "lane3renAvg", null);
+  const laneFirstRate = getUsablePredictionValue(racer, "lane1stScore", getUsablePredictionValue(racer, "lane1stAvg", null));
+  const lane2RenRate = getUsablePredictionValue(racer, "lane2renScore", getUsablePredictionValue(racer, "lane2renAvg", null));
+  const lane3RenRate = getUsablePredictionValue(racer, "lane3renScore", getUsablePredictionValue(racer, "lane3renAvg", null));
   const lapExStretch = getUsablePredictionValue(racer, "lapExStretch", null);
   const motor2_rate = prediction_field_meta.motor2ren?.is_usable
     ? toNullableNumber(prediction_field_meta.motor2ren.value)
