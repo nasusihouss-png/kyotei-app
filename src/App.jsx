@@ -3845,7 +3845,6 @@ export default function App() {
                               <td className={playerMetricLeaders.exhibitionTime.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.exhibitionTime, 2)}</td>
                               <td className={playerMetricLeaders.lapScore.has(row.lane) ? "metric-hot" : ""}>
                                 {Number.isFinite(Number(row.lapExStretch)) ? formatComparisonValue(row.lapExStretch, 2) : "--"}
-                                {row.stretchFootLabel ? <div className="muted small-inline">{row.stretchFootLabel}</div> : null}
                               </td>
                               <td className={playerMetricLeaders.motor2Rate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.motor2ren, 2)}</td>
                               <td className={playerMetricLeaders.laneFirstRate.has(row.lane) ? "metric-hot" : ""}>{formatComparisonValue(row.lane1stAvg, 2)}</td>

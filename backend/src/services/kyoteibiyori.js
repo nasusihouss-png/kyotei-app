@@ -785,6 +785,18 @@ function parseExplicitTargetCell(field, rawText) {
     };
   }
 
+  if (field === "exhibitionTime") {
+    const value = parseDecimal(rawText);
+    return {
+      fields: {
+        exhibitionTime: value,
+        lapExStretch: value,
+        lapExhibitionScore: value
+      },
+      value
+    };
+  }
+
   if (field === "mawariashi") {
     const value = parseDecimal(rawText);
     return {
@@ -921,11 +933,12 @@ function parseHtmlSupplementExplicit(html, options = {}) {
           ...parsed.fields
         });
 
-        if (parsed.value !== null) {
-          const laneFieldSources = fieldSources[lane] || {};
-          laneFieldSources[target.field] = options?.sourceLabel || "race_shusso_html";
-          fieldSources[lane] = laneFieldSources;
+        const laneFieldSources = fieldSources[lane] || {};
+        for (const [fieldKey, fieldValue] of Object.entries(parsed.fields || {})) {
+          if (fieldValue === null || fieldValue === undefined || fieldValue === "") continue;
+          laneFieldSources[fieldKey] = options?.sourceLabel || "race_shusso_html";
         }
+        fieldSources[lane] = laneFieldSources;
 
         const debugEntry = {
           section: target.section,
@@ -945,6 +958,9 @@ function parseHtmlSupplementExplicit(html, options = {}) {
           fieldDebugs[lane][laneField][LANE_STAT_PERIODS[target.period]?.debugKey || target.period] = debugEntry;
         } else {
           setLaneFieldDebug(fieldDebugs, lane, FIELD_DEBUG_NAME_MAP[target.field] || target.field, debugEntry);
+          if (target.field === "exhibitionTime") {
+            setLaneFieldDebug(fieldDebugs, lane, "lapExStretch", debugEntry);
+          }
         }
         cellMatches.push({
           lane,
@@ -990,44 +1006,19 @@ function parseHtmlSupplementExplicit(html, options = {}) {
       }
     } else if ((options?.mode || "all") === "pre_race") {
       for (const [lane, row] of byLane.entries()) {
-        const mawariashi = toFiniteNumberOrNull(row?.__mawariashi);
-        const nobiashi = toFiniteNumberOrNull(row?.__nobiashi);
-        const lapExStretch = computeLapExhibitionScore({
-          mawariashi,
-          chokusen: nobiashi
-        });
         const nextRow = {
-          ...row,
-          lapExhibitionScore: lapExStretch,
-          lapExStretch,
-          stretchFootLabel: makeStretchLabel({
-            mawariashi,
-            chokusen: nobiashi
-          })
+          ...row
         };
         byLane.set(lane, nextRow);
-        const laneFieldSources = fieldSources[lane] || {};
-        if (lapExStretch !== null) {
-          laneFieldSources.lapExStretch = options?.sourceLabel || "race_shusso_html";
-          laneFieldSources.lapExhibitionScore = options?.sourceLabel || "race_shusso_html";
-        }
-        fieldSources[lane] = laneFieldSources;
         const laneDebug = fieldDebugs?.[lane] || {};
-        laneDebug.lapExStretch = {
-          raw: {
-            mawariashi: laneDebug?.mawariashi?.raw ?? null,
-            nobiashi: laneDebug?.nobiashi?.raw ?? null
-          },
-          sourceLabel: options?.sourceLabel || "race_shusso_html",
-          boatColumn: laneDebug?.mawariashi?.column ?? laneDebug?.nobiashi?.column ?? null,
-          value: lapExStretch,
-          mawariashi: laneDebug?.mawariashi
-            ? { ...laneDebug.mawariashi, sourceLabel: options?.sourceLabel || "race_shusso_html" }
-            : null,
-          nobiashi: laneDebug?.nobiashi
-            ? { ...laneDebug.nobiashi, sourceLabel: options?.sourceLabel || "race_shusso_html" }
-            : null
-        };
+        if (laneDebug?.lapExStretch) {
+          laneDebug.lapExStretch = {
+            ...laneDebug.lapExStretch,
+            sourceLabel: options?.sourceLabel || "race_shusso_html",
+            matchedRowLabel: JAPANESE_LABELS.exhibition,
+            finalValue: laneDebug?.lapExStretch?.value ?? null
+          };
+        }
         fieldDebugs[lane] = laneDebug;
       }
     }
@@ -1140,7 +1131,11 @@ function parseSupplementCell(rowLabel, rawText) {
   if (rowLabel === "展示") {
     const exhibitionTime = parseDecimal(rawText);
     return {
-      fields: { exhibitionTime },
+      fields: {
+        exhibitionTime,
+        lapExStretch: exhibitionTime,
+        lapExhibitionScore: exhibitionTime
+      },
       parsedValue: exhibitionTime
     };
   }
@@ -1200,16 +1195,8 @@ function parseSupplementCell(rowLabel, rawText) {
 }
 
 function finalizeSupplementLaneRow(row = {}) {
-  const mawariashi = Number.isFinite(Number(row?.__mawariashi)) ? Number(row.__mawariashi) : null;
-  const chokusen = Number.isFinite(Number(row?.__chokusen)) ? Number(row.__chokusen) : null;
   return {
-    ...row,
-    lapExhibitionScore:
-      row?.lapExhibitionScore ??
-      computeLapExhibitionScore({ mawariashi, chokusen }),
-    stretchFootLabel:
-      row?.stretchFootLabel ??
-      makeStretchLabel({ mawariashi, chokusen })
+    ...row
   };
 }
 
@@ -1289,10 +1276,9 @@ function parseHtmlSupplement(html) {
         lane3RenRate: indexes.lane3RenRate !== null ? parsePercent(values[indexes.lane3RenRate]) : null
       };
 
-      const lapExLabel = indexes.lapExhibition !== null ? values[indexes.lapExhibition] : null;
-      if (lapExLabel) {
-        next.stretchFootLabel = lapExLabel;
-        next.lapExhibitionScore = parseDecimal(lapExLabel);
+      if (next.exhibitionTime !== null) {
+        next.lapExStretch = next.exhibitionTime;
+        next.lapExhibitionScore = next.exhibitionTime;
       }
       if (next.lapTimeRaw !== null) next.lapTime = normalizeLapTimeForModel(next.lapTimeRaw);
 
@@ -1418,8 +1404,7 @@ export function parseKyoteiBiyoriAjaxData(payload) {
     const mawariashi = parseScaledDecimal(row?.mawariashi, 100);
     const chokusen = parseScaledDecimal(row?.chokusen, 100);
     const startParsed = parseStartTimingRaw(row?.start);
-    const lapExhibitionScore = computeLapExhibitionScore({ mawariashi, chokusen });
-    const stretchFootLabel = makeStretchLabel({ mawariashi, chokusen });
+    const lapExhibitionScore = exhibitionTime;
     const entryCourse = Number(row?.shinnyuu);
 
     const currentCourseField = (baseKey) => {
@@ -1432,8 +1417,9 @@ export function parseKyoteiBiyoriAjaxData(payload) {
       playerName: normalizeSpace(row?.player_name) || null,
       lapTimeRaw,
       lapTime: normalizeLapTimeForModel(lapTimeRaw),
+      lapExStretch: lapExhibitionScore,
       lapExhibitionScore,
-      stretchFootLabel,
+      stretchFootLabel: null,
       exhibitionSt: startParsed.type === "normal" ? startParsed.numeric : null,
       exhibitionTime,
       entryCourse: Number.isInteger(entryCourse) ? entryCourse : null,
@@ -1490,6 +1476,7 @@ export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
     "lane3RenRate",
     "lapTime",
     "lapTimeRaw",
+    "exhibitionTime",
     "lapExStretch",
     "lapExhibitionScore",
     "stretchFootLabel",

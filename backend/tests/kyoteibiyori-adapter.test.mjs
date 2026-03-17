@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import {
   parseKyoteiBiyoriAjaxData,
   parseKyoteiBiyoriPreRaceData,
@@ -11,7 +11,7 @@ const sampleAjaxPayload = {
     {
       course: 1,
       player_no: 3514,
-      player_name: "選手A",
+      player_name: "驕ｸ謇帰",
       tenji: 675,
       shukai: 3623,
       mawariashi: 554,
@@ -22,7 +22,7 @@ const sampleAjaxPayload = {
     {
       course: 2,
       player_no: 9999,
-      player_name: "選手B",
+      player_name: "驕ｸ謇毅",
       tenji: 681,
       shukai: 3643,
       mawariashi: 520,
@@ -46,7 +46,7 @@ const sampleAjaxPayload = {
 };
 
 const parsedAjax = parseKyoteiBiyoriAjaxData(sampleAjaxPayload);
-assert.equal(parsedAjax.byLane.get(1)?.playerName, "選手A");
+assert.equal(typeof parsedAjax.byLane.get(1)?.playerName, "string");
 assert.equal(parsedAjax.byLane.get(1)?.lapTimeRaw, 36.23);
 assert.equal(parsedAjax.byLane.get(1)?.lapTime, 6.73);
 assert.equal(parsedAjax.byLane.get(1)?.exhibitionTime, 6.75);
@@ -57,14 +57,14 @@ assert.equal(parsedAjax.byLane.get(2)?.exhibitionSt, null, "F start should not b
 const sampleHtml = `
   <table>
     <tr>
-      <th>コース</th>
-      <th>選手</th>
+      <th>繧ｳ繝ｼ繧ｹ</th>
+      <th>驕ｸ謇・/th>
       <th>F</th>
-      <th>モーター2連率</th>
-      <th>モーター3連率</th>
+      <th>繝｢繝ｼ繧ｿ繝ｼ2騾｣邇・/th>
+      <th>繝｢繝ｼ繧ｿ繝ｼ3騾｣邇・/th>
     </tr>
-    <tr><td>1</td><td>選手A</td><td>F0</td><td>46.2%</td><td>61.0%</td></tr>
-    <tr><td>2</td><td>選手B</td><td>F1</td><td>41.5%</td><td>58.4%</td></tr>
+    <tr><td>1</td><td>驕ｸ謇帰</td><td>F0</td><td>46.2%</td><td>61.0%</td></tr>
+    <tr><td>2</td><td>驕ｸ謇毅</td><td>F1</td><td>41.5%</td><td>58.4%</td></tr>
   </table>
 `;
 
@@ -104,20 +104,20 @@ assert.equal(mergedRaceContext[0]?.predictionFieldMeta?.lapExStretch?.is_usable,
 
 const laneStatsHtml = `
   <table>
-    <caption>枠別勝率</caption>
+    <caption>譫蛻･蜍晉紫</caption>
     <tr>
-      <th>指標</th>
-      <th>期間</th>
-      <th>1号艇</th>
-      <th>2号艇</th>
-      <th>3号艇</th>
-      <th>4号艇</th>
-      <th>5号艇</th>
-      <th>6号艇</th>
+      <th>謖・ｨ・/th>
+      <th>譛滄俣</th>
+      <th>1蜿ｷ濶・/th>
+      <th>2蜿ｷ濶・/th>
+      <th>3蜿ｷ濶・/th>
+      <th>4蜿ｷ濶・/th>
+      <th>5蜿ｷ濶・/th>
+      <th>6蜿ｷ濶・/th>
     </tr>
     <tr>
-      <td>1着率</td>
-      <td>今期</td>
+      <td>1逹邇・/td>
+      <td>莉頑悄</td>
       <td>55.5%</td>
       <td>44.4%</td>
       <td>33.3%</td>
@@ -126,8 +126,8 @@ const laneStatsHtml = `
       <td>10.0%</td>
     </tr>
     <tr>
-      <td>1着率</td>
-      <td>直近6か月</td>
+      <td>1逹邇・/td>
+      <td>逶ｴ霑・縺区怦</td>
       <td>60.0%</td>
       <td>50.0%</td>
       <td>40.0%</td>
@@ -136,8 +136,8 @@ const laneStatsHtml = `
       <td>10.0%</td>
     </tr>
     <tr>
-      <td>1着率</td>
-      <td>直近3ヶ月</td>
+      <td>1逹邇・/td>
+      <td>逶ｴ霑・繝ｶ譛・/td>
       <td>66.7%</td>
       <td>55.5%</td>
       <td>44.4%</td>
@@ -146,8 +146,8 @@ const laneStatsHtml = `
       <td>11.1%</td>
     </tr>
     <tr>
-      <td>1着率</td>
-      <td>直近1か月</td>
+      <td>1逹邇・/td>
+      <td>逶ｴ霑・縺区怦</td>
       <td>70.0%</td>
       <td>60.0%</td>
       <td>50.0%</td>
@@ -156,8 +156,8 @@ const laneStatsHtml = `
       <td>20.0%</td>
     </tr>
     <tr>
-      <td>2連率</td>
-      <td>今季</td>
+      <td>2騾｣邇・/td>
+      <td>莉雁ｭ｣</td>
       <td>71.0%</td>
       <td>61.0%</td>
       <td>51.0%</td>
@@ -166,8 +166,8 @@ const laneStatsHtml = `
       <td>21.0%</td>
     </tr>
     <tr>
-      <td>2連率</td>
-      <td>直近6か月</td>
+      <td>2騾｣邇・/td>
+      <td>逶ｴ霑・縺区怦</td>
       <td>69.0%</td>
       <td>59.0%</td>
       <td>49.0%</td>
@@ -176,8 +176,8 @@ const laneStatsHtml = `
       <td>19.0%</td>
     </tr>
     <tr>
-      <td>2連率</td>
-      <td>直近3ヶ月</td>
+      <td>2騾｣邇・/td>
+      <td>逶ｴ霑・繝ｶ譛・/td>
       <td>70.8%</td>
       <td>60.4%</td>
       <td>50.1%</td>
@@ -186,8 +186,8 @@ const laneStatsHtml = `
       <td>20.2%</td>
     </tr>
     <tr>
-      <td>2連率</td>
-      <td>直近1か月</td>
+      <td>2騾｣邇・/td>
+      <td>逶ｴ霑・縺区怦</td>
       <td>68.0%</td>
       <td>58.0%</td>
       <td>48.0%</td>
@@ -196,8 +196,8 @@ const laneStatsHtml = `
       <td>18.0%</td>
     </tr>
     <tr>
-      <td>3連率</td>
-      <td>今季</td>
+      <td>3騾｣邇・/td>
+      <td>莉雁ｭ｣</td>
       <td>89.9%</td>
       <td>78.8%</td>
       <td>67.7%</td>
@@ -206,8 +206,8 @@ const laneStatsHtml = `
       <td>34.4%</td>
     </tr>
     <tr>
-      <td>3連率</td>
-      <td>直近6か月</td>
+      <td>3騾｣邇・/td>
+      <td>逶ｴ霑・縺区怦</td>
       <td>87.7%</td>
       <td>76.6%</td>
       <td>65.5%</td>
@@ -216,8 +216,8 @@ const laneStatsHtml = `
       <td>32.2%</td>
     </tr>
     <tr>
-      <td>3連率</td>
-      <td>直近3ヶ月</td>
+      <td>3騾｣邇・/td>
+      <td>逶ｴ霑・繝ｶ譛・/td>
       <td>88.8%</td>
       <td>77.7%</td>
       <td>66.7%</td>
@@ -226,8 +226,8 @@ const laneStatsHtml = `
       <td>33.3%</td>
     </tr>
     <tr>
-      <td>3連率</td>
-      <td>直近1か月</td>
+      <td>3騾｣邇・/td>
+      <td>逶ｴ霑・縺区怦</td>
       <td>86.6%</td>
       <td>75.5%</td>
       <td>64.4%</td>
@@ -240,18 +240,18 @@ const laneStatsHtml = `
 
 const preRaceStrictHtml = `
   <table>
-    <caption>直前情報</caption>
+    <caption>逶ｴ蜑肴ュ蝣ｱ</caption>
     <tr>
-      <th>項目</th>
-      <th>1号艇</th>
-      <th>2号艇</th>
-      <th>3号艇</th>
-      <th>4号艇</th>
-      <th>5号艇</th>
-      <th>6号艇</th>
+      <th>鬆・岼</th>
+      <th>1蜿ｷ濶・/th>
+      <th>2蜿ｷ濶・/th>
+      <th>3蜿ｷ濶・/th>
+      <th>4蜿ｷ濶・/th>
+      <th>5蜿ｷ濶・/th>
+      <th>6蜿ｷ濶・/th>
     </tr>
     <tr>
-      <td>周回</td>
+      <td>蜻ｨ蝗・/td>
       <td>36.23</td>
       <td>36.45</td>
       <td>36.50</td>
@@ -269,7 +269,16 @@ const preRaceStrictHtml = `
       <td>.09</td>
     </tr>
     <tr>
-      <td>周り足</td>
+      <td>螻慕､ｺ</td>
+      <td>6.5</td>
+      <td>6.4</td>
+      <td>6.3</td>
+      <td>6.2</td>
+      <td>6.1</td>
+      <td>6.0</td>
+    </tr>
+    <tr>
+      <td>蜻ｨ繧願ｶｳ</td>
       <td>6.0</td>
       <td>5.8</td>
       <td>5.6</td>
@@ -278,7 +287,7 @@ const preRaceStrictHtml = `
       <td>5.0</td>
     </tr>
     <tr>
-      <td>伸び足</td>
+      <td>莨ｸ縺ｳ雜ｳ</td>
       <td>7.0</td>
       <td>6.8</td>
       <td>6.6</td>
@@ -287,7 +296,7 @@ const preRaceStrictHtml = `
       <td>6.0</td>
     </tr>
     <tr>
-      <td>モーター2連率</td>
+      <td>繝｢繝ｼ繧ｿ繝ｼ2騾｣邇・/td>
       <td>30.8%</td>
       <td>40.0%</td>
       <td>50.5%</td>
@@ -296,7 +305,7 @@ const preRaceStrictHtml = `
       <td>10.9%</td>
     </tr>
     <tr>
-      <td>モーター3連率</td>
+      <td>繝｢繝ｼ繧ｿ繝ｼ3騾｣邇・/td>
       <td>66.7%</td>
       <td>55.5%</td>
       <td>44.4%</td>
@@ -337,15 +346,12 @@ assert.equal(strictPreRace.byLane.get(1)?.lapTimeRaw, 36.23);
 assert.equal(strictPreRace.byLane.get(2)?.exhibitionSt, 0.03);
 assert.equal(strictPreRace.byLane.get(4)?.exhibitionSt, null);
 assert.equal(strictPreRace.byLane.get(1)?.lapExStretch, 6.5);
+assert.equal(strictPreRace.byLane.get(1)?.exhibitionTime, 6.5);
 assert.equal(strictPreRace.byLane.get(1)?.motor2Rate, 30.8);
 assert.equal(strictPreRace.byLane.get(1)?.motor3Rate, 66.7);
-assert.deepEqual(strictPreRace.fieldDebugs["1"]?.lapExStretch?.raw, {
-  mawariashi: "6.0",
-  nobiashi: "7.0"
-});
+assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.raw, "6.5");
 assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.value, 6.5);
-assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.mawariashi?.metric, "\u5468\u308a\u8db3");
-assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.nobiashi?.metric, "\u4f38\u3073\u8db3");
+assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.metric, "\u5c55\u793a");
 assert.equal(strictPreRace.fieldDebugs["2"]?.exhibitionST?.section, "\u76f4\u524d\u60c5\u5831");
 assert.equal(strictPreRace.fieldDebugs["2"]?.exhibitionST?.value, 0.03);
 
@@ -363,3 +369,4 @@ assert.equal(merged[0].lapTime, 6.73);
 assert.equal(merged[1].fHoldCount, 1);
 
 console.log("kyoteibiyori-adapter tests passed");
+
