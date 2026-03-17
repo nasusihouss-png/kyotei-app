@@ -55,6 +55,12 @@ function average(values) {
   return valid.reduce((sum, value) => sum + value, 0) / valid.length;
 }
 
+const LANE_FINISH_PRIORS = {
+  first: { 1: 1.22, 2: 1.08, 3: 1.01, 4: 0.94, 5: 0.86, 6: 0.8 },
+  second: { 1: 1.1, 2: 1.08, 3: 1.02, 4: 0.95, 5: 0.9, 6: 0.86 },
+  third: { 1: 1.04, 2: 1.03, 3: 1.01, 4: 0.97, 5: 0.93, 6: 0.9 }
+};
+
 function normalizeAgainstPeers(value, values) {
   if (!Number.isFinite(value)) return 0;
   const valid = values.filter((entry) => Number.isFinite(entry));
@@ -137,6 +143,53 @@ function buildRoleSpecificFinishBonuses(lane, row, laneMap) {
     secondPlaceBonus: round(secondPlaceBonus, 4),
     thirdPlaceBonus: round(thirdPlaceBonus, 4)
   };
+}
+
+function buildTopExactaCandidates({ enhancement, firstProbs, secondProbs, limit = 4 }) {
+  const firstRows = normalizeRows(firstProbs);
+  const secondRows = normalizeRows(secondProbs);
+  const firstMap = new Map(firstRows.map((row) => [row.lane, row.weight]));
+  const secondMap = new Map(secondRows.map((row) => [row.lane, row.weight]));
+  const orderRows = safeArray(enhancement?.treeOrderProbabilities || enhancement?.stage5_ticketing?.order_probabilities);
+  const exactaMap = new Map();
+
+  for (const row of orderRows) {
+    const combo = normalizeCombo(row?.combo);
+    if (!combo) continue;
+    const [a, b] = combo.split("-").map((value) => toInt(value, null));
+    if (!Number.isInteger(a) || !Number.isInteger(b)) continue;
+    const key = `${a}-${b}`;
+    const existing = exactaMap.get(key);
+    exactaMap.set(key, {
+      combo: key,
+      probability: round(toNum(existing?.probability, 0) + toNum(row?.probability, 0), 6),
+      source: "scenario_tree"
+    });
+  }
+
+  for (const firstRow of firstRows.slice(0, 4)) {
+    for (const secondRow of secondRows.slice(0, 5)) {
+      if (firstRow.lane === secondRow.lane) continue;
+      const key = `${firstRow.lane}-${secondRow.lane}`;
+      const baseline = toNum(firstMap.get(firstRow.lane), 0) * toNum(secondMap.get(secondRow.lane), 0) * 1.08;
+      const existing = exactaMap.get(key);
+      exactaMap.set(key, {
+        combo: key,
+        probability: round(Math.max(toNum(existing?.probability, 0), baseline), 6),
+        source: existing?.source || "role_distribution"
+      });
+    }
+  }
+
+  return [...exactaMap.values()]
+    .sort((a, b) => toNum(b?.probability, 0) - toNum(a?.probability, 0))
+    .slice(0, limit)
+    .map((row, index) => ({
+      rank: index + 1,
+      combo: row.combo,
+      probability: round(row.probability, 4),
+      source: row.source
+    }));
 }
 
 function buildStylePressure(lane, profile) {
@@ -342,7 +395,7 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore) {
   };
 }
 
-function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, events, escapeScore) {
+function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, events, escapeScore, laneFinishPriors = LANE_FINISH_PRIORS) {
   const finishProbabilitiesByScenario = [];
   const laneSet = [...new Set([
     ...Object.keys(baseProbs?.first || {}).map((lane) => toInt(lane, null)),
@@ -371,9 +424,18 @@ function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, 
         secondPlaceBonus: 0,
         thirdPlaceBonus: 0
       };
-      firstRows.push({ lane, weight: toNum(baseProbs?.first?.[lane], 0) * roleWeights.first });
-      secondRows.push({ lane, weight: toNum(baseProbs?.second?.[lane], 0) * roleWeights.second });
-      thirdRows.push({ lane, weight: toNum(baseProbs?.third?.[lane], 0) * roleWeights.third });
+      firstRows.push({
+        lane,
+        weight: toNum(baseProbs?.first?.[lane], 0) * roleWeights.first * toNum(laneFinishPriors?.first?.[lane], 1)
+      });
+      secondRows.push({
+        lane,
+        weight: toNum(baseProbs?.second?.[lane], 0) * roleWeights.second * toNum(laneFinishPriors?.second?.[lane], 1)
+      });
+      thirdRows.push({
+        lane,
+        weight: toNum(baseProbs?.third?.[lane], 0) * roleWeights.third * toNum(laneFinishPriors?.third?.[lane], 1)
+      });
     }
     const normalizedFirst = normalizeRows(firstRows);
     const normalizedSecond = normalizeRows(secondRows);
@@ -775,6 +837,23 @@ export function buildHitRateEnhancementContext({
   ];
   const normalizedScenarioProbabilities = normalizeScenarioRows(scenarioProbabilities);
   const intermediateEvents = buildIntermediateEvents(laneMap, escapeScore, outerAttackPressure);
+  const laneFinishPriors = {
+    first: { ...LANE_FINISH_PRIORS.first },
+    second: { ...LANE_FINISH_PRIORS.second },
+    third: { ...LANE_FINISH_PRIORS.third }
+  };
+  laneFinishPriors.first[1] = round(
+    clamp(1.18, 1.36, toNum(laneFinishPriors.first[1], 1.22) + 0.08 + escapeScore * 0.12),
+    4
+  );
+  laneFinishPriors.second[1] = round(
+    clamp(1.08, 1.22, toNum(laneFinishPriors.second[1], 1.1) + Math.max(0, escapeScore - 0.24) * 0.08),
+    4
+  );
+  laneFinishPriors.third[1] = round(
+    clamp(1.02, 1.16, toNum(laneFinishPriors.third[1], 1.04) + Math.max(0, escapeScore - 0.22) * 0.06),
+    4
+  );
   const baseRoleProbabilities = {
     first: Object.fromEntries(normalizeRows(roleProbabilityLayers?.first_place_probability_json).map((row) => [row.lane, row.weight])),
     second: Object.fromEntries(normalizeRows(roleProbabilityLayers?.second_place_probability_json).map((row) => [row.lane, row.weight])),
@@ -785,8 +864,15 @@ export function buildHitRateEnhancementContext({
     laneMap,
     baseRoleProbabilities,
     intermediateEvents,
-    escapeScore
+    escapeScore,
+    laneFinishPriors
   );
+  const topExactaCandidates = buildTopExactaCandidates({
+    enhancement: { treeOrderProbabilities: treeAggregation.orderProbabilities, stage5_ticketing: { order_probabilities: treeAggregation.orderProbabilities } },
+    firstProbs: treeAggregation.aggregatedFinishProbabilities.first,
+    secondProbs: treeAggregation.aggregatedFinishProbabilities.second,
+    limit: 4
+  });
 
   const darkHorseAlerts = [
     toNum(laneMap.get(4)?.lane_fit_1st, 0) >= 46 && String(rows.find((row) => toInt(row?.racer?.lane, null) === 4)?.racer?.class || "") === "B1"
@@ -807,6 +893,8 @@ export function buildHitRateEnhancementContext({
       lane2_allow_nige: round(lane2AllowNige, 4),
       outer_attack_pressure: round(outerAttackPressure, 4),
       venue_bias: venueBias,
+      boat1_prior_boost: round(Math.max(0, laneFinishPriors.first[1] - LANE_FINISH_PRIORS.first[1]), 4),
+      lane_finish_priors: laneFinishPriors,
       hidden_F_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
         hidden_F_flag: row.hidden_F_flag,
         unresolved_F_count: row.unresolved_F_count,
@@ -878,7 +966,8 @@ export function buildHitRateEnhancementContext({
       shape_reason: null,
       finish_probabilities_by_scenario: treeAggregation.finishProbabilitiesByScenario,
       aggregated_finish_probabilities: treeAggregation.aggregatedFinishProbabilities,
-      order_probabilities: treeAggregation.orderProbabilities
+      order_probabilities: treeAggregation.orderProbabilities,
+      top_exacta_candidates: topExactaCandidates
     },
     confidence: toNum(confidence, 0),
     by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row])),
@@ -888,6 +977,7 @@ export function buildHitRateEnhancementContext({
     finishProbabilitiesByScenario: treeAggregation.finishProbabilitiesByScenario,
     aggregatedFinishProbabilities: treeAggregation.aggregatedFinishProbabilities,
     treeOrderProbabilities: treeAggregation.orderProbabilities,
+    topExactaCandidates,
     startDevelopmentStates: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
       start_edge: row.start_edge,
       late_risk: row.late_risk,
@@ -926,10 +1016,14 @@ export function applyHitRateEnhancementToProbabilities({
 
   const applyByRole = (baseMap, role) => normalizeRows([...baseMap.entries()].map(([lane, weight]) => {
     const row = laneRows[String(lane)] || {};
+    const lanePrior = toNum(
+      enhancement?.stage1_static?.lane_finish_priors?.[role]?.[lane],
+      toNum(LANE_FINISH_PRIORS?.[role]?.[lane], 1)
+    );
     let multiplier = 1;
     if (role === "first") {
       multiplier +=
-        (lane === 1 ? 0.08 + escapeScore * 0.16 : 0) +
+        (lane === 1 ? 0.1 + escapeScore * 0.18 : 0) +
         toNum(row.start_edge, 0) * 0.22 +
         (toNum(row.lane_fit_1st, 0) / 100) * 0.18 +
         (toNum(row.motor_true, 0) / 100) * 0.09 +
@@ -971,7 +1065,7 @@ export function applyHitRateEnhancementToProbabilities({
     }
     return {
       lane,
-      weight: Math.max(0.0001, weight * Math.max(0.55, multiplier))
+      weight: Math.max(0.0001, weight * lanePrior * Math.max(0.55, multiplier))
     };
   }));
 
@@ -1018,18 +1112,40 @@ export function buildEnhancedTrifectaShapeRecommendation({
     safeArray(enhancement?.stage3_scenarios?.selected_scenario_probabilities).find((row) => row?.scenario === "outer_mix_chaos")?.probability,
     0
   );
+  const targetTicketCount = 8;
+  const selectedScenarioMap = new Map(
+    safeArray(enhancement?.stage3_scenarios?.selected_scenario_probabilities).map((row) => [row.scenario, toNum(row?.probability, 0)])
+  );
+  const topExacta = safeArray(enhancement?.topExactaCandidates || enhancement?.stage5_ticketing?.top_exacta_candidates);
 
   const templates = [];
   if (topFirst.lane === 1) {
     const secondLanes = pickTopLanes(secondRows, 2, [1]);
-    const thirdLanes = pickTopLanes(thirdRows, 3, [1]);
+    const secondLanesWide = pickTopLanes(secondRows, 3, [1]);
+    const thirdLanes = pickTopLanes(thirdRows, 4, [1]);
     templates.push({
       shape: `1-${secondLanes.join("")}-${[...new Set([...secondLanes, ...thirdLanes])].join("")}`,
       first: [1],
       second: secondLanes,
       third: [...new Set([...secondLanes, ...thirdLanes])],
       why: "boat1 escape with concentrated partners",
-      score: 0.72 + escapeScore * 0.4 + firstDominance * 0.28
+      score: 0.78 + escapeScore * 0.42 + firstDominance * 0.32
+    });
+    templates.push({
+      shape: "1-23-2345",
+      first: [1],
+      second: pickTopLanes(secondRows, 2, [1]),
+      third: pickTopLanes(thirdRows, 4, [1]),
+      why: "practical 1-fixed spread for stable inside race",
+      score: 0.74 + escapeScore * 0.38 + Math.max(0, 0.28 - chaosProb) * 0.16
+    });
+    templates.push({
+      shape: "1-234-234",
+      first: [1],
+      second: secondLanesWide,
+      third: pickTopLanes(thirdRows, 3, [1]),
+      why: "practical 1-fixed 6-ticket class shape",
+      score: 0.73 + escapeScore * 0.34 + Math.max(0, firstDominance) * 0.18
     });
     if (secondLanes.includes(3)) {
       templates.push({
@@ -1045,9 +1161,9 @@ export function buildEnhancedTrifectaShapeRecommendation({
       shape: "1-24-234",
       first: [1],
       second: pickTopLanes(secondRows, 2, [1]),
-      third: pickTopLanes(thirdRows, 3, [1]),
+      third: pickTopLanes(thirdRows, 4, [1]),
       why: "boat1 first with wider third survivor coverage",
-      score: 0.54 + escapeScore * 0.24
+      score: 0.62 + escapeScore * 0.26
     });
     templates.push({
       shape: "1-2-34",
@@ -1055,7 +1171,15 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: [2],
       third: [3, 4],
       why: "stable inside-first tie-break shape",
-      score: 0.49 + Math.max(0, 0.5 - chaosProb) * 0.22
+      score: 0.52 + Math.max(0, 0.5 - chaosProb) * 0.22
+    });
+    templates.push({
+      shape: "1-4-23",
+      first: [1],
+      second: [4],
+      third: [2, 3],
+      why: "boat1 survives while outer pressure stays in partner lane",
+      score: 0.44 + selectedScenarioMap.get("boat4_cado_attack") * 0.24 + Math.max(0, escapeScore - 0.24) * 0.12
     });
   }
   const lane4HeadWeight = toNum(firstRows.find((row) => row.lane === 4)?.weight, 0);
@@ -1080,7 +1204,33 @@ export function buildEnhancedTrifectaShapeRecommendation({
 
   const chosen = templates
     .filter((row) => safeArray(row.first).length && safeArray(row.second).length && safeArray(row.third).length)
+    .map((row) => {
+      const combos = [];
+      for (const a of row.first) {
+        for (const b of row.second) {
+          for (const c of row.third) {
+            const combo = normalizeCombo(`${a}-${b}-${c}`);
+            if (combo) combos.push(combo);
+          }
+        }
+      }
+      const expandedTickets = [...new Set(combos)];
+      const ticketCount = expandedTickets.length;
+      const exactaSupport = expandedTickets.reduce((sum, combo) => {
+        const exacta = combo.split("-").slice(0, 2).join("-");
+        const exactaRow = topExacta.find((item) => item?.combo === exacta);
+        return sum + toNum(exactaRow?.probability, 0);
+      }, 0);
+      const countPenalty = Math.abs(ticketCount - targetTicketCount) * 0.035;
+      return {
+        ...row,
+        expandedTickets,
+        ticketCount,
+        score: row.score + exactaSupport * 0.18 - countPenalty
+      };
+    })
     .sort((a, b) => b.score - a.score)[0] || null;
+
   if (!chosen) {
     return {
       shape: null,
@@ -1095,23 +1245,13 @@ export function buildEnhancedTrifectaShapeRecommendation({
       }
     };
   }
-  const expanded = [];
-  for (const a of chosen.first) {
-    for (const b of chosen.second) {
-      for (const c of chosen.third) {
-        const combo = normalizeCombo(`${a}-${b}-${c}`);
-        if (combo) expanded.push(combo);
-      }
-    }
-  }
-  const expandedTickets = [...new Set(expanded)];
   return {
     shape: chosen.shape,
     selected_shape: chosen.shape,
     first: chosen.first,
     second: chosen.second,
     third: chosen.third,
-    expanded_tickets: expandedTickets,
+    expanded_tickets: chosen.expandedTickets.slice(0, 9),
     reason_tags: [
       "HIT_RATE_ENHANCED_SHAPE",
       topFirst.lane === 1 ? "INSIDE_FIRST_REALISM" : "CONTROLLED_COUNTER",
@@ -1122,7 +1262,9 @@ export function buildEnhancedTrifectaShapeRecommendation({
       first_place_dominance: round(firstDominance, 4),
       escape_score: round(escapeScore, 4),
       chaos_probability: round(chaosProb, 4),
-      confidence: round(confidence, 2)
+      confidence: round(confidence, 2),
+      target_ticket_count: targetTicketCount,
+      actual_ticket_count: chosen.ticketCount
     }
   };
 }

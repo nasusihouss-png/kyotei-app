@@ -145,6 +145,8 @@ const enhancement = buildHitRateEnhancementContext({
 
 assert.equal(enhancement.stage1_static.escape_score > 0.2, true);
 assert.equal(typeof enhancement.stage1_static.venue_bias, "object");
+assert.equal(enhancement.stage1_static.boat1_prior_boost > 0, true);
+assert.equal(enhancement.stage1_static.lane_finish_priors.first["1"] > enhancement.stage1_static.lane_finish_priors.first["4"], true);
 assert.equal(enhancement.stage3_scenarios.selected_scenario_probabilities.some((row) => row.scenario === "boat4_cado_attack"), true);
 assert.equal(Array.isArray(enhancement.finishProbabilitiesByScenario), true);
 assert.equal(Array.isArray(enhancement.scenarioProbabilities), true);
@@ -152,6 +154,8 @@ assert.equal(typeof enhancement.aggregatedFinishProbabilities, "object");
 assert.equal(typeof enhancement.intermediateEvents, "object");
 assert.equal(typeof enhancement.startPatternContext, "object");
 assert.equal(Array.isArray(enhancement.dark_horse_alerts), true);
+assert.equal(Array.isArray(enhancement.topExactaCandidates), true);
+assert.equal(enhancement.topExactaCandidates.length <= 4, true);
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].firstPlaceBonus, "number");
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].secondPlaceBonus, "number");
 assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].thirdPlaceBonus, "number");
@@ -186,6 +190,7 @@ const shape = buildEnhancedTrifectaShapeRecommendation({
 
 assert.equal(typeof shape.selected_shape, "string");
 assert.equal(shape.expanded_tickets.every((combo) => combo.split("-").length === 3), true);
+assert.equal(shape.expanded_tickets.length >= 6 && shape.expanded_tickets.length <= 9, true);
 
 const tickets = buildEnhancedShapeBasedTrifectaTickets({
   shapeRecommendation: shape,
@@ -198,3 +203,4 @@ const tickets = buildEnhancedShapeBasedTrifectaTickets({
 
 assert.equal(tickets.length <= 10, true);
 assert.equal(new Set(tickets.map((row) => row.combo)).size, tickets.length, "ticket list should not contain duplicate combos");
+assert.equal(enhancement.topExactaCandidates.every((row) => row.combo.split("-").length === 2), true);

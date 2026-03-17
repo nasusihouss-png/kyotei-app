@@ -2500,6 +2500,30 @@ export default function App() {
     }
     return null;
   }, [prediction]);
+  const topExactaFour = useMemo(() => {
+    const enhancementExacta = Array.isArray(hitRateEnhancementDebug?.topExactaCandidates)
+      ? hitRateEnhancementDebug.topExactaCandidates
+      : Array.isArray(hitRateEnhancementDebug?.stage5_ticketing?.top_exacta_candidates)
+        ? hitRateEnhancementDebug.stage5_ticketing.top_exacta_candidates
+        : [];
+    if (enhancementExacta.length > 0) {
+      return enhancementExacta.slice(0, 4).map((row, index) => ({
+        rank: row?.rank ?? index + 1,
+        combo: row?.combo || "--",
+        probability: Number(row?.probability),
+        source: row?.source || "scenario_tree"
+      }));
+    }
+    return exactaBets
+      .map((row, index) => ({
+        rank: index + 1,
+        combo: row?.combo || "--",
+        probability: Number(row?.prob ?? row?.estimated_hit_rate ?? null),
+        source: "exacta_snapshot"
+      }))
+      .filter((row) => row.combo && row.combo !== "--")
+      .slice(0, 4);
+  }, [hitRateEnhancementDebug, exactaBets]);
   const roleSpecificBonusRows = useMemo(() => {
     const byLane = hitRateEnhancementDebug?.by_lane && typeof hitRateEnhancementDebug.by_lane === "object"
       ? hitRateEnhancementDebug.by_lane
@@ -3922,6 +3946,36 @@ export default function App() {
                   </div>
                 </article>
 
+                {topExactaFour.length > 0 ? (
+                  <article className="card summary-card premium-ticket-card subtle">
+                    <div className="premium-card-head">
+                      <div>
+                        <p className="eyebrow">Support</p>
+                        <h2>Top Exacta 4</h2>
+                      </div>
+                    </div>
+                    <div className="summary-inline-meta">
+                      <span>{topExactaFour.length} pairs</span>
+                      <span>likely order skeleton for the race</span>
+                    </div>
+                    <div className="ticket-stack compact-list">
+                      {topExactaFour.map((row, idx) => (
+                        <div key={`top-exacta-${row.combo}-${idx}`} className="premium-ticket-row">
+                          <div className="ticket-mainline">
+                            <span className="rank-pill">#{row?.rank ?? idx + 1}</span>
+                            <span className="ticket-type ticket-type-inline">2連単</span>
+                            <strong><ComboBadge combo={row?.combo || "--"} /></strong>
+                          </div>
+                          <div className="ticket-meta">
+                            <span>{Number.isFinite(row?.probability) ? `hit ${formatMaybeNumber(row.probability * 100, 1)}%` : "--"}</span>
+                            <span>{row?.source || "-"}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ) : null}
+
                 <div className="prediction-summary-grid premium-layout">
                   {adminMode ? (
                     <section className="card">
@@ -4053,6 +4107,17 @@ export default function App() {
                                     </tbody>
                                   </table>
                                 </div>
+                              </details>
+                            ) : null}
+                            {hitRateEnhancementDebug?.stage1_static?.lane_finish_priors ? (
+                              <details style={{ marginBottom: 12 }}>
+                                <summary>lane finish priors + exacta support</summary>
+                                <pre className="json-preview">{safePrettyJson({
+                                  boat1PriorBoost: hitRateEnhancementDebug?.stage1_static?.boat1_prior_boost,
+                                  laneFinishPriors: hitRateEnhancementDebug?.stage1_static?.lane_finish_priors,
+                                  selectedShape: recommendedShape,
+                                  topExactaCandidates: topExactaFour
+                                })}</pre>
                               </details>
                             ) : null}
                             <pre className="json-preview">{safePrettyJson(hitRateEnhancementDebug)}</pre>
