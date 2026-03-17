@@ -493,6 +493,10 @@ function safePrettyJson(value) {
   }
 }
 
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function formatDebugRawValue(value) {
   return value === undefined ? "undefined" : JSON.stringify(value);
 }
