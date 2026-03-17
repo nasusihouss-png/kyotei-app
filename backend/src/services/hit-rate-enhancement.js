@@ -77,6 +77,14 @@ const ACTUAL_ENTRY_TUNING = {
   actual_four_cado_boost: 0.18
 };
 
+const BOAT3_HEAD_REBALANCE = {
+  weak_alignment_gate: 0.72,
+  medium_alignment_gate: 0.86,
+  strong_alignment_gate: 1,
+  boat1_survival_restore: 0.018,
+  boat2_second_recovery: 0.045
+};
+
 function normalizeAgainstPeers(value, values) {
   if (!Number.isFinite(value)) return 0;
   const valid = values.filter((entry) => Number.isFinite(entry));
@@ -374,6 +382,8 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       second: 0,
       third: 0
     };
+    const boat2SecondRecoveryBefore = 0;
+    const boat2SecondRecoveryAfter = actualLane === 2 ? toNum(row?.actual_boat2_second_recovery, 0) : 0;
     const insideSecondThirdRecoveryAfter = {
       second:
         actualLane === 2 && primaryHeadLane === 1
@@ -446,7 +456,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       toNum(primaryCompatibility?.third_bonus, 0) * 0.18 +
       toNum(row?.finish_role_bonuses?.thirdPlaceBonus, 0) * 0.18 -
       toNum(thirdExclusion?.penalty, 0);
-    const secondPlaceScore = secondPlaceScoreBeforeTuning + actualFourSecondCarryover + insideSecondThirdRecoveryAfter.second;
+    const secondPlaceScore = secondPlaceScoreBeforeTuning + actualFourSecondCarryover + insideSecondThirdRecoveryAfter.second + boat2SecondRecoveryAfter;
     const thirdPlaceScore = thirdPlaceScoreBeforeTuning + actualFourThirdCarryover + insideSecondThirdRecoveryAfter.third;
 
     row.finish_role_scores_before_tuning = {
@@ -466,6 +476,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       actual_four_second_carryover: round(actualFourSecondCarryover, 4),
       inside_second_recovery: round(insideSecondThirdRecoveryAfter.second, 4),
       inside_third_recovery: round(insideSecondThirdRecoveryAfter.third, 4),
+      boat2_second_recovery: round(actualLane === 2 ? boat2SecondRecoveryAfter : 0, 4),
       actual_four_third_carryover: round(actualFourThirdCarryover, 4),
       third_place_proxy_used: motor3 > 0 ? "motor3ren" : "survival_proxy",
       primary_head_lane: primaryHeadLane
@@ -481,7 +492,9 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       survival_after_attack_bonus: round(tunedSurvivalAfterAttackBonus, 4),
       actual_four_second_carryover: round(actualFourSecondCarryover, 4),
       inside_second_recovery_before: round(insideSecondThirdRecoveryBefore.second, 4),
-      inside_second_recovery_after: round(insideSecondThirdRecoveryAfter.second, 4)
+      inside_second_recovery_after: round(insideSecondThirdRecoveryAfter.second, 4),
+      boat2_second_recovery_before: round(boat2SecondRecoveryBefore, 4),
+      boat2_second_recovery_after: round(actualLane === 2 ? boat2SecondRecoveryAfter : 0, 4)
     };
     row.third_place_bonus_breakdown = {
       lane3renScore: round(laneFit3, 4),
@@ -1450,6 +1463,32 @@ export function buildHitRateEnhancementContext({
     toNum(boat1Row?.motor_true, 0) >= 52 &&
     toNum(actualLane1Row?.late_risk, 0) < 0.16 &&
     toNum(actualLane1Row?.hidden_F_flag, 0) === 0;
+  const boat3HeadAlignmentStrength = clamp(
+    0,
+    0.2,
+    (toNum(actualLane3Row?.style_profile?.makuri, 0) / 100) * 0.06 +
+      (toNum(actualLane3Row?.style_profile?.makuri_sashi, 0) / 100) * 0.05 +
+      Math.max(0, toNum(actualLane3Row?.start_edge, 0)) * 0.08 +
+      Math.max(0, toNum(actualLane3Row?.ex_time_left_gap_advantage, 0)) * 0.07 +
+      Math.max(0, toNum(actualLane3Row?.attack_readiness_bonus, 0)) * 0.12 -
+      toNum(actualLane3Row?.late_risk, 0) * 0.06
+  );
+  const boat3HeadAlignmentGate = boat3HeadAlignmentStrength >= 0.11 && !boat1StrongSurvivalFlag
+    ? BOAT3_HEAD_REBALANCE.strong_alignment_gate
+    : boat3HeadAlignmentStrength >= 0.08 && !boat1StrongSurvivalFlag
+      ? BOAT3_HEAD_REBALANCE.medium_alignment_gate
+      : BOAT3_HEAD_REBALANCE.weak_alignment_gate;
+  const boat2SecondRecoveryBefore = 0;
+  const boat2SecondRecoveryAfter =
+    boat1StrongSurvivalFlag && toNum(actualLane2Row?.lane_fit_2ren, 0) >= 42
+      ? clamp(
+          0,
+          BOAT3_HEAD_REBALANCE.boat2_second_recovery,
+          (toNum(actualLane2Row?.lane_fit_2ren, 0) / 100) * 0.03 +
+            Math.max(0, 6.82 - toNum(actualLane2Row?.motor_form?.lapTime, 6.82)) * 0.02 +
+            (actualLane2Row?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLane2Row?.motor_raw?.motor2ren, 0) / 100) * 0.02 : 0)
+        )
+      : 0;
   const head4FinalDecision = isStrongCado && lane3SurvivalFlag && lane2FlowInFlag
     ? "4-3-2"
     : boat1StrongSurvivalFlag
@@ -1483,7 +1522,7 @@ export function buildHitRateEnhancementContext({
   const boat1FinalSurvivalBonusAfter = clamp(
     0,
     0.1,
-    boat1FinalSurvivalBonusBefore + (isStrongCado ? 0.008 : 0.016)
+    boat1FinalSurvivalBonusBefore + (isStrongCado ? 0.008 : 0.016) + (boat3HeadAlignmentGate < 1 ? BOAT3_HEAD_REBALANCE.boat1_survival_restore : 0)
   );
   const escapeScore = clamp(
     0,
@@ -1494,6 +1533,16 @@ export function buildHitRateEnhancementContext({
       weakWallPenalty +
       stableInnerBonus * 0.4 +
       boat1FinalSurvivalBonusAfter * 0.45
+  );
+  const boat3HeadPromotionBefore = clamp(
+    0,
+    1,
+    (toNum(actualLane3Row?.style_profile?.makuri, 0) / 100) * 0.56 +
+      Math.max(0, toNum(actualLane3Row?.start_edge, 0)) * 0.6 -
+      toNum(actualLane3Row?.late_risk, 0) * 0.26 +
+      toNum(actualLane3Row?.attack_readiness_bonus, 0) * 0.42 +
+      (startPatternContext.outer_attack_window ? 0.05 : 0) +
+      Math.max(0, 0.45 - escapeScoreBeforeActualEntryAdjust) * 0.36
   );
   const actualTwoSashiBasePriority = clamp(
     0,
@@ -1564,6 +1613,7 @@ export function buildHitRateEnhancementContext({
   }
   if (actualLane2Row && typeof actualLane2Row === "object") {
     actualLane2Row.lane2_flow_in_flag = lane2FlowInFlag ? 1 : 0;
+    actualLane2Row.actual_boat2_second_recovery = round(boat2SecondRecoveryAfter, 4);
     actualLane2Row.actual_four_partner_second_carryover = round(clamp(0, 0.05, actualFourAttackCaseStrength * 0.12), 4);
     actualLane2Row.actual_four_partner_third_carryover = round(actualFourPartnerThirdCarryover, 4);
   }
@@ -1595,12 +1645,7 @@ export function buildHitRateEnhancementContext({
       probability: round(clamp(
         0,
         1,
-        (toNum(actualLane3Row?.style_profile?.makuri, 0) / 100) * 0.56 +
-        Math.max(0, toNum(actualLane3Row?.start_edge, 0)) * 0.6 -
-        toNum(actualLane3Row?.late_risk, 0) * 0.26 +
-        toNum(actualLane3Row?.attack_readiness_bonus, 0) * 0.42 +
-        (startPatternContext.outer_attack_window ? 0.05 : 0) +
-        Math.max(0, 0.45 - escapeScore) * 0.36
+        boat3HeadPromotionBefore * boat3HeadAlignmentGate
       ), 4)
     },
     {
@@ -1608,11 +1653,11 @@ export function buildHitRateEnhancementContext({
       probability: round(clamp(
         0,
         1,
-        (toNum(actualLane3Row?.style_profile?.makuri_sashi, 0) / 100) * 0.6 +
-        Math.max(0, toNum(actualLane3Row?.start_edge, 0)) * 0.42 -
-        toNum(actualLane3Row?.late_risk, 0) * 0.18 +
-        toNum(actualLane3Row?.attack_readiness_bonus, 0) * 0.28 +
-        (startPatternContext.two_three_late ? 0.04 : 0)
+        ((toNum(actualLane3Row?.style_profile?.makuri_sashi, 0) / 100) * 0.6 +
+          Math.max(0, toNum(actualLane3Row?.start_edge, 0)) * 0.42 -
+          toNum(actualLane3Row?.late_risk, 0) * 0.18 +
+          toNum(actualLane3Row?.attack_readiness_bonus, 0) * 0.28 +
+          (startPatternContext.two_three_late ? 0.04 : 0)) * boat3HeadAlignmentGate
       ), 4)
     },
     {
@@ -1792,6 +1837,21 @@ export function buildHitRateEnhancementContext({
           .map(([actualLane, row]) => [String(actualLane), boatNumberOf(row)])
       ),
       recalculated_priorities: {
+        boat3_head: {
+          boat_number: boatNumberOf(actualLane3Row),
+          actual_lane: actualLaneOf(actualLane3Row),
+          before_adjustment: round(boat3HeadPromotionBefore, 4),
+          after_adjustment: round(boat3HeadPromotionBefore * boat3HeadAlignmentGate, 4),
+          alignment_strength: round(boat3HeadAlignmentStrength, 4),
+          alignment_gate: round(boat3HeadAlignmentGate, 4),
+          contributors: {
+            start_edge: round(Math.max(0, toNum(actualLane3Row?.start_edge, 0)), 4),
+            left_gap_advantage: round(Math.max(0, toNum(actualLane3Row?.ex_time_left_gap_advantage, 0)), 4),
+            attack_readiness: round(Math.max(0, toNum(actualLane3Row?.attack_readiness_bonus, 0)), 4),
+            late_risk_penalty: round(toNum(actualLane3Row?.late_risk, 0) * 0.06, 4),
+            boat1_survival_block: boat1StrongSurvivalFlag ? 1 : 0
+          }
+        },
         boat1_escape: {
           boat_number: boat1Row.boat_number || 1,
           actual_lane: boat1Row.actual_lane || 1,
@@ -1834,6 +1894,18 @@ export function buildHitRateEnhancementContext({
             late_risk_penalty: round(toNum(actualLane2Row?.late_risk, 0) * 0.06, 4)
           },
           priority: round(actualLane2SashiPriority, 4)
+        },
+        boat2_second_place_recovery: {
+          boat_number: boatNumberOf(actualLane2Row),
+          actual_lane: actualLaneOf(actualLane2Row),
+          before_adjustment: round(boat2SecondRecoveryBefore, 4),
+          after_adjustment: round(boat2SecondRecoveryAfter, 4),
+          contributors: {
+            lane2ren_score: round(toNum(actualLane2Row?.lane_fit_2ren, 0) / 100, 4),
+            lap_time_support: round(Math.max(0, 6.82 - toNum(actualLane2Row?.motor_form?.lapTime, 6.82)) * 0.02, 4),
+            motor2ren_support: round(actualLane2Row?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLane2Row?.motor_raw?.motor2ren, 0) / 100) * 0.02 : 0, 4),
+            boat1_survival_context: boat1StrongSurvivalFlag ? 1 : 0
+          }
         },
         actual_four_course_cado: {
           boat_number: boatNumberOf(actualLane4Row),
@@ -2082,6 +2154,8 @@ export function buildEnhancedTrifectaShapeRecommendation({
   const preTuningScoreMap = enhancement?.stage2_dynamic?.finish_role_scores_before_tuning_by_lane || {};
   const preEscapePriority = toNum(enhancement?.stage3_scenarios?.recalculated_priorities?.boat1_escape?.before_adjustment, 0);
   const preActualFourPriority = toNum(enhancement?.stage3_scenarios?.recalculated_priorities?.actual_four_course_cado?.before_adjustment, 0);
+  const preBoat3HeadPriority = toNum(enhancement?.stage3_scenarios?.recalculated_priorities?.boat3_head?.before_adjustment, 0);
+  const postBoat3HeadPriority = toNum(enhancement?.stage3_scenarios?.recalculated_priorities?.boat3_head?.after_adjustment, 0);
   const head4Decision = enhancement?.stage4_opponents?.head4_partner_debug?.final_decision || null;
   const isStrongCado = !!enhancement?.stage4_opponents?.head4_partner_debug?.is_strong_cado;
   const lane3SurvivalFlag = !!enhancement?.stage4_opponents?.head4_partner_debug?.lane3_survival_flag;
@@ -2271,6 +2345,8 @@ export function buildEnhancedTrifectaShapeRecommendation({
         thirdWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.third_place_score, 0)]))
       }),
       before_top_ticket_hints: [],
+      boat3_before_top_ticket_hint: preBoat3HeadPriority > preEscapePriority ? "3-head pressure" : "inside-favored",
+      boat3_after_top_ticket_hint: postBoat3HeadPriority > escapeScore ? "3-head pressure" : "inside-favored",
       after_shape: null,
       after_top_ticket_hints: []
     }
@@ -2314,6 +2390,8 @@ export function buildEnhancedTrifectaShapeRecommendation({
         secondWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.second_place_score, 0)])),
         thirdWeights: Object.fromEntries(Object.entries(preTuningScoreMap || {}).map(([lane, row]) => [lane, toNum(row?.third_place_score, 0)]))
       })] : [],
+      boat3_before_top_ticket_hint: preBoat3HeadPriority > preEscapePriority ? "3-head pressure" : "inside-favored",
+      boat3_after_top_ticket_hint: postBoat3HeadPriority > escapeScore ? "3-head pressure" : "inside-favored",
       after_shape: chosen.shape,
       after_top_ticket_hints: safeArray(chosen.expandedTickets).slice(0, 3)
     }
