@@ -353,6 +353,14 @@ async function fetchOritenJson({ date, venueId, raceNo, refererUrl, timeoutMs = 
   return response.data;
 }
 
+function nowMs() {
+  return Date.now();
+}
+
+function elapsedMs(startedAt) {
+  return nowMs() - startedAt;
+}
+
 function extractActualRaceTabLinks(indexHtml, raceNo) {
   const $ = cheerio.load(indexHtml);
   const targetRaceNo = Number(raceNo);
@@ -1678,8 +1686,28 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
 
 export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeoutMs = 12000 }) {
   try {
+    const startedAt = nowMs();
+    const hardTimeoutMs = Math.max(250, Math.min(Number(timeoutMs) || 12000, 4000));
+    const deadlineAt = startedAt + hardTimeoutMs;
+    const getRemainingTimeoutMs = (capMs = hardTimeoutMs) => {
+      const remaining = deadlineAt - nowMs();
+      if (remaining <= 0) throw new Error("kyoteibiyori_total_timeout_exceeded");
+      return Math.max(250, Math.min(remaining, capMs));
+    };
+
     const indexUrl = buildIndexUrl({ date, venueId, raceNo });
     const diagnostics = {
+      timings: {
+        total_budget_ms: hardTimeoutMs,
+        index_fetch_ms: null,
+        ajax_fetch_ms: null,
+        ajax_parse_ms: null,
+        lane_stats_fetch_ms: null,
+        lane_stats_parse_ms: null,
+        pre_race_fetch_ms: null,
+        pre_race_parse_ms: null,
+        total_ms: null
+      },
       race_list_url: indexUrl,
       extracted_hrefs: {},
       actual_fetch_paths: [],
@@ -1747,9 +1775,11 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     let indexHtml = "";
 
     try {
-      indexHtml = await fetchText(indexUrl, timeoutMs);
+      const indexStartedAt = nowMs();
+      indexHtml = await fetchText(indexUrl, getRemainingTimeoutMs(1800));
+      diagnostics.timings.index_fetch_ms = elapsedMs(indexStartedAt);
       diagnostics.fetch_results.race_ichiran.ok = true;
-      diagnostics.fetch_results.race_ichiran.has_placeholder = /データ取得中です|しばらくお待ちください/.test(indexHtml);
+      diagnostics.fetch_results.race_ichiran.has_placeholder = indexHtml.includes("placeholder");
       diagnostics.actual_fetch_paths.push("race_ichiran_shell");
     } catch (error) {
       lastError = error;
@@ -1766,25 +1796,39 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     diagnostics.fetch_results.lane_stats_tab.url = laneStatsUrl;
     diagnostics.fetch_results.pre_race_tab.url = preRaceUrl;
 
+    const supplementalTasks = [];
+
     try {
-      const ajaxPayload = await fetchOritenJson({
-        date,
-        venueId,
-        raceNo,
-        refererUrl: laneStatsUrl,
-        timeoutMs
-      });
-      const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
-      mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");
-      diagnostics.fetch_results.request_oriten_kaiseki_custom.ok = true;
-      diagnostics.fetch_results.request_oriten_kaiseki_custom.referer = laneStatsUrl;
-      diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");
-      diagnostics.parse_results.request_oriten_kaiseki_custom = {
-        ok: parsedAjax.byLane.size > 0,
-        parsed_lanes: parsedAjax.byLane.size,
-        required_fields: buildRequiredFieldParseStatus(parsedAjax.byLane),
-        diagnostics: parsedAjax.diagnostics
-      };
+      const ajaxTimeoutMs = getRemainingTimeoutMs(1800);
+      supplementalTasks.push(
+        (async () => {
+          const ajaxFetchStartedAt = nowMs();
+          const ajaxPayload = await fetchOritenJson({
+            date,
+            venueId,
+            raceNo,
+            refererUrl: laneStatsUrl,
+            timeoutMs: ajaxTimeoutMs
+          });
+          diagnostics.timings.ajax_fetch_ms = elapsedMs(ajaxFetchStartedAt);
+          const ajaxParseStartedAt = nowMs();
+          const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
+          diagnostics.timings.ajax_parse_ms = elapsedMs(ajaxParseStartedAt);
+          mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");
+          diagnostics.fetch_results.request_oriten_kaiseki_custom.ok = true;
+          diagnostics.fetch_results.request_oriten_kaiseki_custom.referer = laneStatsUrl;
+          diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");
+          diagnostics.parse_results.request_oriten_kaiseki_custom = {
+            ok: parsedAjax.byLane.size > 0,
+            parsed_lanes: parsedAjax.byLane.size,
+            required_fields: buildRequiredFieldParseStatus(parsedAjax.byLane),
+            diagnostics: parsedAjax.diagnostics
+          };
+        })().catch((error) => {
+          lastError = error;
+          diagnostics.fetch_results.request_oriten_kaiseki_custom.error = String(error?.message || error);
+        })
+      );
     } catch (error) {
       lastError = error;
       diagnostics.fetch_results.request_oriten_kaiseki_custom.error = String(error?.message || error);
@@ -1795,31 +1839,52 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       ["pre_race_tab", preRaceUrl]
     ]) {
       try {
-        const html = await fetchText(url, timeoutMs);
-        const parsed = normalizeKyoteiBiyoriPreRaceFields(
-          parseKyoteiBiyoriPreRaceData(html, {
-            mode: label === "lane_stats_tab" ? "lane_stats" : "pre_race",
-            sourceLabel: label
+        const tabTimeoutMs = getRemainingTimeoutMs(1800);
+        supplementalTasks.push(
+          (async () => {
+            const fetchStartedAt = nowMs();
+            const html = await fetchText(url, tabTimeoutMs);
+            const fetchDurationMs = elapsedMs(fetchStartedAt);
+            if (label === "lane_stats_tab") diagnostics.timings.lane_stats_fetch_ms = fetchDurationMs;
+            else diagnostics.timings.pre_race_fetch_ms = fetchDurationMs;
+            const parseStartedAt = nowMs();
+            const parsed = normalizeKyoteiBiyoriPreRaceFields(
+              parseKyoteiBiyoriPreRaceData(html, {
+                mode: label === "lane_stats_tab" ? "lane_stats" : "pre_race",
+                sourceLabel: label
+              })
+            );
+            const parseDurationMs = elapsedMs(parseStartedAt);
+            if (label === "lane_stats_tab") diagnostics.timings.lane_stats_parse_ms = parseDurationMs;
+            else diagnostics.timings.pre_race_parse_ms = parseDurationMs;
+            mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);
+            tableDiagnostics.push(...(parsed.tableDiagnostics || []));
+            diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);
+            diagnostics.fetch_results[label] = {
+              ...(diagnostics.fetch_results[label] || {}),
+              url,
+              ok: true,
+              error: null
+            };
+            diagnostics.parse_results[label] = {
+              ok: parsed.byLane.size > 0,
+              parsed_lanes: parsed.byLane.size,
+              populated_fields: parsed.fieldDiagnostics?.populated_fields || [],
+              failed_fields: parsed.fieldDiagnostics?.failed_fields || EXPECTED_FIELDS,
+              required_fields: buildRequiredFieldParseStatus(parsed.byLane),
+              table_diagnostics: parsed.tableDiagnostics || [],
+              field_debugs: parsed.fieldDebugs || {}
+            };
+          })().catch((error) => {
+            lastError = error;
+            diagnostics.fetch_results[label] = {
+              ...(diagnostics.fetch_results[label] || {}),
+              url,
+              ok: false,
+              error: String(error?.message || error)
+            };
           })
         );
-        mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);
-        tableDiagnostics.push(...(parsed.tableDiagnostics || []));
-        diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);
-        diagnostics.fetch_results[label] = {
-          ...(diagnostics.fetch_results[label] || {}),
-          url,
-          ok: true,
-          error: null
-        };
-      diagnostics.parse_results[label] = {
-          ok: parsed.byLane.size > 0,
-          parsed_lanes: parsed.byLane.size,
-          populated_fields: parsed.fieldDiagnostics?.populated_fields || [],
-          failed_fields: parsed.fieldDiagnostics?.failed_fields || EXPECTED_FIELDS,
-          required_fields: buildRequiredFieldParseStatus(parsed.byLane),
-          table_diagnostics: parsed.tableDiagnostics || [],
-          field_debugs: parsed.fieldDebugs || {}
-        };
       } catch (error) {
         lastError = error;
         diagnostics.fetch_results[label] = {
@@ -1830,6 +1895,8 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
         };
       }
     }
+
+    await Promise.all(supplementalTasks);
 
     const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
     const laneStatsReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("laneFirstRate"));
@@ -1846,6 +1913,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     diagnostics.field_diagnostics = fieldDiagnostics;
     diagnostics.fallback_reason = fallbackReason;
     diagnostics.kyoteibiyori_fetch_success = ok;
+    diagnostics.timings.total_ms = elapsedMs(startedAt);
 
     return {
       ok,
@@ -1865,7 +1933,19 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       error: ok ? null : fallbackReason
     };
   } catch (error) {
+    const hardTimeoutMs = Math.max(250, Math.min(Number(timeoutMs) || 12000, 4000));
     const emptyDiagnostics = {
+      timings: {
+        total_budget_ms: hardTimeoutMs,
+        index_fetch_ms: null,
+        ajax_fetch_ms: null,
+        ajax_parse_ms: null,
+        lane_stats_fetch_ms: null,
+        lane_stats_parse_ms: null,
+        pre_race_fetch_ms: null,
+        pre_race_parse_ms: null,
+        total_ms: null
+      },
       race_list_url: null,
       extracted_hrefs: {},
       actual_fetch_paths: [],

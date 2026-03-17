@@ -612,12 +612,17 @@ function parseBeforeinfo(html) {
 }
 
 export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, forceRefresh = false }) {
+  const totalStartedAt = Date.now();
   const cached = forceRefresh ? null : getCachedRaceData({ date, venueId, raceNo });
   if (cached) {
     return {
       ...cached,
       source: {
         ...(cached.source || {}),
+        timings: {
+          ...(cached.source?.timings || {}),
+          total_response_ms: Date.now() - totalStartedAt
+        },
         cache: {
           hit: true,
           ttl_ms: BOATRACE_CACHE_TTL_MS
@@ -633,11 +638,14 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
   const racelistUrl = `${BOATRACE_BASE}/owpc/pc/race/racelist?rno=${rno}&jcd=${jcd}&hd=${hd}`;
   const beforeinfoUrl = `${BOATRACE_BASE}/owpc/pc/race/beforeinfo?rno=${rno}&jcd=${jcd}&hd=${hd}`;
 
+  const officialFetchStartedAt = Date.now();
   const [racelistHtml, beforeinfoHtml] = await Promise.all([
     fetchHtml(racelistUrl, timeoutMs),
     fetchHtml(beforeinfoUrl, timeoutMs)
   ]);
+  const officialBaseFetchMs = Date.now() - officialFetchStartedAt;
 
+  const parseStartedAt = Date.now();
   const { racers } = parseRacersFromRacelist(racelistHtml);
   const beforeinfo = parseBeforeinfo(beforeinfoHtml);
 
@@ -656,6 +664,10 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       startRaw: raw
     };
   });
+  const parseMs = Date.now() - parseStartedAt;
+
+  const kyoteiTimeoutMs = Math.min(Number(timeoutMs) || 15000, 2200);
+  const kyoteiFetchStartedAt = Date.now();
   let kyoteiBiyori = {
     ok: false,
     url: null,
@@ -669,7 +681,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       date,
       venueId,
       raceNo,
-      timeoutMs: Math.min(Number(timeoutMs) || 15000, 3500)
+      timeoutMs: kyoteiTimeoutMs
     });
   } catch (error) {
     kyoteiBiyori = {
@@ -681,6 +693,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       error: String(error?.message || error)
     };
   }
+  const kyoteibiyoriFetchMs = Date.now() - kyoteiFetchStartedAt;
   let mergedWithKyoteiBiyori = mergedRacers;
   try {
     mergedWithKyoteiBiyori = mergeKyoteiBiyoriDataIntoRaceContext({
@@ -720,6 +733,12 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
     source: {
       racelistUrl,
       beforeinfoUrl,
+      timings: {
+        official_base_fetch_ms: officialBaseFetchMs,
+        parsing_ms: parseMs,
+        kyoteibiyori_fetch_ms: kyoteibiyoriFetchMs,
+        total_response_ms: Date.now() - totalStartedAt
+      },
       kyotei_biyori: {
         ok: !!kyoteiBiyori?.ok,
         kyoteibiyori_fetch_success: !!kyoteiBiyori?.ok,

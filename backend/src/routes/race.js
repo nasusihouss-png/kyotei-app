@@ -8904,12 +8904,23 @@ function calcHitRateRankingScore({
 raceRouter.get("/race", async (req, res, next) => {
   let failureWhere = "race.route:validate_query";
   try {
+    const routeStartedAt = Date.now();
+    const routeTimings = {
+      official_base_fetch_ms: null,
+      kyoteibiyori_fetch_ms: null,
+      parsing_ms: null,
+      prediction_build_ms: null,
+      total_response_ms: null
+    };
     const { date, venueId, raceNo, participationMode } = req.query;
     const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, false);
 
     if (!date || !venueId || !raceNo) {
       return res.status(400).json({
         error: "bad_request",
+        code: "missing_required_query_params",
+        where: failureWhere,
+        route: "/api/race",
         message: "date, venueId, and raceNo are required query params"
       });
     }
@@ -8918,12 +8929,16 @@ raceRouter.get("/race", async (req, res, next) => {
     try {
       failureWhere = "race.route:getRaceData";
       data = await getRaceData({ date, venueId, raceNo, forceRefresh });
+      routeTimings.official_base_fetch_ms = toNullableNum(data?.source?.timings?.official_base_fetch_ms);
+      routeTimings.kyoteibiyori_fetch_ms = toNullableNum(data?.source?.timings?.kyoteibiyori_fetch_ms);
+      routeTimings.parsing_ms = toNullableNum(data?.source?.timings?.parsing_ms);
     } catch (fetchErr) {
       failureWhere = "race.route:loadRaceSnapshotFallback";
       const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });
       if (!fallback) throw fetchErr;
       data = fallback;
     }
+    const predictionStartedAt = Date.now();
     failureWhere = "race.route:feature_pipeline";
     const learningWeights = getActiveLearningWeights();
     const learningState = getLatestLearningRun();
@@ -10701,6 +10716,19 @@ raceRouter.get("/race", async (req, res, next) => {
       : Array.isArray(candidateDistributions?.finish_probabilities_by_scenario_json)
         ? candidateDistributions.finish_probabilities_by_scenario_json
         : [];
+    routeTimings.prediction_build_ms = Date.now() - predictionStartedAt;
+    routeTimings.total_response_ms = Date.now() - routeStartedAt;
+    console.info(
+      "[RACE_API_TIMING]",
+      JSON.stringify({
+        route: "/api/race",
+        date,
+        venueId: toInt(venueId, null),
+        raceNo: toInt(raceNo, null),
+        cache_hit: !!data?.source?.cache?.hit,
+        ...routeTimings
+      })
+    );
 
     return res.json({
       source: data.source || {},
@@ -10826,10 +10854,20 @@ raceRouter.get("/race", async (req, res, next) => {
       startDisplayDebug: Array.isArray(startDisplay?.start_display_debug)
         ? startDisplay.start_display_debug
         : [],
-      startExhibitionDebug
+      startExhibitionDebug,
+      routeTiming: routeTimings
     });
   } catch (err) {
-    return next(err);
+    const status = Number(err?.statusCode || err?.status || 500);
+    const payload = {
+      error: status >= 500 ? "race_api_failed" : "bad_request",
+      code: err?.code || "race_route_error",
+      where: failureWhere,
+      route: "/api/race",
+      message: String(err?.message || err || "unknown_error")
+    };
+    console.error("[RACE_API_ERROR]", JSON.stringify(payload));
+    return res.status(status).json(payload);
   }
 });
 
