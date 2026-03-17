@@ -2596,6 +2596,26 @@ export default function App() {
       .filter(Boolean)
       .sort((a, b) => a.lane - b.lane);
   }, [hitRateEnhancementDebug]);
+  const upsetSupport = useMemo(() => {
+    const support =
+      hitRateEnhancementDebug?.upsetSupport && typeof hitRateEnhancementDebug.upsetSupport === "object"
+        ? hitRateEnhancementDebug.upsetSupport
+        : hitRateEnhancementDebug?.stage5_ticketing?.upset_support && typeof hitRateEnhancementDebug.stage5_ticketing.upset_support === "object"
+          ? hitRateEnhancementDebug.stage5_ticketing.upset_support
+          : null;
+    if (!support) return null;
+    return {
+      classification: support?.classification || "stable",
+      mediumUpset: support?.medium_upset || { shown: false, exacta_pairs: [], trifecta_tickets: [] },
+      bigUpset: support?.big_upset || { shown: false, exacta_pairs: [], trifecta_tickets: [] },
+      chosenHeads: Array.isArray(support?.chosen_upset_heads) ? support.chosen_upset_heads : [],
+      chosenExactaPairs: Array.isArray(support?.upset_exacta_pairs) ? support.upset_exacta_pairs : [],
+      chosenTrifectaTickets: Array.isArray(support?.upset_trifecta_tickets) ? support.upset_trifecta_tickets : [],
+      weakBoat1Factors: support?.weak_boat1_factors || {},
+      strongAttackerFactors: support?.strong_attacker_factors || {},
+      chaosFactors: support?.chaos_factors || {}
+    };
+  }, [hitRateEnhancementDebug]);
 
   const currentRaceKey = useMemo(
     () =>
@@ -4016,6 +4036,86 @@ export default function App() {
                   </article>
                 ) : null}
 
+                {upsetSupport?.mediumUpset?.shown ? (
+                  <article className="card summary-card premium-ticket-card subtle">
+                    <div className="premium-card-head">
+                      <div>
+                        <p className="eyebrow">Backup</p>
+                        <h2>Medium Upset (中穴)</h2>
+                      </div>
+                    </div>
+                    <div className="summary-inline-meta">
+                      <span>{upsetSupport.classification}</span>
+                      <span>compact backup coverage only</span>
+                    </div>
+                    <div className="ticket-stack compact-list" style={{ marginBottom: 10 }}>
+                      {safeArray(upsetSupport.mediumUpset.trifecta_tickets).map((combo, idx) => (
+                        <div key={`medium-upset-tri-${combo}-${idx}`} className="premium-ticket-row">
+                          <div className="ticket-mainline">
+                            <span className="ticket-type ticket-type-inline">3連単</span>
+                            <strong><ComboBadge combo={combo || "--"} /></strong>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {safeArray(upsetSupport.mediumUpset.exacta_pairs).length > 0 ? (
+                      <div className="ticket-stack compact-list">
+                        {upsetSupport.mediumUpset.exacta_pairs.map((row, idx) => (
+                          <div key={`medium-upset-ex-${row?.combo || idx}`} className="premium-ticket-row">
+                            <div className="ticket-mainline">
+                              <span className="ticket-type ticket-type-inline">2連単</span>
+                              <strong><ComboBadge combo={row?.combo || "--"} /></strong>
+                            </div>
+                            <div className="ticket-meta">
+                              <span>{Number.isFinite(Number(row?.probability)) ? `hit ${formatMaybeNumber(Number(row.probability) * 100, 1)}%` : "--"}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </article>
+                ) : null}
+
+                {upsetSupport?.bigUpset?.shown ? (
+                  <article className="card summary-card premium-ticket-card subtle">
+                    <div className="premium-card-head">
+                      <div>
+                        <p className="eyebrow">Backup</p>
+                        <h2>Big Upset (大穴)</h2>
+                      </div>
+                    </div>
+                    <div className="summary-inline-meta">
+                      <span>{upsetSupport.classification}</span>
+                      <span>strong upset warning, compact hedge only</span>
+                    </div>
+                    <div className="ticket-stack compact-list" style={{ marginBottom: 10 }}>
+                      {safeArray(upsetSupport.bigUpset.trifecta_tickets).map((combo, idx) => (
+                        <div key={`big-upset-tri-${combo}-${idx}`} className="premium-ticket-row">
+                          <div className="ticket-mainline">
+                            <span className="ticket-type ticket-type-inline">3連単</span>
+                            <strong><ComboBadge combo={combo || "--"} /></strong>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {safeArray(upsetSupport.bigUpset.exacta_pairs).length > 0 ? (
+                      <div className="ticket-stack compact-list">
+                        {upsetSupport.bigUpset.exacta_pairs.map((row, idx) => (
+                          <div key={`big-upset-ex-${row?.combo || idx}`} className="premium-ticket-row">
+                            <div className="ticket-mainline">
+                              <span className="ticket-type ticket-type-inline">2連単</span>
+                              <strong><ComboBadge combo={row?.combo || "--"} /></strong>
+                            </div>
+                            <div className="ticket-meta">
+                              <span>{Number.isFinite(Number(row?.probability)) ? `hit ${formatMaybeNumber(Number(row.probability) * 100, 1)}%` : "--"}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </article>
+                ) : null}
+
                 <div className="prediction-summary-grid premium-layout">
                   {adminMode ? (
                     <section className="card">
@@ -4216,6 +4316,20 @@ export default function App() {
                                   compatibilityWithHead: hitRateEnhancementDebug?.stage4_opponents?.compatibility_with_head,
                                   selectedShape: recommendedShape,
                                   topExactaCandidates: topExactaFour
+                                })}</pre>
+                              </details>
+                            ) : null}
+                            {upsetSupport ? (
+                              <details style={{ marginBottom: 12 }}>
+                                <summary>upset detection + backup coverage</summary>
+                                <pre className="json-preview">{safePrettyJson({
+                                  classification: upsetSupport.classification,
+                                  weakBoat1Factors: upsetSupport.weakBoat1Factors,
+                                  strongAttackerFactors: upsetSupport.strongAttackerFactors,
+                                  chaosFactors: upsetSupport.chaosFactors,
+                                  chosenHeads: upsetSupport.chosenHeads,
+                                  chosenExactaPairs: upsetSupport.chosenExactaPairs,
+                                  chosenTrifectaTickets: upsetSupport.chosenTrifectaTickets
                                 })}</pre>
                               </details>
                             ) : null}

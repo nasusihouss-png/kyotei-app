@@ -413,6 +413,186 @@ function buildTopExactaCandidates({ enhancement, firstProbs, secondProbs, limit 
     }));
 }
 
+function buildUpsetSupport({ laneMap, enhancementBase, scenarioRows, aggregatedFinishProbabilities, topExactaCandidates }) {
+  const lane1 = laneMap.get(1) || {};
+  const lane2 = laneMap.get(2) || {};
+  const lane3 = laneMap.get(3) || {};
+  const lane4 = laneMap.get(4) || {};
+  const scenarioMap = new Map(safeArray(scenarioRows).map((row) => [String(row?.scenario || ""), toNum(row?.probability, 0)]));
+  const weakBoat1Factors = {
+    weak_lane1stScore: toNum(lane1?.lane_fit_1st, 0) > 0 && toNum(lane1?.lane_fit_1st, 0) < 52,
+    unstable_exhibition_st: toNum(lane1?.late_risk, 0) >= 0.18 || toNum(lane1?.exhibition_st, 1) >= 0.17,
+    weak_lap_time: lane1?.prediction_data_usage?.lapTime?.used && toNum(lane1?.motor_form?.lapTime, 0) >= 6.79,
+    hidden_f_risk: toNum(lane1?.hidden_F_flag, 0) === 1 || toNum(lane1?.unresolved_F_count, 0) > 0,
+    weak_escape_score: toNum(enhancementBase?.escape_score, 0) < 0.24
+  };
+  const strongAttackerFactors = {
+    boat2: {
+      active:
+        scenarioMap.get("boat2_sashi") >= 0.14 ||
+        scenarioMap.get("boat2_direct_makuri") >= 0.12,
+      sashi_pressure: round(toNum(lane2?.style_profile?.sashi, 0) / 100, 4),
+      direct_makuri_pressure: round(toNum(lane2?.style_profile?.makuri, 0) / 100, 4),
+      ex_time_left_advantage: round(Math.max(0, toNum(lane2?.ex_time_left_gap_advantage, 0)), 4)
+    },
+    boat3: {
+      active:
+        scenarioMap.get("boat3_makuri") >= 0.13 ||
+        scenarioMap.get("boat3_makuri_sashi") >= 0.13,
+      makuri_pressure: round(toNum(lane3?.style_profile?.makuri, 0) / 100, 4),
+      makuri_sashi_pressure: round(toNum(lane3?.style_profile?.makuri_sashi, 0) / 100, 4),
+      ex_time_left_advantage: round(Math.max(0, toNum(lane3?.ex_time_left_gap_advantage, 0)), 4)
+    },
+    boat4: {
+      active: scenarioMap.get("boat4_cado_attack") >= 0.12,
+      cado_pressure: round(toNum(lane4?.style_profile?.makuri, 0) / 100, 4),
+      straight_support: round(Math.max(0, toNum(lane4?.finish_role_bonuses?.straightLineDelta, 0)), 4),
+      turning_support: round(Math.max(0, toNum(lane4?.finish_role_bonuses?.turningAbilityDelta, 0)), 4)
+    }
+  };
+  const activeAttackers = [2, 3, 4].filter((lane) => strongAttackerFactors[`boat${lane}`]?.active);
+  const chaosFactors = {
+    multiple_attackers: activeAttackers.length >= 2,
+    inner_collapse_risk: !!enhancementBase?.intermediate_events?.inner_collapse,
+    outside_pressure_support: toNum(enhancementBase?.outer_attack_pressure, 0) >= 0.14,
+    conflicting_scenario_pressure: scenarioMap.get("boat2_direct_makuri") >= 0.1 && scenarioMap.get("boat3_makuri") >= 0.1
+  };
+  const weakBoat1Count = Object.values(weakBoat1Factors).filter(Boolean).length;
+  const chaosCount = Object.values(chaosFactors).filter(Boolean).length;
+  const attackerCount = activeAttackers.length;
+  const upsetScore = round(
+    weakBoat1Count * 0.22 +
+    attackerCount * 0.18 +
+    chaosCount * 0.16 +
+    Math.max(0, 0.28 - toNum(enhancementBase?.escape_score, 0)) * 1.2,
+    4
+  );
+  const classification =
+    upsetScore >= 0.9 || (weakBoat1Count >= 3 && attackerCount >= 2)
+      ? "chaotic"
+      : upsetScore >= 0.52 || (weakBoat1Count >= 2 && attackerCount >= 1)
+        ? "semi-chaotic"
+        : "stable";
+
+  const secondMap = new Map(normalizeRows(aggregatedFinishProbabilities?.second).map((row) => [row.lane, row.weight]));
+  const thirdMap = new Map(normalizeRows(aggregatedFinishProbabilities?.third).map((row) => [row.lane, row.weight]));
+  const firstMap = new Map(normalizeRows(aggregatedFinishProbabilities?.first).map((row) => [row.lane, row.weight]));
+  const upsetHeadPool = [2, 3, 4, 5, 6]
+    .map((lane) => {
+      const row = laneMap.get(lane) || {};
+      const laneWeight = lane <= 4 ? 1 : 0.65;
+      const rareOuterGate = lane <= 4 || (toNum(firstMap.get(lane), 0) >= 0.09 && toNum(row?.attack_readiness_bonus, 0) >= 0.06);
+      if (!rareOuterGate) return null;
+      const score =
+        toNum(firstMap.get(lane), 0) * 0.5 +
+        toNum(row?.finish_role_scores?.first_place_score, 0) * 0.24 +
+        toNum(row?.attack_readiness_bonus, 0) * 0.34 +
+        toNum(row?.compatibility_with_head?.["1"]?.second_bonus, 0) * 0.08 +
+        laneWeight * 0.06;
+      return { lane, score: round(score, 4) };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || a.lane - b.lane)
+    .slice(0, classification === "chaotic" ? 3 : classification === "semi-chaotic" ? 2 : 0);
+
+  const upsetScenarios = upsetHeadPool.map((head) => {
+    const partners = [1, 2, 3, 4, 5, 6]
+      .filter((lane) => lane !== head.lane)
+      .map((lane) => {
+        const row = laneMap.get(lane) || {};
+        return {
+          lane,
+          score: round(
+            toNum(secondMap.get(lane), 0) * 0.42 +
+            toNum(row?.finish_role_scores?.second_place_score, 0) * 0.26 +
+            toNum(row?.compatibility_with_head?.[String(head.lane)]?.second_bonus, 0) * 0.28 +
+            (lane === 1 ? 0.04 : 0),
+            4
+          )
+        };
+      })
+      .sort((a, b) => b.score - a.score || a.lane - b.lane)
+      .slice(0, 2);
+    return {
+      head_lane: head.lane,
+      head_score: head.score,
+      partner_lanes: partners.map((row) => row.lane),
+      exacta_pairs: partners.map((row) => `${head.lane}-${row.lane}`)
+    };
+  });
+
+  const upsetExactaPairs = [...new Set(
+    upsetScenarios.flatMap((row) => row.exacta_pairs)
+  )]
+    .map((combo) => {
+      const topRow = safeArray(topExactaCandidates).find((row) => row?.combo === combo);
+      const [a, b] = combo.split("-").map((value) => toInt(value, null));
+      return {
+        combo,
+        probability: round(
+          Math.max(
+            toNum(topRow?.probability, 0),
+            toNum(firstMap.get(a), 0) * toNum(secondMap.get(b), 0) * 1.6
+          ),
+          4
+        ),
+        source: topRow?.source || "upset_support"
+      };
+    })
+    .sort((a, b) => b.probability - a.probability)
+    .slice(0, classification === "chaotic" ? 4 : classification === "semi-chaotic" ? 3 : 0);
+
+  const upsetTrifectaTickets = [];
+  for (const scenario of upsetScenarios) {
+    const thirdCandidates = [1, 2, 3, 4, 5, 6]
+      .filter((lane) => lane !== scenario.head_lane && !scenario.partner_lanes.includes(lane))
+      .map((lane) => ({
+        lane,
+        score: round(
+          toNum(thirdMap.get(lane), 0) * 0.42 +
+          toNum(laneMap.get(lane)?.finish_role_scores?.third_place_score, 0) * 0.26 +
+          toNum(laneMap.get(lane)?.compatibility_with_head?.[String(scenario.head_lane)]?.third_bonus, 0) * 0.22 -
+          toNum(laneMap.get(lane)?.third_place_exclusion?.penalty, 0) * 0.32,
+          4
+        )
+      }))
+      .sort((a, b) => b.score - a.score || a.lane - b.lane)
+      .slice(0, classification === "chaotic" ? 2 : 1);
+
+    for (const secondLane of scenario.partner_lanes) {
+      for (const thirdLane of thirdCandidates.map((row) => row.lane)) {
+        const combo = normalizeCombo(`${scenario.head_lane}-${secondLane}-${thirdLane}`);
+        if (combo) upsetTrifectaTickets.push(combo);
+      }
+    }
+  }
+  const compactUpsetTrifecta = [...new Set(upsetTrifectaTickets)].slice(0, classification === "chaotic" ? 5 : classification === "semi-chaotic" ? 3 : 0);
+
+  return {
+    classification,
+    weak_boat1_factors: weakBoat1Factors,
+    strong_attacker_factors: strongAttackerFactors,
+    chaos_factors: chaosFactors,
+    chosen_upset_heads: upsetScenarios,
+    upset_exacta_pairs: upsetExactaPairs,
+    upset_trifecta_tickets: compactUpsetTrifecta.map((combo, index) => ({
+      combo,
+      rank: index + 1,
+      bucket: classification === "chaotic" ? "big_upset" : "medium_upset"
+    })),
+    medium_upset: {
+      shown: classification === "semi-chaotic",
+      exacta_pairs: classification === "semi-chaotic" ? upsetExactaPairs.slice(0, 3) : [],
+      trifecta_tickets: classification === "semi-chaotic" ? compactUpsetTrifecta.slice(0, 3) : []
+    },
+    big_upset: {
+      shown: classification === "chaotic",
+      exacta_pairs: classification === "chaotic" ? upsetExactaPairs.slice(0, 4) : [],
+      trifecta_tickets: classification === "chaotic" ? compactUpsetTrifecta.slice(0, 5) : []
+    }
+  };
+}
+
 function buildStylePressure(lane, profile) {
   const style = profile?.style_profile || {};
   const sashi = toNum(style.sashi, 0);
@@ -1122,6 +1302,17 @@ export function buildHitRateEnhancementContext({
     secondProbs: treeAggregation.aggregatedFinishProbabilities.second,
     limit: 4
   });
+  const upsetSupport = buildUpsetSupport({
+    laneMap,
+    enhancementBase: {
+      escape_score: escapeScore,
+      outer_attack_pressure: outerAttackPressure,
+      intermediate_events: intermediateEvents
+    },
+    scenarioRows: normalizedScenarioProbabilities,
+    aggregatedFinishProbabilities: treeAggregation.aggregatedFinishProbabilities,
+    topExactaCandidates
+  });
 
   const darkHorseAlerts = [
     toNum(laneMap.get(4)?.lane_fit_1st, 0) >= 46 && String(rows.find((row) => toInt(row?.racer?.lane, null) === 4)?.racer?.class || "") === "B1"
@@ -1222,7 +1413,8 @@ export function buildHitRateEnhancementContext({
       finish_probabilities_by_scenario: treeAggregation.finishProbabilitiesByScenario,
       aggregated_finish_probabilities: treeAggregation.aggregatedFinishProbabilities,
       order_probabilities: treeAggregation.orderProbabilities,
-      top_exacta_candidates: topExactaCandidates
+      top_exacta_candidates: topExactaCandidates,
+      upset_support: upsetSupport
     },
     confidence: toNum(confidence, 0),
     by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row])),
@@ -1233,6 +1425,7 @@ export function buildHitRateEnhancementContext({
     aggregatedFinishProbabilities: treeAggregation.aggregatedFinishProbabilities,
     treeOrderProbabilities: treeAggregation.orderProbabilities,
     topExactaCandidates,
+    upsetSupport,
     startDevelopmentStates: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
       start_edge: row.start_edge,
       late_risk: row.late_risk,
