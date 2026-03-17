@@ -1261,6 +1261,7 @@ export function buildHitRateEnhancementContext({
   const actualLane2Row = actualLaneMap.get(2) || {};
   const actualLane3Row = actualLaneMap.get(3) || {};
   const actualLane4Row = actualLaneMap.get(4) || {};
+  const entryStructureChanged = laneContexts.some((row) => row.course_change_occurred);
   const startPatternContext = buildStartPatternContext(actualLaneMap);
   const outerAttackPressure = safeArray([3, 4, 5, 6]).reduce((sum, lane) => {
     const row = actualLaneMap.get(lane);
@@ -1273,16 +1274,52 @@ export function buildHitRateEnhancementContext({
   const lane2AllowNige = actualLane2Row
     ? clamp(0, 0.2, (toNum(actualLane2Row?.style_profile?.sashi, 0) / 100) * 0.08 - (toNum(actualLane2Row?.style_profile?.makuri, 0) / 100) * 0.04)
     : 0;
-  const deepInDepthRisk = Math.max(0, toNum(boat1Row.actual_lane, 1) - 1);
-  const deepInPenalty = deepInDepthRisk > 0
-    ? clamp(0, 0.12, deepInDepthRisk * ACTUAL_ENTRY_TUNING.deep_in_escape_penalty)
-    : 0;
   const weakWallPenalty = actualLane2Row && actualLane2Row.boat_number !== 2 ? ACTUAL_ENTRY_TUNING.weak_wall_penalty : 0;
   const stableInnerBonus =
     actualLane2Row && actualLane3Row && toNum(actualLane2Row.late_risk, 0) < 0.15 && toNum(actualLane3Row.late_risk, 0) < 0.16
       ? ACTUAL_ENTRY_TUNING.stable_inner_bonus
       : 0;
-  const escapeScore = clamp(
+  const deepInDepthRisk = Math.max(0, toNum(boat1Row.actual_lane, 1) - 1);
+  const deepWeakStartPressure = clamp(
+    0,
+    0.08,
+    Math.max(0, 0.03 - Math.max(0, toNum(actualLane1Row.start_edge, 0))) * 1.3 +
+      toNum(actualLane1Row.late_risk, 0) * 0.12
+  );
+  const weakActualTwoPressure = clamp(
+    0,
+    0.08,
+    (toNum(actualLane2Row?.style_profile?.sashi, 0) / 100) * 0.05 +
+      Math.max(0, toNum(actualLane2Row?.start_edge, 0)) * 0.08
+  );
+  const deepOutsidePressure = clamp(0, 0.08, outerAttackPressure * 0.22);
+  const deepMitigationLap = boat1Row?.prediction_data_usage?.lapTime?.used
+    ? clamp(0, 0.05, Math.max(0, 6.82 - toNum(boat1Row?.motor_form?.lapTime, 6.82)) * 0.45)
+    : 0;
+  const deepMitigationMotor = boat1Row?.prediction_data_usage?.motor2ren?.used
+    ? clamp(0, 0.04, (toNum(boat1Row?.motor_raw?.motor2ren, 0) / 100) * 0.05)
+    : 0;
+  const weakActualTwoAttacker = clamp(
+    0,
+    0.03,
+    Math.max(0, 0.08 - (toNum(actualLane2Row?.attack_readiness_bonus, 0) * 0.25 + Math.max(0, toNum(actualLane2Row?.start_edge, 0)) * 0.18))
+  );
+  const deepInEscapePenalty = deepInDepthRisk > 0
+    ? clamp(
+        0,
+        0.16,
+        deepInDepthRisk * ACTUAL_ENTRY_TUNING.deep_in_escape_penalty +
+          deepWeakStartPressure +
+          weakActualTwoPressure +
+          deepOutsidePressure +
+          weakWallPenalty -
+          deepMitigationLap -
+          deepMitigationMotor -
+          stableInnerBonus * 0.6 -
+          weakActualTwoAttacker
+      )
+    : 0;
+  const escapeScoreBeforeActualEntryAdjust = clamp(
     0,
     1,
     0.18 +
@@ -1297,11 +1334,17 @@ export function buildHitRateEnhancementContext({
     venueBias.turn1_narrow_penalty -
     toNum(actualLane1Row.boat1_ex_time_warning, 0) * 0.08 -
     toNum(boat1Row.hidden_F_flag, 0) * 0.08 -
-    toNum(actualLane1Row.late_risk, 0) * 0.12 -
-    deepInPenalty -
-    weakWallPenalty
+    toNum(actualLane1Row.late_risk, 0) * 0.12
   );
-  const actualLane2SashiPriority = clamp(
+  const escapeScore = clamp(
+    0,
+    1,
+    escapeScoreBeforeActualEntryAdjust -
+      deepInEscapePenalty -
+      weakWallPenalty +
+      stableInnerBonus * 0.4
+  );
+  const actualTwoSashiBasePriority = clamp(
     0,
     1,
     (toNum(actualLane2Row?.lane_fit_2ren, 0) / 100) * 0.28 +
@@ -1309,12 +1352,25 @@ export function buildHitRateEnhancementContext({
       (toNum(actualLane2Row?.style_profile?.makuri_sashi, 0) / 100) * 0.14 +
       Math.max(0, toNum(actualLane2Row?.start_edge, 0)) * 0.42 +
       Math.max(0, toNum(actualLane2Row?.ex_time_left_gap_advantage, 0)) * 0.38 +
-      ACTUAL_ENTRY_TUNING.actual_two_sashi_boost +
-      (deepInPenalty > 0 ? 0.06 : 0) +
+      (deepInEscapePenalty > 0 ? 0.06 : 0) +
       Math.max(0, 0.42 - escapeScore) * 0.18 -
       toNum(actualLane2Row?.late_risk, 0) * 0.24
   );
-  const actualLane4CadoPriority = clamp(
+  const actualTwoBoostGate = entryStructureChanged || boatNumberOf(actualLane2Row) !== 2 || deepInDepthRisk > 0 ? 1 : 0.22;
+  const actualTwoSashiBoost = clamp(
+    0,
+    ACTUAL_ENTRY_TUNING.actual_two_sashi_boost,
+    ((toNum(actualLane2Row?.lane_fit_2ren, 0) / 100) * 0.05 +
+      (toNum(actualLane2Row?.style_profile?.sashi, 0) / 100) * 0.06 +
+      Math.max(0, toNum(actualLane2Row?.start_edge, 0)) * 0.08 +
+      Math.max(0, toNum(actualLane2Row?.ex_time_left_gap_advantage, 0)) * 0.07 +
+      (actualLane2Row?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLane2Row?.motor_raw?.motor2ren, 0) / 100) * 0.04 : 0) +
+      Math.max(0, toNum(actualLane2Row?.turning_ability, 0) - 5) * 0.005 +
+      Math.min(0.04, deepInEscapePenalty * 0.5) -
+      toNum(actualLane2Row?.late_risk, 0) * 0.06) * actualTwoBoostGate
+  );
+  const actualLane2SashiPriority = clamp(0, 1, actualTwoSashiBasePriority + actualTwoSashiBoost);
+  const actualFourCadoBasePriority = clamp(
     0,
     1,
     (toNum(actualLane4Row?.style_profile?.makuri, 0) / 100) * 0.34 +
@@ -1322,12 +1378,25 @@ export function buildHitRateEnhancementContext({
       Math.max(0, toNum(actualLane4Row?.start_edge, 0)) * 0.34 +
       Math.max(0, toNum(actualLane4Row?.ex_time_left_gap_advantage, 0)) * 0.24 +
       Math.max(0, toNum(actualLane4Row?.finish_role_bonuses?.straightLineDelta, 0)) * 0.08 +
-      ACTUAL_ENTRY_TUNING.actual_four_cado_boost +
       venueBias.venue_outer_attack_bias +
       (startPatternContext.outer_attack_window ? 0.05 : 0) -
       toNum(actualLane4Row?.late_risk, 0) * 0.16 -
       toNum(actualLane4Row?.hidden_F_flag, 0) * 0.08
   );
+  const actualFourBoostGate = entryStructureChanged || boatNumberOf(actualLane4Row) !== 4 || startPatternContext.outer_attack_window ? 1 : 0.22;
+  const actualFourCadoBoost = clamp(
+    0,
+    ACTUAL_ENTRY_TUNING.actual_four_cado_boost,
+    ((toNum(actualLane4Row?.style_profile?.makuri, 0) / 100) * 0.06 +
+      (toNum(actualLane4Row?.style_profile?.makuri_sashi, 0) / 100) * 0.035 +
+      Math.max(0, toNum(actualLane4Row?.finish_role_bonuses?.straightLineDelta, 0)) * 0.08 +
+      Math.max(0, toNum(actualLane4Row?.ex_time_left_gap_advantage, 0)) * 0.06 +
+      Math.max(0, toNum(actualLane4Row?.start_edge, 0)) * 0.08 +
+      (actualLane4Row?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLane4Row?.motor_raw?.motor2ren, 0) / 100) * 0.04 : 0) +
+      (startPatternContext.outer_attack_window ? 0.03 : 0) -
+      toNum(actualLane4Row?.late_risk, 0) * 0.05) * actualFourBoostGate
+  );
+  const actualLane4CadoPriority = clamp(0, 1, actualFourCadoBasePriority + actualFourCadoBoost);
 
   const scenarioProbabilities = [
     {
@@ -1555,23 +1624,61 @@ export function buildHitRateEnhancementContext({
         boat1_escape: {
           boat_number: boat1Row.boat_number || 1,
           actual_lane: boat1Row.actual_lane || 1,
+          before_adjustment: round(escapeScoreBeforeActualEntryAdjust, 4),
+          after_adjustment: round(escapeScore, 4),
           deep_in_depth_risk: round(deepInDepthRisk, 4),
-          deep_in_penalty: round(deepInPenalty, 4),
+          deep_in_escape_penalty: round(deepInEscapePenalty, 4),
           weak_wall_penalty: round(weakWallPenalty, 4),
           stable_inner_bonus: round(stableInnerBonus, 4),
+          contributors: {
+            deep_weak_start_pressure: round(deepWeakStartPressure, 4),
+            actual_two_sashi_pressure: round(weakActualTwoPressure, 4),
+            outside_attack_pressure: round(deepOutsidePressure, 4),
+            lap_time_mitigation: round(deepMitigationLap, 4),
+            motor2ren_mitigation: round(deepMitigationMotor, 4),
+            weak_actual_two_attacker_mitigation: round(weakActualTwoAttacker, 4)
+          },
           actual_escape_score: round(escapeScore, 4),
           actual_lane_pressure_from_outside: round(outerAttackPressure, 4)
         },
         actual_two_course_sashi: {
           boat_number: boatNumberOf(actualLane2Row),
           actual_lane: actualLaneOf(actualLane2Row),
-          tuning_boost: round(ACTUAL_ENTRY_TUNING.actual_two_sashi_boost, 4),
+          before_adjustment: round(actualTwoSashiBasePriority, 4),
+          actual_two_course_boat: boatNumberOf(actualLane2Row),
+          actual_two_sashi_boost: round(actualTwoSashiBoost, 4),
+          tuning_cap: round(ACTUAL_ENTRY_TUNING.actual_two_sashi_boost, 4),
+          structure_gate: round(actualTwoBoostGate, 4),
+          contributors: {
+            lane2ren_score: round(toNum(actualLane2Row?.lane_fit_2ren, 0) / 100, 4),
+            sashi_tendency: round(toNum(actualLane2Row?.style_profile?.sashi, 0) / 100, 4),
+            exhibition_st_edge: round(Math.max(0, toNum(actualLane2Row?.start_edge, 0)), 4),
+            left_gap_advantage: round(Math.max(0, toNum(actualLane2Row?.ex_time_left_gap_advantage, 0)), 4),
+            motor2ren_support: round(actualLane2Row?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLane2Row?.motor_raw?.motor2ren, 0) / 100) : 0, 4),
+            turning_support: round(Math.max(0, toNum(actualLane2Row?.turning_ability, 0) - 5) * 0.005, 4),
+            deep_in_pressure_bonus: round(Math.min(0.04, deepInEscapePenalty * 0.5), 4),
+            late_risk_penalty: round(toNum(actualLane2Row?.late_risk, 0) * 0.06, 4)
+          },
           priority: round(actualLane2SashiPriority, 4)
         },
         actual_four_course_cado: {
           boat_number: boatNumberOf(actualLane4Row),
           actual_lane: actualLaneOf(actualLane4Row),
-          tuning_boost: round(ACTUAL_ENTRY_TUNING.actual_four_cado_boost, 4),
+          before_adjustment: round(actualFourCadoBasePriority, 4),
+          actual_four_course_boat: boatNumberOf(actualLane4Row),
+          actual_four_cado_boost: round(actualFourCadoBoost, 4),
+          tuning_cap: round(ACTUAL_ENTRY_TUNING.actual_four_cado_boost, 4),
+          structure_gate: round(actualFourBoostGate, 4),
+          contributors: {
+            makuri_tendency: round(toNum(actualLane4Row?.style_profile?.makuri, 0) / 100, 4),
+            makuri_sashi_tendency: round(toNum(actualLane4Row?.style_profile?.makuri_sashi, 0) / 100, 4),
+            straight_support: round(Math.max(0, toNum(actualLane4Row?.finish_role_bonuses?.straightLineDelta, 0)), 4),
+            left_gap_advantage: round(Math.max(0, toNum(actualLane4Row?.ex_time_left_gap_advantage, 0)), 4),
+            start_readiness: round(Math.max(0, toNum(actualLane4Row?.start_edge, 0)), 4),
+            motor_support: round(actualLane4Row?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLane4Row?.motor_raw?.motor2ren, 0) / 100) : 0, 4),
+            outer_attack_window_bonus: startPatternContext.outer_attack_window ? 0.03 : 0,
+            late_risk_penalty: round(toNum(actualLane4Row?.late_risk, 0) * 0.05, 4)
+          },
           priority: round(actualLane4CadoPriority, 4)
         }
       }
