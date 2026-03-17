@@ -151,6 +151,7 @@ function buildKyoteiBiyoriFieldDebugMaps(fieldDebugSources = {}) {
     lapExStretch: {},
     lapTime: {},
     exhibitionST: {},
+    exhibitionTime: {},
     motor2ren: {},
     motor3ren: {}
   };
@@ -180,6 +181,7 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
           lane3renRate_raw: racer?.lane3renRate_raw ?? toKyoteiDebugValue(racer?.lane3RenRate),
           lapTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriLapTimeRaw ?? racer?.kyoteiBiyoriLapTime ?? racer?.lapTime),
           exhibitionST_raw: toNullableDebugNumber(racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt),
+          exhibitionTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriExhibitionTime ?? racer?.exhibitionTime),
           motor2ren_raw: toNullableDebugNumber(racer?.motor2ren ?? racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate),
           motor3ren_raw: toNullableDebugNumber(racer?.motor3ren ?? racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate),
           lane1stAvg: toNullableDebugNumber(racer?.lane1stAvg ?? racer?.laneFirstRate),
@@ -190,6 +192,7 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
           lane3renRate_debug: fieldDebugMaps.lane3renRate[String(racer?.lane)] || null,
           lapTime_debug: fieldDebugMaps.lapTime[String(racer?.lane)] || null,
           exhibitionST_debug: fieldDebugMaps.exhibitionST[String(racer?.lane)] || null,
+          exhibitionTime_debug: fieldDebugMaps.exhibitionTime[String(racer?.lane)] || null,
           motor2ren_debug: fieldDebugMaps.motor2ren[String(racer?.lane)] || null,
           motor3ren_debug: fieldDebugMaps.motor3ren[String(racer?.lane)] || null,
           lapExStretch_debug: fieldDebugMaps.lapExStretch[String(racer?.lane)] || null,
@@ -211,6 +214,7 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     lapExStretch_raw: byField("lapExStretch"),
     lapTime_raw: byField("lapTime_raw"),
     exhibitionST_raw: byField("exhibitionST_raw"),
+    exhibitionTime_raw: byField("exhibitionTime_raw"),
     motor2ren_raw: byField("motor2ren_raw"),
     motor3ren_raw: byField("motor3ren_raw"),
     lane1stAvg_raw: byField("lane1stAvg"),
@@ -237,6 +241,7 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     ),
     lapTime: fieldDebugMaps.lapTime,
     exhibitionST: fieldDebugMaps.exhibitionST,
+    exhibitionTime: fieldDebugMaps.exhibitionTime,
     motor2ren: fieldDebugMaps.motor2ren,
     motor3ren: fieldDebugMaps.motor3ren,
     prediction_field_meta: Object.fromEntries(

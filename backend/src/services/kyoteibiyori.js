@@ -22,6 +22,7 @@ const EXPECTED_FIELDS = [
 const PREDICTION_FIELD_META_CONFIG = {
   lapTime: { key: "lapTime", minConfidence: 0.6, required: true },
   exhibitionST: { key: "exhibitionST", minConfidence: 0.6, required: true },
+  exhibitionTime: { key: "exhibitionTime", minConfidence: 0.6, required: true },
   lapExStretch: { key: "lapExStretch", minConfidence: 0.6, required: true },
   motor2ren: { key: "motor2ren", minConfidence: 0.6, required: true },
   motor3ren: { key: "motor3ren", minConfidence: 0.5, required: false },
@@ -54,7 +55,12 @@ function makePredictionFieldMeta({ field, value, source, debugEntry, required = 
       confidence: 0,
       is_usable: false,
       required,
-      reason: "missing"
+      reason: "missing",
+      raw_cell_text: debugEntry?.raw ?? null,
+      source_section: debugEntry?.section ?? null,
+      source_row_label: debugEntry?.metric ?? debugEntry?.row ?? null,
+      source_period_label: debugEntry?.period ?? null,
+      source_boat_column: debugEntry?.boatColumn ?? debugEntry?.column ?? null
     };
   }
   let confidence = baseSourceConfidence(source);
@@ -75,6 +81,12 @@ function makePredictionFieldMeta({ field, value, source, debugEntry, required = 
     confidence: normalizedConfidence,
     is_usable: !!source && normalizedConfidence >= minConfidence,
     required,
+    raw_cell_text: debugEntry?.raw ?? null,
+    source_section: debugEntry?.section ?? null,
+    source_row_label: debugEntry?.metric ?? debugEntry?.row ?? null,
+    source_period_label: debugEntry?.period ?? null,
+    source_boat_column: debugEntry?.boatColumn ?? debugEntry?.column ?? null,
+    normalized_numeric_value: Number(value),
     reason: !!source
       ? normalizedConfidence >= minConfidence
         ? "verified"
@@ -105,6 +117,11 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
       value: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
       source: laneSources.exhibitionSt || (Number.isFinite(Number(racer?.exhibitionSt)) ? "boatrace_racelist" : null),
       debugEntry: laneDebug?.exhibitionST || null
+    }),
+    exhibitionTime: getFieldMeta("exhibitionTime", {
+      value: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
+      source: laneSources.exhibitionTime || (Number.isFinite(Number(racer?.exhibitionTime)) ? "boatrace_racelist" : null),
+      debugEntry: laneDebug?.exhibitionTime || null
     }),
     lapExStretch: getFieldMeta("lapExStretch", {
       value: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExStretch ?? racer?.lapExhibitionScore ?? null,
@@ -412,6 +429,7 @@ const FIELD_DEBUG_NAME_MAP = {
   lane3RenRate: "lane3renRate",
   lapTimeRaw: "lapTime",
   exhibitionSt: "exhibitionST",
+  exhibitionTime: "exhibitionTime",
   motor2Rate: "motor2ren",
   motor3Rate: "motor3ren",
   lapExStretch: "lapExStretch"
@@ -729,6 +747,7 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
     const resolvedSection = section || JAPANESE_LABELS.preRaceSection;
     if (metric === JAPANESE_LABELS.lapTime) return { field: "lapTimeRaw", section: resolvedSection, row: JAPANESE_LABELS.lapTime };
     if (metric === JAPANESE_LABELS.st) return { field: "exhibitionSt", section: resolvedSection, row: JAPANESE_LABELS.st };
+    if (metric === JAPANESE_LABELS.exhibition) return { field: "exhibitionTime", section: resolvedSection, row: JAPANESE_LABELS.exhibition };
     if (metric === JAPANESE_LABELS.mawariashi) return { field: "mawariashi", section: resolvedSection, row: JAPANESE_LABELS.mawariashi };
     if (metric === JAPANESE_LABELS.nobiashi) return { field: "nobiashi", section: resolvedSection, row: JAPANESE_LABELS.nobiashi };
     if (metric === JAPANESE_LABELS.motor2) return { field: "motor2Rate", section: resolvedSection, row: JAPANESE_LABELS.motor2 };

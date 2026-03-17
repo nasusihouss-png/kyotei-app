@@ -4528,6 +4528,7 @@ function computeFinishOverrideStrength(features) {
     prediction_data_usage: {
       lapTime: { used: !!lapTimeMeta?.is_usable, source: lapTimeMeta?.source || null, confidence: toNum(lapTimeMeta?.confidence, 0), reason: lapTimeMeta?.reason || null },
       exhibitionST: { used: !!exhibitionStMeta?.is_usable, source: exhibitionStMeta?.source || null, confidence: toNum(exhibitionStMeta?.confidence, 0), reason: exhibitionStMeta?.reason || null },
+      exhibitionTime: { used: !!features?.prediction_field_meta?.exhibitionTime?.is_usable, source: features?.prediction_field_meta?.exhibitionTime?.source || null, confidence: toNum(features?.prediction_field_meta?.exhibitionTime?.confidence, 0), reason: features?.prediction_field_meta?.exhibitionTime?.reason || null },
       lapExStretch: { used: !!lapStretchMeta?.is_usable, source: lapStretchMeta?.source || null, confidence: toNum(lapStretchMeta?.confidence, 0), reason: lapStretchMeta?.reason || null },
       motor2ren: { used: !!motor2Meta?.is_usable, source: motor2Meta?.source || null, confidence: toNum(motor2Meta?.confidence, 0), reason: motor2Meta?.reason || null },
       motor3ren: { used: !!motor3Meta?.is_usable, source: motor3Meta?.source || null, confidence: toNum(motor3Meta?.confidence, 0), reason: motor3Meta?.reason || null }
@@ -8678,6 +8679,7 @@ function buildPredictionDataUsageSummary(ranking) {
   const fieldConfig = {
     lapTime: { required: true, penalty: 6 },
     exhibitionST: { required: true, penalty: 5 },
+    exhibitionTime: { required: true, penalty: 4 },
     lapExStretch: { required: true, penalty: 5 },
     motor2ren: { required: true, penalty: 5 },
     lane1stAvg: { required: true, penalty: 4 },
@@ -8731,6 +8733,7 @@ function buildPredictionDataUsageSummary(ranking) {
     const metaMap = row?.features?.prediction_field_meta || {};
     if (!(metaMap?.lapTime?.is_usable)) penaltyHead += fieldConfig.lapTime.penalty;
     if (!(metaMap?.exhibitionST?.is_usable)) penaltyHead += fieldConfig.exhibitionST.penalty * 0.8;
+    if (!(metaMap?.exhibitionTime?.is_usable)) penaltyHead += fieldConfig.exhibitionTime.penalty * 0.65;
     if (!(metaMap?.lapExStretch?.is_usable)) penaltyHead += fieldConfig.lapExStretch.penalty * 0.75;
     if (!(metaMap?.motor2ren?.is_usable)) penaltyTop2 += fieldConfig.motor2ren.penalty;
     if (!(metaMap?.lane1stAvg?.is_usable)) penaltyLaneFit += fieldConfig.lane1stAvg.penalty * 0.8;

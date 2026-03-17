@@ -128,19 +128,21 @@ const roleProbabilityLayers = {
 
 const enhancement = buildHitRateEnhancementContext({
   ranking,
-  race: { grade: "G2" },
-  raceFlow: { tendency: "inside_favored" },
+  race: { grade: "G2", windSpeed: 5, waveHeight: 3 },
+  raceFlow: { tendency: "inside_favored", formation_pattern: "inside_lead", entry_changed: false },
   playerStartProfile,
   roleProbabilityLayers,
   confidence: 66
 });
 
 assert.equal(enhancement.stage1_static.escape_score > 0.2, true);
+assert.equal(typeof enhancement.stage1_static.venue_bias, "object");
 assert.equal(enhancement.stage3_scenarios.selected_scenario_probabilities.some((row) => row.scenario === "boat4_cado_attack"), true);
 assert.equal(Array.isArray(enhancement.finishProbabilitiesByScenario), true);
 assert.equal(Array.isArray(enhancement.scenarioProbabilities), true);
 assert.equal(typeof enhancement.aggregatedFinishProbabilities, "object");
 assert.equal(typeof enhancement.intermediateEvents, "object");
+assert.equal(typeof enhancement.startPatternContext, "object");
 assert.equal(Array.isArray(enhancement.dark_horse_alerts), true);
 
 const enhanced = applyHitRateEnhancementToProbabilities({

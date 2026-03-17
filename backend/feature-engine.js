@@ -51,6 +51,7 @@ export function buildFeatures(racer) {
   const prediction_field_meta = {
     lapTime: getPredictionFieldMeta(racer, "lapTime"),
     exhibitionST: getPredictionFieldMeta(racer, "exhibitionST"),
+    exhibitionTime: getPredictionFieldMeta(racer, "exhibitionTime"),
     lapExStretch: getPredictionFieldMeta(racer, "lapExStretch"),
     motor2ren: getPredictionFieldMeta(racer, "motor2ren"),
     motor3ren: getPredictionFieldMeta(racer, "motor3ren"),
@@ -59,9 +60,7 @@ export function buildFeatures(racer) {
     lane3renAvg: getPredictionFieldMeta(racer, "lane3renAvg"),
     fCount: getPredictionFieldMeta(racer, "fCount")
   };
-  const exhibition_time_raw = racer?.kyoteiBiyoriExhibitionTime ?? racer?.exhibitionTime;
-  const exhibition_time =
-    Number.isFinite(Number(exhibition_time_raw)) ? Number(exhibition_time_raw) : null;
+  const exhibition_time = getUsablePredictionValue(racer, "exhibitionTime", null);
   const exhibition_st = getUsablePredictionValue(racer, "exhibitionST", null);
   const lap_time = getUsablePredictionValue(racer, "lapTime", null);
   const lap_exhibition_score = getUsablePredictionValue(racer, "lapExStretch", null);
@@ -86,13 +85,13 @@ export function buildFeatures(racer) {
   const lapExStretch = getUsablePredictionValue(racer, "lapExStretch", null);
   const motor2_rate = prediction_field_meta.motor2ren?.is_usable
     ? toNullableNumber(prediction_field_meta.motor2ren.value)
-    : (Number.isFinite(Number(racer?.motor2Rate)) ? Number(racer.motor2Rate) : null);
+    : null;
   const motor3_rate = prediction_field_meta.motor3ren?.is_usable
     ? toNullableNumber(prediction_field_meta.motor3ren.value)
-    : (Number.isFinite(Number(racer?.motor3Rate)) ? Number(racer.motor3Rate) : null);
+    : null;
   const f_hold_count = prediction_field_meta.fCount?.is_usable
     ? Math.max(0, toNumber(prediction_field_meta.fCount.value, 0))
-    : (Number.isFinite(Number(racer?.fHoldCount)) ? Math.max(0, toNumber(racer?.fHoldCount, 0)) : null);
+    : null;
   const local_minus_nation = local_win_rate - nationwide_win_rate;
   const motor_boat_avg = ((Number.isFinite(motor2_rate) ? motor2_rate : 0) + boat2_rate) / 2;
   const st_inv = avg_st && avg_st > 0 ? 1 / avg_st : 0;
@@ -142,9 +141,9 @@ export function buildFeatures(racer) {
     prediction_field_meta,
     lane_avg_st: avg_st,
     lane_st_rank: null,
-    hidden_f_flag: 0,
-    unresolved_f_count: Math.max(0, toNumber(racer?.fHoldCount, 0)),
-    start_caution_penalty: 0,
+    hidden_f_flag: Number.isFinite(f_hold_count) && f_hold_count > 0 ? 1 : 0,
+    unresolved_f_count: Number.isFinite(f_hold_count) ? f_hold_count : null,
+    start_caution_penalty: Number.isFinite(f_hold_count) && f_hold_count > 0 ? Number((0.04 + Math.min(0.08, f_hold_count * 0.02)).toFixed(3)) : 0,
     course_fit_score: 0,
     motor_base_score: 0,
     motor_exhibition_score: 0,

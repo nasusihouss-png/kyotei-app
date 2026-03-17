@@ -98,6 +98,8 @@ const mergedRaceContext = mergeKyoteiBiyoriDataIntoRaceContext({
 });
 assert.equal(mergedRaceContext[0]?.predictionFieldMeta?.motor2ren?.is_usable, true);
 assert.equal(typeof mergedRaceContext[0]?.predictionFieldMeta?.motor2ren?.source, "string");
+assert.equal(typeof mergedRaceContext[0]?.predictionFieldMeta?.exhibitionTime, "object");
+assert.equal(mergedRaceContext[0]?.predictionFieldMeta?.exhibitionTime?.is_usable, false);
 assert.equal(mergedRaceContext[0]?.predictionFieldMeta?.lapExStretch?.is_usable, false);
 
 const laneStatsHtml = `

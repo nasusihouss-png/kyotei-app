@@ -343,7 +343,50 @@ function buildFieldUsage(meta) {
     source: meta?.source || null,
     confidence: round(toNum(meta?.confidence, 0), 3),
     is_usable: !!meta?.is_usable,
-    reason: meta?.reason || (!meta?.source ? "missing" : "skipped")
+    reason: meta?.reason || (!meta?.source ? "missing" : "skipped"),
+    source_section: meta?.source_section || null,
+    source_row_label: meta?.source_row_label || null,
+    source_period_label: meta?.source_period_label || null,
+    source_boat_column: meta?.source_boat_column || null,
+    raw_cell_text: meta?.raw_cell_text || null
+  };
+}
+
+function buildVenueBiasContext({ race, raceFlow, laneContexts }) {
+  const windSpeed = Math.max(0, toNum(race?.windSpeed, 0));
+  const waveHeight = Math.max(0, toNum(race?.waveHeight, 0));
+  const entryChanged = !!raceFlow?.entry_changed;
+  const insideLocal = average(safeArray([1, 2, 3]).map((lane) => toNum(laneContexts.find((row) => row.lane === lane)?.lane_fit_local, NaN)));
+  const outerLocal = average(safeArray([4, 5, 6]).map((lane) => toNum(laneContexts.find((row) => row.lane === lane)?.lane_fit_local, NaN)));
+  const insideStrengthDelta = Number.isFinite(insideLocal) && Number.isFinite(outerLocal) ? insideLocal - outerLocal : 0;
+  const venueEscapeBias = clamp(-0.04, 0.08, insideStrengthDelta * 0.012 + (entryChanged ? -0.015 : 0.02) - windSpeed * 0.003);
+  const venueOuterAttackBias = clamp(0, 0.08, Math.max(0, -insideStrengthDelta) * 0.01 + Math.max(0, windSpeed - 4) * 0.006 + (String(raceFlow?.formation_pattern || "").includes("outside") ? 0.018 : 0));
+  const turn1NarrowPenalty = clamp(0, 0.08, waveHeight * 0.01 + (entryChanged ? 0.015 : 0));
+  const strongWindCaution = clamp(0, 0.12, Math.max(0, windSpeed - 5) * 0.02 + waveHeight * 0.01);
+  const stabilityBoardBias = clamp(-0.03, 0.08, (windSpeed <= 3 ? 0.03 : 0) + (waveHeight <= 2 ? 0.025 : 0) - (entryChanged ? 0.03 : 0));
+  return {
+    venue_escape_bias: round(venueEscapeBias, 4),
+    venue_outer_attack_bias: round(venueOuterAttackBias, 4),
+    turn1_narrow_penalty: round(turn1NarrowPenalty, 4),
+    strong_wind_caution: round(strongWindCaution, 4),
+    stability_board_bias: round(stabilityBoardBias, 4)
+  };
+}
+
+function buildStartPatternContext(laneMap) {
+  const lane1 = laneMap.get(1) || {};
+  const lane2 = laneMap.get(2) || {};
+  const lane3 = laneMap.get(3) || {};
+  const lane4 = laneMap.get(4) || {};
+  const lane12Ahead = toNum(lane1.start_edge, 0) >= 0.03 && toNum(lane2.start_edge, 0) >= 0.02 ? 1 : 0;
+  const middleDent = toNum(lane2.late_risk, 0) >= 0.16 && toNum(lane3.start_edge, 0) >= 0.03 ? 1 : 0;
+  const twoThreeLate = toNum(lane2.late_risk, 0) >= 0.18 && toNum(lane3.late_risk, 0) >= 0.16 ? 1 : 0;
+  const outerAttackWindow = (toNum(lane3.start_edge, 0) >= 0.035 || toNum(lane4.start_edge, 0) >= 0.035) && (toNum(lane3.slit_alert_flag, 0) === 1 || toNum(lane4.slit_alert_flag, 0) === 1 || middleDent === 1) ? 1 : 0;
+  return {
+    lane12_ahead: lane12Ahead,
+    middle_dent: middleDent,
+    two_three_late: twoThreeLate,
+    outer_attack_window: outerAttackWindow
   };
 }
 
@@ -365,6 +408,10 @@ export function buildHitRateEnhancementContext({
     const laneAvgSt = Number.isFinite(features?.avg_st) ? features.avg_st : null;
     const laneStRank = Number.isFinite(features?.avg_st_rank) ? features.avg_st_rank : null;
     const exhibitionSt = Number.isFinite(features?.exhibition_st) ? features.exhibition_st : null;
+    const predictionFieldMeta = features?.prediction_field_meta || {};
+    const exhibitionTime = predictionFieldMeta?.exhibitionTime?.is_usable && Number.isFinite(features?.exhibition_time)
+      ? features.exhibition_time
+      : null;
     const laneFit1st = average([
       Number.isFinite(features?.lane_fit_1st) ? features.lane_fit_1st : null,
       Number.isFinite(features?.laneFirstRate) ? features.laneFirstRate : null
@@ -377,10 +424,10 @@ export function buildHitRateEnhancementContext({
       Number.isFinite(features?.lane_fit_3ren) ? features.lane_fit_3ren : null,
       Number.isFinite(features?.lane3RenRate) ? features.lane3RenRate : null
     ]);
-    const predictionFieldMeta = features?.prediction_field_meta || {};
     const predictionDataUsage = {
       lapTime: buildFieldUsage(predictionFieldMeta?.lapTime),
       exhibitionST: buildFieldUsage(predictionFieldMeta?.exhibitionST),
+      exhibitionTime: buildFieldUsage(predictionFieldMeta?.exhibitionTime),
       lapExStretch: buildFieldUsage(predictionFieldMeta?.lapExStretch),
       motor2ren: buildFieldUsage(predictionFieldMeta?.motor2ren),
       motor3ren: buildFieldUsage(predictionFieldMeta?.motor3ren),
@@ -427,6 +474,12 @@ export function buildHitRateEnhancementContext({
       (Number.isFinite(exhibitionSt) && exhibitionSt >= 0.18 ? 0.12 : 0) +
       Math.min(0.18, startCautionPenalty / 100)
     );
+    const recentLPenalty =
+      predictionFieldMeta?.exhibitionST?.raw_cell_text && /^L/i.test(String(predictionFieldMeta.exhibitionST.raw_cell_text))
+        ? 0.08
+        : 0;
+    const windStartInstability = clamp(0, 0.12, Math.max(0, toNum(race?.windSpeed, 0) - 4) * 0.015);
+    const boardStartCaution = clamp(0, 0.1, toNum(race?.waveHeight, 0) * 0.012);
     const stylePressure = buildStylePressure(lane, profile);
     const motivation = buildMotivation(row, race);
     return {
@@ -439,10 +492,13 @@ export function buildHitRateEnhancementContext({
       current_exhibition_ST_edge: round(currentExhibitionEdge, 4),
       launch_state_bonus: round(launchStateBonus, 4),
       start_edge: round(startEdge, 4),
-      late_risk: round(lateRisk, 4),
+      late_risk: round(clamp(0, 1, lateRisk + recentLPenalty + windStartInstability + boardStartCaution), 4),
       hidden_F_flag: hiddenF,
       unresolved_F_count: unresolvedFCount,
       start_caution_penalty: round(startCautionPenalty, 2),
+      recent_L_penalty: round(recentLPenalty, 4),
+      wind_start_instability: round(windStartInstability, 4),
+      board_start_caution: round(boardStartCaution, 4),
       lane_fit_1st: laneFit1st === null ? null : round(laneFit1st, 2),
       lane_fit_2ren: laneFit2ren === null ? null : round(laneFit2ren, 2),
       lane_fit_3ren: laneFit3ren === null ? null : round(laneFit3ren, 2),
@@ -457,16 +513,33 @@ export function buildHitRateEnhancementContext({
       motor_form: {
         lapTime: predictionDataUsage.lapTime.used && Number.isFinite(features?.lap_time) ? round(features.lap_time, 2) : null,
         lapExStretch: predictionDataUsage.lapExStretch.used && Number.isFinite(features?.lap_exhibition_score) ? round(features.lap_exhibition_score, 2) : null,
-        exhibitionTime: Number.isFinite(features?.exhibition_time) ? round(features.exhibition_time, 2) : null
+        exhibitionTime: Number.isFinite(exhibitionTime) ? round(exhibitionTime, 2) : null
       },
       style_pressure: stylePressure,
+      slit_alert_flag: toNum(features?.slit_alert_flag, 0),
       motivation_attack: motivation.motivation_attack,
       safe_run_bias: motivation.safe_run_bias
     };
   }).filter((row) => Number.isInteger(row.lane));
 
   const laneMap = new Map(laneContexts.map((row) => [row.lane, row]));
+  const venueBias = buildVenueBiasContext({ race, raceFlow, laneContexts });
+  const bestAdjustedExTime = Math.min(
+    ...laneContexts
+      .map((row) => Number.isFinite(row?.motor_form?.exhibitionTime) ? row.motor_form.exhibitionTime + venueBias.strong_wind_caution * 0.08 : Number.POSITIVE_INFINITY)
+  );
+  laneContexts.forEach((row) => {
+    const exTime = row?.motor_form?.exhibitionTime;
+    const windAdjusted = Number.isFinite(exTime) ? round(exTime + venueBias.strong_wind_caution * 0.08, 3) : null;
+    row.wind_adjusted_ex_time = windAdjusted;
+    row.ex_time_relative_gap = Number.isFinite(windAdjusted) && Number.isFinite(bestAdjustedExTime)
+      ? round(windAdjusted - bestAdjustedExTime, 3)
+      : null;
+    row.boat1_ex_time_warning = row.lane === 1 && Number.isFinite(row.ex_time_relative_gap) && row.ex_time_relative_gap >= 0.07 ? 1 : 0;
+    row.venue_specific_ex_time_mode = venueBias.strong_wind_caution >= 0.05 ? "wind_sensitive" : "standard";
+  });
   const lane1 = laneMap.get(1) || {};
+  const startPatternContext = buildStartPatternContext(laneMap);
   const outerAttackPressure = safeArray([3, 4, 5, 6]).reduce((sum, lane) => {
     const row = laneMap.get(lane);
     if (!row) return sum;
@@ -485,8 +558,12 @@ export function buildHitRateEnhancementContext({
     toNum(lane1.lane_fit_1st, 0) / 100 * 0.34 +
     toNum(lane1.motor_true, 0) / 100 * 0.12 +
     Math.max(0, toNum(lane1.start_edge, 0)) * 0.24 +
+    venueBias.venue_escape_bias +
+    venueBias.stability_board_bias +
     lane2AllowNige -
-    outerAttackPressure * 0.55 -
+    outerAttackPressure * (0.55 + venueBias.venue_outer_attack_bias) -
+    venueBias.turn1_narrow_penalty -
+    toNum(lane1.boat1_ex_time_warning, 0) * 0.08 -
     toNum(lane1.hidden_F_flag, 0) * 0.08 -
     toNum(lane1.late_risk, 0) * 0.12
   );
@@ -504,6 +581,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(2)?.style_profile?.sashi, 0) / 100) * 0.54 +
         Math.max(0, toNum(laneMap.get(2)?.start_edge, 0)) * 0.55 -
         toNum(laneMap.get(2)?.late_risk, 0) * 0.28 +
+        (startPatternContext.lane12_ahead ? 0.04 : 0) +
         (1 - escapeScore) * 0.24
       ), 4)
     },
@@ -515,6 +593,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(2)?.style_profile?.makuri, 0) / 100) * 0.56 +
         Math.max(0, toNum(laneMap.get(2)?.start_edge, 0)) * 0.62 -
         toNum(laneMap.get(2)?.hidden_F_flag, 0) * 0.12 +
+        (startPatternContext.middle_dent ? 0.06 : 0) +
         Math.max(0, 0.42 - escapeScore) * 0.55
       ), 4)
     },
@@ -526,6 +605,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(3)?.style_profile?.makuri, 0) / 100) * 0.56 +
         Math.max(0, toNum(laneMap.get(3)?.start_edge, 0)) * 0.6 -
         toNum(laneMap.get(3)?.late_risk, 0) * 0.26 +
+        (startPatternContext.outer_attack_window ? 0.05 : 0) +
         Math.max(0, 0.45 - escapeScore) * 0.36
       ), 4)
     },
@@ -536,7 +616,8 @@ export function buildHitRateEnhancementContext({
         1,
         (toNum(laneMap.get(3)?.style_profile?.makuri_sashi, 0) / 100) * 0.6 +
         Math.max(0, toNum(laneMap.get(3)?.start_edge, 0)) * 0.42 -
-        toNum(laneMap.get(3)?.late_risk, 0) * 0.18
+        toNum(laneMap.get(3)?.late_risk, 0) * 0.18 +
+        (startPatternContext.two_three_late ? 0.04 : 0)
       ), 4)
     },
     {
@@ -548,6 +629,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(4)?.lane_fit_1st, 0) / 100) * 0.24 +
         Math.max(0, toNum(laneMap.get(4)?.start_edge, 0)) * 0.55 -
         toNum(laneMap.get(4)?.hidden_F_flag, 0) * 0.1 +
+        venueBias.venue_outer_attack_bias +
         Math.max(0, 0.44 - escapeScore) * 0.28
       ), 4)
     },
@@ -558,6 +640,7 @@ export function buildHitRateEnhancementContext({
         1,
         outerAttackPressure * 0.34 +
         safeArray([2, 3, 4, 5, 6]).reduce((sum, lane) => sum + toNum(laneMap.get(lane)?.late_risk, 0), 0) * 0.12 +
+        venueBias.strong_wind_caution +
         Math.max(0, 0.34 - escapeScore) * 0.46
       ), 4)
     }
@@ -595,6 +678,7 @@ export function buildHitRateEnhancementContext({
       escape_score: round(escapeScore, 4),
       lane2_allow_nige: round(lane2AllowNige, 4),
       outer_attack_pressure: round(outerAttackPressure, 4),
+      venue_bias: venueBias,
       hidden_F_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
         hidden_F_flag: row.hidden_F_flag,
         unresolved_F_count: row.unresolved_F_count,
@@ -611,10 +695,17 @@ export function buildHitRateEnhancementContext({
         lane_avgST: row.lane_avgST,
         lane_STrank: row.lane_STrank,
         exhibition_st: row.exhibition_st,
+        exhibition_time: row.motor_form?.exhibitionTime ?? null,
+        ex_time_relative_gap: row.ex_time_relative_gap,
+        wind_adjusted_ex_time: row.wind_adjusted_ex_time,
+        boat1_ex_time_warning: row.boat1_ex_time_warning,
         start_edge: row.start_edge,
         late_risk: row.late_risk,
         hidden_F_flag: row.hidden_F_flag,
         start_caution_penalty: row.start_caution_penalty,
+        recent_L_penalty: row.recent_L_penalty,
+        wind_start_instability: row.wind_start_instability,
+        board_start_caution: row.board_start_caution,
         launch_state_bonus: row.launch_state_bonus,
         style_attack_readiness: round(
           Math.max(
@@ -628,6 +719,12 @@ export function buildHitRateEnhancementContext({
       start_edge_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.start_edge])),
       late_risk_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.late_risk])),
       motor_form_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.motor_form])),
+      exhibition_time_context_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
+        ex_time_relative_gap: row.ex_time_relative_gap,
+        wind_adjusted_ex_time: row.wind_adjusted_ex_time,
+        boat1_ex_time_warning: row.boat1_ex_time_warning,
+        venue_specific_ex_time_mode: row.venue_specific_ex_time_mode
+      }])),
       lane_fit_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
         lane_fit_1st: row.lane_fit_1st,
         lane_fit_2ren: row.lane_fit_2ren,
@@ -638,7 +735,8 @@ export function buildHitRateEnhancementContext({
     },
     stage3_scenarios: {
       selected_scenario_probabilities: normalizedScenarioProbabilities,
-      intermediate_events: intermediateEvents
+      intermediate_events: intermediateEvents,
+      start_pattern_context: startPatternContext
     },
     stage4_opponents: {
       head_candidate_set: pickTopLanes(roleProbabilityLayers?.first_place_probability_json, 3),
@@ -665,9 +763,14 @@ export function buildHitRateEnhancementContext({
       start_edge: row.start_edge,
       late_risk: row.late_risk,
       hidden_F_flag: row.hidden_F_flag,
-      style_profile: row.style_profile
+      style_profile: row.style_profile,
+      ex_time_relative_gap: row.ex_time_relative_gap,
+      wind_adjusted_ex_time: row.wind_adjusted_ex_time,
+      recent_L_penalty: row.recent_L_penalty
     }])),
-    intermediateEvents
+    intermediateEvents,
+    venueBias,
+    startPatternContext
   };
 }
 
