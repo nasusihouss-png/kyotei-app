@@ -55,6 +55,90 @@ function average(values) {
   return valid.reduce((sum, value) => sum + value, 0) / valid.length;
 }
 
+function normalizeAgainstPeers(value, values) {
+  if (!Number.isFinite(value)) return 0;
+  const valid = values.filter((entry) => Number.isFinite(entry));
+  if (valid.length < 2) return 0;
+  const min = Math.min(...valid);
+  const max = Math.max(...valid);
+  const avg = average(valid);
+  const spread = Math.max(0.05, max - min);
+  return clamp(-1, 1, (value - avg) / spread);
+}
+
+function buildRoleSpecificFinishBonuses(lane, row, laneMap) {
+  const leftLane = lane > 1 ? laneMap.get(lane - 1) || null : null;
+  const leftGap = Number.isFinite(row?.ex_time_left_gap_advantage) ? row.ex_time_left_gap_advantage : 0;
+  const positiveLeftGap = Math.max(0, leftGap);
+  const turningNorm = normalizeAgainstPeers(
+    row?.turning_ability,
+    [...laneMap.values()].map((entry) => entry?.turning_ability)
+  );
+  const straightNorm = normalizeAgainstPeers(
+    row?.straight_line_power,
+    [...laneMap.values()].map((entry) => entry?.straight_line_power)
+  );
+  const styleProfile = row?.style_profile || {};
+  const makuriHeadStyle = clamp(
+    0,
+    1,
+    (toNum(styleProfile?.makuri, 0) * 0.62 + toNum(styleProfile?.nige, 0) * 0.24) / 100
+  );
+  const sashiSecondStyle = clamp(
+    0,
+    1,
+    (toNum(styleProfile?.sashi, 0) * 0.54 + toNum(styleProfile?.makuri_sashi, 0) * 0.38) / 100
+  );
+  const survivalThirdStyle = clamp(
+    0,
+    1,
+    (toNum(styleProfile?.nuki, 0) * 0.5 + toNum(styleProfile?.makuri_sashi, 0) * 0.22 + toNum(styleProfile?.sashi, 0) * 0.14) / 100
+  );
+
+  const firstPlaceBonus = clamp(
+    -0.08,
+    0.22,
+    positiveLeftGap * 0.95 +
+      Math.max(0, straightNorm) * 0.12 +
+      Math.max(0, turningNorm) * 0.05 +
+      makuriHeadStyle * 0.14 -
+      Math.max(0, -straightNorm) * 0.04
+  );
+  const secondPlaceBonus = clamp(
+    -0.08,
+    0.24,
+    positiveLeftGap * 0.72 +
+      Math.max(0, turningNorm) * 0.13 +
+      Math.max(0, straightNorm) * 0.08 +
+      sashiSecondStyle * 0.16 -
+      Math.max(0, -turningNorm) * 0.04
+  );
+  const thirdPlaceBonus = clamp(
+    -0.08,
+    0.22,
+    positiveLeftGap * 0.28 +
+      Math.max(0, turningNorm) * 0.15 +
+      Math.max(0, straightNorm) * 0.04 +
+      survivalThirdStyle * 0.13 -
+      Math.max(0, -turningNorm) * 0.03
+  );
+
+  return {
+    left_boat_lane: leftLane?.lane ?? null,
+    leftGapAttackSupport: round(positiveLeftGap, 4),
+    turningAbilityDelta: round(turningNorm, 4),
+    straightLineDelta: round(straightNorm, 4),
+    styleRoleFit: {
+      first: round(makuriHeadStyle, 4),
+      second: round(sashiSecondStyle, 4),
+      third: round(survivalThirdStyle, 4)
+    },
+    firstPlaceBonus: round(firstPlaceBonus, 4),
+    secondPlaceBonus: round(secondPlaceBonus, 4),
+    thirdPlaceBonus: round(thirdPlaceBonus, 4)
+  };
+}
+
 function buildStylePressure(lane, profile) {
   const style = profile?.style_profile || {};
   const sashi = toNum(style.sashi, 0);
@@ -172,10 +256,18 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore) {
   const startEdge = Math.max(-0.08, toNum(row?.start_edge, 0));
   const lateRisk = toNum(row?.late_risk, 0);
   const hiddenF = toNum(row?.hidden_F_flag, 0);
+  const roleBonus = row?.finish_role_bonuses || {
+    firstPlaceBonus: 0,
+    secondPlaceBonus: 0,
+    thirdPlaceBonus: 0
+  };
 
   first += laneFit1 * 0.28 + motorTrue * 0.12 + lapBoost * 0.16 + startEdge * 0.7 - lateRisk * 0.28 - hiddenF * 0.16;
   second += laneFit2 * 0.3 + motor2 * 0.22 + startEdge * 0.3 + stretchBoost * 0.15 - lateRisk * 0.16 - hiddenF * 0.06;
   third += laneFit3 * 0.34 + motor3 * 0.24 + stretchBoost * 0.22 + toNum(row?.safe_run_bias, 0) * 0.4 - lateRisk * 0.12 - hiddenF * 0.03;
+  first += toNum(roleBonus.firstPlaceBonus, 0);
+  second += toNum(roleBonus.secondPlaceBonus, 0);
+  third += toNum(roleBonus.thirdPlaceBonus, 0);
 
   if (lane === 1) first += 0.18 + escapeScore * 0.14;
 
@@ -270,9 +362,15 @@ function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, 
     const firstRows = [];
     const secondRows = [];
     const thirdRows = [];
+    const roleBonusByLane = {};
     for (const lane of laneSet) {
       const row = laneMap.get(lane) || {};
       const roleWeights = roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore);
+      roleBonusByLane[String(lane)] = row?.finish_role_bonuses || {
+        firstPlaceBonus: 0,
+        secondPlaceBonus: 0,
+        thirdPlaceBonus: 0
+      };
       firstRows.push({ lane, weight: toNum(baseProbs?.first?.[lane], 0) * roleWeights.first });
       secondRows.push({ lane, weight: toNum(baseProbs?.second?.[lane], 0) * roleWeights.second });
       thirdRows.push({ lane, weight: toNum(baseProbs?.third?.[lane], 0) * roleWeights.third });
@@ -286,7 +384,8 @@ function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, baseProbs, 
       probability: scenarioProbability,
       first: normalizedFirst,
       second: normalizedSecond,
-      third: normalizedThird
+      third: normalizedThird,
+      role_bonus_by_lane: roleBonusByLane
     });
 
     for (const row of normalizedFirst) {
@@ -515,6 +614,8 @@ export function buildHitRateEnhancementContext({
         lapExStretch: predictionDataUsage.lapExStretch.used && Number.isFinite(features?.lap_exhibition_score) ? round(features.lap_exhibition_score, 2) : null,
         exhibitionTime: Number.isFinite(exhibitionTime) ? round(exhibitionTime, 2) : null
       },
+      turning_ability: Number.isFinite(features?.turning_ability) ? round(features.turning_ability, 2) : null,
+      straight_line_power: Number.isFinite(features?.straight_line_power) ? round(features.straight_line_power, 2) : null,
       style_pressure: stylePressure,
       slit_alert_flag: toNum(features?.slit_alert_flag, 0),
       motivation_attack: motivation.motivation_attack,
@@ -531,12 +632,34 @@ export function buildHitRateEnhancementContext({
   laneContexts.forEach((row) => {
     const exTime = row?.motor_form?.exhibitionTime;
     const windAdjusted = Number.isFinite(exTime) ? round(exTime + venueBias.strong_wind_caution * 0.08, 3) : null;
+    const leftLaneRow = row.lane > 1 ? laneMap.get(row.lane - 1) || null : null;
     row.wind_adjusted_ex_time = windAdjusted;
     row.ex_time_relative_gap = Number.isFinite(windAdjusted) && Number.isFinite(bestAdjustedExTime)
       ? round(windAdjusted - bestAdjustedExTime, 3)
       : null;
+    row.ex_time_left_gap_advantage =
+      leftLaneRow && Number.isFinite(windAdjusted) && Number.isFinite(leftLaneRow?.wind_adjusted_ex_time ?? leftLaneRow?.motor_form?.exhibitionTime)
+        ? round((leftLaneRow.wind_adjusted_ex_time ?? leftLaneRow.motor_form.exhibitionTime) - windAdjusted, 3)
+        : null;
     row.boat1_ex_time_warning = row.lane === 1 && Number.isFinite(row.ex_time_relative_gap) && row.ex_time_relative_gap >= 0.07 ? 1 : 0;
     row.venue_specific_ex_time_mode = venueBias.strong_wind_caution >= 0.05 ? "wind_sensitive" : "standard";
+  });
+  laneContexts.forEach((row) => {
+    row.finish_role_bonuses = buildRoleSpecificFinishBonuses(row.lane, row, laneMap);
+    row.attack_readiness_bonus = round(
+      clamp(
+        0,
+        0.18,
+        Math.max(0, toNum(row.finish_role_bonuses?.leftGapAttackSupport, 0)) * 0.42 +
+          Math.max(0, toNum(row.finish_role_bonuses?.straightLineDelta, 0)) * 0.04 +
+          Math.max(0, toNum(row.finish_role_bonuses?.turningAbilityDelta, 0)) * 0.03 +
+          Math.max(
+            toNum(row.finish_role_bonuses?.styleRoleFit?.first, 0),
+            toNum(row.finish_role_bonuses?.styleRoleFit?.second, 0)
+          ) * 0.04
+      ),
+      4
+    );
   });
   const lane1 = laneMap.get(1) || {};
   const startPatternContext = buildStartPatternContext(laneMap);
@@ -581,6 +704,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(2)?.style_profile?.sashi, 0) / 100) * 0.54 +
         Math.max(0, toNum(laneMap.get(2)?.start_edge, 0)) * 0.55 -
         toNum(laneMap.get(2)?.late_risk, 0) * 0.28 +
+        toNum(laneMap.get(2)?.attack_readiness_bonus, 0) * 0.36 +
         (startPatternContext.lane12_ahead ? 0.04 : 0) +
         (1 - escapeScore) * 0.24
       ), 4)
@@ -593,6 +717,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(2)?.style_profile?.makuri, 0) / 100) * 0.56 +
         Math.max(0, toNum(laneMap.get(2)?.start_edge, 0)) * 0.62 -
         toNum(laneMap.get(2)?.hidden_F_flag, 0) * 0.12 +
+        toNum(laneMap.get(2)?.attack_readiness_bonus, 0) * 0.44 +
         (startPatternContext.middle_dent ? 0.06 : 0) +
         Math.max(0, 0.42 - escapeScore) * 0.55
       ), 4)
@@ -605,6 +730,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(3)?.style_profile?.makuri, 0) / 100) * 0.56 +
         Math.max(0, toNum(laneMap.get(3)?.start_edge, 0)) * 0.6 -
         toNum(laneMap.get(3)?.late_risk, 0) * 0.26 +
+        toNum(laneMap.get(3)?.attack_readiness_bonus, 0) * 0.42 +
         (startPatternContext.outer_attack_window ? 0.05 : 0) +
         Math.max(0, 0.45 - escapeScore) * 0.36
       ), 4)
@@ -617,6 +743,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(3)?.style_profile?.makuri_sashi, 0) / 100) * 0.6 +
         Math.max(0, toNum(laneMap.get(3)?.start_edge, 0)) * 0.42 -
         toNum(laneMap.get(3)?.late_risk, 0) * 0.18 +
+        toNum(laneMap.get(3)?.attack_readiness_bonus, 0) * 0.28 +
         (startPatternContext.two_three_late ? 0.04 : 0)
       ), 4)
     },
@@ -629,6 +756,7 @@ export function buildHitRateEnhancementContext({
         (toNum(laneMap.get(4)?.lane_fit_1st, 0) / 100) * 0.24 +
         Math.max(0, toNum(laneMap.get(4)?.start_edge, 0)) * 0.55 -
         toNum(laneMap.get(4)?.hidden_F_flag, 0) * 0.1 +
+        toNum(laneMap.get(4)?.attack_readiness_bonus, 0) * 0.4 +
         venueBias.venue_outer_attack_bias +
         Math.max(0, 0.44 - escapeScore) * 0.28
       ), 4)
@@ -731,7 +859,8 @@ export function buildHitRateEnhancementContext({
         lane_fit_3ren: row.lane_fit_3ren,
         lane_fit_local: row.lane_fit_local,
         lane_fit_grade: row.lane_fit_grade
-      }]))
+      }])),
+      finish_role_bonuses_by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.finish_role_bonuses]))
     },
     stage3_scenarios: {
       selected_scenario_probabilities: normalizedScenarioProbabilities,
@@ -804,6 +933,7 @@ export function applyHitRateEnhancementToProbabilities({
         toNum(row.start_edge, 0) * 0.22 +
         (toNum(row.lane_fit_1st, 0) / 100) * 0.18 +
         (toNum(row.motor_true, 0) / 100) * 0.09 +
+        toNum(row.finish_role_bonuses?.firstPlaceBonus, 0) * 0.7 +
         toNum(row.motivation_attack, 0) * 0.05 -
         toNum(row.late_risk, 0) * 0.28 -
         toNum(row.hidden_F_flag, 0) * (lane === 1 ? 0.18 : 0.12);
@@ -822,6 +952,7 @@ export function applyHitRateEnhancementToProbabilities({
         toNum(row.start_edge, 0) * 0.12 +
         (toNum(row.lane_fit_2ren, 0) / 100) * 0.22 +
         (toNum(row.motor_raw?.motor2ren, 0) / 100) * 0.18 +
+        toNum(row.finish_role_bonuses?.secondPlaceBonus, 0) * 0.7 +
         toNum(row.safe_run_bias, 0) * 0.06 -
         toNum(row.late_risk, 0) * 0.18 -
         toNum(row.hidden_F_flag, 0) * 0.06;
@@ -832,6 +963,7 @@ export function applyHitRateEnhancementToProbabilities({
         (lane === 1 ? Math.max(0, 0.42 - escapeScore) * 0.1 : 0) +
         (toNum(row.lane_fit_3ren, 0) / 100) * 0.26 +
         (toNum(row.motor_raw?.motor3ren, 0) / 100) * 0.2 +
+        toNum(row.finish_role_bonuses?.thirdPlaceBonus, 0) * 0.7 +
         toNum(row.safe_run_bias, 0) * 0.1 +
         (toNum(row.style_profile?.nuki, 0) / 100) * 0.04 -
         toNum(row.late_risk, 0) * 0.12 -

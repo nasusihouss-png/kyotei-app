@@ -28,6 +28,8 @@ const ranking = [
       lap_time: 6.72,
       lap_exhibition_score: 7.2,
       exhibition_time: 6.74,
+      turning_ability: 6.7,
+      straight_line_power: 6.6,
       f_hold_bias_applied: 0,
       f_hold_count: 0,
       f_hold_caution_penalty: 0
@@ -53,6 +55,8 @@ const ranking = [
       lap_time: 6.76,
       lap_exhibition_score: 6.6,
       exhibition_time: 6.77,
+      turning_ability: 6.8,
+      straight_line_power: 6.9,
       f_hold_bias_applied: 0,
       f_hold_count: 0,
       f_hold_caution_penalty: 0
@@ -78,6 +82,8 @@ const ranking = [
       lap_time: 6.75,
       lap_exhibition_score: 6.8,
       exhibition_time: 6.76,
+      turning_ability: 6.9,
+      straight_line_power: 6.8,
       f_hold_bias_applied: 0,
       f_hold_count: 0,
       f_hold_caution_penalty: 0
@@ -103,6 +109,8 @@ const ranking = [
       lap_time: 6.73,
       lap_exhibition_score: 7.0,
       exhibition_time: 6.75,
+      turning_ability: 6.6,
+      straight_line_power: 7.1,
       f_hold_bias_applied: 0,
       f_hold_count: 0,
       f_hold_caution_penalty: 0
@@ -144,6 +152,18 @@ assert.equal(typeof enhancement.aggregatedFinishProbabilities, "object");
 assert.equal(typeof enhancement.intermediateEvents, "object");
 assert.equal(typeof enhancement.startPatternContext, "object");
 assert.equal(Array.isArray(enhancement.dark_horse_alerts), true);
+assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].firstPlaceBonus, "number");
+assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].secondPlaceBonus, "number");
+assert.equal(typeof enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].thirdPlaceBonus, "number");
+assert.notEqual(
+  enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].firstPlaceBonus,
+  enhancement.stage2_dynamic.finish_role_bonuses_by_lane["2"].secondPlaceBonus,
+  "role bonuses should be separated by finish role"
+);
+assert.equal(
+  typeof enhancement.finishProbabilitiesByScenario[0]?.role_bonus_by_lane?.["2"]?.secondPlaceBonus,
+  "number"
+);
 
 const enhanced = applyHitRateEnhancementToProbabilities({
   firstProbs: roleProbabilityLayers.first_place_probability_json,

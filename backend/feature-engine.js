@@ -118,6 +118,8 @@ export function buildFeatures(racer) {
     lap_time,
     lap_exhibition_score,
     stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel ?? racer?.stretchFootLabel ?? null,
+    turning_ability: toNullableNumber(racer?.kyoteiBiyoriMawariashi ?? racer?.mawariashi),
+    straight_line_power: toNullableNumber(racer?.kyoteiBiyoriNobiashi ?? racer?.nobiashi),
     entry_course,
     tilt,
     wind_speed,

@@ -1566,6 +1566,8 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
     normalizedRow.motor2Rate = normalizedRow.motor2ren;
     normalizedRow.motor3Rate = normalizedRow.motor3ren;
     normalizedRow.lapExhibitionScore = normalizedRow.lapExStretch;
+    normalizedRow.mawariashi = toFiniteNumberOrNull(row?.mawariashi ?? row?.__mawariashi);
+    normalizedRow.nobiashi = toFiniteNumberOrNull(row?.nobiashi ?? row?.__nobiashi);
     normalizedRow.laneFirstRate = normalizedRow.lane1stAvg;
     normalizedRow.lane2RenRate = normalizedRow.lane2renAvg;
     normalizedRow.lane3RenRate = normalizedRow.lane3renAvg;
@@ -1606,11 +1608,15 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         kyoteiBiyoriLapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriLapExStretch: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
+        kyoteiBiyoriMawariashi: extra?.mawariashi ?? null,
+        kyoteiBiyoriNobiashi: extra?.nobiashi ?? null,
         kyoteiBiyoriExhibitionSt: extra?.exhibitionSt ?? null,
         kyoteiBiyoriExhibitionTime: extra?.exhibitionTime ?? null,
         kyoteiBiyoriMotor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? null,
         kyoteiBiyoriMotor3Rate: extra?.motor3ren ?? extra?.motor3Rate ?? null,
         lapExStretch: extra?.lapExStretch ?? racer?.lapExStretch ?? null,
+        mawariashi: extra?.mawariashi ?? racer?.mawariashi ?? null,
+        nobiashi: extra?.nobiashi ?? racer?.nobiashi ?? null,
         motor2ren: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2ren ?? racer?.motor2Rate ?? null,
         motor3ren: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3ren ?? racer?.motor3Rate ?? null,
         lane1stAvg: extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
