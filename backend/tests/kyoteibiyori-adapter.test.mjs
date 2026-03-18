@@ -316,36 +316,88 @@ const preRaceStrictHtml = `
   </table>
 `;
 
+const exactLaneStatsHtml = `
+  <table>
+    <caption>枠別情報</caption>
+    <tr>
+      <th>項目</th>
+      <th>期間</th>
+      <th>1号艇</th>
+      <th>2号艇</th>
+      <th>3号艇</th>
+      <th>4号艇</th>
+      <th>5号艇</th>
+      <th>6号艇</th>
+    </tr>
+    <tr><td>1着率</td><td>今期</td><td>55.5%</td><td>44.4%</td><td>33.3%</td><td>22.2%</td><td>11.1%</td><td>10.0%</td></tr>
+    <tr><td>1着率</td><td>当地</td><td>60.0%</td><td>50.0%</td><td>40.0%</td><td>30.0%</td><td>20.0%</td><td>10.0%</td></tr>
+    <tr><td>1着率</td><td>直近6か月</td><td>70.0%</td><td>60.0%</td><td>50.0%</td><td>40.0%</td><td>30.0%</td><td>20.0%</td></tr>
+    <tr><td>1着率</td><td>直近3か月</td><td>66.7%</td><td>55.5%</td><td>44.4%</td><td>33.3%</td><td>22.2%</td><td>11.1%</td></tr>
+    <tr><td>2連対率</td><td>今期</td><td>71.0%</td><td>61.0%</td><td>51.0%</td><td>41.0%</td><td>31.0%</td><td>21.0%</td></tr>
+    <tr><td>2連対率</td><td>当地</td><td>69.0%</td><td>59.0%</td><td>49.0%</td><td>39.0%</td><td>29.0%</td><td>19.0%</td></tr>
+    <tr><td>2連対率</td><td>直近6か月</td><td>70.8%</td><td>60.4%</td><td>50.1%</td><td>40.0%</td><td>30.8%</td><td>20.2%</td></tr>
+    <tr><td>2連対率</td><td>直近3か月</td><td>68.0%</td><td>58.0%</td><td>48.0%</td><td>38.0%</td><td>28.0%</td><td>18.0%</td></tr>
+    <tr><td>3連対率</td><td>今期</td><td>89.9%</td><td>78.8%</td><td>67.7%</td><td>56.6%</td><td>45.5%</td><td>34.4%</td></tr>
+    <tr><td>3連対率</td><td>当地</td><td>87.7%</td><td>76.6%</td><td>65.5%</td><td>54.4%</td><td>43.3%</td><td>32.2%</td></tr>
+    <tr><td>3連対率</td><td>直近6か月</td><td>88.8%</td><td>77.7%</td><td>66.7%</td><td>55.5%</td><td>44.4%</td><td>33.3%</td></tr>
+    <tr><td>3連対率</td><td>直近3か月</td><td>86.6%</td><td>75.5%</td><td>64.4%</td><td>53.3%</td><td>42.2%</td><td>31.1%</td></tr>
+  </table>
+`;
+
 const strictLaneStats = normalizeKyoteiBiyoriPreRaceFields(
-  parseKyoteiBiyoriPreRaceData(laneStatsHtml, { mode: "lane_stats", sourceLabel: "lane_stats_tab" })
+  parseKyoteiBiyoriPreRaceData(exactLaneStatsHtml, { mode: "lane_stats", sourceLabel: "lane_stats_tab" })
 );
-assert.equal(strictLaneStats.byLane.get(1)?.laneFirstRate, 64.9083);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stScore, 64.9083);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stAvg, 64.9083);
+assert.equal(strictLaneStats.byLane.get(1)?.laneFirstRate, 64.2071);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stScore, 64.2071);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stAvg, 64.2071);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_season, 55.5);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_6m, 70);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_3m, 66.7);
 assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_1m, null);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_sum, 192.2);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_avg, 64.0667);
-assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_weighted, 64.9083);
-assert.equal(strictLaneStats.byLane.get(5)?.lane2renRate_3m, 30.8);
-assert.equal(strictLaneStats.byLane.get(3)?.lane3renRate_3m, 66.7);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2RenRate, 69.9471);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renScore, 69.9471);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renAvg, 69.9471);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_sum, 209.8);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_avg, 69.9333);
-assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_weighted, 69.9471);
-assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.avg, 64.0667);
-assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.availablePeriods, ["season", "m6", "m3"]);
-assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.weights_used, { season: 0.25, m6: 0.3056, m3: 0.4444 });
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_local, 60);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_sum, 252.2);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_avg, 63.05);
+assert.equal(strictLaneStats.byLane.get(1)?.lane1stRate_weighted, 64.2071);
+assert.equal(strictLaneStats.byLane.get(5)?.lane2renRate_6m, 30.8);
+assert.equal(strictLaneStats.byLane.get(3)?.lane3renRate_6m, 66.7);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2RenRate, 69.5667);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renScore, 69.5667);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renAvg, 69.5667);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_sum, 278.8);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_avg, 69.7);
+assert.equal(strictLaneStats.byLane.get(1)?.lane2renRate_weighted, 69.5667);
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.avg, 63.05);
+assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.availablePeriods, ["season", "m6", "m3", "local"]);
+assert.deepEqual(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.weights_used, { season: 0.2143, m6: 0.2619, m3: 0.381, local: 0.1429 });
 assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.hot_form_bonus, 0);
-assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.finalValue, 64.9083);
-assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.final_score, 64.9083);
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.finalValue, 64.2071);
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.final_score, 64.2071);
+assert.equal(strictLaneStats.fieldDebugs["1"]?.lane1stRate?.exact_verified, true);
+
+const exactPreRaceStrictHtml = `
+  <table>
+    <caption>直前情報</caption>
+    <tr>
+      <th>項目</th>
+      <th>1号艇</th>
+      <th>2号艇</th>
+      <th>3号艇</th>
+      <th>4号艇</th>
+      <th>5号艇</th>
+      <th>6号艇</th>
+    </tr>
+    <tr><td>周回</td><td>36.23</td><td>36.45</td><td>36.50</td><td>36.61</td><td>36.73</td><td>36.80</td></tr>
+    <tr><td>ST</td><td>.02</td><td>.03</td><td>.13</td><td>F.01</td><td>.11</td><td>.09</td></tr>
+    <tr><td>展示</td><td>6.5</td><td>6.4</td><td>6.3</td><td>6.2</td><td>6.1</td><td>6.0</td></tr>
+    <tr><td>周り足</td><td>6.0</td><td>5.8</td><td>5.6</td><td>5.4</td><td>5.2</td><td>5.0</td></tr>
+    <tr><td>直線</td><td>7.0</td><td>6.8</td><td>6.6</td><td>6.4</td><td>6.2</td><td>6.0</td></tr>
+    <tr><td>モーター2連率</td><td>30.8%</td><td>40.0%</td><td>50.5%</td><td>60.1%</td><td>20.2%</td><td>10.9%</td></tr>
+    <tr><td>モーター3連率</td><td>66.7%</td><td>55.5%</td><td>44.4%</td><td>33.3%</td><td>22.2%</td><td>11.1%</td></tr>
+  </table>
+`;
 
 const strictPreRace = normalizeKyoteiBiyoriPreRaceFields(
-  parseKyoteiBiyoriPreRaceData(preRaceStrictHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+  parseKyoteiBiyoriPreRaceData(exactPreRaceStrictHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
 );
 assert.equal(strictPreRace.byLane.get(1)?.lapTimeRaw, 36.23);
 assert.equal(strictPreRace.byLane.get(2)?.exhibitionSt, 0.03);

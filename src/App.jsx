@@ -563,6 +563,12 @@ function formatDebugRawValue(value) {
   return value === undefined ? "undefined" : JSON.stringify(value);
 }
 
+function formatLaneRawDebugValue(entry) {
+  if (!entry || typeof entry !== "object") return "--";
+  const value = toFiniteComparisonNumber(entry?.value);
+  return value === null ? "--" : String(value);
+}
+
 function toFiniteComparisonNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const num = Number(value);
@@ -4082,9 +4088,6 @@ export default function App() {
                             <th>Ex ST</th>
                             <th>Ex Time</th>
                             <th>Motor 2-ren</th>
-                            <th>Lane 1st Score</th>
-                            <th>Lane 2-ren Score</th>
-                            <th>Lane 3-ren Score</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -4113,16 +4116,13 @@ export default function App() {
                               <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionSt, 2)}</td>
                               <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionTime, 2)}</td>
                               <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.laneFirstRate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane1st"), 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.lane2RenRate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane2ren"), 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.lane3RenRate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(getLaneScoreDisplayValue(row, "lane3ren"), 2)}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                     <p className="muted strategy-line">
-                      Rows are ordered by actual entry lane when course movement occurs. Lane scores shown here follow the reassigned actual lane when available.
+                      Rows are ordered by actual entry lane when course movement occurs. Lane-score columns are temporarily hidden until raw 枠別情報 parsing is re-verified against the source table.
                     </p>
                     {!hasRenderableKyoteiBiyoriData(playerComparisonRows, data) ? (
                       <p className="muted strategy-line">
@@ -4594,6 +4594,46 @@ export default function App() {
                                     <td><code>{formatDebugRawValue(row?.motor3ren_raw)}</code></td>
                                     <td><code>{formatDebugRawValue(row?.motor3ren_debug)}</code></td>
                                   </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div className="table-wrap" style={{ marginTop: 10 }}>
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Lane</th>
+                                  <th>Metric</th>
+                                  <th>今期</th>
+                                  <th>6m</th>
+                                  <th>3m</th>
+                                  <th>1m</th>
+                                  <th>当地</th>
+                                  <th>一般戦</th>
+                                  <th>SG/G1</th>
+                                  <th>Verified</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {safeArray(kyoteiBiyoriFrontendDebug?.lane_rows).flatMap((row) => (
+                                  [
+                                    { label: "1着率", debug: row?.lane1stRate_debug },
+                                    { label: "2連対率", debug: row?.lane2renRate_debug },
+                                    { label: "3連対率", debug: row?.lane3renRate_debug }
+                                  ].map((metricRow) => (
+                                    <tr key={`kyotei-lane-raw-${row?.lane ?? "unknown"}-${metricRow.label}`}>
+                                      <td>{row?.lane ?? "-"}</td>
+                                      <td>{metricRow.label}</td>
+                                      <td>{formatLaneRawDebugValue(metricRow.debug?.season)}</td>
+                                      <td>{formatLaneRawDebugValue(metricRow.debug?.m6)}</td>
+                                      <td>{formatLaneRawDebugValue(metricRow.debug?.m3)}</td>
+                                      <td>{formatLaneRawDebugValue(metricRow.debug?.m1)}</td>
+                                      <td>{formatLaneRawDebugValue(metricRow.debug?.local)}</td>
+                                      <td>{formatLaneRawDebugValue(metricRow.debug?.ippansen)}</td>
+                                      <td>{formatLaneRawDebugValue(metricRow.debug?.sg_g1)}</td>
+                                      <td>{metricRow.debug?.exact_verified ? "verified" : "--"}</td>
+                                    </tr>
+                                  ))
                                 ))}
                               </tbody>
                             </table>

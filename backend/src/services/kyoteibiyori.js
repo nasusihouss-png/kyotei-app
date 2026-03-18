@@ -101,6 +101,11 @@ function makePredictionFieldMeta({ field, value, source, debugEntry, required = 
 function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fieldDebugs }) {
   const laneSources = fieldSources?.[lane] || {};
   const laneDebug = fieldDebugs?.[lane] || {};
+  const laneRawVerified = {
+    lane1st: isVerifiedLaneStatDebug(extra?.lane1stDebug || laneDebug?.lane1stRate, "1着率"),
+    lane2ren: isVerifiedLaneStatDebug(extra?.lane2renDebug || laneDebug?.lane2renRate, "2連対率"),
+    lane3ren: isVerifiedLaneStatDebug(extra?.lane3renDebug || laneDebug?.lane3renRate, "3連対率")
+  };
   const getFieldMeta = (field, options) => makePredictionFieldMeta({
     field,
     value: options.value,
@@ -143,32 +148,32 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
     }),
     lane1stScore: getFieldMeta("lane1stScore", {
       value: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
-      source: laneSources.laneFirstRate || (Number.isFinite(Number(racer?.lane1stAvg ?? racer?.laneFirstRate)) ? "boatrace_profile_lane_stats" : null),
+      source: laneRawVerified.lane1st ? (laneSources.laneFirstRate || "boatrace_profile_lane_stats_exact_raw_verified") : null,
       debugEntry: laneDebug?.lane1stRate || extra?.lane1stDebug || null
     }),
     lane2renScore: getFieldMeta("lane2renScore", {
       value: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
-      source: laneSources.lane2RenRate || (Number.isFinite(Number(racer?.lane2renAvg ?? racer?.lane2RenRate)) ? "boatrace_profile_lane_stats" : null),
+      source: laneRawVerified.lane2ren ? (laneSources.lane2RenRate || "boatrace_profile_lane_stats_exact_raw_verified") : null,
       debugEntry: laneDebug?.lane2renRate || extra?.lane2renDebug || null
     }),
     lane3renScore: getFieldMeta("lane3renScore", {
       value: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
-      source: laneSources.lane3RenRate || (Number.isFinite(Number(racer?.lane3renAvg ?? racer?.lane3RenRate)) ? "boatrace_profile_lane_stats" : null),
+      source: laneRawVerified.lane3ren ? (laneSources.lane3RenRate || "boatrace_profile_lane_stats_exact_raw_verified") : null,
       debugEntry: laneDebug?.lane3renRate || extra?.lane3renDebug || null
     }),
     lane1stAvg: getFieldMeta("lane1stAvg", {
       value: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
-      source: laneSources.laneFirstRate || (Number.isFinite(Number(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate)) ? "boatrace_profile_lane_stats" : null),
+      source: laneRawVerified.lane1st ? (laneSources.laneFirstRate || "boatrace_profile_lane_stats_exact_raw_verified") : null,
       debugEntry: laneDebug?.lane1stRate || extra?.lane1stDebug || null
     }),
     lane2renAvg: getFieldMeta("lane2renAvg", {
       value: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
-      source: laneSources.lane2RenRate || (Number.isFinite(Number(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate)) ? "boatrace_profile_lane_stats" : null),
+      source: laneRawVerified.lane2ren ? (laneSources.lane2RenRate || "boatrace_profile_lane_stats_exact_raw_verified") : null,
       debugEntry: laneDebug?.lane2renRate || extra?.lane2renDebug || null
     }),
     lane3renAvg: getFieldMeta("lane3renAvg", {
       value: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
-      source: laneSources.lane3RenRate || (Number.isFinite(Number(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate)) ? "boatrace_profile_lane_stats" : null),
+      source: laneRawVerified.lane3ren ? (laneSources.lane3RenRate || "boatrace_profile_lane_stats_exact_raw_verified") : null,
       debugEntry: laneDebug?.lane3renRate || extra?.lane3renDebug || null
     }),
     fCount: getFieldMeta("fCount", {
@@ -585,7 +590,7 @@ const LANE_STAT_PERIODS = {
 const LANE_STAT_FIELD_CONFIG = {
   laneFirstRate: {
     debugField: "lane1stRate",
-    metricLabel: JAPANESE_LABELS.lane1st,
+    metricLabel: "1着率",
     periodsKey: "lane1st_raw",
     scoreField: "lane1stScore",
     debugScoreField: "lane1stDebug",
@@ -604,7 +609,7 @@ const LANE_STAT_FIELD_CONFIG = {
   },
   lane2RenRate: {
     debugField: "lane2renRate",
-    metricLabel: JAPANESE_LABELS.lane2ren,
+    metricLabel: "2連対率",
     periodsKey: "lane2ren_raw",
     scoreField: "lane2renScore",
     debugScoreField: "lane2renDebug",
@@ -623,7 +628,7 @@ const LANE_STAT_FIELD_CONFIG = {
   },
   lane3RenRate: {
     debugField: "lane3renRate",
-    metricLabel: JAPANESE_LABELS.lane3ren,
+    metricLabel: "3連対率",
     periodsKey: "lane3ren_raw",
     scoreField: "lane3renScore",
     debugScoreField: "lane3renDebug",
@@ -657,6 +662,37 @@ function matchesLabel(text, label, aliases = []) {
     .map((entry) => compactJapaneseLabel(entry))
     .filter(Boolean);
   return candidates.some((candidate) => compactText.includes(candidate) || compactText === candidate);
+}
+
+function matchesExactLabel(text, label, aliases = []) {
+  if (!text || !label) return false;
+  const compactText = compactJapaneseLabel(text);
+  if (!compactText) return false;
+  const candidates = [label, ...(Array.isArray(aliases) ? aliases : [])]
+    .map((entry) => compactJapaneseLabel(entry))
+    .filter(Boolean);
+  return candidates.some((candidate) => compactText === candidate);
+}
+
+function findExactLaneStatMetricLabel(value) {
+  if (matchesExactLabel(value, JAPANESE_LABELS.lane1st, LABEL_ALIASES.lane1st)) return JAPANESE_LABELS.lane1st;
+  if (matchesExactLabel(value, "2連対率", ["2連率"])) return "2連対率";
+  if (matchesExactLabel(value, "3連対率", ["3連率"])) return "3連対率";
+  return null;
+}
+
+function canonicalLaneStatMetricToField(metricLabel) {
+  if (metricLabel === JAPANESE_LABELS.lane1st) return "laneFirstRate";
+  if (metricLabel === "2連対率" || metricLabel === "2連率") return "lane2RenRate";
+  if (metricLabel === "3連対率" || metricLabel === "3連率") return "lane3RenRate";
+  return null;
+}
+
+function findExactLaneStatPeriodKey(value) {
+  for (const [periodKey, config] of Object.entries(LANE_STAT_PERIODS)) {
+    if ((config.labels || []).some((label) => matchesExactLabel(value, label))) return periodKey;
+  }
+  return null;
 }
 
 function canonicalizeExplicitSectionLabel(value) {
@@ -912,14 +948,26 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
   const timeWindow = timeWindowCandidates[0] || null;
 
   if (mode === "lane_stats") {
-    if (section !== JAPANESE_LABELS.laneStatsSection) return null;
-    if (!Object.prototype.hasOwnProperty.call(LANE_STAT_PERIODS, timeWindow)) return null;
-    const period = timeWindow;
+    const exactSection =
+      rowLabels.find((label) => matchesExactLabel(label, JAPANESE_LABELS.laneStatsSection, LABEL_ALIASES.laneStatsSection)) ||
+      tableContextLabels.find((label) => matchesExactLabel(label, JAPANESE_LABELS.laneStatsSection, LABEL_ALIASES.laneStatsSection)) ||
+      null;
+    const exactMetric = rowLabels.find((label) => findExactLaneStatMetricLabel(label)) || null;
+    const exactPeriod = rowLabels.find((label) => findExactLaneStatPeriodKey(label)) || null;
+    if (!exactSection || !exactMetric || !exactPeriod) return null;
+    const metricLabel = findExactLaneStatMetricLabel(exactMetric);
+    const period = findExactLaneStatPeriodKey(exactPeriod);
+    const field = canonicalLaneStatMetricToField(metricLabel);
+    if (!field || !Object.prototype.hasOwnProperty.call(LANE_STAT_PERIODS, period)) return null;
     const periodLabel = LANE_STAT_PERIODS[period]?.canonical || period;
-    if (metric === JAPANESE_LABELS.lane1st) return { field: "laneFirstRate", section, row: metric, period, periodLabel };
-    if (metric === JAPANESE_LABELS.lane2ren) return { field: "lane2RenRate", section, row: metric, period, periodLabel };
-    if (metric === JAPANESE_LABELS.lane3ren) return { field: "lane3RenRate", section, row: metric, period, periodLabel };
-    return null;
+    return {
+      field,
+      section: JAPANESE_LABELS.laneStatsSection,
+      row: metricLabel,
+      period,
+      periodLabel,
+      exactMatchVerified: true
+    };
   }
 
   if (mode === "pre_race") {
@@ -1061,6 +1109,19 @@ function setLaneFieldDebug(fieldDebugs, lane, field, debugEntry) {
   fieldDebugs[lane][field] = debugEntry;
 }
 
+function isVerifiedLaneStatDebug(debugEntry, expectedMetricLabel) {
+  if (!debugEntry || typeof debugEntry !== "object") return false;
+  const periodEntries = Object.values(LANE_STAT_PERIODS)
+    .map((config) => debugEntry?.[config.debugKey])
+    .filter((entry) => entry && typeof entry === "object" && Number.isFinite(Number(entry?.value)));
+  if (!periodEntries.length) return false;
+  return periodEntries.every((entry) =>
+    entry?.exact_match_verified === true &&
+    entry?.section === JAPANESE_LABELS.laneStatsSection &&
+    entry?.metric === expectedMetricLabel
+  );
+}
+
 function parseHtmlSupplementExplicit(html, options = {}) {
   const byLane = new Map();
   const fieldSources = {};
@@ -1130,8 +1191,10 @@ function parseHtmlSupplementExplicit(html, options = {}) {
           period: target.period ? LANE_STAT_PERIODS[target.period]?.canonical || target.period : null,
           row: target.period ? LANE_STAT_PERIODS[target.period]?.canonical || target.period : target.row,
           column: columnHeader,
+          boatColumn: columnHeader,
           raw: rawCellText || null,
-          value: parsed.value
+          value: parsed.value,
+          exact_match_verified: !!target?.exactMatchVerified
         };
         if (options?.mode === "lane_stats") {
           const laneField = FIELD_DEBUG_NAME_MAP[target.field] || target.field;
@@ -1190,7 +1253,8 @@ function parseHtmlSupplementExplicit(html, options = {}) {
             availablePeriods: aggregate.availablePeriods,
             count: aggregate.count,
             finalValue: aggregate.score,
-            final_score: aggregate.score
+            final_score: aggregate.score,
+            exact_verified: isVerifiedLaneStatDebug(fieldDebug, config.metricLabel)
           };
         }
         fieldDebugs[lane] = laneDebug;
