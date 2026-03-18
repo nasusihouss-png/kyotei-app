@@ -15,6 +15,10 @@ function toNullableNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function clamp(min, max, value) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function getPredictionFieldMeta(racer, field) {
   const meta = racer?.predictionFieldMeta?.[field];
   return meta && typeof meta === "object"
@@ -101,6 +105,70 @@ export function buildFeatures(racer) {
   const st_inv = avg_st && avg_st > 0 ? 1 / avg_st : 0;
   const is_inner = actual_lane >= 1 && actual_lane <= 3 ? 1 : 0;
   const is_outer = actual_lane >= 5 && actual_lane <= 6 ? 1 : 0;
+  const boat3_rate = toNullableNumber(racer?.boat3Rate);
+  const player_strength_blended = toNullableNumber(racer?.playerStrengthBlended);
+  const player_strength_component = Number.isFinite(player_strength_blended)
+    ? clamp(0, 100, player_strength_blended)
+    : clamp(0, 100, nationwide_win_rate * 10 + class_score * 6);
+  const national_component = clamp(0, 100, nationwide_win_rate * 10);
+  const local_component = clamp(0, 100, local_win_rate * 10);
+  const class_component = clamp(0, 100, class_score * 20);
+  const motor2_component = Number.isFinite(motor2_rate) ? clamp(0, 100, motor2_rate) : null;
+  const motor3_component = Number.isFinite(motor3_rate) ? clamp(0, 100, motor3_rate) : null;
+  const boat2_component = Number.isFinite(boat2_rate) ? clamp(0, 100, boat2_rate) : null;
+  const boat3_component = Number.isFinite(boat3_rate) ? clamp(0, 100, boat3_rate) : null;
+  const avgStComponent =
+    Number.isFinite(avg_st) && avg_st > 0
+      ? clamp(0, 100, (0.22 - avg_st) / 0.08 * 100)
+      : null;
+  const exhibitionStComponent =
+    Number.isFinite(exhibition_st) && exhibition_st > 0
+      ? clamp(0, 100, (0.22 - exhibition_st) / 0.08 * 100)
+      : null;
+  const fPenalty = Number.isFinite(f_hold_count) ? Math.min(24, f_hold_count * 10) : 0;
+  const base_strength_score = Number(
+    clamp(
+      0,
+      100,
+      player_strength_component * 0.34 +
+        national_component * 0.28 +
+        local_component * 0.14 +
+        class_component * 0.1 +
+        (Number.isFinite(motor2_component) ? motor2_component : 50) * 0.08 +
+        (Number.isFinite(boat2_component) ? boat2_component : 50) * 0.06
+    ).toFixed(2)
+  );
+  const local_fit_score = Number(
+    clamp(
+      0,
+      100,
+      local_component * 0.58 +
+        clamp(0, 100, 50 + local_minus_nation * 10) * 0.22 +
+        (Number.isFinite(course1_win_rate) ? clamp(0, 100, course1_win_rate) : 50) * 0.12 +
+        (Number.isFinite(course1_2rate) ? clamp(0, 100, course1_2rate) : 50) * 0.08
+    ).toFixed(2)
+  );
+  const motor_strength_score = Number(
+    clamp(
+      0,
+      100,
+      (Number.isFinite(motor2_component) ? motor2_component : 50) * 0.42 +
+        (Number.isFinite(motor3_component) ? motor3_component : 50) * 0.22 +
+        (Number.isFinite(boat2_component) ? boat2_component : 50) * 0.22 +
+        (Number.isFinite(boat3_component) ? boat3_component : 50) * 0.08 +
+        (Number.isFinite(lap_time) ? clamp(0, 100, (6.9 - lap_time) / 0.25 * 100) : 50) * 0.06
+    ).toFixed(2)
+  );
+  const start_stability_score = Number(
+    clamp(
+      0,
+      100,
+      (Number.isFinite(avgStComponent) ? avgStComponent : 50) * 0.52 +
+        (Number.isFinite(exhibitionStComponent) ? exhibitionStComponent : 50) * 0.24 +
+        (Number.isFinite(laneStRank) ? clamp(0, 100, (7 - laneStRank) / 6 * 100) : 50) * 0.14 -
+        fPenalty
+    ).toFixed(2)
+  );
 
   return {
     lane,
@@ -113,6 +181,7 @@ export function buildFeatures(racer) {
     motor2_rate,
     motor3_rate,
     boat2_rate,
+    boat3_rate,
     weight,
     avg_st,
     local_minus_nation,
@@ -147,6 +216,10 @@ export function buildFeatures(racer) {
     laneFirstRate,
     lane2RenRate,
     lane3RenRate,
+    base_strength_score,
+    local_fit_score,
+    motor_strength_score,
+    start_stability_score,
     prediction_field_meta,
     lane_avg_st: avg_st,
     lane_st_rank: null,
