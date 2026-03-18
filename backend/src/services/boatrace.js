@@ -9,6 +9,19 @@ const BOATRACE_BASE = "https://www.boatrace.jp";
 const BOATRACE_CACHE_TTL_MS = Number(process.env.BOATRACE_CACHE_TTL_MS || 45000);
 const raceDataCache = new Map();
 
+function buildEmptyBeforeinfo() {
+  return {
+    byLane: new Map(),
+    rawByLane: new Map(),
+    weather: {
+      weather: null,
+      windSpeed: null,
+      windDirection: null,
+      waveHeight: null
+    }
+  };
+}
+
 function normalizeSpace(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -639,15 +652,30 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
   const beforeinfoUrl = `${BOATRACE_BASE}/owpc/pc/race/beforeinfo?rno=${rno}&jcd=${jcd}&hd=${hd}`;
 
   const officialFetchStartedAt = Date.now();
-  const [racelistHtml, beforeinfoHtml] = await Promise.all([
-    fetchHtml(racelistUrl, timeoutMs),
-    fetchHtml(beforeinfoUrl, timeoutMs)
-  ]);
+  const officialTimeoutMs = Math.max(2000, Math.min(Number(timeoutMs) || 15000, 5000));
+  const beforeinfoTimeoutMs = Math.max(1500, Math.min(Number(timeoutMs) || 15000, 3200));
+  const racelistHtml = await fetchHtml(racelistUrl, officialTimeoutMs);
+  let beforeinfoHtml = null;
+  let beforeinfoFetchError = null;
+  try {
+    beforeinfoHtml = await fetchHtml(beforeinfoUrl, beforeinfoTimeoutMs);
+  } catch (error) {
+    beforeinfoFetchError = String(error?.message || error);
+  }
   const officialBaseFetchMs = Date.now() - officialFetchStartedAt;
 
   const parseStartedAt = Date.now();
   const { racers } = parseRacersFromRacelist(racelistHtml);
-  const beforeinfo = parseBeforeinfo(beforeinfoHtml);
+  let beforeinfo = buildEmptyBeforeinfo();
+  let beforeinfoParseError = null;
+  if (beforeinfoHtml) {
+    try {
+      beforeinfo = parseBeforeinfo(beforeinfoHtml);
+    } catch (error) {
+      beforeinfo = buildEmptyBeforeinfo();
+      beforeinfoParseError = String(error?.message || error);
+    }
+  }
 
   const mergedRacers = racers.map((racer) => {
     const b = beforeinfo.byLane.get(racer.lane) || {};
@@ -757,6 +785,12 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
           per_lane: []
         },
         error: kyoteiBiyori?.error || null
+      },
+      official_fetch_status: {
+        racelist: "success",
+        beforeinfo: beforeinfoHtml ? "success" : "fallback",
+        beforeinfo_fetch_error: beforeinfoFetchError,
+        beforeinfo_parse_error: beforeinfoParseError
       },
       start_display_source: "official_pre_race_info",
       fetched_at: new Date().toISOString(),

@@ -215,6 +215,32 @@ function toNullableNum(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function createTimeoutError({ code, where, route, message, statusCode = 504 }) {
+  const error = new Error(message);
+  error.code = code;
+  error.where = where;
+  error.route = route;
+  error.statusCode = statusCode;
+  return error;
+}
+
+async function withTimeout(promiseFactory, { timeoutMs, code, where, route, message, fallbackValue, swallow = false }) {
+  let timeoutHandle = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(createTimeoutError({ code, where, route, message, statusCode: 504 }));
+    }, Math.max(100, Number(timeoutMs) || 1000));
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(promiseFactory), timeoutPromise]);
+  } catch (error) {
+    if (swallow) return fallbackValue;
+    throw error;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
 function pct(numerator, denominator) {
   if (!denominator) return 0;
   return Number(((numerator / denominator) * 100).toFixed(2));
@@ -8913,6 +8939,9 @@ raceRouter.get("/race", async (req, res, next) => {
       official_base_fetch_ms: null,
       kyoteibiyori_fetch_ms: null,
       parsing_ms: null,
+      score_calculation_ms: null,
+      actual_entry_reassignment_ms: null,
+      odds_fetch_ms: null,
       prediction_build_ms: null,
       total_response_ms: null
     };
@@ -8932,7 +8961,17 @@ raceRouter.get("/race", async (req, res, next) => {
     let data;
     try {
       failureWhere = "race.route:getRaceData";
-      data = await getRaceData({ date, venueId, raceNo, forceRefresh });
+      const raceDataTimeoutMs = Math.min(Number(process.env.RACE_API_GETRACEDATA_TIMEOUT_MS || 9000), 9000);
+      data = await withTimeout(
+        () => getRaceData({ date, venueId, raceNo, forceRefresh, timeoutMs: 5000 }),
+        {
+          timeoutMs: raceDataTimeoutMs,
+          code: "get_race_data_timeout",
+          where: failureWhere,
+          route: "/api/race",
+          message: "base race data fetch timed out"
+        }
+      );
       routeTimings.official_base_fetch_ms = toNullableNum(data?.source?.timings?.official_base_fetch_ms);
       routeTimings.kyoteibiyori_fetch_ms = toNullableNum(data?.source?.timings?.kyoteibiyori_fetch_ms);
       routeTimings.parsing_ms = toNullableNum(data?.source?.timings?.parsing_ms);
@@ -8957,9 +8996,11 @@ raceRouter.get("/race", async (req, res, next) => {
       ...data,
       racers: racersWithRecentPlayerStats
     };
+    const reassignmentStartedAt = Date.now();
     const baseFeatures = applyMotorPerformanceFeatures(
       applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
     );
+    routeTimings.actual_entry_reassignment_ms = Date.now() - reassignmentStartedAt;
     const venueAdjustedBase = applyVenueAdjustments(baseFeatures, data.race);
     const preRanking = rankRace(venueAdjustedBase.racersWithFeatures);
     const prePattern = analyzeRacePattern(preRanking);
@@ -9025,10 +9066,12 @@ raceRouter.get("/race", async (req, res, next) => {
     else if (indexes.chaos_index >= 62 && buyType === "solid") buyType = "standard";
     else if (indexes.chaos_index >= 62 && buyType === "standard") buyType = "aggressive";
 
+    const scoreCalculationStartedAt = Date.now();
     const monteCarlo = simulateTrifectaProbabilities(ranking, {
       topN: 10,
       simulations: 8000
     });
+    routeTimings.score_calculation_ms = Date.now() - scoreCalculationStartedAt;
     const probabilities = monteCarlo.probabilities;
     const simulation = {
       method: "monte_carlo",
@@ -9047,12 +9090,25 @@ raceRouter.get("/race", async (req, res, next) => {
       }
     };
     try {
-      evData = await analyzeExpectedValue({
-        date: data.race.date,
-        venueId: data.race.venueId,
-        raceNo: data.race.raceNo,
-        simulation
-      });
+      const oddsStartedAt = Date.now();
+      evData = await withTimeout(
+        () => analyzeExpectedValue({
+          date: data.race.date,
+          venueId: data.race.venueId,
+          raceNo: data.race.raceNo,
+          simulation
+        }),
+        {
+          timeoutMs: Math.min(Number(process.env.RACE_API_ODDS_TIMEOUT_MS || 2800), 2800),
+          code: "odds_pipeline_timeout",
+          where: failureWhere,
+          route: "/api/race",
+          message: "odds pipeline timed out",
+          fallbackValue: evData,
+          swallow: true
+        }
+      );
+      routeTimings.odds_fetch_ms = Date.now() - oddsStartedAt;
     } catch (oddsErr) {
       console.warn("[ODDS] fetch failed:", oddsErr?.message || oddsErr);
     }
