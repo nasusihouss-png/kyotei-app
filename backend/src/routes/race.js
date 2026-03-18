@@ -10010,9 +10010,17 @@ raceRouter.get("/race", async (req, res, next) => {
         lane1st_score: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
         lane2ren_score: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
         lane3ren_score: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
+        lane1st_score_before_reassignment: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
+        lane2ren_score_before_reassignment: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
+        lane3ren_score_before_reassignment: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
+        lane1st_score_after_reassignment: toNullableNum(laneFeatures?.lane_fit_1st ?? laneFeatures?.laneFirstRate),
+        lane2ren_score_after_reassignment: toNullableNum(laneFeatures?.lane_fit_2ren ?? laneFeatures?.lane2RenRate),
+        lane3ren_score_after_reassignment: toNullableNum(laneFeatures?.lane_fit_3ren ?? laneFeatures?.lane3RenRate),
         lane_first_rate: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
         lane_2ren_rate: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
-        lane_3ren_rate: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate)
+        lane_3ren_rate: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
+        lane_assignment_debug: laneFeatures?.lane_assignment_debug || null,
+        prediction_field_meta: racer?.predictionFieldMeta || null
       };
     });
     const fetchedSignalDiagnostics = snapshotPlayers.map((row) => ({

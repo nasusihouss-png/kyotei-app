@@ -318,7 +318,11 @@ function buildRequiredFieldParseStatus(byLane) {
     lane2renRate: hasValue("lane2RenRate"),
     lane3renRate: hasValue("lane3RenRate"),
     lapTime: hasValue("lapTime") || hasValue("lapTimeRaw"),
-    exhibitionST: hasValue("exhibitionSt")
+    exhibitionST: hasValue("exhibitionSt"),
+    exhibitionTime: hasValue("exhibitionTime"),
+    lapExStretch: hasValue("lapExStretch") || hasValue("lapExhibitionScore"),
+    motor2ren: hasValue("motor2ren") || hasValue("motor2Rate"),
+    motor3ren: hasValue("motor3ren") || hasValue("motor3Rate")
   };
 }
 
@@ -2125,16 +2129,25 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
     const laneStatsReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("laneFirstRate"));
     const lapTimeReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("lapTimeRaw"));
-    const ok = mergedByLane.size > 0 && (laneStatsReady || lapTimeReady);
+    const requiredFieldStatus = buildRequiredFieldParseStatus(mergedByLane);
+    const criticalFieldsReady = Object.entries(requiredFieldStatus)
+      .filter(([field]) => field !== "motor3ren")
+      .filter(([, ready]) => !!ready);
+    const ok = mergedByLane.size > 0 && criticalFieldsReady.length > 0;
     const fallbackReason =
       ok
         ? null
         : lastError
           ? String(lastError.message || lastError)
-          : "kyoteibiyori returned no usable lane-stat or pre-race fields";
+          : "kyoteibiyori returned no usable prediction-critical lane-stat or pre-race fields";
     diagnostics.merge_results.merged_lanes = mergedByLane.size;
     diagnostics.field_sources = fieldSources;
     diagnostics.field_diagnostics = fieldDiagnostics;
+    diagnostics.required_field_status = requiredFieldStatus;
+    diagnostics.critical_fields_ready = criticalFieldsReady.map(([field]) => field);
+    diagnostics.partial_prediction_data_available = mergedByLane.size > 0 && criticalFieldsReady.length > 0;
+    diagnostics.lane_stats_ready = laneStatsReady;
+    diagnostics.lap_time_ready = lapTimeReady;
     diagnostics.fallback_reason = fallbackReason;
     diagnostics.kyoteibiyori_fetch_success = ok;
     diagnostics.timings.total_ms = elapsedMs(startedAt);

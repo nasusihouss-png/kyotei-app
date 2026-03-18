@@ -513,11 +513,23 @@ function getLaneScoreDisplayValue(row, key) {
   const safeRow = safeObject(row);
   switch (key) {
     case "lane1st":
-      return safeRow?.lane1stScore ?? safeRow?.lane1stAvg ?? safeRow?.laneFirstRate ?? null;
+      return firstMeaningfulFiniteValue(
+        safeRow?.lane1stScore,
+        safeRow?.lane1stAvg,
+        safeRow?.laneFirstRate
+      );
     case "lane2ren":
-      return safeRow?.lane2renScore ?? safeRow?.lane2renAvg ?? safeRow?.lane2RenRate ?? null;
+      return firstMeaningfulFiniteValue(
+        safeRow?.lane2renScore,
+        safeRow?.lane2renAvg,
+        safeRow?.lane2RenRate
+      );
     case "lane3ren":
-      return safeRow?.lane3renScore ?? safeRow?.lane3renAvg ?? safeRow?.lane3RenRate ?? null;
+      return firstMeaningfulFiniteValue(
+        safeRow?.lane3renScore,
+        safeRow?.lane3renAvg,
+        safeRow?.lane3RenRate
+      );
     default:
       return null;
   }
@@ -565,6 +577,20 @@ function firstFiniteValue(...values) {
   return null;
 }
 
+function firstMeaningfulFiniteValue(...values) {
+  let zeroCandidate = null;
+  for (const value of values) {
+    const normalized = toFiniteComparisonNumber(value);
+    if (normalized === null) continue;
+    if (normalized === 0) {
+      if (zeroCandidate === null) zeroCandidate = 0;
+      continue;
+    }
+    return normalized;
+  }
+  return zeroCandidate;
+}
+
 function getLapTimeDisplayValue(source = {}) {
   return firstFiniteValue(
     source?.lapTime,
@@ -580,10 +606,12 @@ function getLapTimeDisplayValue(source = {}) {
 
 function normalizeLaneStats(source = {}) {
   return {
-    laneFirstRate: firstFiniteValue(
+    laneFirstRate: firstMeaningfulFiniteValue(
       source?.lane1stScore,
       source?.lane1stAvg,
       source?.lane1st_score,
+      source?.lane1st_score_after_reassignment,
+      source?.lane1st_score_before_reassignment,
       source?.laneFirstRate,
       source?.lane1stDebug?.final_score,
       source?.lane1stRate_avg,
@@ -592,10 +620,12 @@ function normalizeLaneStats(source = {}) {
       source?.lane_first_rate,
       source?.lane_1st_rate
     ),
-    lane2RenRate: firstFiniteValue(
+    lane2RenRate: firstMeaningfulFiniteValue(
       source?.lane2renScore,
       source?.lane2renAvg,
       source?.lane2ren_score,
+      source?.lane2ren_score_after_reassignment,
+      source?.lane2ren_score_before_reassignment,
       source?.lane2RenRate,
       source?.lane2renDebug?.final_score,
       source?.lane2renRate_avg,
@@ -603,10 +633,12 @@ function normalizeLaneStats(source = {}) {
       source?.lane2renRate,
       source?.lane_2ren_rate
     ),
-    lane3RenRate: firstFiniteValue(
+    lane3RenRate: firstMeaningfulFiniteValue(
       source?.lane3renScore,
       source?.lane3renAvg,
       source?.lane3ren_score,
+      source?.lane3ren_score_after_reassignment,
+      source?.lane3ren_score_before_reassignment,
       source?.lane3RenRate,
       source?.lane3renDebug?.final_score,
       source?.lane3renRate_avg,
@@ -615,6 +647,20 @@ function normalizeLaneStats(source = {}) {
       source?.lane_3ren_rate
     )
   };
+}
+
+function hasRenderableKyoteiBiyoriData(rows = [], data = {}) {
+  const comparisonRows = safeArray(rows);
+  if (comparisonRows.some((row) =>
+    row?.kyoteiBiyoriFetched ||
+    Number.isFinite(Number(row?.lapTime)) ||
+    Number.isFinite(Number(getLaneScoreDisplayValue(row, "lane1st"))) ||
+    Number.isFinite(Number(getLaneScoreDisplayValue(row, "lane2ren"))) ||
+    Number.isFinite(Number(getLaneScoreDisplayValue(row, "lane3ren")))
+  )) {
+    return true;
+  }
+  return !!data?.source?.kyotei_biyori?.ok;
 }
 
 function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
@@ -678,10 +724,15 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
     motor3ren_debug: debug?.motor3ren || {},
     rendered_rows: (Array.isArray(playerComparisonRows) ? playerComparisonRows : []).map((row) => ({
       lane: row?.lane ?? null,
+      actual_lane: row?.actualLane ?? row?.lane ?? null,
+      course_change_occurred: !!row?.courseChanged,
       lane1stRate_raw: row?.lane1stScore ?? row?.lane1stAvg ?? row?.laneFirstRate ?? null,
       lane2renRate_raw: row?.lane2renScore ?? row?.lane2renAvg ?? row?.lane2RenRate ?? null,
       lane3renRate_raw: row?.lane3renScore ?? row?.lane3renAvg ?? row?.lane3RenRate ?? null,
       lapExStretch_raw: row?.lapExStretch ?? row?.lapScore ?? null,
+      lapTime_raw: row?.lapTime ?? null,
+      lane_scores_before_reassignment: row?.laneScoreDebug?.beforeReassignment || null,
+      lane_scores_after_reassignment: row?.laneScoreDebug?.afterReassignment || null,
       motor2ren_raw: row?.motor2ren ?? row?.motor2Rate ?? null,
       motor3ren_raw: row?.motor3ren ?? row?.motor3Rate ?? null,
       lane1stRate: Number.isFinite(Number(row?.lane1stScore ?? row?.lane1stAvg ?? row?.laneFirstRate)),
@@ -1582,6 +1633,46 @@ function getPlayerComparisonRows({ prediction, data }) {
         const debugLaneStats = normalizeLaneStats(debugRow);
         const liveLaneStats = normalizeLaneStats(row);
         const snapshotLaneStats = normalizeLaneStats(snapshotRow);
+        const reassignedLaneScores = {
+          lane1st: firstMeaningfulFiniteValue(
+            snapshotRow?.lane1st_score_after_reassignment,
+            snapshotRow?.feature_snapshot?.lane_fit_1st
+          ),
+          lane2ren: firstMeaningfulFiniteValue(
+            snapshotRow?.lane2ren_score_after_reassignment,
+            snapshotRow?.feature_snapshot?.lane_fit_2ren
+          ),
+          lane3ren: firstMeaningfulFiniteValue(
+            snapshotRow?.lane3ren_score_after_reassignment,
+            snapshotRow?.feature_snapshot?.lane_fit_3ren
+          )
+        };
+        const beforeReassignmentLaneScores = {
+          lane1st: firstMeaningfulFiniteValue(
+            row?.lane1stScore,
+            row?.lane1stAvg,
+            row?.laneFirstRate,
+            debugRow?.lane1stScore,
+            snapshotRow?.lane1st_score_before_reassignment,
+            snapshotRow?.lane1st_score
+          ),
+          lane2ren: firstMeaningfulFiniteValue(
+            row?.lane2renScore,
+            row?.lane2renAvg,
+            row?.lane2RenRate,
+            debugRow?.lane2renScore,
+            snapshotRow?.lane2ren_score_before_reassignment,
+            snapshotRow?.lane2ren_score
+          ),
+          lane3ren: firstMeaningfulFiniteValue(
+            row?.lane3renScore,
+            row?.lane3renAvg,
+            row?.lane3RenRate,
+            debugRow?.lane3renScore,
+            snapshotRow?.lane3ren_score_before_reassignment,
+            snapshotRow?.lane3ren_score
+          )
+        };
         const liveLapTime = getLapTimeDisplayValue(row);
         const liveExhibitionSt = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt);
         const liveExhibitionTime = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime);
@@ -1629,15 +1720,21 @@ function getPlayerComparisonRows({ prediction, data }) {
           motor3ren: liveMotor3Rate,
           motor2Rate: liveMotor2Rate ?? toFiniteComparisonNumber(snapshotRow?.motor_2rate),
           motor3Rate: liveMotor3Rate,
-          lane1stScore: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
-          lane2renScore: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
-          lane3renScore: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate),
-          lane1stAvg: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
-          lane2renAvg: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
-          lane3renAvg: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate),
-          laneFirstRate: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
-          lane2RenRate: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
-          lane3RenRate: firstFiniteValue(snapshotRow?.feature_snapshot?.lane_fit_3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate)
+          lane1stScore: firstMeaningfulFiniteValue(reassignedLaneScores.lane1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
+          lane2renScore: firstMeaningfulFiniteValue(reassignedLaneScores.lane2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
+          lane3renScore: firstMeaningfulFiniteValue(reassignedLaneScores.lane3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate),
+          lane1stAvg: firstMeaningfulFiniteValue(reassignedLaneScores.lane1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
+          lane2renAvg: firstMeaningfulFiniteValue(reassignedLaneScores.lane2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
+          lane3renAvg: firstMeaningfulFiniteValue(reassignedLaneScores.lane3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate),
+          laneFirstRate: firstMeaningfulFiniteValue(reassignedLaneScores.lane1st, debugLaneStats.laneFirstRate, liveLaneStats.laneFirstRate, snapshotLaneStats.laneFirstRate),
+          lane2RenRate: firstMeaningfulFiniteValue(reassignedLaneScores.lane2ren, debugLaneStats.lane2RenRate, liveLaneStats.lane2RenRate, snapshotLaneStats.lane2RenRate),
+          lane3RenRate: firstMeaningfulFiniteValue(reassignedLaneScores.lane3ren, debugLaneStats.lane3RenRate, liveLaneStats.lane3RenRate, snapshotLaneStats.lane3RenRate),
+          laneScoreDebug: {
+            beforeReassignment: beforeReassignmentLaneScores,
+            afterReassignment: reassignedLaneScores,
+            actualLane: Number(row?.entryCourse ?? snapshotRow?.entry_course ?? lane) || lane,
+            courseChanged: Number(row?.entryCourse ?? snapshotRow?.entry_course ?? lane) !== lane
+          }
         };
       })
       .sort((a, b) => (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber));
@@ -1661,15 +1758,29 @@ function getPlayerComparisonRows({ prediction, data }) {
       motor3ren: toFiniteComparisonNumber(row?.motor_3rate),
       motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
       motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
-      lane1stScore: firstFiniteValue(row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
-      lane2renScore: firstFiniteValue(row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
-      lane3renScore: firstFiniteValue(row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
-      lane1stAvg: firstFiniteValue(row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
-      lane2renAvg: firstFiniteValue(row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
-      lane3renAvg: firstFiniteValue(row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
-      laneFirstRate: firstFiniteValue(row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
-      lane2RenRate: firstFiniteValue(row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
-      lane3RenRate: firstFiniteValue(row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate)
+      lane1stScore: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+      lane2renScore: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+      lane3renScore: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
+      lane1stAvg: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+      lane2renAvg: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+      lane3renAvg: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
+      laneFirstRate: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+      lane2RenRate: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+      lane3RenRate: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
+      laneScoreDebug: {
+        beforeReassignment: {
+          lane1st: firstMeaningfulFiniteValue(row?.lane1st_score_before_reassignment, row?.lane1st_score, normalizeLaneStats(row).laneFirstRate),
+          lane2ren: firstMeaningfulFiniteValue(row?.lane2ren_score_before_reassignment, row?.lane2ren_score, normalizeLaneStats(row).lane2RenRate),
+          lane3ren: firstMeaningfulFiniteValue(row?.lane3ren_score_before_reassignment, row?.lane3ren_score, normalizeLaneStats(row).lane3RenRate)
+        },
+        afterReassignment: {
+          lane1st: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st),
+          lane2ren: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren),
+          lane3ren: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren)
+        },
+        actualLane: Number(row?.entry_course || row?.lane || 0),
+        courseChanged: Number(row?.entry_course || row?.lane || 0) !== Number(row?.lane || 0)
+      }
     }))
     .sort((a, b) => (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber));
 }
@@ -4013,7 +4124,7 @@ export default function App() {
                     <p className="muted strategy-line">
                       Rows are ordered by actual entry lane when course movement occurs. Lane scores shown here follow the reassigned actual lane when available.
                     </p>
-                    {!data?.source?.kyotei_biyori?.ok ? (
+                    {!hasRenderableKyoteiBiyoriData(playerComparisonRows, data) ? (
                       <p className="muted strategy-line">
                         Supplemental kyoteibiyori data unavailable. Base race data is still loaded.
                       </p>
