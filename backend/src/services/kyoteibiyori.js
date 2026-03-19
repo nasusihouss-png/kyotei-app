@@ -114,12 +114,17 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
     required: PREDICTION_FIELD_META_CONFIG[field]?.required,
     minConfidence: PREDICTION_FIELD_META_CONFIG[field]?.minConfidence
   });
+  const lapTimeDebug = laneDebug?.lapTime || null;
+  const exactLapTimeVerified =
+    lapTimeDebug?.exact_match_verified === true &&
+    lapTimeDebug?.section === JAPANESE_LABELS.preRaceSection &&
+    lapTimeDebug?.metric === JAPANESE_LABELS.lapTime;
 
   return {
     lapTime: getFieldMeta("lapTime", {
-      value: extra?.lapTime ?? racer?.lapTime ?? null,
-      source: laneSources.lapTimeRaw || laneSources.lapTime || (Number.isFinite(Number(racer?.lapTime)) ? "boatrace_racelist" : null),
-      debugEntry: laneDebug?.lapTime || null
+      value: exactLapTimeVerified ? (extra?.lapTime ?? null) : null,
+      source: exactLapTimeVerified ? (laneSources.lapTimeRaw || laneSources.lapTime || null) : null,
+      debugEntry: lapTimeDebug
     }),
     exhibitionST: getFieldMeta("exhibitionST", {
       value: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
@@ -946,6 +951,11 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
 
   const section = rowSectionCandidates[0] || tableSectionCandidates[0] || null;
   const joinedRowLabels = normalizeSpace(rowLabels.join(" "));
+  const exactLapTimeRow = rowLabels.find((label) => matchesExactLabel(label, JAPANESE_LABELS.lapTime, LABEL_ALIASES.lapTime)) || null;
+  const exactStRow = rowLabels.find((label) => matchesExactLabel(label, JAPANESE_LABELS.st)) || null;
+  const exactExhibitionRow = rowLabels.find((label) => matchesExactLabel(label, JAPANESE_LABELS.exhibition, LABEL_ALIASES.exhibition)) || null;
+  const exactMawariashiRow = rowLabels.find((label) => matchesExactLabel(label, JAPANESE_LABELS.mawariashi, LABEL_ALIASES.mawariashi)) || null;
+  const exactNobiashiRow = rowLabels.find((label) => matchesExactLabel(label, JAPANESE_LABELS.nobiashi, LABEL_ALIASES.nobiashi)) || null;
   const metric =
     metricCandidates[0] ||
     (/\u5468.*\u56de/u.test(joinedRowLabels) ? JAPANESE_LABELS.lapTime : null) ||
@@ -985,11 +995,18 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
         : metric === JAPANESE_LABELS.motor3
           ? JAPANESE_LABELS.motor3
           : rowSectionCandidates[0] || JAPANESE_LABELS.preRaceSection;
-    if (metric === JAPANESE_LABELS.lapTime) return { field: "lapTimeRaw", section: resolvedSection, row: JAPANESE_LABELS.lapTime };
-    if (metric === JAPANESE_LABELS.st) return { field: "exhibitionSt", section: resolvedSection, row: JAPANESE_LABELS.st };
-    if (metric === JAPANESE_LABELS.exhibition) return { field: "exhibitionTime", section: resolvedSection, row: JAPANESE_LABELS.exhibition };
-    if (metric === JAPANESE_LABELS.mawariashi) return { field: "mawariashi", section: resolvedSection, row: JAPANESE_LABELS.mawariashi };
-    if (metric === JAPANESE_LABELS.nobiashi) return { field: "nobiashi", section: resolvedSection, row: JAPANESE_LABELS.nobiashi };
+    if (exactLapTimeRow) {
+      return {
+        field: "lapTimeRaw",
+        section: resolvedSection,
+        row: JAPANESE_LABELS.lapTime,
+        exactMatchVerified: resolvedSection === JAPANESE_LABELS.preRaceSection
+      };
+    }
+    if (exactStRow) return { field: "exhibitionSt", section: resolvedSection, row: JAPANESE_LABELS.st, exactMatchVerified: true };
+    if (exactExhibitionRow) return { field: "exhibitionTime", section: resolvedSection, row: JAPANESE_LABELS.exhibition, exactMatchVerified: true };
+    if (exactMawariashiRow) return { field: "mawariashi", section: resolvedSection, row: JAPANESE_LABELS.mawariashi, exactMatchVerified: true };
+    if (exactNobiashiRow) return { field: "nobiashi", section: resolvedSection, row: JAPANESE_LABELS.nobiashi, exactMatchVerified: true };
     if (metric === JAPANESE_LABELS.motor2) return { field: "motor2Rate", section: resolvedSection, row: JAPANESE_LABELS.motor2 };
     if (metric === JAPANESE_LABELS.motor3) return { field: "motor3Rate", section: resolvedSection, row: JAPANESE_LABELS.motor3 };
     if (section === JAPANESE_LABELS.motorSection && metric === JAPANESE_LABELS.lane2ren) {
@@ -1903,12 +1920,17 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         racer?.lane3renAvg,
         racer?.lane3RenRate
       );
+      const trustedLapTime = getVerifiedValue(
+        "lapTime",
+        extra?.lapTime,
+        racer?.lapTime
+      );
       return {
         ...racer,
         name: extra?.playerName || racer?.name || null,
         fHoldCount: extra?.fCount ?? racer?.fHoldCount ?? null,
         kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,
-        kyoteiBiyoriLapTime: extra?.lapTime ?? null,
+        kyoteiBiyoriLapTime: trustedLapTime,
         kyoteiBiyoriLapTimeRaw: extra?.lapTimeRaw ?? null,
         kyoteiBiyoriLapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriLapExStretch: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
@@ -1933,7 +1955,7 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         lane1stAvg: trustedLane1st,
         lane2renAvg: trustedLane2ren,
         lane3renAvg: trustedLane3ren,
-        lapTime: extra?.lapTime ?? racer?.lapTime ?? null,
+        lapTime: trustedLapTime,
         lapTimeRaw: extra?.lapTimeRaw ?? racer?.lapTimeRaw ?? null,
         lapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
         stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,

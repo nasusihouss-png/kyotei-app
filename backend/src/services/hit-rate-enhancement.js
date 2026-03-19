@@ -64,6 +64,8 @@ function getNormalizedAvgStRank(features) {
 
 function buildIppansenLaneSupport(row) {
   const actualLane = actualLaneOf(row);
+  const ippansen2renRate = clamp(0, 1, toNum(row?.ippansen_lane_2ren_rate, 0) / 100);
+  const ippansen3renRate = clamp(0, 1, toNum(row?.ippansen_lane_3ren_rate, 0) / 100);
   const laneFit2 = clamp(0, 1, toNum(row?.lane_fit_2ren, 0) / 100);
   const laneFit3 = clamp(0, 1, toNum(row?.lane_fit_3ren, 0) / 100);
   const outerResidualBoost = actualLane >= 5 ? 0.03 : actualLane === 4 ? 0.018 : 0;
@@ -71,11 +73,11 @@ function buildIppansenLaneSupport(row) {
 
   return {
     ippansen_2ren_support: round(
-      clamp(0, 0.22, laneFit2 * 0.16 + laneFit3 * 0.04 + middleLanePartnerBoost + outerResidualBoost * 0.45),
+      clamp(0, 0.24, ippansen2renRate * 0.16 + ippansen3renRate * 0.05 + laneFit2 * 0.12 + laneFit3 * 0.03 + middleLanePartnerBoost + outerResidualBoost * 0.4),
       4
     ),
     ippansen_3ren_support: round(
-      clamp(0, 0.24, laneFit3 * 0.18 + laneFit2 * 0.05 + outerResidualBoost + (actualLane === 3 ? 0.012 : 0)),
+      clamp(0, 0.28, ippansen3renRate * 0.2 + ippansen2renRate * 0.05 + laneFit3 * 0.12 + laneFit2 * 0.03 + outerResidualBoost + (actualLane === 3 ? 0.012 : 0)),
       4
     )
   };
@@ -101,11 +103,11 @@ function buildStDeltaProfile(row) {
 
   const fasterThanUsual = Math.max(0, stDelta);
   const slowerThanUsual = Math.max(0, -stDelta);
-  const attackStDeltaBonus = clamp(0, 0.12, Math.max(0, fasterThanUsual - 0.008) * 1.5);
-  const instabilityStDeltaPenalty = clamp(0, 0.08, Math.max(0, fasterThanUsual - 0.016) * 1.2);
+  const attackStDeltaBonus = clamp(0, 0.14, Math.max(0, fasterThanUsual - 0.008) * 1.7);
+  const instabilityStDeltaPenalty = clamp(0, 0.09, Math.max(0, fasterThanUsual - 0.016) * 1.3);
   const stableFinishBonus = clamp(
     0,
-    0.1,
+    0.12,
     (Math.abs(stDelta) <= 0.012 ? 0.045 - Math.abs(stDelta) * 1.6 : 0) +
       Math.max(0, 0.018 - slowerThanUsual) * 0.4
   );
@@ -127,9 +129,9 @@ function boatNumberOf(row) {
 }
 
 const LANE_FINISH_PRIORS = {
-  first: { 1: 1.22, 2: 1.08, 3: 1.01, 4: 0.94, 5: 0.86, 6: 0.8 },
-  second: { 1: 1.1, 2: 1.08, 3: 1.02, 4: 0.95, 5: 0.9, 6: 0.86 },
-  third: { 1: 1.04, 2: 1.03, 3: 1.01, 4: 0.97, 5: 0.93, 6: 0.9 }
+  first: { 1: 1.28, 2: 1.1, 3: 1.02, 4: 0.93, 5: 0.84, 6: 0.77 },
+  second: { 1: 1.12, 2: 1.1, 3: 1.03, 4: 0.95, 5: 0.89, 6: 0.84 },
+  third: { 1: 1.06, 2: 1.04, 3: 1.02, 4: 0.97, 5: 0.92, 6: 0.88 }
 };
 
 const ACTUAL_ENTRY_TUNING = {
@@ -436,6 +438,25 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     const actualFourCaseStrength = toNum(row?.actual_four_attack_case_strength, 0);
     const actualFourSecondCarryover = toNum(row?.actual_four_partner_second_carryover, 0) + toNum(row?.actual_four_self_second_carryover, 0);
     const actualFourThirdCarryover = toNum(row?.actual_four_partner_third_carryover, 0) + toNum(row?.actual_four_self_third_carryover, 0);
+    const lapHeadBoost = row?.prediction_data_usage?.lapTime?.used
+      ? clamp(0, 0.22, Math.max(0, 6.84 - toNum(row?.motor_form?.lapTime, 6.84)) * 0.85)
+      : 0;
+    const boat1BaseFirstBonus = boatNumberOf(row) === 1 && actualLane === 1
+      ? clamp(
+          0,
+          0.22,
+          0.1 +
+            Math.max(0, 0.34 - escapeScore) * 0.1 +
+            lapHeadBoost * 0.45 +
+            Math.max(0, startEdge) * 0.12 +
+            laneFit1 * 0.06
+        )
+      : 0;
+    const boat1SurvivalBonus = boatNumberOf(row) === 1 && actualLane === 1
+      ? clamp(0, 0.12, 0.035 + stableFinishBonus * 0.26 + laneFit2 * 0.04 + laneFit3 * 0.03)
+      : 0;
+    row.boat1_base_first_bonus = round(boat1BaseFirstBonus, 4);
+    row.boat1_survival_bonus = round(boat1SurvivalBonus, 4);
     const tunedAttackButNotWinCarryover = clamp(
       0,
       0.2,
@@ -455,12 +476,16 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     const insideSecondThirdRecoveryAfter = {
       second:
         actualLane === 2 && primaryHeadLane === 1
-          ? clamp(0, 0.06, laneFit2 * 0.05 + Math.max(0, turning) * 0.03 + Math.max(0, 0.5 - escapeScore) * 0.015)
+          ? clamp(0, 0.08, laneFit2 * 0.06 + Math.max(0, turning) * 0.035 + Math.max(0, 0.5 - escapeScore) * 0.018)
           : 0,
       third:
         actualLane === 3 && primaryHeadLane === 1
-          ? clamp(0, 0.055, laneFit3 * 0.045 + Math.max(0, turning) * 0.025 + Math.max(0, straight) * 0.015)
+          ? clamp(0, 0.075, laneFit3 * 0.06 + Math.max(0, turning) * 0.03 + Math.max(0, straight) * 0.02)
           : 0
+    };
+    row.inside_second_third_recovery = {
+      second: round(insideSecondThirdRecoveryAfter.second, 4),
+      third: round(insideSecondThirdRecoveryAfter.third, 4)
     };
     const flowInBonus = clamp(0, 0.16, (actualLane >= 4 ? 0.025 : 0) + Math.max(0, turning) * 0.06 + safeRunBias * 0.18);
     const outerSurvivalBonus = clamp(0, 0.14, (actualLane >= 4 ? 0.03 : 0) + Math.max(0, straight) * 0.05 + thirdStyle * 0.06 + ippansen3renSupport * 0.18 + stableFinishBonus * 0.14);
@@ -491,11 +516,13 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     const firstPlaceScore =
       toNum(baseRoleProbabilities?.first?.[lane], 0) * 0.44 +
       laneFit1 * 0.24 +
+      lapHeadBoost * 0.3 +
       (toNum(row?.motor_true, 0) / 100) * 0.14 +
       startEdge * 0.18 +
       toNum(row?.finish_role_bonuses?.firstPlaceBonus, 0) * 0.34 +
       firstStyle * 0.08 +
-      toNum(laneFinishPriors?.first?.[lane], 1) * 0.08 -
+      toNum(laneFinishPriors?.first?.[lane], 1) * 0.08 +
+      boat1BaseFirstBonus -
       lateRisk * 0.12 -
       hiddenF * (lane === 1 ? 0.1 : 0.08);
     const secondPlaceScoreBeforeTuning =
@@ -533,8 +560,8 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       toNum(row?.finish_role_bonuses?.thirdPlaceBonus, 0) * 0.18 -
       instabilityStDeltaPenalty * 0.16 -
       toNum(thirdExclusion?.penalty, 0);
-    const secondPlaceScore = secondPlaceScoreBeforeTuning + actualFourSecondCarryover + insideSecondThirdRecoveryAfter.second + boat2SecondRecoveryAfter;
-    const thirdPlaceScore = thirdPlaceScoreBeforeTuning + actualFourThirdCarryover + insideSecondThirdRecoveryAfter.third;
+    const secondPlaceScore = secondPlaceScoreBeforeTuning + actualFourSecondCarryover + insideSecondThirdRecoveryAfter.second + boat2SecondRecoveryAfter + boat1SurvivalBonus * 0.4;
+    const thirdPlaceScore = thirdPlaceScoreBeforeTuning + actualFourThirdCarryover + insideSecondThirdRecoveryAfter.third + boat1SurvivalBonus * 0.28;
 
     row.finish_role_scores_before_tuning = {
       second_place_score: round(Math.max(0.0001, secondPlaceScoreBeforeTuning), 4),
@@ -544,6 +571,9 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       first_place_score: round(Math.max(0.0001, firstPlaceScore), 4),
       second_place_score: round(Math.max(0.0001, secondPlaceScore), 4),
       third_place_score: round(Math.max(0.0001, thirdPlaceScore), 4),
+      lap_head_boost: round(lapHeadBoost, 4),
+      boat1_base_first_bonus: round(boat1BaseFirstBonus, 4),
+      boat1_survival_bonus: round(boat1SurvivalBonus, 4),
       survival_after_attack_bonus: round(tunedSurvivalAfterAttackBonus, 4),
       likely_head_survival_context: round(likelyHeadSurvivalContext, 4),
       attack_but_not_win_carryover: round(tunedAttackButNotWinCarryover, 4),
@@ -558,6 +588,10 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       actual_four_second_carryover: round(actualFourSecondCarryover, 4),
       inside_second_recovery: round(insideSecondThirdRecoveryAfter.second, 4),
       inside_third_recovery: round(insideSecondThirdRecoveryAfter.third, 4),
+      inside_second_third_recovery: {
+        second: round(insideSecondThirdRecoveryAfter.second, 4),
+        third: round(insideSecondThirdRecoveryAfter.third, 4)
+      },
       boat2_second_recovery: round(actualLane === 2 ? boat2SecondRecoveryAfter : 0, 4),
       actual_four_third_carryover: round(actualFourThirdCarryover, 4),
       third_place_proxy_used: motor3 > 0 ? "motor3ren" : "survival_proxy",
@@ -578,6 +612,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       attack_but_not_win_carryover: round(tunedAttackButNotWinCarryover, 4),
       survival_after_attack_bonus: round(tunedSurvivalAfterAttackBonus, 4),
       actual_four_second_carryover: round(actualFourSecondCarryover, 4),
+      boat1_survival_bonus: round(boat1SurvivalBonus, 4),
       inside_second_recovery_before: round(insideSecondThirdRecoveryBefore.second, 4),
       inside_second_recovery_after: round(insideSecondThirdRecoveryAfter.second, 4),
       boat2_second_recovery_before: round(boat2SecondRecoveryBefore, 4),
@@ -599,6 +634,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       outer_survival_bonus: round(outerSurvivalBonus, 4),
       residual_tendency: round(residualTendency, 4),
       actual_four_third_carryover: round(actualFourThirdCarryover, 4),
+      boat1_survival_bonus: round(boat1SurvivalBonus, 4),
       inside_second_third_recovery_before: insideSecondThirdRecoveryBefore,
       inside_second_third_recovery_after: {
         second: round(insideSecondThirdRecoveryAfter.second, 4),
@@ -606,6 +642,13 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       },
       compatibility_with_head: round(toNum(primaryCompatibility?.third_bonus, 0), 4),
       exclusion_penalty: round(toNum(thirdExclusion?.penalty, 0), 4)
+    };
+    row.first_place_bonus_breakdown = {
+      lap_head_boost: round(lapHeadBoost, 4),
+      boat1_base_first_bonus: round(boat1BaseFirstBonus, 4),
+      start_edge: round(startEdge, 4),
+      lane1stScore: round(laneFit1, 4),
+      inside_lane_prior: round(toNum(laneFinishPriors?.first?.[lane], 1), 4)
     };
   }
 
@@ -1021,10 +1064,16 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, ac
   const attackStDeltaBonus = toNum(row?.attack_st_delta_bonus, 0);
   const instabilityStDeltaPenalty = toNum(row?.instability_st_delta_penalty, 0);
   const stableFinishBonus = toNum(row?.stable_finish_bonus, 0);
+  const boat1BaseFirstBonus = boatNumberOf(row) === 1 && actualLane === 1
+    ? toNum(row?.boat1_base_first_bonus, 0)
+    : 0;
+  const boat1SurvivalBonus = boatNumberOf(row) === 1 && actualLane === 1
+    ? toNum(row?.boat1_survival_bonus, 0)
+    : 0;
 
-  first += laneFit1 * 0.28 + motorTrue * 0.12 + lapBoost * 0.16 + startEdge * 0.7 - lateRisk * 0.28 - hiddenF * 0.16;
-  second += laneFit2 * 0.3 + ippansen2renSupport * 0.28 + motor2 * 0.22 + startEdge * 0.3 + stretchBoost * 0.15 + attackStDeltaBonus * 0.14 + stableFinishBonus * 0.12 - instabilityStDeltaPenalty * 0.12 - lateRisk * 0.16 - hiddenF * 0.06;
-  third += laneFit3 * 0.34 + ippansen3renSupport * 0.32 + motor3 * 0.24 + stretchBoost * 0.22 + toNum(row?.safe_run_bias, 0) * 0.4 + attackStDeltaBonus * 0.08 + stableFinishBonus * 0.18 - instabilityStDeltaPenalty * 0.08 - lateRisk * 0.12 - hiddenF * 0.03;
+  first += laneFit1 * 0.3 + motorTrue * 0.12 + lapBoost * 0.22 + startEdge * 0.72 + boat1BaseFirstBonus - lateRisk * 0.28 - hiddenF * 0.16;
+  second += laneFit2 * 0.32 + ippansen2renSupport * 0.3 + motor2 * 0.22 + startEdge * 0.32 + stretchBoost * 0.15 + attackStDeltaBonus * 0.16 + stableFinishBonus * 0.14 + boat1SurvivalBonus * 0.42 - instabilityStDeltaPenalty * 0.12 - lateRisk * 0.16 - hiddenF * 0.06;
+  third += laneFit3 * 0.34 + ippansen3renSupport * 0.36 + motor3 * 0.24 + stretchBoost * 0.22 + toNum(row?.safe_run_bias, 0) * 0.4 + attackStDeltaBonus * 0.08 + stableFinishBonus * 0.2 + boat1SurvivalBonus * 0.3 - instabilityStDeltaPenalty * 0.08 - lateRisk * 0.12 - hiddenF * 0.03;
   first += toNum(roleBonus.firstPlaceBonus, 0);
   second += toNum(roleBonus.secondPlaceBonus, 0);
   third += toNum(roleBonus.thirdPlaceBonus, 0);
@@ -1032,7 +1081,7 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, ac
   second += toNum(finishRoleScores.second_place_score, 0) * 0.3 + toNum(compatibility.second_bonus, 0) + attackCarryoverSecond;
   third += toNum(finishRoleScores.third_place_score, 0) * 0.34 + toNum(compatibility.third_bonus, 0) + attackCarryoverThird - thirdExclusionPenalty;
 
-  if (actualLane === 1) first += 0.18 + escapeScore * 0.14;
+  if (actualLane === 1) first += 0.2 + escapeScore * 0.16;
 
   switch (scenario) {
     case "boat1_escape":
@@ -1309,6 +1358,16 @@ export function buildHitRateEnhancementContext({
       Number.isFinite(features?.lane_fit_3ren) ? features.lane_fit_3ren : null,
       Number.isFinite(features?.lane3RenRate) ? features.lane3RenRate : null
     ]);
+    const ippansenLane2renRate = Number.isFinite(row?.racer?.lane2renRate_ippansen)
+      ? row.racer.lane2renRate_ippansen
+      : Number.isFinite(features?.lane2renRate_ippansen)
+        ? features.lane2renRate_ippansen
+        : null;
+    const ippansenLane3renRate = Number.isFinite(row?.racer?.lane3renRate_ippansen)
+      ? row.racer.lane3renRate_ippansen
+      : Number.isFinite(features?.lane3renRate_ippansen)
+        ? features.lane3renRate_ippansen
+        : null;
     const predictionDataUsage = {
       lapTime: buildFieldUsage(predictionFieldMeta?.lapTime),
       exhibitionST: buildFieldUsage(predictionFieldMeta?.exhibitionST),
@@ -1391,6 +1450,8 @@ export function buildHitRateEnhancementContext({
       lane_fit_1st: laneFit1st === null ? null : round(laneFit1st, 2),
       lane_fit_2ren: laneFit2ren === null ? null : round(laneFit2ren, 2),
       lane_fit_3ren: laneFit3ren === null ? null : round(laneFit3ren, 2),
+      ippansen_lane_2ren_rate: ippansenLane2renRate === null ? null : round(ippansenLane2renRate, 2),
+      ippansen_lane_3ren_rate: ippansenLane3renRate === null ? null : round(ippansenLane3renRate, 2),
       ippansen_2ren_support: 0,
       ippansen_3ren_support: 0,
       st_delta: null,
@@ -1400,6 +1461,7 @@ export function buildHitRateEnhancementContext({
       lane_fit_local: Number.isFinite(features?.lane_fit_local) ? round(features.lane_fit_local, 2) : null,
       lane_fit_grade: Number.isFinite(features?.lane_fit_grade) ? round(features.lane_fit_grade, 2) : null,
       prediction_data_usage: predictionDataUsage,
+      lapTime_source: predictionDataUsage.lapTime,
       motor_raw: {
         motor2ren: predictionDataUsage.motor2ren.used && Number.isFinite(features?.motor2_rate) ? round(features.motor2_rate, 2) : null,
         motor3ren: predictionDataUsage.motor3ren.used && Number.isFinite(features?.motor3_rate) ? round(features.motor3_rate, 2) : null
