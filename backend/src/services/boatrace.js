@@ -13,6 +13,18 @@ function buildEmptyBeforeinfo() {
   return {
     byLane: new Map(),
     rawByLane: new Map(),
+    actualEntry: {
+      authoritative_source: "official_beforeinfo_entry_course",
+      raw_text_by_lane: {},
+      raw_actual_entry_source_text: null,
+      parsed_actual_entry_order: [],
+      actual_lane_map: {},
+      fallback_used: true,
+      fallback_reason: "beforeinfo_missing",
+      validation_ok: false,
+      validation_error: "beforeinfo_missing",
+      per_boat_lanes: {}
+    },
     weather: {
       weather: null,
       windSpeed: null,
@@ -100,6 +112,63 @@ function extractFirstNumber(value) {
   const text = normalizeDigits(String(value || ""));
   const match = text.match(/\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : null;
+}
+
+function isValidEntryOrder(order) {
+  return Array.isArray(order) &&
+    order.length === 6 &&
+    order.every((lane) => Number.isInteger(lane) && lane >= 1 && lane <= 6) &&
+    new Set(order).size === 6;
+}
+
+function buildActualEntryMetaFromOfficialRows(rawByLane) {
+  const predictedOrder = [1, 2, 3, 4, 5, 6];
+  const sourcePairs = predictedOrder.map((lane) => {
+    const raw = rawByLane.get(lane) || {};
+    const rawText = normalizeSpace(raw?.rawEntryCourse) || null;
+    const entry = toNumber(rawText);
+    return {
+      lane,
+      rawText,
+      entry: Number.isInteger(entry) && entry >= 1 && entry <= 6 ? entry : null
+    };
+  });
+  const rawTextByLane = Object.fromEntries(sourcePairs.map((row) => [String(row.lane), row.rawText]));
+  const complete = sourcePairs.every((row) => Number.isInteger(row.entry));
+  const unique = complete && new Set(sourcePairs.map((row) => row.entry)).size === 6;
+  const parsedActualEntryOrder = complete && unique
+    ? [...sourcePairs].sort((a, b) => a.entry - b.entry).map((row) => row.lane)
+    : predictedOrder;
+  const validationOk = isValidEntryOrder(parsedActualEntryOrder) && complete && unique;
+  const actualLaneMap = Object.fromEntries(
+    parsedActualEntryOrder.map((lane, idx) => [String(lane), idx + 1])
+  );
+  const perBoatLanes = Object.fromEntries(
+    predictedOrder.map((lane) => [String(lane), {
+      original_lane: lane,
+      actual_lane: Number(actualLaneMap[String(lane)] || lane)
+    }])
+  );
+  const fallbackReason = validationOk
+    ? null
+    : !complete
+      ? "official_entry_course_incomplete"
+      : !unique
+        ? "official_entry_course_duplicate"
+        : "official_entry_course_invalid";
+
+  return {
+    authoritative_source: "official_beforeinfo_entry_course",
+    raw_text_by_lane: rawTextByLane,
+    raw_actual_entry_source_text: sourcePairs.map((row) => `${row.lane}:${row.rawText ?? "-"}`).join(" | "),
+    parsed_actual_entry_order: parsedActualEntryOrder,
+    actual_lane_map: actualLaneMap,
+    fallback_used: !validationOk,
+    fallback_reason: fallbackReason,
+    validation_ok: validationOk,
+    validation_error: validationOk ? null : fallbackReason,
+    per_boat_lanes: perBoatLanes
+  };
 }
 
 function extractLinesFromCell($, cell) {
@@ -615,6 +684,7 @@ function parseBeforeinfo(html) {
   return {
     byLane,
     rawByLane,
+    actualEntry: buildActualEntryMetaFromOfficialRows(rawByLane),
     weather: {
       weather,
       windSpeed,
@@ -680,6 +750,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
   const mergedRacers = racers.map((racer) => {
     const b = beforeinfo.byLane.get(racer.lane) || {};
     const raw = beforeinfo.rawByLane.get(racer.lane) || {};
+    const authoritativeActualLane = beforeinfo.actualEntry?.actual_lane_map?.[String(racer.lane)];
     return {
       ...racer,
       exhibitionTime: b.exhibitionTime ?? null,
@@ -687,9 +758,15 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
       exhibitionStRaw: b.exhibitionStRaw ?? null,
       exhibitionStType: b.exhibitionStType ?? null,
       exhibitionStNumeric: b.exhibitionStNumeric ?? null,
-      entryCourse: b.entryCourse ?? null,
+      entryCourse: Number.isInteger(authoritativeActualLane) ? authoritativeActualLane : racer.lane,
       tilt: b.tilt ?? null,
-      startRaw: raw
+      startRaw: {
+        ...raw,
+        authoritativeRawEntryCourse: beforeinfo.actualEntry?.raw_text_by_lane?.[String(racer.lane)] ?? null,
+        authoritativeActualLane: Number.isInteger(authoritativeActualLane) ? authoritativeActualLane : racer.lane,
+        actualEntryFallbackUsed: !!beforeinfo.actualEntry?.fallback_used,
+        actualEntryFallbackReason: beforeinfo.actualEntry?.fallback_reason ?? null
+      }
     };
   });
   const parseMs = Date.now() - parseStartedAt;
@@ -792,6 +869,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
         beforeinfo_fetch_error: beforeinfoFetchError,
         beforeinfo_parse_error: beforeinfoParseError
       },
+      actual_entry: beforeinfo.actualEntry,
       start_display_source: "official_pre_race_info",
       fetched_at: new Date().toISOString(),
       cache: {

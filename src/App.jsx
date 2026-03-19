@@ -1967,6 +1967,16 @@ function getStartDisplayRows(startDisplay) {
   const orderRaw = Array.isArray(startDisplay.start_display_order)
     ? startDisplay.start_display_order
     : [];
+  const entryMeta = startDisplay.start_display_entry_meta && typeof startDisplay.start_display_entry_meta === "object"
+    ? startDisplay.start_display_entry_meta
+    : {};
+  const entryValidation = entryMeta.validation && typeof entryMeta.validation === "object"
+    ? entryMeta.validation
+    : {};
+  const confirmedActualEntry = entryValidation.validation_ok === true && entryMeta.fallback_used !== true;
+  const perBoatLaneMap = entryMeta.per_boat_lane_map && typeof entryMeta.per_boat_lane_map === "object"
+    ? entryMeta.per_boat_lane_map
+    : {};
   const stMap = startDisplay.start_display_st && typeof startDisplay.start_display_st === "object"
     ? startDisplay.start_display_st
     : {};
@@ -2033,7 +2043,11 @@ function getStartDisplayRows(startDisplay) {
       lane,
       order: entryOrderByLane.get(lane) || null,
       actualLane: entryOrderByLane.get(lane) || lane,
-      moved: (entryOrderByLane.get(lane) || lane) !== lane,
+      moved: confirmedActualEntry && (entryOrderByLane.get(lane) || lane) !== lane,
+      confirmedActualEntry,
+      fallbackUsed: entryMeta.fallback_used === true,
+      fallbackReason: entryMeta.fallback_reason || null,
+      perBoatLane: perBoatLaneMap[String(lane)] || null,
       leftPct,
       xUnit: Number.isFinite(axisClamped) ? Number(axisClamped.toFixed(2)) : null,
       st: Number.isFinite(Number(st)) ? Number(st) : null,
@@ -2077,6 +2091,7 @@ function StartExhibitionDisplay({ startDisplay, compact = false }) {
           source: {startDisplay?.start_display_source || "official_pre_race_info"} / layout:{" "}
           {startDisplay?.start_display_layout_mode || "normalized_entry_order"}
           {startDisplay?.source_fetched_at ? ` / updated: ${new Date(startDisplay.source_fetched_at).toLocaleString()}` : ""}
+          {startDisplay?.start_display_entry_meta?.fallback_used ? " / actual entry fallback: predicted/base order" : ""}
         </p>
       ) : null}
       {rows.map((row) => (
@@ -2086,7 +2101,11 @@ function StartExhibitionDisplay({ startDisplay, compact = false }) {
               <span className={`combo-dot ${BOAT_META[row.actualLane]?.className || ""}`}>{row.actualLane ?? "--"}</span>
               <strong>Boat {row.lane}</strong>
               <div className="muted">
-                {row.moved ? `Moved from ${row.lane} to entry ${row.actualLane}` : "No course change"}
+                {row.confirmedActualEntry
+                  ? row.moved
+                    ? `Moved from ${row.lane} to entry ${row.actualLane}`
+                    : "No course change"
+                  : "Actual entry not confirmed. Using base/predicted order"}
               </div>
             </div>
           </div>

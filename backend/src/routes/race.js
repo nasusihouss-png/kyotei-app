@@ -2009,32 +2009,50 @@ function downgradeModeForEntryChange(mode, severity) {
   return m;
 }
 
-function buildEntryOrderMeta(racers) {
+function isValidCanonicalEntryOrder(order) {
+  return Array.isArray(order) &&
+    order.length === 6 &&
+    order.every((lane) => Number.isInteger(lane) && lane >= 1 && lane <= 6) &&
+    new Set(order).size === 6;
+}
+
+function buildCanonicalEntryOrderMeta(racers, actualEntrySource = null) {
   const rows = Array.isArray(racers) ? racers : [];
   const predicted_entry_order = rows
     .map((r) => toInt(r?.lane))
     .filter((v) => Number.isInteger(v) && v >= 1 && v <= 6)
     .sort((a, b) => a - b);
-  const actual_entry_order = rows
-    .map((r) => {
-      const lane = toInt(r?.lane);
-      const entry = toInt(r?.entryCourse, lane);
-      return {
-        lane,
-        entry
-      };
+  const sourceOrder = Array.isArray(actualEntrySource?.parsed_actual_entry_order)
+    ? actualEntrySource.parsed_actual_entry_order.map((lane) => toInt(lane, null)).filter(Number.isInteger)
+    : [];
+  const validationOk = actualEntrySource?.validation_ok === true && isValidCanonicalEntryOrder(sourceOrder);
+  const actual_entry_order = validationOk ? sourceOrder : predicted_entry_order;
+  const laneToEntry = new Map(actual_entry_order.map((lane, idx) => [lane, idx + 1]));
+  const actual_lane_map = Object.fromEntries(actual_entry_order.map((lane, idx) => [String(lane), idx + 1]));
+  const fallback_used = !validationOk;
+  const fallback_reason = validationOk ? null : actualEntrySource?.fallback_reason || actualEntrySource?.validation_error || "predicted_order_fallback";
+  const raw_actual_entry_source_text = actualEntrySource?.raw_actual_entry_source_text || null;
+  const raw_text_by_lane =
+    actualEntrySource?.raw_text_by_lane && typeof actualEntrySource.raw_text_by_lane === "object"
+      ? actualEntrySource.raw_text_by_lane
+      : {};
+  const validation = {
+    validation_ok: validationOk,
+    every_boat_once: new Set(actual_entry_order).size === actual_entry_order.length,
+    lanes_1_to_6_once: isValidCanonicalEntryOrder(actual_entry_order),
+    ui_order_matches_actual_entry: isValidCanonicalEntryOrder(actual_entry_order),
+    validation_error: validationOk ? null : fallback_reason
+  };
+  const per_boat_lane_map = Object.fromEntries(
+    predicted_entry_order.map((lane) => {
+      const actualLane = Number(laneToEntry.get(lane) || lane);
+      return [String(lane), {
+        boat: lane,
+        original_lane: lane,
+        actual_lane: actualLane,
+        course_change_occurred: actualLane !== lane
+      }];
     })
-    .filter((x) => Number.isInteger(x.lane))
-    .sort((a, b) => {
-      if (a.entry !== b.entry) return a.entry - b.entry;
-      return a.lane - b.lane;
-    })
-    .map((x) => x.lane);
-
-  const laneToEntry = new Map(
-    rows
-      .map((r) => [toInt(r?.lane), toInt(r?.entryCourse, toInt(r?.lane))])
-      .filter((x) => Number.isInteger(x[0]))
   );
 
   let changedCount = 0;
@@ -2070,11 +2088,19 @@ function buildEntryOrderMeta(racers) {
   return {
     predicted_entry_order,
     actual_entry_order,
+    actual_lane_map,
     entry_changed,
     entry_change_type,
     changed_count: changedCount,
     max_shift: maxShift,
-    severity
+    severity,
+    authoritative_source: actualEntrySource?.authoritative_source || "official_beforeinfo_entry_course",
+    raw_actual_entry_source_text,
+    raw_text_by_lane,
+    fallback_used,
+    fallback_reason,
+    validation,
+    per_boat_lane_map
   };
 }
 
@@ -9147,7 +9173,17 @@ raceRouter.get("/race", async (req, res, next) => {
     };
     const raceId = saveRace(data);
     const manualLapEvaluation = getManualLapEvaluation(raceId);
-    const entryMeta = buildEntryOrderMeta(data.racers);
+    const entryMeta = buildCanonicalEntryOrderMeta(data.racers, data?.source?.actual_entry || null);
+    if (entryMeta.fallback_used) {
+      console.warn("[RACE_API][actual_entry_fallback]", {
+        route: "/api/race",
+        date,
+        venueId,
+        raceNo,
+        reason: entryMeta.fallback_reason,
+        raw_actual_entry_source_text: entryMeta.raw_actual_entry_source_text
+      });
+    }
     const racersWithRecentPlayerStats = applyRecentPlayerStatProfilesToRacers({
       racers: data.racers,
       raceDate: data?.race?.date || null
@@ -10202,6 +10238,7 @@ raceRouter.get("/race", async (req, res, next) => {
     const startDisplay = saveRaceStartDisplaySnapshot({
       raceId,
       racers: data.racers,
+      entryMeta,
       sourceMeta: data.source || {},
       predictionSnapshot: {
         raceDecision,
@@ -11093,8 +11130,15 @@ raceRouter.get("/race", async (req, res, next) => {
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,
+      actual_lane_map: entryMeta.actual_lane_map,
       entry_changed: entryMeta.entry_changed,
       entry_change_type: entryMeta.entry_change_type,
+      entry_fallback_used: entryMeta.fallback_used,
+      entry_fallback_reason: entryMeta.fallback_reason,
+      entry_validation: entryMeta.validation,
+      actual_entry_authoritative_source: entryMeta.authoritative_source,
+      raw_actual_entry_source_text: entryMeta.raw_actual_entry_source_text,
+      per_boat_lane_map: entryMeta.per_boat_lane_map,
       startSignalAnalysis: startSignals,
       recommendation_score,
       scenarioSuggestions: safeScenarioSuggestions,
@@ -11308,7 +11352,7 @@ raceRouter.get("/recommendations", async (req, res, next) => {
           if (!resolved.data) continue;
           if (resolved.usedCachedData) usedCachedCount += 1;
           const data = resolved.data;
-          const entryMeta = buildEntryOrderMeta(data.racers);
+          const entryMeta = buildCanonicalEntryOrderMeta(data.racers, data?.source?.actual_entry || null);
           const baseFeatures = applyMotorPerformanceFeatures(
             applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
           );
@@ -11910,7 +11954,7 @@ raceRouter.get("/rankings", async (req, res, next) => {
           if (!resolved.data) continue;
           if (resolved.usedCachedData) usedCachedCount += 1;
           const data = resolved.data;
-          const entryMeta = buildEntryOrderMeta(data.racers);
+          const entryMeta = buildCanonicalEntryOrderMeta(data.racers, data?.source?.actual_entry || null);
           const baseFeatures = applyMotorPerformanceFeatures(
             applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
           );

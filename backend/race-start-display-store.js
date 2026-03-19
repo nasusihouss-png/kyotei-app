@@ -96,7 +96,13 @@ const updateResultFieldsStmt = db.prepare(`
     updated_at = excluded.updated_at
 `);
 
-function buildStartDisplayOrder(racers) {
+function buildStartDisplayOrder(racers, entryMeta = null) {
+  const canonicalOrder = Array.isArray(entryMeta?.actual_entry_order) ? entryMeta.actual_entry_order : [];
+  if (canonicalOrder.length === 6 && new Set(canonicalOrder).size === 6) {
+    return canonicalOrder
+      .map((lane) => toNum(lane, null))
+      .filter((lane) => Number.isInteger(lane));
+  }
   const rows = Array.isArray(racers) ? racers : [];
   return rows
     .map((r) => ({
@@ -234,7 +240,7 @@ function buildStartDisplayPositions(positions, order, stMap) {
   });
 }
 
-function buildStartDisplayDebugRows({ order, timingMap, rawMap }) {
+function buildStartDisplayDebugRows({ order, timingMap, rawMap, entryMeta }) {
   const lanes = [1, 2, 3, 4, 5, 6];
   const entryOrderByLane = new Map();
   (Array.isArray(order) ? order : []).forEach((lane, idx) => {
@@ -244,14 +250,21 @@ function buildStartDisplayDebugRows({ order, timingMap, rawMap }) {
   return lanes.map((lane) => {
     const timing = timingMap?.[String(lane)] || {};
     const axis = toNum(timing?.axis_position, null);
+    const perBoat = entryMeta?.per_boat_lane_map?.[String(lane)] || {};
+    const confirmed = entryMeta?.validation?.validation_ok === true;
     return {
       lane,
+      original_lane: perBoat?.original_lane ?? lane,
+      actual_lane: perBoat?.actual_lane ?? entryOrderByLane.get(lane) ?? lane,
+      course_change_occurred: confirmed ? !!perBoat?.course_change_occurred : false,
       raw_st: rawMap?.[String(lane)]?.raw_st ?? null,
+      raw_entry_course: rawMap?.[String(lane)]?.raw_entry_course ?? null,
       normalized_st_type: timing?.type || "missing",
       normalized_st_numeric: toNum(timing?.normalized_numeric, null),
       entry_order: entryOrderByLane.get(lane) || null,
       visual_unit: Number.isFinite(axis) ? Number(axis.toFixed(3)) : null,
-      visual_percent: Number.isFinite(axis) ? Number(((axis / 120) * 100).toFixed(3)) : null
+      visual_percent: Number.isFinite(axis) ? Number(((axis / 120) * 100).toFixed(3)) : null,
+      fallback_used: !!entryMeta?.fallback_used
     };
   });
 }
@@ -259,17 +272,18 @@ function buildStartDisplayDebugRows({ order, timingMap, rawMap }) {
 export function saveRaceStartDisplaySnapshot({
   raceId,
   racers,
+  entryMeta,
   predictionSnapshot,
   startDisplayPositions,
   sourceMeta
 }) {
   if (!raceId) return null;
-  const order = buildStartDisplayOrder(racers);
+  const order = buildStartDisplayOrder(racers, entryMeta);
   const stMap = buildStartDisplaySt(racers);
   const rawMap = buildStartDisplayRaw(racers);
   const timingMap = buildStartDisplayTiming(racers, stMap);
   const positions = buildStartDisplayPositions(startDisplayPositions, order, stMap);
-  const debugRows = buildStartDisplayDebugRows({ order, timingMap, rawMap });
+  const debugRows = buildStartDisplayDebugRows({ order, timingMap, rawMap, entryMeta });
   const signature = order.join("-");
   const now = nowIso();
   const startDisplaySource =
@@ -302,6 +316,16 @@ export function saveRaceStartDisplaySnapshot({
     start_display_debug: debugRows,
     start_display_layout_mode: layoutMode,
     start_display_source: startDisplaySource,
+    start_display_entry_meta: {
+      authoritative_source: entryMeta?.authoritative_source || null,
+      raw_actual_entry_source_text: entryMeta?.raw_actual_entry_source_text || null,
+      actual_entry_order: Array.isArray(entryMeta?.actual_entry_order) ? entryMeta.actual_entry_order : order,
+      actual_lane_map: entryMeta?.actual_lane_map || {},
+      fallback_used: !!entryMeta?.fallback_used,
+      fallback_reason: entryMeta?.fallback_reason || null,
+      validation: entryMeta?.validation || null,
+      per_boat_lane_map: entryMeta?.per_boat_lane_map || {}
+    },
     source_fetched_at: sourceFetchedAt,
     updated_at: now,
     prediction_snapshot: predictionSnapshot || {}
