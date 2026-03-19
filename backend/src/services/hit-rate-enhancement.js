@@ -55,6 +55,13 @@ function average(values) {
   return valid.reduce((sum, value) => sum + value, 0) / valid.length;
 }
 
+function getNormalizedAvgStRank(features) {
+  if (Number.isFinite(features?.avg_st_rank)) return features.avg_st_rank;
+  if (Number.isFinite(features?.lane_st_rank)) return features.lane_st_rank;
+  if (Number.isFinite(features?.lane_STrank)) return features.lane_STrank;
+  return null;
+}
+
 function actualLaneOf(row) {
   return toInt(row?.actual_lane ?? row?.lane, null);
 }
@@ -1189,7 +1196,7 @@ export function buildHitRateEnhancementContext({
     const profile = profileByLane[String(actualLane)] || {};
     const styleProfile = profile?.style_profile || {};
     const laneAvgSt = Number.isFinite(features?.avg_st) ? features.avg_st : null;
-    const laneStRank = Number.isFinite(features?.avg_st_rank) ? features.avg_st_rank : null;
+    const avgStRank = getNormalizedAvgStRank(features);
     const exhibitionSt = Number.isFinite(features?.exhibition_st) ? features.exhibition_st : null;
     const predictionFieldMeta = features?.prediction_field_meta || {};
     const exhibitionTime = predictionFieldMeta?.exhibitionTime?.is_usable && Number.isFinite(features?.exhibition_time)
@@ -1238,7 +1245,7 @@ export function buildHitRateEnhancementContext({
       -0.24,
       0.24,
       (Number.isFinite(laneAvgSt) ? (0.18 - laneAvgSt) * 0.7 : 0) +
-      (Number.isFinite(laneStRank) ? (4 - laneStRank) * 0.03 : 0) +
+      (Number.isFinite(avgStRank) ? (4 - avgStRank) * 0.03 : 0) +
       currentExhibitionEdge +
       launchStateBonus
     );
@@ -1251,7 +1258,7 @@ export function buildHitRateEnhancementContext({
     const lateRisk = clamp(
       0,
       1,
-      (Number.isFinite(laneStRank) && laneStRank >= 4 ? 0.14 : 0.02) +
+      (Number.isFinite(avgStRank) && avgStRank >= 4 ? 0.14 : 0.02) +
       (hiddenF ? 0.12 : 0) +
       Math.min(0.18, unresolvedFCount * 0.05) +
       (Number.isFinite(exhibitionSt) && exhibitionSt >= 0.18 ? 0.12 : 0) +
@@ -1273,7 +1280,8 @@ export function buildHitRateEnhancementContext({
       style_profile: styleProfile,
       player_start_profile: profile?.player_start_profile || null,
       lane_avgST: laneAvgSt,
-      lane_STrank: laneStRank,
+      avg_st_rank: avgStRank,
+      lane_st_rank: avgStRank,
       exhibition_st: exhibitionSt,
       current_exhibition_ST_edge: round(currentExhibitionEdge, 4),
       launch_state_bonus: round(launchStateBonus, 4),
@@ -1776,7 +1784,8 @@ export function buildHitRateEnhancementContext({
     stage2_dynamic: {
       start_development_states: Object.fromEntries(laneContexts.map((row) => [String(row.lane), {
         lane_avgST: row.lane_avgST,
-        lane_STrank: row.lane_STrank,
+        avg_st_rank: row.avg_st_rank,
+        lane_st_rank: row.lane_st_rank,
         exhibition_st: row.exhibition_st,
         exhibition_time: row.motor_form?.exhibitionTime ?? null,
         ex_time_relative_gap: row.ex_time_relative_gap,

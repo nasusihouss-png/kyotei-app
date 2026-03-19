@@ -43,7 +43,7 @@ function buildAscendingRanks(valuesByLane) {
   return rankMap;
 }
 
-function computeStartStabilityScore({ avgSt, exhibitionSt, laneStRank, fHoldCount }) {
+function computeStartStabilityScore({ avgSt, exhibitionSt, avgStRank, fHoldCount }) {
   const avgStComponent =
     Number.isFinite(avgSt) && avgSt > 0
       ? clamp(0, 100, (0.22 - avgSt) / 0.08 * 100)
@@ -52,9 +52,9 @@ function computeStartStabilityScore({ avgSt, exhibitionSt, laneStRank, fHoldCoun
     Number.isFinite(exhibitionSt) && exhibitionSt > 0
       ? clamp(0, 100, (0.22 - exhibitionSt) / 0.08 * 100)
       : null;
-  const laneStRankComponent =
-    Number.isFinite(laneStRank)
-      ? clamp(0, 100, (7 - laneStRank) / 6 * 100)
+  const avgStRankComponent =
+    Number.isFinite(avgStRank)
+      ? clamp(0, 100, (7 - avgStRank) / 6 * 100)
       : 50;
   const fPenalty = Number.isFinite(fHoldCount) ? Math.min(24, fHoldCount * 10) : 0;
 
@@ -64,7 +64,7 @@ function computeStartStabilityScore({ avgSt, exhibitionSt, laneStRank, fHoldCoun
       100,
       (Number.isFinite(avgStComponent) ? avgStComponent : 50) * 0.52 +
         (Number.isFinite(exhibitionStComponent) ? exhibitionStComponent : 50) * 0.24 +
-        laneStRankComponent * 0.14 -
+        avgStRankComponent * 0.14 -
         fPenalty
     ).toFixed(2)
   );
@@ -127,8 +127,8 @@ export function buildFeatures(racer) {
   const f_hold_count = prediction_field_meta.fCount?.is_usable
     ? Math.max(0, toNumber(prediction_field_meta.fCount.value, 0))
     : null;
-  const laneStRank = toNullableNumber(
-    racer?.avgStRank ?? racer?.avg_st_rank ?? racer?.laneStRank ?? racer?.lane_st_rank
+  const avgStRankValue = toNullableNumber(
+    racer?.avgStRank ?? racer?.avg_st_rank ?? racer?.["laneStRank"] ?? racer?.lane_st_rank
   );
   const local_minus_nation = local_win_rate - nationwide_win_rate;
   const motor_boat_avg = ((Number.isFinite(motor2_rate) ? motor2_rate : 0) + boat2_rate) / 2;
@@ -183,7 +183,7 @@ export function buildFeatures(racer) {
   const start_stability_score = computeStartStabilityScore({
     avgSt: avg_st,
     exhibitionSt: exhibition_st,
-    laneStRank,
+    avgStRank: avgStRankValue,
     fHoldCount: f_hold_count
   });
 
@@ -239,7 +239,7 @@ export function buildFeatures(racer) {
     start_stability_score,
     prediction_field_meta,
     lane_avg_st: avg_st,
-    lane_st_rank: laneStRank,
+    lane_st_rank: avgStRankValue,
     hidden_f_flag: Number.isFinite(f_hold_count) && f_hold_count > 0 ? 1 : 0,
     unresolved_f_count: Number.isFinite(f_hold_count) ? f_hold_count : null,
     start_caution_penalty: Number.isFinite(f_hold_count) && f_hold_count > 0 ? Number((0.04 + Math.min(0.08, f_hold_count * 0.02)).toFixed(3)) : 0,
@@ -468,7 +468,7 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         start_stability_score: computeStartStabilityScore({
           avgSt: f.avg_st,
           exhibitionSt: f.exhibition_st,
-          laneStRank: selfAvgStRank,
+          avgStRank: selfAvgStRank,
           fHoldCount: expectedActualStMeta.fHoldCount ?? f.f_hold_count
         }),
         expected_actual_st_rank: expectedActualStRanks.get(actualLane) ?? null,

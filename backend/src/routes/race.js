@@ -215,6 +215,158 @@ function toNullableNum(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function buildFailOpenFeatureSet(racer, raceContext = {}) {
+  const classScoreMap = { A1: 4, A2: 3, B1: 2, B2: 1 };
+  const lane = Number.isFinite(Number(racer?.lane)) ? Number(racer.lane) : 0;
+  const entryCourse = toNullableNum(racer?.entryCourse);
+  const actualLane = Number.isFinite(entryCourse) ? entryCourse : lane || null;
+  const nationwideWinRate = toNum(racer?.nationwideWinRate, 0);
+  const localWinRate = toNum(racer?.localWinRate, 0);
+  const avgSt = toNullableNum(racer?.avgSt);
+  const exhibitionSt = toNullableNum(racer?.exhibitionSt ?? racer?.exhibitionStNumeric);
+  const boat2Rate = toNum(racer?.boat2Rate, 0);
+  const boat3Rate = toNullableNum(racer?.boat3Rate);
+  const actualStInv =
+    Number.isFinite(avgSt) && avgSt > 0
+      ? Number((1 / avgSt).toFixed(6))
+      : 0;
+
+  return {
+    lane,
+    original_lane: lane || null,
+    boat_number: lane || null,
+    actual_lane: actualLane,
+    class_score: classScoreMap[String(racer?.class || "").toUpperCase()] ?? 0,
+    nationwide_win_rate: nationwideWinRate,
+    local_win_rate: localWinRate,
+    motor2_rate: toNullableNum(racer?.motor2ren ?? racer?.motor2Rate),
+    motor3_rate: toNullableNum(racer?.motor3ren ?? racer?.motor3Rate),
+    boat2_rate: boat2Rate,
+    boat3_rate: boat3Rate,
+    weight: toNum(racer?.weight, 0),
+    avg_st: avgSt,
+    exhibition_st: exhibitionSt,
+    exhibition_time: toNullableNum(racer?.exhibitionTime),
+    lap_time: toNullableNum(racer?.kyoteiBiyoriLapTime ?? racer?.lapTime),
+    lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch),
+    local_minus_nation: localWinRate - nationwideWinRate,
+    motor_boat_avg: ((toNum(racer?.motor2ren ?? racer?.motor2Rate, 0)) + boat2Rate) / 2,
+    st_inv: actualStInv,
+    expected_actual_st_inv: actualStInv,
+    is_inner: actualLane >= 1 && actualLane <= 3 ? 1 : 0,
+    is_outer: actualLane >= 5 && actualLane <= 6 ? 1 : 0,
+    entry_course: entryCourse,
+    wind_speed: toNum(raceContext?.windSpeed ?? racer?.windSpeed, 0),
+    tilt_bonus: toNullableNum(racer?.tilt) === 0.5 ? 2 : 0,
+    course_change: Number.isFinite(entryCourse) && lane ? (entryCourse !== lane ? 1 : 0) : 0,
+    prediction_field_meta:
+      racer?.predictionFieldMeta && typeof racer.predictionFieldMeta === "object"
+        ? racer.predictionFieldMeta
+        : {},
+    course_fit_score: 0,
+    motor_total_score: 0,
+    entry_advantage_score: 0,
+    motor_trend_score: 0,
+    venue_lane_adjustment: 0,
+    f_hold_caution_penalty: 0,
+    exhibition_rank: null,
+    st_rank: null,
+    avg_st_rank: null,
+    lane_st_rank: null,
+    expected_actual_st_rank: null,
+    display_time_delta_vs_left: null,
+    avg_st_rank_delta_vs_left: null,
+    slit_alert_flag: 0,
+    lap_time_delta_vs_front: null,
+    lap_time_rank: null,
+    lap_attack_strength: 0,
+    hidden_f_flag: 0,
+    unresolved_f_count: null,
+    start_caution_penalty: 0,
+    f_hold_count: null,
+    f_hold_bias_applied: 0,
+    expected_actual_st_adjustment: 0,
+    expected_actual_st: avgSt,
+    start_stability_score: 50,
+    motor_true: 0,
+    lane_fit_1st: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
+    lane_fit_2ren: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
+    lane_fit_3ren: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate)
+  };
+}
+
+function buildFeaturePipelineFallback(data, featurePipelineDebug, learningWeights) {
+  const racersWithFeatures = (Array.isArray(data?.racers) ? data.racers : []).map((racer) => ({
+    racer,
+    features: buildFailOpenFeatureSet(racer, data?.race || {})
+  }));
+  const venueAdjustedBase = {
+    racersWithFeatures,
+    venue: { chaosAdjustment: 0, fallbackApplied: true }
+  };
+  const rankingBase = rankRace(racersWithFeatures);
+  const fallbackPattern = analyzeRacePattern(rankingBase);
+  let escapePatternAnalysis = {
+    formation_pattern: fallbackPattern?.race_pattern || "mixed",
+    formation_pattern_clarity_score: 0,
+    escape_pattern_applied: false,
+    escape_pattern_confidence: 0,
+    escape_second_place_bias_json: {}
+  };
+
+  try {
+    escapePatternAnalysis = analyzeEscapeFormationLayer({
+      ranking: rankingBase,
+      racePattern: fallbackPattern?.race_pattern || "mixed",
+      indexes: fallbackPattern?.indexes || {}
+    });
+  } catch (fallbackErr) {
+    featurePipelineDebug.skipped_optional_features.push("escape_pattern_analysis");
+    featurePipelineDebug.errors.push(`escape_pattern_analysis:${fallbackErr?.message || fallbackErr}`);
+  }
+
+  return {
+    baseFeatures: venueAdjustedBase,
+    venueAdjustedBase,
+    preRanking: rankingBase,
+    prePattern: fallbackPattern,
+    trendFeatures: venueAdjustedBase,
+    entryAdjusted: { racersWithFeatures, chaosBoost: 0 },
+    rankingBase,
+    contenderAdjusted: { ranking: rankingBase, contenderSignals: [] },
+    rankingBeforePatternBias: rankingBase,
+    patternBeforeBias: fallbackPattern,
+    escapePatternAnalysis,
+    ranking: rankingBase
+  };
+}
+
+function buildTemporaryFeaturePipelineDebug(ranking, featurePipelineDebug) {
+  const missingLegacyFields = [...(featurePipelineDebug?.legacy_fields_missing || [])];
+  const skippedOptionalFeatures = [...(featurePipelineDebug?.skipped_optional_features || [])];
+
+  for (const row of Array.isArray(ranking) ? ranking : []) {
+    const lane = toInt(row?.racer?.lane ?? row?.features?.lane, null);
+    const laneLabel = Number.isInteger(lane) ? `lane_${lane}` : "lane_unknown";
+    const features = row?.features || {};
+    const hasAvgStRank = Number.isFinite(features?.avg_st_rank) || Number.isFinite(features?.lane_st_rank);
+    if (!hasAvgStRank) {
+      missingLegacyFields.push(`${laneLabel}: laneStRank unavailable`);
+      missingLegacyFields.push(`${laneLabel}: lane_st_rank unavailable`);
+      skippedOptionalFeatures.push(`${laneLabel}: start_stability_score lane-rank contribution skipped`);
+      skippedOptionalFeatures.push(`${laneLabel}: hit_rate_start_edge avg_st_rank contribution skipped`);
+    }
+  }
+
+  return {
+    feature_pipeline_fail_open_applied: !!featurePipelineDebug?.fail_open_applied,
+    missing_legacy_fields: [...new Set(missingLegacyFields)],
+    skipped_optional_features: [...new Set(skippedOptionalFeatures)],
+    skipped_pipeline_steps: [...new Set(featurePipelineDebug?.skipped_pipeline_steps || [])],
+    errors: [...new Set(featurePipelineDebug?.errors || [])]
+  };
+}
+
 function createTimeoutError({ code, where, route, message, statusCode = 504 }) {
   const error = new Error(message);
   error.code = code;
@@ -8933,6 +9085,7 @@ function calcHitRateRankingScore({
 
 raceRouter.get("/race", async (req, res, next) => {
   let failureWhere = "race.route:validate_query";
+  let temporaryFeaturePipelineDebug = null;
   try {
     const routeStartedAt = Date.now();
     const routeTimings = {
@@ -8985,6 +9138,13 @@ raceRouter.get("/race", async (req, res, next) => {
     failureWhere = "race.route:feature_pipeline";
     const learningWeights = getActiveLearningWeights();
     const learningState = getLatestLearningRun();
+    const featurePipelineDebug = {
+      fail_open_applied: false,
+      legacy_fields_missing: [],
+      skipped_optional_features: [],
+      skipped_pipeline_steps: [],
+      errors: []
+    };
     const raceId = saveRace(data);
     const manualLapEvaluation = getManualLapEvaluation(raceId);
     const entryMeta = buildEntryOrderMeta(data.racers);
@@ -8997,33 +9157,93 @@ raceRouter.get("/race", async (req, res, next) => {
       racers: racersWithRecentPlayerStats
     };
     const reassignmentStartedAt = Date.now();
-    const baseFeatures = applyMotorPerformanceFeatures(
-      applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
-    );
-    routeTimings.actual_entry_reassignment_ms = Date.now() - reassignmentStartedAt;
-    const venueAdjustedBase = applyVenueAdjustments(baseFeatures, data.race);
-    const preRanking = rankRace(venueAdjustedBase.racersWithFeatures);
-    const prePattern = analyzeRacePattern(preRanking);
-    const trendFeatures = applyMotorTrendFeatures(venueAdjustedBase.racersWithFeatures, {
-      racePattern: prePattern.race_pattern
-    });
+    let baseFeatures;
+    let venueAdjustedBase;
+    let preRanking;
+    let prePattern;
+    let trendFeatures;
+    let entryAdjusted;
+    let rankingBase;
+    let contenderAdjusted;
+    let rankingBeforePatternBias;
+    let patternBeforeBias;
+    let escapePatternAnalysis;
+    let ranking;
+    try {
+      featurePipelineDebug.legacy_fields_missing = (Array.isArray(data?.racers) ? data.racers : [])
+        .flatMap((racer) => {
+          const lane = toInt(racer?.lane, null);
+          const laneLabel = Number.isInteger(lane) ? `lane_${lane}` : "lane_unknown";
+          const legacyEntries = [];
+          if (!Number.isFinite(toNullableNum(racer?.avgStRank))) legacyEntries.push(`${laneLabel}: avgStRank missing`);
+          if (!Number.isFinite(toNullableNum(racer?.["laneStRank"]))) legacyEntries.push(`${laneLabel}: laneStRank missing`);
+          if (!Number.isFinite(toNullableNum(racer?.lane_st_rank))) legacyEntries.push(`${laneLabel}: lane_st_rank missing`);
+          return legacyEntries;
+        });
+      baseFeatures = applyMotorPerformanceFeatures(
+        applyCoursePerformanceFeatures(buildRaceFeatures(data.racers, data.race))
+      );
+      routeTimings.actual_entry_reassignment_ms = Date.now() - reassignmentStartedAt;
+      venueAdjustedBase = applyVenueAdjustments(baseFeatures, data.race);
+      preRanking = rankRace(venueAdjustedBase.racersWithFeatures);
+      prePattern = analyzeRacePattern(preRanking);
+      trendFeatures = applyMotorTrendFeatures(venueAdjustedBase.racersWithFeatures, {
+        racePattern: prePattern.race_pattern
+      });
 
-    const entryAdjusted = applyEntryDynamicsFeatures(trendFeatures, {
-      racePattern: prePattern.race_pattern,
-      chaos_index: prePattern.indexes.chaos_index
-    });
+      entryAdjusted = applyEntryDynamicsFeatures(trendFeatures, {
+        racePattern: prePattern.race_pattern,
+        chaos_index: prePattern.indexes.chaos_index
+      });
 
-    const rankingBase = rankRace(entryAdjusted.racersWithFeatures);
-    const contenderAdjusted = applyContenderSynergy(rankingBase);
-    const rankingBeforePatternBias = contenderAdjusted.ranking;
-    const patternBeforeBias = analyzeRacePattern(rankingBeforePatternBias);
-    const escapePatternAnalysis = analyzeEscapeFormationLayer({
-      ranking: rankingBeforePatternBias,
-      racePattern: patternBeforeBias.race_pattern,
-      indexes: patternBeforeBias.indexes
-    });
-    let ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis, learningWeights, data?.race || null);
-    ranking = applyHitRateFocusToRanking(ranking, escapePatternAnalysis);
+      rankingBase = rankRace(entryAdjusted.racersWithFeatures);
+      contenderAdjusted = applyContenderSynergy(rankingBase);
+      rankingBeforePatternBias = contenderAdjusted.ranking;
+      patternBeforeBias = analyzeRacePattern(rankingBeforePatternBias);
+      escapePatternAnalysis = analyzeEscapeFormationLayer({
+        ranking: rankingBeforePatternBias,
+        racePattern: patternBeforeBias.race_pattern,
+        indexes: patternBeforeBias.indexes
+      });
+      ranking = applyEscapeFormationBiasToRanking(rankingBeforePatternBias, escapePatternAnalysis, learningWeights, data?.race || null);
+      ranking = applyHitRateFocusToRanking(ranking, escapePatternAnalysis);
+    } catch (featurePipelineErr) {
+      featurePipelineDebug.fail_open_applied = true;
+      featurePipelineDebug.skipped_optional_features.push("feature_pipeline_primary_path");
+      featurePipelineDebug.skipped_pipeline_steps.push(
+        "applyCoursePerformanceFeatures",
+        "applyMotorPerformanceFeatures",
+        "applyVenueAdjustments",
+        "applyMotorTrendFeatures",
+        "applyEntryDynamicsFeatures",
+        "applyContenderSynergy",
+        "applyEscapeFormationBiasToRanking",
+        "applyHitRateFocusToRanking"
+      );
+      featurePipelineDebug.errors.push(String(featurePipelineErr?.message || featurePipelineErr || "feature_pipeline_failed"));
+      console.warn("[RACE_API][feature_pipeline_fail_open]", {
+        route: "/api/race",
+        date,
+        venueId,
+        raceNo,
+        message: featurePipelineErr?.message || String(featurePipelineErr)
+      });
+      const fallbackPipeline = buildFeaturePipelineFallback(data, featurePipelineDebug, learningWeights);
+      baseFeatures = fallbackPipeline.baseFeatures;
+      venueAdjustedBase = fallbackPipeline.venueAdjustedBase;
+      preRanking = fallbackPipeline.preRanking;
+      prePattern = fallbackPipeline.prePattern;
+      trendFeatures = fallbackPipeline.trendFeatures;
+      entryAdjusted = fallbackPipeline.entryAdjusted;
+      rankingBase = fallbackPipeline.rankingBase;
+      contenderAdjusted = fallbackPipeline.contenderAdjusted;
+      rankingBeforePatternBias = fallbackPipeline.rankingBeforePatternBias;
+      patternBeforeBias = fallbackPipeline.patternBeforeBias;
+      escapePatternAnalysis = fallbackPipeline.escapePatternAnalysis;
+      ranking = fallbackPipeline.ranking;
+      routeTimings.actual_entry_reassignment_ms = Date.now() - reassignmentStartedAt;
+    }
+    temporaryFeaturePipelineDebug = buildTemporaryFeaturePipelineDebug(ranking, featurePipelineDebug);
     const manualLapImpact = {
       enabled: false,
       applied_lane_count: 0,
@@ -10924,6 +11144,7 @@ raceRouter.get("/race", async (req, res, next) => {
       marketTrap,
       raceFlow,
       fetchedSignalDiagnostics,
+      temporary_backend_debug: temporaryFeaturePipelineDebug,
       finishProbabilitiesByScenario: safeFinishProbabilitiesByScenario,
       startDisplay: startDisplay || null,
       startDisplayDebug: Array.isArray(startDisplay?.start_display_debug)
@@ -10941,6 +11162,9 @@ raceRouter.get("/race", async (req, res, next) => {
       route: "/api/race",
       message: String(err?.message || err || "unknown_error")
     };
+    if (temporaryFeaturePipelineDebug) {
+      payload.temporary_backend_debug = temporaryFeaturePipelineDebug;
+    }
     console.error("[RACE_API_ERROR]", JSON.stringify(payload));
     return res.status(status).json(payload);
   }
