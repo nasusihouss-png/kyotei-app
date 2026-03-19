@@ -134,19 +134,20 @@ function buildActualEntryMetaFromOfficialRows(rawByLane) {
     };
   });
   const rawTextByLane = Object.fromEntries(sourcePairs.map((row) => [String(row.lane), row.rawText]));
+  const parsedEntryByBoat = Object.fromEntries(sourcePairs.map((row) => [String(row.lane), row.entry]));
   const complete = sourcePairs.every((row) => Number.isInteger(row.entry));
   const unique = complete && new Set(sourcePairs.map((row) => row.entry)).size === 6;
   const parsedActualEntryOrder = complete && unique
     ? [...sourcePairs].sort((a, b) => a.entry - b.entry).map((row) => row.lane)
-    : predictedOrder;
+    : null;
   const validationOk = isValidEntryOrder(parsedActualEntryOrder) && complete && unique;
-  const actualLaneMap = Object.fromEntries(
-    parsedActualEntryOrder.map((lane, idx) => [String(lane), idx + 1])
-  );
+  const actualLaneMap = validationOk
+    ? Object.fromEntries(parsedActualEntryOrder.map((lane, idx) => [String(lane), idx + 1]))
+    : {};
   const perBoatLanes = Object.fromEntries(
     predictedOrder.map((lane) => [String(lane), {
       original_lane: lane,
-      actual_lane: Number(actualLaneMap[String(lane)] || lane)
+      actual_lane: validationOk ? Number(actualLaneMap[String(lane)] || lane) : null
     }])
   );
   const fallbackReason = validationOk
@@ -160,6 +161,7 @@ function buildActualEntryMetaFromOfficialRows(rawByLane) {
   return {
     authoritative_source: "official_beforeinfo_entry_course",
     raw_text_by_lane: rawTextByLane,
+    parsed_entry_by_boat: parsedEntryByBoat,
     raw_actual_entry_source_text: sourcePairs.map((row) => `${row.lane}:${row.rawText ?? "-"}`).join(" | "),
     parsed_actual_entry_order: parsedActualEntryOrder,
     actual_lane_map: actualLaneMap,
@@ -269,6 +271,9 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
           lane1stScore: toNullableDebugNumber(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
           lane2renScore: toNullableDebugNumber(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
           lane3renScore: toNullableDebugNumber(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
+          lane1stScoreRawParsed: toNullableDebugNumber(racer?.lane1stScoreRawParsed),
+          lane2renScoreRawParsed: toNullableDebugNumber(racer?.lane2renScoreRawParsed),
+          lane3renScoreRawParsed: toNullableDebugNumber(racer?.lane3renScoreRawParsed),
           lane1stRate_debug: fieldDebugMaps.lane1stRate[String(racer?.lane)] || null,
           lane2renRate_debug: fieldDebugMaps.lane2renRate[String(racer?.lane)] || null,
           lane3renRate_debug: fieldDebugMaps.lane3renRate[String(racer?.lane)] || null,
@@ -278,7 +283,10 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
           motor2ren_debug: fieldDebugMaps.motor2ren[String(racer?.lane)] || null,
           motor3ren_debug: fieldDebugMaps.motor3ren[String(racer?.lane)] || null,
           lapExStretch_debug: fieldDebugMaps.lapExStretch[String(racer?.lane)] || null,
-          predictionFieldMeta: racer?.predictionFieldMeta || null
+          predictionFieldMeta: racer?.predictionFieldMeta || null,
+          lane1st_verified: !!racer?.predictionFieldMeta?.lane1stScore?.is_usable,
+          lane2ren_verified: !!racer?.predictionFieldMeta?.lane2renScore?.is_usable,
+          lane3ren_verified: !!racer?.predictionFieldMeta?.lane3renScore?.is_usable
         }))
         .sort((a, b) => Number(a?.lane || 0) - Number(b?.lane || 0))
     : [];

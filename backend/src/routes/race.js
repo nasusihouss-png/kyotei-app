@@ -10289,6 +10289,16 @@ raceRouter.get("/race", async (req, res, next) => {
       const canonicalLaneMeta = canonicalPerBoatLaneMap[String(lane)] || null;
       const canonicalActualLane = toInt(canonicalLaneMeta?.actual_lane, lane);
       const laneFeatures = rankingFeatureByLane.get(lane) || {};
+      const predictionFieldMeta =
+        racer?.predictionFieldMeta && typeof racer.predictionFieldMeta === "object"
+          ? racer.predictionFieldMeta
+          : {};
+      const lane1stVerified = !!(predictionFieldMeta?.lane1stScore?.is_usable || predictionFieldMeta?.lane1stAvg?.is_usable);
+      const lane2renVerified = !!(predictionFieldMeta?.lane2renScore?.is_usable || predictionFieldMeta?.lane2renAvg?.is_usable);
+      const lane3renVerified = !!(predictionFieldMeta?.lane3renScore?.is_usable || predictionFieldMeta?.lane3renAvg?.is_usable);
+      const rawLane1st = toNullableNum(racer?.lane1stScoreRawParsed ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate);
+      const rawLane2ren = toNullableNum(racer?.lane2renScoreRawParsed ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate);
+      const rawLane3ren = toNullableNum(racer?.lane3renScoreRawParsed ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate);
       const contributionComponents = buildFeatureContributionComponents({ features: laneFeatures });
       return {
         ...(laneFeatures
@@ -10352,20 +10362,23 @@ raceRouter.get("/race", async (req, res, next) => {
         kyoteibiyori_exhibition_st: toNullableNum(racer?.kyoteiBiyoriExhibitionSt),
         entry_course: canonicalActualLane,
         tilt: toNullableNum(racer?.tilt),
-        lane1st_score: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
-        lane2ren_score: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
-        lane3ren_score: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
-        lane1st_score_before_reassignment: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
-        lane2ren_score_before_reassignment: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
-        lane3ren_score_before_reassignment: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
+        lane1st_score: lane1stVerified ? rawLane1st : null,
+        lane2ren_score: lane2renVerified ? rawLane2ren : null,
+        lane3ren_score: lane3renVerified ? rawLane3ren : null,
+        lane1st_score_raw: rawLane1st,
+        lane2ren_score_raw: rawLane2ren,
+        lane3ren_score_raw: rawLane3ren,
+        lane1st_score_before_reassignment: lane1stVerified ? rawLane1st : null,
+        lane2ren_score_before_reassignment: lane2renVerified ? rawLane2ren : null,
+        lane3ren_score_before_reassignment: lane3renVerified ? rawLane3ren : null,
         lane1st_score_after_reassignment: toNullableNum(laneFeatures?.lane_fit_1st ?? laneFeatures?.laneFirstRate),
         lane2ren_score_after_reassignment: toNullableNum(laneFeatures?.lane_fit_2ren ?? laneFeatures?.lane2RenRate),
         lane3ren_score_after_reassignment: toNullableNum(laneFeatures?.lane_fit_3ren ?? laneFeatures?.lane3RenRate),
-        lane_first_rate: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
-        lane_2ren_rate: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
-        lane_3ren_rate: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
+        lane_first_rate: lane1stVerified ? rawLane1st : null,
+        lane_2ren_rate: lane2renVerified ? rawLane2ren : null,
+        lane_3ren_rate: lane3renVerified ? rawLane3ren : null,
         lane_assignment_debug: laneFeatures?.lane_assignment_debug || null,
-        prediction_field_meta: racer?.predictionFieldMeta || null
+        prediction_field_meta: predictionFieldMeta || null
       };
     });
     const fetchedSignalDiagnostics = snapshotPlayers.map((row) => ({
@@ -11064,6 +11077,10 @@ raceRouter.get("/race", async (req, res, next) => {
     const compactEntryDebug = {
       authoritative_source: entryMeta.authoritative_source,
       raw_actual_entry_source_text: entryMeta.raw_actual_entry_source_text,
+      parsed_entry_by_boat:
+        data?.source?.actual_entry?.parsed_entry_by_boat && typeof data.source.actual_entry.parsed_entry_by_boat === "object"
+          ? data.source.actual_entry.parsed_entry_by_boat
+          : {},
       parsed_actual_entry_order: Array.isArray(data?.source?.actual_entry?.parsed_actual_entry_order)
         ? data.source.actual_entry.parsed_actual_entry_order
         : entryMeta.actual_entry_order,
@@ -11072,6 +11089,7 @@ raceRouter.get("/race", async (req, res, next) => {
           ? data.source.actual_entry.actual_lane_map
           : entryMeta.actual_lane_map,
       validation_passed: entryMeta?.validation?.validation_ok === true,
+      authoritative_entry_usable: data?.source?.actual_entry?.validation_ok === true,
       fallback_used: !!entryMeta.fallback_used,
       fallback_reason: entryMeta.fallback_reason || null,
       per_boat_lanes: entryMeta.per_boat_lane_map,

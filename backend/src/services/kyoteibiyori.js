@@ -219,6 +219,14 @@ function toFiniteNumberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function firstFiniteValue(...values) {
+  for (const value of values) {
+    const normalized = toFiniteNumberOrNull(value);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
 function parseDecimal(value) {
   const text = normalizeDigits(value).replace(/\s+/g, "");
   if (!text) return null;
@@ -1866,6 +1874,35 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         fieldSources,
         fieldDebugs
       });
+      const getVerifiedValue = (metaKey, ...candidates) =>
+        predictionFieldMeta?.[metaKey]?.is_usable ? firstFiniteValue(...candidates) : null;
+      const trustedLane1st = getVerifiedValue(
+        "lane1stScore",
+        extra?.lane1stScore,
+        extra?.lane1stAvg,
+        extra?.laneFirstRate,
+        racer?.lane1stScore,
+        racer?.lane1stAvg,
+        racer?.laneFirstRate
+      );
+      const trustedLane2ren = getVerifiedValue(
+        "lane2renScore",
+        extra?.lane2renScore,
+        extra?.lane2renAvg,
+        extra?.lane2RenRate,
+        racer?.lane2renScore,
+        racer?.lane2renAvg,
+        racer?.lane2RenRate
+      );
+      const trustedLane3ren = getVerifiedValue(
+        "lane3renScore",
+        extra?.lane3renScore,
+        extra?.lane3renAvg,
+        extra?.lane3RenRate,
+        racer?.lane3renScore,
+        racer?.lane3renAvg,
+        racer?.lane3RenRate
+      );
       return {
         ...racer,
         name: extra?.playerName || racer?.name || null,
@@ -1887,12 +1924,15 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         nobiashi: extra?.nobiashi ?? racer?.nobiashi ?? null,
         motor2ren: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2ren ?? racer?.motor2Rate ?? null,
         motor3ren: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3ren ?? racer?.motor3Rate ?? null,
-        lane1stScore: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
-        lane2renScore: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
-        lane3renScore: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
-        lane1stAvg: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate ?? null,
-        lane2renAvg: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate ?? null,
-        lane3renAvg: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate ?? null,
+        lane1stScoreRawParsed: firstFiniteValue(extra?.lane1stScore, extra?.lane1stAvg, extra?.laneFirstRate),
+        lane2renScoreRawParsed: firstFiniteValue(extra?.lane2renScore, extra?.lane2renAvg, extra?.lane2RenRate),
+        lane3renScoreRawParsed: firstFiniteValue(extra?.lane3renScore, extra?.lane3renAvg, extra?.lane3RenRate),
+        lane1stScore: trustedLane1st,
+        lane2renScore: trustedLane2ren,
+        lane3renScore: trustedLane3ren,
+        lane1stAvg: trustedLane1st,
+        lane2renAvg: trustedLane2ren,
+        lane3renAvg: trustedLane3ren,
         lapTime: extra?.lapTime ?? racer?.lapTime ?? null,
         lapTimeRaw: extra?.lapTimeRaw ?? racer?.lapTimeRaw ?? null,
         lapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
@@ -1901,9 +1941,9 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         exhibitionTime: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
         motor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2Rate ?? null,
         motor3Rate: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3Rate ?? null,
-        laneFirstRate: extra?.lane1stScore ?? extra?.lane1stAvg ?? extra?.laneFirstRate ?? racer?.laneFirstRate ?? null,
-        lane2RenRate: extra?.lane2renScore ?? extra?.lane2renAvg ?? extra?.lane2RenRate ?? racer?.lane2RenRate ?? null,
-        lane3RenRate: extra?.lane3renScore ?? extra?.lane3renAvg ?? extra?.lane3RenRate ?? racer?.lane3RenRate ?? null,
+        laneFirstRate: trustedLane1st,
+        lane2RenRate: trustedLane2ren,
+        lane3RenRate: trustedLane3ren,
         lane1stRate_raw: extra?.lane1stRate_raw ?? racer?.lane1stRate_raw ?? null,
         lane1stRate_season: extra?.lane1stRate_season ?? racer?.lane1stRate_season ?? null,
         lane1stRate_6m: extra?.lane1stRate_6m ?? racer?.lane1stRate_6m ?? null,

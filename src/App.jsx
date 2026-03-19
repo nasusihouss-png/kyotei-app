@@ -152,8 +152,19 @@ async function fetchRaceData(date, venueId, raceNo) {
       parseFailed = true;
     }
   }
+  console.info("[frontend:/api/race]", {
+    url: requestUrl,
+    status: response.status,
+    ok: response.ok,
+    body_preview: rawText.slice(0, 1200)
+  });
 
   if (parseFailed) {
+    console.error("[frontend:/api/race][parse_failed]", {
+      url: requestUrl,
+      status: response.status,
+      body_preview: rawText.slice(0, 1200)
+    });
     throw buildApiError({
       message: `Race API returned invalid JSON (${response.status})`,
       url: requestUrl,
@@ -163,6 +174,11 @@ async function fetchRaceData(date, venueId, raceNo) {
     });
   }
   if (!response.ok) {
+    console.error("[frontend:/api/race][http_error]", {
+      url: requestUrl,
+      status: response.status,
+      body
+    });
     throw buildApiError({
       message: body?.message || `Failed to fetch race data (${response.status})`,
       url: requestUrl,
@@ -172,6 +188,11 @@ async function fetchRaceData(date, venueId, raceNo) {
     });
   }
   if (!body || typeof body !== "object") {
+    console.error("[frontend:/api/race][invalid_body]", {
+      url: requestUrl,
+      status: response.status,
+      body
+    });
     throw buildApiError({
       message: "Race API returned an empty response",
       url: requestUrl,
@@ -509,22 +530,42 @@ function safeSetHas(setLike, value) {
   return !!setLike && typeof setLike.has === "function" ? setLike.has(value) : false;
 }
 
+function getPredictionFieldMetaEntry(source = {}, key) {
+  const metaMap =
+    source?.predictionFieldMeta && typeof source.predictionFieldMeta === "object"
+      ? source.predictionFieldMeta
+      : source?.prediction_field_meta && typeof source.prediction_field_meta === "object"
+        ? source.prediction_field_meta
+        : {};
+  return metaMap?.[key] || null;
+}
+
+function isPredictionFieldVerified(source = {}, ...keys) {
+  return keys.some((key) => {
+    const meta = getPredictionFieldMetaEntry(source, key);
+    return !!meta?.is_usable && !!meta?.source && meta?.reason !== "unknown_source";
+  });
+}
+
 function getLaneScoreDisplayValue(row, key) {
   const safeRow = safeObject(row);
   switch (key) {
     case "lane1st":
+      if (!isPredictionFieldVerified(safeRow, "lane1stScore", "lane1stAvg")) return null;
       return firstMeaningfulFiniteValue(
         safeRow?.lane1stScore,
         safeRow?.lane1stAvg,
         safeRow?.laneFirstRate
       );
     case "lane2ren":
+      if (!isPredictionFieldVerified(safeRow, "lane2renScore", "lane2renAvg")) return null;
       return firstMeaningfulFiniteValue(
         safeRow?.lane2renScore,
         safeRow?.lane2renAvg,
         safeRow?.lane2RenRate
       );
     case "lane3ren":
+      if (!isPredictionFieldVerified(safeRow, "lane3renScore", "lane3renAvg")) return null;
       return firstMeaningfulFiniteValue(
         safeRow?.lane3renScore,
         safeRow?.lane3renAvg,
@@ -612,7 +653,8 @@ function getLapTimeDisplayValue(source = {}) {
 
 function normalizeLaneStats(source = {}) {
   return {
-    laneFirstRate: firstMeaningfulFiniteValue(
+    laneFirstRate: isPredictionFieldVerified(source, "lane1stScore", "lane1stAvg")
+      ? firstMeaningfulFiniteValue(
       source?.lane1stScore,
       source?.lane1stAvg,
       source?.lane1st_score,
@@ -625,8 +667,10 @@ function normalizeLaneStats(source = {}) {
       source?.lane1stRate,
       source?.lane_first_rate,
       source?.lane_1st_rate
-    ),
-    lane2RenRate: firstMeaningfulFiniteValue(
+    )
+      : null,
+    lane2RenRate: isPredictionFieldVerified(source, "lane2renScore", "lane2renAvg")
+      ? firstMeaningfulFiniteValue(
       source?.lane2renScore,
       source?.lane2renAvg,
       source?.lane2ren_score,
@@ -638,8 +682,10 @@ function normalizeLaneStats(source = {}) {
       source?.lane2renRate_weighted,
       source?.lane2renRate,
       source?.lane_2ren_rate
-    ),
-    lane3RenRate: firstMeaningfulFiniteValue(
+    )
+      : null,
+    lane3RenRate: isPredictionFieldVerified(source, "lane3renScore", "lane3renAvg")
+      ? firstMeaningfulFiniteValue(
       source?.lane3renScore,
       source?.lane3renAvg,
       source?.lane3ren_score,
@@ -652,6 +698,7 @@ function normalizeLaneStats(source = {}) {
       source?.lane3renRate,
       source?.lane_3ren_rate
     )
+      : null
   };
 }
 
@@ -741,16 +788,16 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
       lane_scores_after_reassignment: row?.laneScoreDebug?.afterReassignment || null,
       motor2ren_raw: row?.motor2ren ?? row?.motor2Rate ?? null,
       motor3ren_raw: row?.motor3ren ?? row?.motor3Rate ?? null,
-      lane1stRate: Number.isFinite(Number(row?.lane1stScore ?? row?.lane1stAvg ?? row?.laneFirstRate)),
-      lane2renRate: Number.isFinite(Number(row?.lane2renScore ?? row?.lane2renAvg ?? row?.lane2RenRate)),
-      lane3renRate: Number.isFinite(Number(row?.lane3renScore ?? row?.lane3renAvg ?? row?.lane3RenRate)),
+      lane1stRate: Number.isFinite(Number(getLaneScoreDisplayValue(row, "lane1st"))),
+      lane2renRate: Number.isFinite(Number(getLaneScoreDisplayValue(row, "lane2ren"))),
+      lane3renRate: Number.isFinite(Number(getLaneScoreDisplayValue(row, "lane3ren"))),
       lapTime: Number.isFinite(Number(row?.lapTime)),
       exhibitionST: Number.isFinite(Number(row?.exhibitionSt)),
       display_lapExStretch: formatComparisonValue(row?.lapExStretch ?? row?.lapScore, 2),
       display_motor2ren: formatComparisonValue(row?.motor2ren ?? row?.motor2Rate, 2),
-      display_lane1stRate: formatComparisonValue(row?.lane1stScore ?? row?.lane1stAvg ?? row?.laneFirstRate, 2),
-      display_lane2renRate: formatComparisonValue(row?.lane2renScore ?? row?.lane2renAvg ?? row?.lane2RenRate, 2),
-      display_lane3renRate: formatComparisonValue(row?.lane3renScore ?? row?.lane3renAvg ?? row?.lane3RenRate, 2),
+      display_lane1stRate: formatComparisonValue(getLaneScoreDisplayValue(row, "lane1st"), 2),
+      display_lane2renRate: formatComparisonValue(getLaneScoreDisplayValue(row, "lane2ren"), 2),
+      display_lane3renRate: formatComparisonValue(getLaneScoreDisplayValue(row, "lane3ren"), 2),
       display_motor3ren: formatComparisonValue(row?.motor3ren ?? row?.motor3Rate, 2)
     }))
   };
@@ -1177,7 +1224,7 @@ function getCanonicalEntryDebug(data, startDisplayOverride = null) {
   };
 }
 
-function resolveCanonicalActualLane({ lane, row = {}, snapshotRow = {}, entryDebug = {} }) {
+function resolveCanonicalActualLane({ lane, entryDebug = {} }) {
   const baseLane = Number(lane);
   if (!Number.isInteger(baseLane) || baseLane < 1 || baseLane > 6) {
     return {
