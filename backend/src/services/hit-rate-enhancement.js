@@ -1007,6 +1007,123 @@ function buildUpsetSupport({ laneMap, enhancementBase, scenarioRows, aggregatedF
   };
 }
 
+function buildHardRaceAssessment({
+  boat1Row,
+  venueBias,
+  raceFlow,
+  escapeScore,
+  outerAttackPressure,
+  actualTwoSashiPriority,
+  boat3HeadPriority,
+  actualFourCadoPriority,
+  scenarioRows,
+  upsetSupport
+}) {
+  const selectedScenarioMap = new Map(
+    safeArray(scenarioRows).map((row) => [String(row?.scenario || ""), toNum(row?.probability, 0)])
+  );
+  const actualLane = actualLaneOf(boat1Row);
+  const actualLanePenalty = Math.max(0, actualLane - 1);
+  const entryChanged = !!raceFlow?.entry_changed || actualLanePenalty > 0;
+  const lapSupport = boat1Row?.prediction_data_usage?.lapTime?.used
+    ? clamp(0, 12, Math.max(0, 6.82 - toNum(boat1Row?.motor_form?.lapTime, 6.82)) * 42)
+    : 0;
+  const exStSupport = boat1Row?.prediction_data_usage?.exhibitionST?.used
+    ? clamp(0, 10, Math.max(0, 0.18 - toNum(boat1Row?.exhibition_st, 0.18)) * 90)
+    : 0;
+  const exTimeSupport = Number.isFinite(boat1Row?.ex_time_relative_gap)
+    ? clamp(0, 9, Math.max(0, 0.08 - toNum(boat1Row?.ex_time_relative_gap, 0.08)) * 70)
+    : 0;
+  const motor2Support = boat1Row?.prediction_data_usage?.motor2ren?.used
+    ? clamp(0, 10, Math.max(0, (toNum(boat1Row?.motor_raw?.motor2ren, 0) - 40) / 2.2))
+    : 0;
+  const winProfileSupport = clamp(
+    0,
+    10,
+    Math.max(0, toNum(boat1Row?.national_win_rate, 0) - 5.2) * 1.7 +
+      Math.max(0, toNum(boat1Row?.local_win_rate, 0) - 5.4) * 1.9 +
+      Math.max(0, toNum(boat1Row?.lane_fit_local, 0) - 50) * 0.06
+  );
+  const boat1Positive =
+    18 +
+    escapeScore * 22 +
+    toNum(boat1Row?.boat1_base_first_bonus, 0) * 95 +
+    toNum(boat1Row?.boat1_survival_bonus, 0) * 78 +
+    toNum(venueBias?.venue_inside_finish_bias, 0) * 130 +
+    lapSupport +
+    exStSupport +
+    exTimeSupport +
+    motor2Support +
+    winProfileSupport;
+  const boat1Negative =
+    actualLanePenalty * 13 +
+    toNum(boat1Row?.late_risk, 0) * 36 +
+    toNum(boat1Row?.hidden_F_flag, 0) * 15 +
+    toNum(boat1Row?.recent_L_penalty, 0) * 18 +
+    outerAttackPressure * 20 +
+    actualTwoSashiPriority * 16 +
+    boat3HeadPriority * 14 +
+    actualFourCadoPriority * 16 +
+    toNum(selectedScenarioMap.get("outer_mix_chaos"), 0) * 22;
+  const boat1TrustScore = round(clamp(0, 100, boat1Positive - boat1Negative), 1);
+
+  const positiveFactors = [];
+  const negativeFactors = [];
+  if (toNum(venueBias?.strong_inside_venue, 0) === 1) positiveFactors.push("strong inside venue");
+  if (!entryChanged && actualLane === 1) positiveFactors.push("stable entry");
+  if (outerAttackPressure <= 0.12) positiveFactors.push("weak attack pressure");
+  if (escapeScore >= 0.42) positiveFactors.push("strong boat1 escape");
+  if (boat1Row?.prediction_data_usage?.lapTime?.used && toNum(boat1Row?.motor_form?.lapTime, 9) <= 6.79) positiveFactors.push("strong Lap Time");
+  if (boat1Row?.prediction_data_usage?.motor2ren?.used && toNum(boat1Row?.motor_raw?.motor2ren, 0) >= 50) positiveFactors.push("strong motor");
+
+  if (actualLanePenalty > 0 || entryChanged) negativeFactors.push("course movement risk");
+  if (toNum(boat1Row?.hidden_F_flag, 0) === 1 || toNum(boat1Row?.recent_L_penalty, 0) > 0.04) negativeFactors.push("boat1 F risk");
+  if (actualTwoSashiPriority >= 0.34) negativeFactors.push("strong 2-sashi pressure");
+  if (boat3HeadPriority >= 0.34) negativeFactors.push("strong 3-makuri pressure");
+  if (actualFourCadoPriority >= 0.3) negativeFactors.push("strong 4-cado pressure");
+  if (toNum(selectedScenarioMap.get("outer_mix_chaos"), 0) >= 0.2 || toNum(upsetSupport?.upset_score, 0) >= 0.48) negativeFactors.push("chaos risk");
+  if (outerAttackPressure >= 0.17) negativeFactors.push("outside attack pressure");
+
+  const hardRaceBase =
+    30 +
+    escapeScore * 28 +
+    toNum(boat1Row?.boat1_base_first_bonus, 0) * 92 +
+    toNum(boat1Row?.boat1_survival_bonus, 0) * 75 +
+    toNum(venueBias?.venue_inside_finish_bias, 0) * 135 +
+    toNum(venueBias?.venue_inside_second_third_bias, 0) * 85 +
+    (entryChanged ? 0 : 7) +
+    (actualLane === 1 ? 6 : -actualLanePenalty * 6) +
+    (outerAttackPressure <= 0.12 ? 5 : 0) +
+    (actualTwoSashiPriority <= 0.22 ? 4 : 0) +
+    (boat3HeadPriority <= 0.22 ? 3 : 0) +
+    (actualFourCadoPriority <= 0.2 ? 3 : 0) +
+    lapSupport * 0.75 +
+    motor2Support * 0.6;
+  const hardRacePenalty =
+    toNum(boat1Row?.late_risk, 0) * 32 +
+    toNum(boat1Row?.hidden_F_flag, 0) * 14 +
+    toNum(boat1Row?.recent_L_penalty, 0) * 16 +
+    actualLanePenalty * 12 +
+    outerAttackPressure * 22 +
+    actualTwoSashiPriority * 18 +
+    boat3HeadPriority * 17 +
+    actualFourCadoPriority * 18 +
+    toNum(selectedScenarioMap.get("outer_mix_chaos"), 0) * 24 +
+    toNum(upsetSupport?.upset_score, 0) * 20;
+  const hardRaceScore = round(clamp(0, 100, hardRaceBase - hardRacePenalty), 1);
+
+  return {
+    hard_race_score: hardRaceScore,
+    boat1_trust_score: boat1TrustScore,
+    hard_race_positive_factors: positiveFactors,
+    hard_race_negative_factors: negativeFactors,
+    one_head_fixed_recommended:
+      hardRaceScore >= 75 ? "YES" : hardRaceScore >= 55 ? "BORDERLINE" : "NO",
+    recommended_shape_bias:
+      hardRaceScore >= 75 ? "1-23-234" : hardRaceScore >= 55 ? "1-23-2345" : null
+  };
+}
+
 function buildStylePressure(lane, profile) {
   const style = profile?.style_profile || {};
   const sashi = toNum(style.sashi, 0);
@@ -1596,6 +1713,16 @@ export function buildHitRateEnhancementContext({
       monster_motor_first_bonus: 0,
       lane_fit_local: Number.isFinite(features?.lane_fit_local) ? round(features.lane_fit_local, 2) : null,
       lane_fit_grade: Number.isFinite(features?.lane_fit_grade) ? round(features.lane_fit_grade, 2) : null,
+      national_win_rate: Number.isFinite(features?.national_win_rate)
+        ? round(features.national_win_rate, 2)
+        : Number.isFinite(features?.nationalWinRate)
+          ? round(features.nationalWinRate, 2)
+          : null,
+      local_win_rate: Number.isFinite(features?.local_win_rate)
+        ? round(features.local_win_rate, 2)
+        : Number.isFinite(features?.localWinRate)
+          ? round(features.localWinRate, 2)
+          : null,
       prediction_data_usage: predictionDataUsage,
       lapTime_source: predictionDataUsage.lapTime,
       motor_raw: {
@@ -2136,6 +2263,18 @@ export function buildHitRateEnhancementContext({
     aggregatedFinishProbabilities: treeAggregation.aggregatedFinishProbabilities,
     topExactaCandidates
   });
+  const hardRaceAssessment = buildHardRaceAssessment({
+    boat1Row,
+    venueBias,
+    raceFlow,
+    escapeScore,
+    outerAttackPressure,
+    actualTwoSashiPriority: actualLane2SashiPriority,
+    boat3HeadPriority: boat3HeadPromotionBefore * boat3HeadAlignmentGate,
+    actualFourCadoPriority: actualLane4CadoPriority,
+    scenarioRows: normalizedScenarioProbabilities,
+    upsetSupport
+  });
 
   const darkHorseAlerts = [
     toNum(actualLane4Row?.lane_fit_1st, 0) >= 46 && String(rows.find((row) => toInt(row?.racer?.lane, null) === boatNumberOf(actualLane4Row))?.racer?.class || "") === "B1"
@@ -2377,12 +2516,18 @@ export function buildHitRateEnhancementContext({
     stage5_ticketing: {
       selected_ticket_shape: null,
       shape_reason: null,
+      one_head_fixed_assessment: hardRaceAssessment,
       finish_probabilities_by_scenario: treeAggregation.finishProbabilitiesByScenario,
       aggregated_finish_probabilities: treeAggregation.aggregatedFinishProbabilities,
       order_probabilities: treeAggregation.orderProbabilities,
       top_exacta_candidates: topExactaCandidates,
       upset_support: upsetSupport
     },
+    hard_race_score: hardRaceAssessment.hard_race_score,
+    boat1_trust_score: hardRaceAssessment.boat1_trust_score,
+    hard_race_positive_factors: hardRaceAssessment.hard_race_positive_factors,
+    hard_race_negative_factors: hardRaceAssessment.hard_race_negative_factors,
+    one_head_fixed_recommended: hardRaceAssessment.one_head_fixed_recommended,
     confidence: toNum(confidence, 0),
     by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row])),
     dark_horse_alerts: darkHorseAlerts,
@@ -2581,6 +2726,15 @@ export function buildEnhancedTrifectaShapeRecommendation({
   const lane3SurvivalFlag = !!enhancement?.stage4_opponents?.head4_partner_debug?.lane3_survival_flag;
   const lane2FlowInFlag = !!enhancement?.stage4_opponents?.head4_partner_debug?.lane2_flow_in_flag;
   const topExacta = safeArray(enhancement?.topExactaCandidates || enhancement?.stage5_ticketing?.top_exacta_candidates);
+  const hardRaceScore = toNum(
+    enhancement?.hard_race_score ?? enhancement?.stage5_ticketing?.one_head_fixed_assessment?.hard_race_score,
+    0
+  );
+  const oneHeadFixedRecommended = String(
+    enhancement?.one_head_fixed_recommended ?? enhancement?.stage5_ticketing?.one_head_fixed_assessment?.one_head_fixed_recommended ?? ""
+  ).toUpperCase();
+  const oneHeadBias =
+    oneHeadFixedRecommended === "YES" ? 0.16 : oneHeadFixedRecommended === "BORDERLINE" ? 0.06 : -0.08;
 
   const templates = [];
   if (topFirst.lane === 1) {
@@ -2595,7 +2749,15 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: secondLanes,
       third: [...new Set([...secondLanes, ...thirdLanes])],
       why: "boat1 escape with concentrated partners",
-      score: 0.78 + escapeScore * 0.42 + firstDominance * 0.32 + secondConcentration * 0.14 + thirdConcentration * 0.1
+      score: 0.78 + escapeScore * 0.42 + firstDominance * 0.32 + secondConcentration * 0.14 + thirdConcentration * 0.1 + oneHeadBias
+    });
+    templates.push({
+      shape: "1-23-234",
+      first: [1],
+      second: [2, 3],
+      third: [2, 3, 4],
+      why: "conservative 1-head fixed shape for hard race",
+      score: 0.7 + escapeScore * 0.36 + Math.max(0, hardRaceScore - 55) * 0.006 + firstDominance * 0.16 + oneHeadBias
     });
     templates.push({
       shape: "1-23-2345",
@@ -2603,7 +2765,7 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: pickTopLanes(secondRows, 2, [1]),
       third: pickTopLanes(thirdRows, 4, [1]),
       why: "practical 1-fixed spread for stable inside race",
-      score: 0.74 + escapeScore * 0.38 + Math.max(0, 0.28 - chaosProb) * 0.16
+      score: 0.74 + escapeScore * 0.38 + Math.max(0, 0.28 - chaosProb) * 0.16 + oneHeadBias
     });
     templates.push({
       shape: "1-234-234",
@@ -2611,7 +2773,7 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: secondLanesWide,
       third: pickTopLanes(thirdRows, 3, [1]),
       why: "practical 1-fixed 6-ticket class shape",
-      score: 0.73 + escapeScore * 0.34 + Math.max(0, firstDominance) * 0.18
+      score: 0.73 + escapeScore * 0.34 + Math.max(0, firstDominance) * 0.18 + oneHeadBias * 0.9
     });
     if (secondLanes.includes(3)) {
       templates.push({
@@ -2782,8 +2944,9 @@ export function buildEnhancedTrifectaShapeRecommendation({
     reason_tags: [
       "HIT_RATE_ENHANCED_SHAPE",
       topFirst.lane === 1 ? "INSIDE_FIRST_REALISM" : "CONTROLLED_COUNTER",
+      oneHeadFixedRecommended ? `ONE_HEAD_FIXED_${oneHeadFixedRecommended}` : null,
       chosen.why
-    ],
+    ].filter(Boolean),
     why_shape_chosen: chosen.why,
     concentration_metrics: {
       first_place_dominance: round(firstDominance, 4),
