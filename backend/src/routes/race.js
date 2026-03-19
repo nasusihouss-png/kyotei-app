@@ -2104,6 +2104,32 @@ function buildCanonicalEntryOrderMeta(racers, actualEntrySource = null) {
   };
 }
 
+function summarizeSupplementalFieldUsage(snapshotPlayers = []) {
+  const rows = Array.isArray(snapshotPlayers) ? snapshotPlayers : [];
+  const fieldChecks = {
+    lap_time: (row) => toNullableNum(row?.kyoteibiyori_lap_time ?? row?.lap_time) !== null,
+    exhibition_st: (row) => toNullableNum(row?.exhibition_st) !== null,
+    exhibition_time: (row) => toNullableNum(row?.exhibition_time) !== null,
+    motor2ren: (row) => toNullableNum(row?.motor_2rate) !== null,
+    motor3ren: (row) => toNullableNum(row?.motor_3rate) !== null,
+    lane_fit_1st: (row) => toNullableNum(row?.lane1st_score_after_reassignment) !== null,
+    lane_fit_2ren: (row) => toNullableNum(row?.lane2ren_score_after_reassignment) !== null,
+    lane_fit_3ren: (row) => toNullableNum(row?.lane3ren_score_after_reassignment) !== null
+  };
+
+  const usable = [];
+  const skipped = [];
+  for (const [field, check] of Object.entries(fieldChecks)) {
+    if (rows.some((row) => check(row))) usable.push(field);
+    else skipped.push(field);
+  }
+
+  return {
+    usable,
+    skipped
+  };
+}
+
 function applyEntryChangeToDecision(raceDecision, entryMeta) {
   const meta = entryMeta || {};
   const original = raceDecision || {};
@@ -10254,8 +10280,14 @@ raceRouter.get("/race", async (req, res, next) => {
     const rankingFeatureByLane = new Map(
       ranking.map((row) => [toInt(row?.racer?.lane, null), row?.features || {}]).filter((row) => Number.isInteger(row[0]))
     );
+    const canonicalPerBoatLaneMap =
+      entryMeta?.per_boat_lane_map && typeof entryMeta.per_boat_lane_map === "object"
+        ? entryMeta.per_boat_lane_map
+        : {};
     const snapshotPlayers = safeArray(data?.racers).map((racer) => {
       const lane = toInt(racer?.lane, null);
+      const canonicalLaneMeta = canonicalPerBoatLaneMap[String(lane)] || null;
+      const canonicalActualLane = toInt(canonicalLaneMeta?.actual_lane, lane);
       const laneFeatures = rankingFeatureByLane.get(lane) || {};
       const contributionComponents = buildFeatureContributionComponents({ features: laneFeatures });
       return {
@@ -10281,8 +10313,8 @@ raceRouter.get("/race", async (req, res, next) => {
           : {}),
         lane,
         original_lane: lane,
-        actual_lane: toInt(racer?.entryCourse, lane),
-        course_change_occurred: toInt(racer?.entryCourse, lane) !== lane ? 1 : 0,
+        actual_lane: canonicalActualLane,
+        course_change_occurred: canonicalActualLane !== lane ? 1 : 0,
         registration_no: toInt(racer?.registrationNo, null),
         name: racer?.name || null,
         class: racer?.class || null,
@@ -10318,7 +10350,7 @@ raceRouter.get("/race", async (req, res, next) => {
         kyoteibiyori_lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore),
         kyoteibiyori_stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel || null,
         kyoteibiyori_exhibition_st: toNullableNum(racer?.kyoteiBiyoriExhibitionSt),
-        entry_course: toInt(racer?.entryCourse, null),
+        entry_course: canonicalActualLane,
         tilt: toNullableNum(racer?.tilt),
         lane1st_score: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.laneFirstRate),
         lane2ren_score: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
@@ -10349,6 +10381,7 @@ raceRouter.get("/race", async (req, res, next) => {
         toInt(row?.feature_snapshot?.fetched_signal_score_breakdown?.final_rank, null),
       changed_second_place_ranking: false
     }));
+    const supplementalFieldUsage = summarizeSupplementalFieldUsage(snapshotPlayers);
     const snapshotContext = {
       race_key: raceId,
       race_date: data?.race?.date || null,
@@ -10379,17 +10412,25 @@ raceRouter.get("/race", async (req, res, next) => {
       entry: {
         predicted_entry_order: entryMeta.predicted_entry_order,
         actual_entry_order: entryMeta.actual_entry_order,
+        actual_lane_map: entryMeta.actual_lane_map,
+        per_boat_lane_map: entryMeta.per_boat_lane_map,
         start_exhibition_st: startDisplay?.start_display_st || {},
         start_display_order: startDisplay?.start_display_order || [],
         start_display_timing: startDisplay?.start_display_timing || {},
         entry_changed: !!entryMeta.entry_changed,
         entry_change_type: entryMeta.entry_change_type || "none",
+        validation: entryMeta.validation,
+        fallback_used: !!entryMeta.fallback_used,
+        fallback_reason: entryMeta.fallback_reason || null,
+        raw_actual_entry_source_text: entryMeta.raw_actual_entry_source_text || null,
         entry_change_summary: {
           changed: !!entryMeta.entry_changed,
           type: entryMeta.entry_change_type || "none",
           predicted: entryMeta.predicted_entry_order || [],
           actual: entryMeta.actual_entry_order || []
-        }
+        },
+        supplemental_fields_usable: supplementalFieldUsage.usable,
+        supplemental_fields_skipped: supplementalFieldUsage.skipped
       },
       start_display: startDisplay || null,
       manual_lap_evaluation: manualLapEvaluation || null,
@@ -10975,12 +11016,10 @@ raceRouter.get("/race", async (req, res, next) => {
           layer1_raw_fetch: (Array.isArray(data?.racers) ? data.racers : [])
             .map((r) => ({
               boat_no: toInt(r?.lane, null),
-              raw_entry_order: toInt(r?.startRaw?.fallbackEntryCourse ?? r?.entryCourse, null),
+              raw_entry_order: toInt(r?.startRaw?.authoritativeRawEntryCourse, null),
               raw_st_string: r?.startRaw?.fallbackRawSt ?? r?.startRaw?.rawSt ?? r?.exhibitionStRaw ?? null,
               source_block:
-                r?.startRaw?.fallbackRawSt != null
-                  ? "start_exhibition_block(.table1_boatImage1)"
-                  : "beforeinfo_table(table.is-w748)",
+                "official_beforeinfo_entry_course",
               raw_beforeinfo_st: r?.startRaw?.rawSt ?? null,
               raw_start_exhibition_st: r?.startRaw?.fallbackRawSt ?? null
             }))
@@ -10988,7 +11027,7 @@ raceRouter.get("/race", async (req, res, next) => {
           layer2_normalized_by_boat: (Array.isArray(data?.racers) ? data.racers : [])
             .map((r) => ({
               boat_no: toInt(r?.lane, null),
-              normalized_entry_order: toInt(r?.entryCourse, null),
+              normalized_entry_order: toInt(entryMeta?.actual_lane_map?.[String(toInt(r?.lane, null))], toInt(r?.lane, null)),
               normalized_st_raw: r?.exhibitionStRaw ?? null,
               normalized_st_type: r?.exhibitionStType ?? "missing",
               normalized_st_numeric: toNullableNum(r?.exhibitionStNumeric)
@@ -11022,6 +11061,23 @@ raceRouter.get("/race", async (req, res, next) => {
       scenarioSuggestions && typeof scenarioSuggestions === "object"
         ? scenarioSuggestions
         : {};
+    const compactEntryDebug = {
+      authoritative_source: entryMeta.authoritative_source,
+      raw_actual_entry_source_text: entryMeta.raw_actual_entry_source_text,
+      parsed_actual_entry_order: Array.isArray(data?.source?.actual_entry?.parsed_actual_entry_order)
+        ? data.source.actual_entry.parsed_actual_entry_order
+        : entryMeta.actual_entry_order,
+      actual_lane_map:
+        data?.source?.actual_entry?.actual_lane_map && typeof data.source.actual_entry.actual_lane_map === "object"
+          ? data.source.actual_entry.actual_lane_map
+          : entryMeta.actual_lane_map,
+      validation_passed: entryMeta?.validation?.validation_ok === true,
+      fallback_used: !!entryMeta.fallback_used,
+      fallback_reason: entryMeta.fallback_reason || null,
+      per_boat_lanes: entryMeta.per_boat_lane_map,
+      supplemental_fields_usable: supplementalFieldUsage.usable,
+      supplemental_fields_skipped: supplementalFieldUsage.skipped
+    };
     const safeRecommendedShape = shapeRecommendation?.selected_shape
       ? {
           shape: shapeRecommendation.selected_shape,
@@ -11139,6 +11195,7 @@ raceRouter.get("/race", async (req, res, next) => {
       actual_entry_authoritative_source: entryMeta.authoritative_source,
       raw_actual_entry_source_text: entryMeta.raw_actual_entry_source_text,
       per_boat_lane_map: entryMeta.per_boat_lane_map,
+      entry_debug: compactEntryDebug,
       startSignalAnalysis: startSignals,
       recommendation_score,
       scenarioSuggestions: safeScenarioSuggestions,

@@ -1128,6 +1128,78 @@ function compactTicketRows(rows = [], limit = 6) {
   return (Array.isArray(rows) ? rows : []).slice(0, limit);
 }
 
+function getCanonicalEntryDebug(data, startDisplayOverride = null) {
+  const startDisplay =
+    startDisplayOverride && typeof startDisplayOverride === "object"
+      ? startDisplayOverride
+      : data?.startDisplay && typeof data.startDisplay === "object"
+        ? data.startDisplay
+        : {};
+  const startMeta =
+    startDisplay?.start_display_entry_meta && typeof startDisplay.start_display_entry_meta === "object"
+      ? startDisplay.start_display_entry_meta
+      : {};
+  const validation =
+    startMeta?.validation && typeof startMeta.validation === "object"
+      ? startMeta.validation
+      : data?.entry_validation && typeof data.entry_validation === "object"
+        ? data.entry_validation
+        : {};
+  const actualEntryOrder = Array.isArray(startMeta?.actual_entry_order)
+    ? startMeta.actual_entry_order
+    : Array.isArray(data?.actual_entry_order)
+      ? data.actual_entry_order
+      : [];
+  const actualLaneMap =
+    startMeta?.actual_lane_map && typeof startMeta.actual_lane_map === "object"
+      ? startMeta.actual_lane_map
+      : data?.actual_lane_map && typeof data.actual_lane_map === "object"
+        ? data.actual_lane_map
+        : {};
+  const perBoatLaneMap =
+    startMeta?.per_boat_lane_map && typeof startMeta.per_boat_lane_map === "object"
+      ? startMeta.per_boat_lane_map
+      : data?.per_boat_lane_map && typeof data.per_boat_lane_map === "object"
+        ? data.per_boat_lane_map
+        : {};
+  const fallbackUsed = startMeta?.fallback_used === true || data?.entry_fallback_used === true;
+  return {
+    authoritativeSource: startMeta?.authoritative_source || data?.actual_entry_authoritative_source || null,
+    rawActualEntrySourceText: startMeta?.raw_actual_entry_source_text || data?.raw_actual_entry_source_text || null,
+    actualEntryOrder,
+    actualLaneMap,
+    perBoatLaneMap,
+    validation,
+    validationPassed: validation?.validation_ok === true,
+    fallbackUsed,
+    fallbackReason: startMeta?.fallback_reason || data?.entry_fallback_reason || null,
+    confirmedActualEntry: validation?.validation_ok === true && fallbackUsed !== true
+  };
+}
+
+function resolveCanonicalActualLane({ lane, row = {}, snapshotRow = {}, entryDebug = {} }) {
+  const baseLane = Number(lane);
+  if (!Number.isInteger(baseLane) || baseLane < 1 || baseLane > 6) {
+    return {
+      actualLane: null,
+      courseChanged: false,
+      actualLaneConfirmed: false
+    };
+  }
+
+  const perBoat = entryDebug?.perBoatLaneMap?.[String(baseLane)] || null;
+  const mappedLane = Number(perBoat?.actual_lane ?? entryDebug?.actualLaneMap?.[String(baseLane)]);
+  const actualLane = entryDebug?.confirmedActualEntry
+    ? (Number.isInteger(mappedLane) && mappedLane >= 1 && mappedLane <= 6 ? mappedLane : baseLane)
+    : baseLane;
+
+  return {
+    actualLane,
+    courseChanged: entryDebug?.confirmedActualEntry ? actualLane !== baseLane : false,
+    actualLaneConfirmed: entryDebug?.confirmedActualEntry
+  };
+}
+
 function normalizeProbValue(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
@@ -1617,6 +1689,7 @@ function getPlayerComparisonRows({ prediction, data }) {
     prediction?.snapshot_context && typeof prediction.snapshot_context === "object"
       ? prediction.snapshot_context
       : {};
+  const entryDebug = getCanonicalEntryDebug(data, data?.startDisplay);
   const snapshotPlayers = Array.isArray(snapshotContext?.players) ? snapshotContext.players : [];
   const debugLaneRows = Array.isArray(data?.kyoteibiyori_debug?.lane_rows) ? data.kyoteibiyori_debug.lane_rows : [];
   const snapshotByLane = new Map(
@@ -1636,6 +1709,7 @@ function getPlayerComparisonRows({ prediction, data }) {
         const lane = Number(row?.lane || 0);
         const snapshotRow = snapshotByLane.get(lane) || {};
         const debugRow = debugByLane.get(lane) || {};
+        const laneResolution = resolveCanonicalActualLane({ lane, row, snapshotRow, entryDebug });
         const debugLaneStats = normalizeLaneStats(debugRow);
         const liveLaneStats = normalizeLaneStats(row);
         const snapshotLaneStats = normalizeLaneStats(snapshotRow);
@@ -1704,8 +1778,9 @@ function getPlayerComparisonRows({ prediction, data }) {
         return {
           lane,
           boatNumber: lane,
-          actualLane: Number(row?.entryCourse ?? snapshotRow?.entry_course ?? lane) || lane,
-          courseChanged: Number(row?.entryCourse ?? snapshotRow?.entry_course ?? lane) !== lane,
+          actualLane: laneResolution.actualLane,
+          courseChanged: laneResolution.courseChanged,
+          actualLaneConfirmed: laneResolution.actualLaneConfirmed,
           name: row?.name || snapshotRow?.name || `Boat ${lane || "-"}`,
           fCount: row?.fHoldCount === null || row?.fHoldCount === undefined
             ? (snapshotRow?.f_hold_count === null || snapshotRow?.f_hold_count === undefined ? null : Number(snapshotRow.f_hold_count))
@@ -1738,56 +1813,63 @@ function getPlayerComparisonRows({ prediction, data }) {
           laneScoreDebug: {
             beforeReassignment: beforeReassignmentLaneScores,
             afterReassignment: reassignedLaneScores,
-            actualLane: Number(row?.entryCourse ?? snapshotRow?.entry_course ?? lane) || lane,
-            courseChanged: Number(row?.entryCourse ?? snapshotRow?.entry_course ?? lane) !== lane
+            actualLane: laneResolution.actualLane,
+            courseChanged: laneResolution.courseChanged,
+            actualLaneConfirmed: laneResolution.actualLaneConfirmed
           }
         };
       })
       .sort((a, b) => (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber));
   }
   return snapshotPlayers
-    .map((row) => ({
-      lane: Number(row?.lane || 0),
-      boatNumber: Number(row?.lane || 0),
-      actualLane: Number(row?.entry_course || row?.lane || 0),
-      courseChanged: Number(row?.entry_course || row?.lane || 0) !== Number(row?.lane || 0),
-      name: row?.name || `Boat ${row?.lane || "-"}`,
-      fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
-      kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched) === 1,
-      lapTime: getLapTimeDisplayValue(row),
-      exhibitionSt: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_st ?? row?.exhibition_st),
-      exhibitionTime: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_time ?? row?.exhibition_time),
-      lapExStretch: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
-      lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
-      stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
-      motor2ren: toFiniteComparisonNumber(row?.motor_2rate),
-      motor3ren: toFiniteComparisonNumber(row?.motor_3rate),
-      motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
-      motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
-      lane1stScore: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
-      lane2renScore: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
-      lane3renScore: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
-      lane1stAvg: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
-      lane2renAvg: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
-      lane3renAvg: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
-      laneFirstRate: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
-      lane2RenRate: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
-      lane3RenRate: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
-      laneScoreDebug: {
-        beforeReassignment: {
-          lane1st: firstMeaningfulFiniteValue(row?.lane1st_score_before_reassignment, row?.lane1st_score, normalizeLaneStats(row).laneFirstRate),
-          lane2ren: firstMeaningfulFiniteValue(row?.lane2ren_score_before_reassignment, row?.lane2ren_score, normalizeLaneStats(row).lane2RenRate),
-          lane3ren: firstMeaningfulFiniteValue(row?.lane3ren_score_before_reassignment, row?.lane3ren_score, normalizeLaneStats(row).lane3RenRate)
-        },
-        afterReassignment: {
-          lane1st: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st),
-          lane2ren: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren),
-          lane3ren: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren)
-        },
-        actualLane: Number(row?.entry_course || row?.lane || 0),
-        courseChanged: Number(row?.entry_course || row?.lane || 0) !== Number(row?.lane || 0)
-      }
-    }))
+    .map((row) => {
+      const lane = Number(row?.lane || 0);
+      const laneResolution = resolveCanonicalActualLane({ lane, snapshotRow: row, entryDebug });
+      return {
+        lane,
+        boatNumber: lane,
+        actualLane: laneResolution.actualLane,
+        courseChanged: laneResolution.courseChanged,
+        actualLaneConfirmed: laneResolution.actualLaneConfirmed,
+        name: row?.name || `Boat ${row?.lane || "-"}`,
+        fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
+        kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched) === 1,
+        lapTime: getLapTimeDisplayValue(row),
+        exhibitionSt: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_st ?? row?.exhibition_st),
+        exhibitionTime: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_time ?? row?.exhibition_time),
+        lapExStretch: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
+        lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
+        stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
+        motor2ren: toFiniteComparisonNumber(row?.motor_2rate),
+        motor3ren: toFiniteComparisonNumber(row?.motor_3rate),
+        motor2Rate: toFiniteComparisonNumber(row?.motor_2rate),
+        motor3Rate: toFiniteComparisonNumber(row?.motor_3rate),
+        lane1stScore: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+        lane2renScore: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+        lane3renScore: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
+        lane1stAvg: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+        lane2renAvg: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+        lane3renAvg: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
+        laneFirstRate: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st, normalizeLaneStats(row).laneFirstRate),
+        lane2RenRate: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren, normalizeLaneStats(row).lane2RenRate),
+        lane3RenRate: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren, normalizeLaneStats(row).lane3RenRate),
+        laneScoreDebug: {
+          beforeReassignment: {
+            lane1st: firstMeaningfulFiniteValue(row?.lane1st_score_before_reassignment, row?.lane1st_score, normalizeLaneStats(row).laneFirstRate),
+            lane2ren: firstMeaningfulFiniteValue(row?.lane2ren_score_before_reassignment, row?.lane2ren_score, normalizeLaneStats(row).lane2RenRate),
+            lane3ren: firstMeaningfulFiniteValue(row?.lane3ren_score_before_reassignment, row?.lane3ren_score, normalizeLaneStats(row).lane3RenRate)
+          },
+          afterReassignment: {
+            lane1st: firstMeaningfulFiniteValue(row?.lane1st_score_after_reassignment, row?.feature_snapshot?.lane_fit_1st),
+            lane2ren: firstMeaningfulFiniteValue(row?.lane2ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_2ren),
+            lane3ren: firstMeaningfulFiniteValue(row?.lane3ren_score_after_reassignment, row?.feature_snapshot?.lane_fit_3ren)
+          },
+          actualLane: laneResolution.actualLane,
+          courseChanged: laneResolution.courseChanged,
+          actualLaneConfirmed: laneResolution.actualLaneConfirmed
+        }
+      };
+    })
     .sort((a, b) => (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber));
 }
 
@@ -2270,6 +2352,7 @@ export default function App() {
   const race = data?.race || {};
   const sourceMeta = data?.source || {};
   const startDisplay = data?.startDisplay || null;
+  const entryPipelineDebug = useMemo(() => getCanonicalEntryDebug(data, startDisplay), [data, startDisplay]);
   const prediction = data?.prediction || {};
   const racers = Array.isArray(data?.racers) ? data.racers : [];
   const predictedEntryOrder = Array.isArray(data?.predicted_entry_order)
@@ -2282,6 +2365,7 @@ export default function App() {
     : Array.isArray(prediction?.actual_entry_order)
       ? prediction.actual_entry_order
       : [];
+  const displayActualEntryOrder = entryPipelineDebug.confirmedActualEntry ? actualEntryOrder : predictedEntryOrder;
   const entryChanged = typeof data?.entry_changed === "boolean"
     ? data.entry_changed
     : predictedEntryOrder.length > 0 &&
@@ -2660,6 +2744,18 @@ export default function App() {
     () => getPlayerComparisonRows({ prediction, data }),
     [prediction, data]
   );
+  const entrySupplementalDebug = useMemo(() => {
+    const fieldChecks = [
+      ["lap_time", (row) => Number.isFinite(Number(row?.lapTime))],
+      ["exhibition_st", (row) => Number.isFinite(Number(row?.exhibitionSt))],
+      ["exhibition_time", (row) => Number.isFinite(Number(row?.exhibitionTime))],
+      ["motor2ren", (row) => Number.isFinite(Number(row?.motor2ren ?? row?.motor2Rate))],
+      ["motor3ren", (row) => Number.isFinite(Number(row?.motor3ren ?? row?.motor3Rate))]
+    ];
+    const usable = fieldChecks.filter(([, check]) => playerComparisonRows.some((row) => check(row))).map(([field]) => field);
+    const skipped = fieldChecks.filter(([, check]) => !playerComparisonRows.some((row) => check(row))).map(([field]) => field);
+    return { usable, skipped };
+  }, [playerComparisonRows]);
   const playerMetricLeaders = useMemo(() => ({
     lapTime: buildTopMetricLaneSet(playerComparisonRows, "lapTime", "asc"),
     exhibitionSt: buildTopMetricLaneSet(playerComparisonRows, "exhibitionSt", "asc"),
@@ -4125,7 +4221,11 @@ export default function App() {
                               <td>
                                 <div className="player-name-cell">
                                   <strong>{row?.name || "-"}</strong>
-                                  {row?.courseChanged ? <div className="muted">Moved from boat {row?.boatNumber} to entry {row?.actualLane}</div> : null}
+                                  {row?.actualLaneConfirmed
+                                    ? row?.courseChanged
+                                      ? <div className="muted">Moved from boat {row?.boatNumber} to entry {row?.actualLane}</div>
+                                      : <div className="muted">No course change</div>
+                                    : <div className="muted">Actual entry not confirmed. Using base/predicted order</div>}
                                 </div>
                               </td>
                               <td>
@@ -4161,27 +4261,45 @@ export default function App() {
                     </div>
                   </div>
                   <div className="kv-list" style={{ marginBottom: 12 }}>
-                    <div className="kv-row"><span>Actual entry flow</span><strong><LanePills lanes={actualEntryOrder} /></strong></div>
+                    <div className="kv-row"><span>Actual entry flow</span><strong><LanePills lanes={displayActualEntryOrder} /></strong></div>
                     <div className="kv-row"><span>Base / predicted order</span><strong><LanePills lanes={predictedEntryOrder} /></strong></div>
-                    <div className="kv-row"><span>Course movement</span><strong>{entryChanged ? "reordered by actual entry" : "none"}</strong></div>
+                    <div className="kv-row"><span>Course movement</span><strong>{entryPipelineDebug.confirmedActualEntry ? (entryChanged ? "reordered by actual entry" : "none") : "fallback to base/predicted order"}</strong></div>
                   </div>
                   <StartExhibitionDisplay startDisplay={startDisplay} />
                   <div className="kv-list" style={{ marginTop: 12 }}>
                     <div className="kv-row"><span>Predicted entry</span><strong><LanePills lanes={predictedEntryOrder} /></strong></div>
-                    <div className="kv-row"><span>Actual entry</span><strong><LanePills lanes={actualEntryOrder} /></strong></div>
-                    <div className="kv-row"><span>Entry change</span><strong>{entryChanged ? "changed" : "none"}</strong></div>
+                    <div className="kv-row"><span>Actual entry</span><strong><LanePills lanes={displayActualEntryOrder} /></strong></div>
+                    <div className="kv-row"><span>Entry change</span><strong>{entryPipelineDebug.confirmedActualEntry ? (entryChanged ? "changed" : "none") : "fallback"}</strong></div>
                     <div className="kv-row"><span>Formation</span><strong>{formationPatternLabel || "-"}</strong></div>
                     <div className="kv-row"><span>Attack scenario</span><strong>{attackScenarioLabel || "-"}</strong></div>
                   </div>
+                  <div className="kv-list" style={{ marginTop: 12 }}>
+                    <div className="kv-row"><span>Entry source</span><strong>{entryPipelineDebug.authoritativeSource || "--"}</strong></div>
+                    <div className="kv-row"><span>Validation</span><strong>{entryPipelineDebug.validationPassed ? "passed" : "failed"}</strong></div>
+                    <div className="kv-row"><span>Fallback</span><strong>{entryPipelineDebug.fallbackUsed ? (entryPipelineDebug.fallbackReason || "used") : "not used"}</strong></div>
+                    <div className="kv-row"><span>Source text</span><strong><code>{formatDebugRawValue(entryPipelineDebug.rawActualEntrySourceText)}</code></strong></div>
+                    <div className="kv-row"><span>Usable fields</span><strong>{entrySupplementalDebug.usable.length ? entrySupplementalDebug.usable.join(", ") : "--"}</strong></div>
+                    <div className="kv-row"><span>Skipped fields</span><strong>{entrySupplementalDebug.skipped.length ? entrySupplementalDebug.skipped.join(", ") : "--"}</strong></div>
+                  </div>
                   <p className="muted strategy-line">
-                    {data?.source?.kyotei_biyori?.ok
-                      ? "official pre-race + kyoteibiyori merged; rows above follow actual entry when course movement occurs"
-                      : sourceMeta?.cache?.fallback === "db_snapshot"
+                    {entryPipelineDebug.confirmedActualEntry
+                      ? data?.source?.kyotei_biyori?.ok
+                        ? "official pre-race + kyoteibiyori merged; rows above follow validated actual entry"
+                        : "official pre-race info; rows above follow validated actual entry"
+                      : data?.source?.kyotei_biyori?.ok
+                        ? "actual entry validation failed, so UI stays on base/predicted order while supplemental data remains attached to each boat"
+                        : "actual entry validation failed, so UI stays on base/predicted order"
+                    }
+                  </p>
+                  {!data?.source?.kyotei_biyori?.ok ? (
+                    <p className="muted strategy-line">
+                      {sourceMeta?.cache?.fallback === "db_snapshot"
                         ? "official fetch unavailable; using saved snapshot"
                         : sourceMeta?.cache?.hit
                           ? "official pre-race from backend cache"
                           : "official pre-race info"}
-                  </p>
+                    </p>
+                  ) : null}
                 </section>
                 </RenderGuard>
 
