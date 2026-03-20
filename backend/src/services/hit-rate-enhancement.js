@@ -194,6 +194,113 @@ function buildMonsterMotorProfile(row) {
   };
 }
 
+function buildRacingStyleProfile(row) {
+  const styleProfile = row?.style_profile || {};
+  const sashi = toNum(styleProfile?.sashi, 0) / 100;
+  const makuri = toNum(styleProfile?.makuri, 0) / 100;
+  const makuriSashi = toNum(styleProfile?.makuri_sashi, 0) / 100;
+  const ranking = [
+    { key: "sashi", value: sashi },
+    { key: "makuri", value: makuri },
+    { key: "makuri_sashi", value: makuriSashi }
+  ].sort((a, b) => b.value - a.value);
+  const top = ranking[0] || { key: "balanced", value: 0 };
+  const second = ranking[1] || { key: "balanced", value: 0 };
+  const style =
+    top.value >= 0.48 || (top.value >= 0.4 && top.value - second.value >= 0.08)
+      ? top.key
+      : "balanced";
+  return {
+    style,
+    style_rates: {
+      sashi: round(sashi, 4),
+      makuri: round(makuri, 4),
+      makuri_sashi: round(makuriSashi, 4)
+    }
+  };
+}
+
+function buildCapabilityProfile(row, actualLaneMap) {
+  const style = String(row?.style || "balanced");
+  const actualLane = actualLaneOf(row);
+  const startEdge = toNum(row?.start_edge, 0);
+  const motor = clamp(0, 1, toNum(row?.motor_true, 0) / 100);
+  const exhibitionStNorm = Number.isFinite(row?.exhibition_st)
+    ? clamp(0, 1, (0.19 - toNum(row?.exhibition_st, 0.19)) / 0.08)
+    : 0.45;
+  const lapNorm = row?.prediction_data_usage?.lapTime?.used
+    ? clamp(0, 1, Math.max(0, 6.88 - toNum(row?.motor_form?.lapTime, 6.88)) / 0.16)
+    : 0.4;
+  const exTimeNorm = Number.isFinite(row?.ex_time_relative_gap)
+    ? clamp(0, 1, Math.max(0, 0.1 - toNum(row?.ex_time_relative_gap, 0.1)) / 0.1)
+    : 0.4;
+  const turningNorm = Number.isFinite(row?.turning_ability)
+    ? clamp(0, 1, (toNum(row?.turning_ability, 4.8) - 4.6) / 1.4)
+    : clamp(0, 1, Math.max(0, toNum(row?.finish_role_bonuses?.turningAbilityDelta, 0)) * 4.2);
+  const motorRaw = row?.prediction_data_usage?.motor2ren?.used ? clamp(0, 1, toNum(row?.motor_raw?.motor2ren, 0) / 100) : motor;
+  const styleMakuriBonus = style === "makuri" ? 0.12 : style === "makuri_sashi" ? 0.08 : 0;
+  const styleSashiBonus = style === "sashi" ? 0.12 : style === "makuri_sashi" ? 0.08 : 0;
+  const attackCapability = clamp(
+    0,
+    1,
+    clamp(0, 1, (startEdge + 0.03) / 0.13) * 0.42 +
+      exhibitionStNorm * 0.16 +
+      motorRaw * 0.2 +
+      motor * 0.12 +
+      styleMakuriBonus +
+      toNum(row?.monster_motor_attack_support, 0) * 0.42
+  );
+  const turnEfficiency = clamp(
+    0,
+    1,
+    turningNorm * 0.42 +
+      lapNorm * 0.26 +
+      Math.max(0, toNum(row?.finish_role_bonuses?.turningAbilityDelta, 0)) * 0.12 +
+      styleSashiBonus
+  );
+  const recoveryPower = clamp(
+    0,
+    1,
+    lapNorm * 0.32 +
+      exTimeNorm * 0.28 +
+      motorRaw * 0.2 +
+      motor * 0.12 +
+      Math.max(0, toNum(row?.finish_role_bonuses?.straightLineDelta, 0)) * 0.12
+  );
+  const neighborEdges = [actualLane - 1, actualLane + 1]
+    .map((lane) => actualLaneMap.get(lane)?.start_edge)
+    .filter((value) => Number.isFinite(value));
+  const neighborAvgStart = average(neighborEdges);
+  const slowStVsNeighbors = Number.isFinite(neighborAvgStart) ? startEdge <= neighborAvgStart - 0.015 : startEdge <= 0;
+  const fastSt = startEdge >= 0.04;
+  const secondAdjustment =
+    slowStVsNeighbors && (style === "sashi" || style === "makuri_sashi") && turnEfficiency >= 0.58
+      ? clamp(0, 0.12, 0.04 + turnEfficiency * 0.09 + (style === "sashi" ? 0.012 : 0))
+      : 0;
+  const thirdAdjustment =
+    slowStVsNeighbors && recoveryPower >= 0.56
+      ? clamp(0, 0.1, 0.026 + recoveryPower * 0.08 + (actualLane >= 4 ? 0.01 : 0))
+      : 0;
+  const failureRisk =
+    fastSt && style === "makuri" && motorRaw < 0.5
+      ? clamp(0, 0.12, 0.03 + (0.5 - motorRaw) * 0.12 + attackCapability * 0.04)
+      : 0;
+
+  return {
+    style,
+    attack_capability: round(attackCapability, 4),
+    turn_efficiency: round(turnEfficiency, 4),
+    recovery_power: round(recoveryPower, 4),
+    st_vs_result_adjustment: {
+      second: round(secondAdjustment, 4),
+      third: round(thirdAdjustment, 4),
+      failure_risk: round(failureRisk, 4),
+      slow_st_vs_neighbors: slowStVsNeighbors ? 1 : 0,
+      fast_st_high_risk: fastSt && style === "makuri" ? 1 : 0
+    }
+  };
+}
+
 function actualLaneOf(row) {
   return toInt(row?.actual_lane ?? row?.lane, null);
 }
@@ -489,6 +596,10 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     const attackStDeltaBonus = Math.max(0, toNum(row?.attack_st_delta_bonus, 0));
     const instabilityStDeltaPenalty = Math.max(0, toNum(row?.instability_st_delta_penalty, 0));
     const stableFinishBonus = Math.max(0, toNum(row?.stable_finish_bonus, 0));
+    const attackCapability = Math.max(0, toNum(row?.attack_capability, 0));
+    const turnEfficiency = Math.max(0, toNum(row?.turn_efficiency, 0));
+    const recoveryPower = Math.max(0, toNum(row?.recovery_power, 0));
+    const stVsResultAdjustment = row?.st_vs_result_adjustment || { second: 0, third: 0, failure_risk: 0 };
     const monsterMotorFirstBonus = Math.max(0, toNum(row?.monster_motor_first_bonus, 0));
     const monsterMotorSecondBonus = Math.max(0, toNum(row?.monster_motor_second_bonus, 0));
     const likelyHeadSurvivalContext = primaryHeadLane === 1
@@ -593,6 +704,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     const firstPlaceScore =
       toNum(baseRoleProbabilities?.first?.[lane], 0) * 0.44 +
       laneFit1 * 0.24 +
+      attackCapability * 0.08 +
       lapHeadBoost * 0.3 +
       monsterMotorFirstBonus * 0.78 +
       (toNum(row?.motor_true, 0) / 100) * 0.14 +
@@ -609,6 +721,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       ippansen2renSupport * 0.34 +
       motor2 * 0.18 +
       monsterMotorSecondBonus * 0.62 +
+      turnEfficiency * 0.2 +
       Math.max(0, turning) * 0.12 +
       secondStyle * 0.13 +
       likelyHeadSurvivalContext * 0.16 +
@@ -620,12 +733,14 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       toNum(row?.finish_role_bonuses?.secondPlaceBonus, 0) * 0.22 -
       instabilityStDeltaPenalty * 0.22 -
       lateRisk * 0.1 -
-      hiddenF * 0.04;
+      hiddenF * 0.04 -
+      toNum(stVsResultAdjustment?.failure_risk, 0) * 0.16;
     const thirdPlaceScoreBeforeTuning =
       toNum(baseRoleProbabilities?.third?.[lane], 0) * 0.28 +
       laneFit3 * 0.28 +
       ippansen3renSupport * 0.36 +
       motor3Proxy * 0.16 +
+      recoveryPower * 0.18 +
       Math.max(0, turning) * 0.13 +
       Math.max(0, straight) * 0.09 +
       flowInBonus * 0.16 +
@@ -638,9 +753,21 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       toNum(primaryCompatibility?.third_bonus, 0) * 0.18 +
       toNum(row?.finish_role_bonuses?.thirdPlaceBonus, 0) * 0.18 -
       instabilityStDeltaPenalty * 0.16 -
-      toNum(thirdExclusion?.penalty, 0);
-    const secondPlaceScore = secondPlaceScoreBeforeTuning + actualFourSecondCarryover + insideSecondThirdRecoveryAfter.second + boat2SecondRecoveryAfter + boat1SurvivalBonus * 0.4;
-    const thirdPlaceScore = thirdPlaceScoreBeforeTuning + actualFourThirdCarryover + insideSecondThirdRecoveryAfter.third + boat1SurvivalBonus * 0.28;
+      toNum(thirdExclusion?.penalty, 0) -
+      toNum(stVsResultAdjustment?.failure_risk, 0) * 0.08;
+    const secondPlaceScore =
+      secondPlaceScoreBeforeTuning +
+      toNum(stVsResultAdjustment?.second, 0) +
+      actualFourSecondCarryover +
+      insideSecondThirdRecoveryAfter.second +
+      boat2SecondRecoveryAfter +
+      boat1SurvivalBonus * 0.4;
+    const thirdPlaceScore =
+      thirdPlaceScoreBeforeTuning +
+      toNum(stVsResultAdjustment?.third, 0) +
+      actualFourThirdCarryover +
+      insideSecondThirdRecoveryAfter.third +
+      boat1SurvivalBonus * 0.28;
 
     row.finish_role_scores_before_tuning = {
       second_place_score: round(Math.max(0.0001, secondPlaceScoreBeforeTuning), 4),
@@ -658,6 +785,15 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       survival_after_attack_bonus: round(tunedSurvivalAfterAttackBonus, 4),
       likely_head_survival_context: round(likelyHeadSurvivalContext, 4),
       attack_but_not_win_carryover: round(tunedAttackButNotWinCarryover, 4),
+      style: row?.style || "balanced",
+      attack_capability: round(attackCapability, 4),
+      turn_efficiency: round(turnEfficiency, 4),
+      recovery_power: round(recoveryPower, 4),
+      st_vs_result_adjustment: {
+        second: round(toNum(stVsResultAdjustment?.second, 0), 4),
+        third: round(toNum(stVsResultAdjustment?.third, 0), 4),
+        failure_risk: round(toNum(stVsResultAdjustment?.failure_risk, 0), 4)
+      },
       ippansen_2ren_support: round(ippansen2renSupport, 4),
       ippansen_3ren_support: round(ippansen3renSupport, 4),
       attack_st_delta_bonus: round(attackStDeltaBonus, 4),
@@ -679,6 +815,10 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       primary_head_lane: primaryHeadLane
     };
     row.second_place_bonus_breakdown = {
+      style: row?.style || "balanced",
+      attack_capability: round(attackCapability, 4),
+      turn_efficiency: round(turnEfficiency, 4),
+      st_vs_result_adjustment: round(toNum(stVsResultAdjustment?.second, 0), 4),
       lane2renScore: round(laneFit2, 4),
       motor2ren: round(motor2, 4),
       monster_motor_first_bonus: round(monsterMotorFirstBonus, 4),
@@ -701,6 +841,9 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       boat2_second_recovery_after: round(actualLane === 2 ? boat2SecondRecoveryAfter : 0, 4)
     };
     row.third_place_bonus_breakdown = {
+      style: row?.style || "balanced",
+      recovery_power: round(recoveryPower, 4),
+      st_vs_result_adjustment: round(toNum(stVsResultAdjustment?.third, 0), 4),
       lane3renScore: round(laneFit3, 4),
       motor3ren_or_proxy: round(motor3Proxy, 4),
       third_place_proxy_used: motor3 > 0 ? "motor3ren" : "survival_proxy",
@@ -726,6 +869,9 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       exclusion_penalty: round(toNum(thirdExclusion?.penalty, 0), 4)
     };
     row.first_place_bonus_breakdown = {
+      style: row?.style || "balanced",
+      attack_capability: round(attackCapability, 4),
+      st_vs_result_failure_risk: round(toNum(stVsResultAdjustment?.failure_risk, 0), 4),
       lap_head_boost: round(lapHeadBoost, 4),
       monster_motor_first_bonus: round(monsterMotorFirstBonus, 4),
       boat1_base_first_bonus: round(boat1BaseFirstBonus, 4),
@@ -1704,11 +1850,20 @@ export function buildHitRateEnhancementContext({
       ippansen_lane_3ren_rate: ippansenLane3renRate === null ? null : round(ippansenLane3renRate, 2),
       ippansen_2ren_support: 0,
       ippansen_3ren_support: 0,
+      style: "balanced",
       st_delta: null,
       st_delta_bucket: null,
       attack_st_delta_bonus: 0,
       instability_st_delta_penalty: 0,
       stable_finish_bonus: 0,
+      attack_capability: 0,
+      turn_efficiency: 0,
+      recovery_power: 0,
+      st_vs_result_adjustment: {
+        second: 0,
+        third: 0,
+        failure_risk: 0
+      },
       monster_motor_class: null,
       monster_motor_first_bonus: 0,
       lane_fit_local: Number.isFinite(features?.lane_fit_local) ? round(features.lane_fit_local, 2) : null,
@@ -1772,9 +1927,11 @@ export function buildHitRateEnhancementContext({
     row.venue_inside_finish_bias = venueBias.venue_inside_finish_bias;
     row.venue_inside_second_third_bias = venueBias.venue_inside_second_third_bias;
     row.finish_role_bonuses = buildRoleSpecificFinishBonuses(row, actualLaneMap);
+    Object.assign(row, buildRacingStyleProfile(row));
     Object.assign(row, buildIppansenLaneSupport(row));
     Object.assign(row, buildStDeltaProfile(row));
     Object.assign(row, buildMonsterMotorProfile(row));
+    Object.assign(row, buildCapabilityProfile(row, actualLaneMap));
     row.attack_readiness_bonus = round(
       clamp(
         0,
@@ -1782,6 +1939,7 @@ export function buildHitRateEnhancementContext({
         Math.max(0, toNum(row.finish_role_bonuses?.leftGapAttackSupport, 0)) * 0.42 +
           Math.max(0, toNum(row.finish_role_bonuses?.straightLineDelta, 0)) * 0.04 +
           Math.max(0, toNum(row.finish_role_bonuses?.turningAbilityDelta, 0)) * 0.03 +
+          toNum(row.attack_capability, 0) * 0.08 +
           toNum(row.attack_st_delta_bonus, 0) * 0.65 -
           toNum(row.instability_st_delta_penalty, 0) * 0.22 +
           toNum(row.monster_motor_attack_support, 0) * 0.48 +
@@ -2330,6 +2488,11 @@ export function buildHitRateEnhancementContext({
         attack_st_delta_bonus: row.attack_st_delta_bonus,
         instability_st_delta_penalty: row.instability_st_delta_penalty,
         stable_finish_bonus: row.stable_finish_bonus,
+        style: row.style,
+        attack_capability: row.attack_capability,
+        turn_efficiency: row.turn_efficiency,
+        recovery_power: row.recovery_power,
+        st_vs_result_adjustment: row.st_vs_result_adjustment,
         hidden_F_flag: row.hidden_F_flag,
         start_caution_penalty: row.start_caution_penalty,
         recent_L_penalty: row.recent_L_penalty,
@@ -2542,6 +2705,11 @@ export function buildHitRateEnhancementContext({
       start_edge: row.start_edge,
       late_risk: row.late_risk,
       hidden_F_flag: row.hidden_F_flag,
+      style: row.style,
+      attack_capability: row.attack_capability,
+      turn_efficiency: row.turn_efficiency,
+      recovery_power: row.recovery_power,
+      st_vs_result_adjustment: row.st_vs_result_adjustment,
       style_profile: row.style_profile,
       ex_time_relative_gap: row.ex_time_relative_gap,
       wind_adjusted_ex_time: row.wind_adjusted_ex_time,
