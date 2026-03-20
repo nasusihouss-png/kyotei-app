@@ -1084,14 +1084,95 @@ function sumFinishWeights(rows, lanes) {
   );
 }
 
+function toFiniteOrNull(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function getVenueInsideBias(venueName) {
+  const name = String(venueName || "");
+  if (["Omura", "Tokuyama", "Ashiya", "Suminoe"].includes(name)) return 1;
+  if (["Wakamatsu", "Tamagawa"].includes(name)) return 0.7;
+  return 0.35;
+}
+
+function getBoatClassScore(value) {
+  const text = String(value || "").toUpperCase();
+  if (text === "A1") return 1;
+  if (text === "A2") return 0.8;
+  if (text === "B1") return 0.55;
+  if (text === "B2") return 0.35;
+  return 0.45;
+}
+
+function getRacerWinStrength(racer = {}) {
+  const national = toFiniteOrNull(racer?.nationwideWinRate);
+  const local = toFiniteOrNull(racer?.localWinRate);
+  const classScore = getBoatClassScore(racer?.class);
+  const nationalScore = national === null ? null : clampNumber(0, 1, (national - 3.8) / 4.2);
+  const localScore = local === null ? null : clampNumber(0, 1, (local - 3.8) / 4.2);
+  const blended =
+    (nationalScore === null ? 0 : nationalScore * 0.55) +
+    (localScore === null ? 0 : localScore * 0.45);
+  return {
+    value: clampNumber(0, 1, blended * 0.8 + classScore * 0.2),
+    hasCore: national !== null || local !== null
+  };
+}
+
+function getRacerMotorStrength(racer = {}) {
+  const motor = toFiniteOrNull(racer?.motor2ren ?? racer?.motor2Rate ?? racer?.kyoteiBiyoriMotor2Rate);
+  return {
+    value: motor === null ? null : clampNumber(0, 1, (motor - 28) / 35),
+    raw: motor,
+    hasCore: motor !== null
+  };
+}
+
+function getRacerStartStrength(racer = {}) {
+  const avgSt = toFiniteOrNull(racer?.avgSt);
+  return {
+    value: avgSt === null ? null : clampNumber(0, 1, (0.23 - avgSt) / 0.11),
+    raw: avgSt,
+    hasCore: avgSt !== null
+  };
+}
+
+function getRacerRiskPenalty(racer = {}) {
+  const fCount = toFiniteOrNull(racer?.fHoldCount ?? racer?.fCount);
+  const lateFlag = String(racer?.exhibitionStType || "").toLowerCase() === "late" ? 0.08 : 0;
+  return clampNumber(0, 0.35, (fCount === null ? 0 : fCount * 0.08) + lateFlag);
+}
+
+function getUnderlyingBoatFit(racer = {}, lane) {
+  const win = getRacerWinStrength(racer);
+  const motor = getRacerMotorStrength(racer);
+  const start = getRacerStartStrength(racer);
+  const localBonus = (() => {
+    const local = toFiniteOrNull(racer?.localWinRate);
+    const national = toFiniteOrNull(racer?.nationwideWinRate);
+    if (local === null || national === null) return 0;
+    return clampNumber(-0.08, 0.12, (local - national) / 10);
+  })();
+  const laneBias = lane === 2 ? 0.18 : lane === 3 ? 0.14 : 0.08;
+  const fit =
+    (win.value * 0.42) +
+    ((motor.value ?? 0.48) * 0.28) +
+    ((start.value ?? 0.45) * 0.2) +
+    laneBias +
+    localBonus -
+    getRacerRiskPenalty(racer) * 0.4;
+  return Number((clampNumber(0, 1, fit) * 100).toFixed(1));
+}
+
 function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const failedDebug = {
     race_fetch_success: false,
     kyoteibiyori_fetch_success: false,
     href_extraction_success: false,
     parse_success: false,
-    required_fields_ready: false,
-    score_computed: false,
+    core_fields_ready: false,
+    hard_race_score_ready: false,
     final_status: "UNAVAILABLE",
     attempt_count: Number(entry?.attemptCount || 0),
     failure_message: entry?.error || "Race data unavailable"
@@ -1112,142 +1193,199 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       topReasons: [entry?.error || "Race data unavailable"],
       expandableReason: "Screening skipped because race data could not be loaded.",
       sourceData: null,
-      fetchFailed: true
-      ,
+      fetchFailed: true,
       screeningDebug: failedDebug
     };
   }
 
   const source = entry.data;
-  const enhancement = source?.aiEnhancement && typeof source.aiEnhancement === "object"
-    ? source.aiEnhancement
-    : {};
   const kyoteiFetch = source?.source?.kyotei_biyori && typeof source.source.kyotei_biyori === "object"
     ? source.source.kyotei_biyori
     : {};
   const officialFetch = source?.source?.official_fetch_status && typeof source.source.official_fetch_status === "object"
     ? source.source.official_fetch_status
     : {};
+  const racers = Array.isArray(source?.racers) ? source.racers : [];
+  const boat1 = racers.find((row) => Number(row?.lane) === 1) || null;
+  const lane2 = racers.find((row) => Number(row?.lane) === 2) || null;
+  const lane3 = racers.find((row) => Number(row?.lane) === 3) || null;
+  const lane4 = racers.find((row) => Number(row?.lane) === 4) || null;
+  const venueBias = getVenueInsideBias(source?.race?.venueName || venueNameFallback);
+  const win1 = getRacerWinStrength(boat1 || {});
+  const motor1 = getRacerMotorStrength(boat1 || {});
+  const start1 = getRacerStartStrength(boat1 || {});
+  const risk1 = getRacerRiskPenalty(boat1 || {});
+  const entryStable = source?.entry_changed ? 0.42 : source?.entry_validation?.validation_ok === false ? 0.55 : 1;
+  const movementRisk = source?.entry_changed ? 0.18 : source?.entry_fallback_used ? 0.1 : 0;
+  const underlyingFits = [
+    { lane: 2, score: lane2 ? getUnderlyingBoatFit(lane2, 2) : null },
+    { lane: 3, score: lane3 ? getUnderlyingBoatFit(lane3, 3) : null },
+    { lane: 4, score: lane4 ? getUnderlyingBoatFit(lane4, 4) : null }
+  ];
+  const availableUnderlying = underlyingFits.filter((row) => Number.isFinite(row.score));
+  const opponentPressure = Number(
+    availableUnderlying.reduce((sum, row) => sum + (Number(row.score) || 0), 0) /
+    Math.max(1, availableUnderlying.length) /
+    100
+  );
   const orderRows = getHardRaceOrderRows(source);
   const secondRows = getHardRaceFinishRoleRows(source, "second");
   const thirdRows = getHardRaceFinishRoleRows(source, "third");
-  const hardRaceScoreRaw =
-    enhancement?.hard_race_score ??
-    enhancement?.stage5_ticketing?.one_head_fixed_assessment?.hard_race_score ??
-    null;
-  const boat1AnchorScoreRaw =
-    enhancement?.boat1_trust_score ??
-    enhancement?.stage5_ticketing?.one_head_fixed_assessment?.boat1_trust_score ??
-    source?.boat1HeadSection?.boat1_head_score ??
-    null;
-  const hardRaceScore = Number.isFinite(Number(hardRaceScoreRaw)) ? Number(hardRaceScoreRaw) : null;
-  const boat1AnchorScore = Number.isFinite(Number(boat1AnchorScoreRaw)) ? Number(boat1AnchorScoreRaw) : null;
-  const fixed1234Probability = sumOrderProbability(
-    orderRows,
-    ({ first, second, third }) => (
-      first === 1 &&
-      [2, 3, 4].includes(second) &&
-      [2, 3, 4].includes(third) &&
-      second !== third
-    )
-  );
-  const shapeRows = [
-    { shape: "1-23-234", second: [2, 3], third: [2, 3, 4] },
-    { shape: "1-24-234", second: [2, 4], third: [2, 3, 4] },
-    { shape: "1-34-234", second: [3, 4], third: [2, 3, 4] }
-  ].map((row) => ({
-    ...row,
-    probability: sumOrderProbability(
-      orderRows,
-      ({ first, second, third }) => (
-        first === 1 &&
-        row.second.includes(second) &&
-        row.third.includes(third) &&
-        second !== third
+  const orderProbabilityOptional = orderRows.length > 0
+    ? sumOrderProbability(
+        orderRows,
+        ({ first, second, third }) => (
+          first === 1 &&
+          [2, 3, 4].includes(second) &&
+          [2, 3, 4].includes(third) &&
+          second !== third
+        )
       )
-    )
-  })).sort((a, b) => b.probability - a.probability);
-  const second234Weight = sumFinishWeights(secondRows, [2, 3, 4]);
-  const third234Weight = sumFinishWeights(thirdRows, [2, 3, 4]);
-  const topShape = shapeRows[0] || null;
-  const requiredFieldsReady =
-    hardRaceScore !== null &&
-    boat1AnchorScore !== null &&
-    orderRows.length > 0 &&
-    secondRows.length > 0 &&
-    thirdRows.length > 0;
-  const box234FitScore = requiredFieldsReady
+    : null;
+  const finishRoleOptional = secondRows.length > 0 && thirdRows.length > 0
+    ? {
+        second234: sumFinishWeights(secondRows, [2, 3, 4]),
+        third234: sumFinishWeights(thirdRows, [2, 3, 4])
+      }
+    : null;
+
+  const coreFieldsPresent = [
+    { label: "boat1 win strength", ready: !!win1.hasCore },
+    { label: "boat1 motor2ren", ready: !!motor1.hasCore },
+    { label: "boat1 avgSt", ready: !!start1.hasCore },
+    { label: "lane2 opponent", ready: Number.isFinite(underlyingFits[0]?.score) },
+    { label: "lane3 opponent", ready: Number.isFinite(underlyingFits[1]?.score) },
+    { label: "lane4 opponent", ready: Number.isFinite(underlyingFits[2]?.score) },
+    { label: "venue", ready: !!(source?.race?.venueName || venueNameFallback) }
+  ];
+  const coreFieldsMissing = coreFieldsPresent.filter((row) => !row.ready).map((row) => row.label);
+  const coreFieldsReady = coreFieldsMissing.length <= 1 && !!boat1;
+  const optionalMissing = [];
+  if (orderProbabilityOptional === null) optionalMissing.push("order probabilities");
+  if (!finishRoleOptional) optionalMissing.push("finish-role probabilities");
+  if (!kyoteiFetch?.kyoteibiyori_fetch_success) optionalMissing.push("kyoteibiyori supplemental fields");
+
+  const boat1AnchorScore = coreFieldsReady
     ? Number(
         clampNumber(
           0,
           100,
           (
-            second234Weight * 42 +
-            third234Weight * 34 +
-            fixed1234Probability * 100 * 0.16 +
-            (topShape?.probability || 0) * 100 * 0.12
+            win1.value * 34 +
+            (motor1.value ?? 0.46) * 26 +
+            (start1.value ?? 0.45) * 18 +
+            venueBias * 14 +
+            entryStable * 10 -
+            risk1 * 42 -
+            movementRisk * 26
           ).toFixed(1)
         )
       )
     : null;
-  const conservativeComposite = requiredFieldsReady
-    ? (
-        hardRaceScore * 0.44 +
-        boat1AnchorScore * 0.34 +
-        box234FitScore * 0.22 +
-        fixed1234Probability * 100 * 0.15
+
+  const underlyingSorted = [...availableUnderlying].sort((a, b) => (b.score || 0) - (a.score || 0));
+  const box234FitScore = coreFieldsReady
+    ? Number(
+        clampNumber(
+          0,
+          100,
+          (
+            (underlyingSorted[0]?.score || 0) * 0.42 +
+            (underlyingSorted[1]?.score || 0) * 0.33 +
+            (underlyingSorted[2]?.score || 0) * 0.15 +
+            venueBias * 8 +
+            entryStable * 6 +
+            ((finishRoleOptional?.second234 || 0) * 100) * 0.08
+          ).toFixed(1)
+        )
       )
     : null;
-  const oneHeadFlag = String(
-    enhancement?.one_head_fixed_recommended ??
-    enhancement?.stage5_ticketing?.one_head_fixed_assessment?.one_head_fixed_recommended ??
-    ""
-  ).toUpperCase();
-  const finalStatus = !requiredFieldsReady
+
+  const fixed1234Probability = coreFieldsReady
+    ? Number(
+        clampNumber(
+          0.01,
+          0.48,
+          (
+            (boat1AnchorScore / 100) * 0.2 +
+            (box234FitScore / 100) * 0.12 +
+            venueBias * 0.04 +
+            entryStable * 0.05 -
+            opponentPressure * 0.06 -
+            risk1 * 0.1 +
+            ((orderProbabilityOptional ?? 0) * 0.25)
+          ).toFixed(4)
+        )
+      )
+    : null;
+
+  const hardRaceScore = coreFieldsReady
+    ? Number(
+        clampNumber(
+          0,
+          100,
+          (
+            boat1AnchorScore * 0.62 +
+            box234FitScore * 0.22 +
+            (fixed1234Probability * 100) * 0.16 -
+            opponentPressure * 16
+          ).toFixed(1)
+        )
+      )
+    : null;
+
+  const shapeBase =
+    underlyingSorted[0]?.lane === 4
+      ? "1-24-234"
+      : underlyingSorted[0]?.lane === 3 && (underlyingSorted[0]?.score || 0) - (underlyingSorted[1]?.score || 0) >= 4
+        ? "1-34-234"
+        : "1-23-234";
+  const suggestedShape = coreFieldsReady && box234FitScore >= 44 ? shapeBase : null;
+  const conservativeComposite = hardRaceScore;
+
+  const finalStatus = !coreFieldsReady
     ? "UNAVAILABLE"
-    : hardRaceScore >= 75 && boat1AnchorScore >= 70 && box234FitScore >= 57 && fixed1234Probability >= 0.08
+    : hardRaceScore >= 72 && boat1AnchorScore >= 67 && fixed1234Probability >= 0.14
       ? "BUY"
-      : hardRaceScore >= 58 && boat1AnchorScore >= 58 && box234FitScore >= 45 && fixed1234Probability >= 0.045
+      : hardRaceScore >= 56 && boat1AnchorScore >= 57 && fixed1234Probability >= 0.08
         ? "BORDERLINE"
-        : oneHeadFlag === "YES" && conservativeComposite >= 72
-          ? "BUY"
-          : oneHeadFlag === "BORDERLINE" && conservativeComposite >= 58
-            ? "BORDERLINE"
-            : "SKIP";
-  const suggestedShape =
-    finalStatus === "UNAVAILABLE" || finalStatus === "SKIP" || !topShape || topShape.probability < 0.025
-      ? null
-      : topShape.shape;
-  const positiveReasons = Array.isArray(enhancement?.hard_race_positive_factors)
-    ? enhancement.hard_race_positive_factors.slice(0, 3)
-    : [];
-  const negativeReasons = Array.isArray(enhancement?.hard_race_negative_factors)
-    ? enhancement.hard_race_negative_factors.slice(0, 3)
-    : [];
-  const unavailableReasons = [];
-  if (hardRaceScore === null) unavailableReasons.push("hard_race_score unavailable");
-  if (boat1AnchorScore === null) unavailableReasons.push("boat1_anchor_score unavailable");
-  if (orderRows.length === 0) unavailableReasons.push("order probabilities unavailable");
-  if (secondRows.length === 0 || thirdRows.length === 0) unavailableReasons.push("finish-role probabilities unavailable");
-  const topReasons = requiredFieldsReady
+        : "SKIP";
+
+  const positiveReasons = [];
+  if (venueBias >= 0.7) positiveReasons.push("strong inside venue");
+  if (boat1AnchorScore !== null && boat1AnchorScore >= 68) positiveReasons.push("boat1 anchor strong");
+  if (!source?.entry_changed) positiveReasons.push("stable entry");
+  if (underlyingSorted[0]?.lane === 2) positiveReasons.push("lane2 underneath support");
+  if (underlyingSorted[0]?.lane === 3) positiveReasons.push("lane3 underneath support");
+  if (underlyingSorted[0]?.lane === 4) positiveReasons.push("lane4 underneath support");
+  const negativeReasons = [];
+  if (risk1 >= 0.12) negativeReasons.push("boat1 F/L risk");
+  if (source?.entry_changed) negativeReasons.push("course movement risk");
+  if (opponentPressure >= 0.72) negativeReasons.push("2/3/4 pressure high");
+  if (optionalMissing.length > 0) negativeReasons.push(...optionalMissing.slice(0, 2).map((item) => `${item} missing`));
+  const topReasons = coreFieldsReady
     ? [...positiveReasons, ...negativeReasons].slice(0, 4)
-    : unavailableReasons.slice(0, 4);
+    : coreFieldsMissing.slice(0, 4);
   const hrefExtractionSuccess =
     kyoteiFetch?.request_diagnostics?.race_list_fetch_success === true ||
     kyoteiFetch?.request_diagnostics?.race_list_match_found === true ||
     Array.isArray(kyoteiFetch?.tried_urls) && kyoteiFetch.tried_urls.length > 0;
   const parseSuccess =
     officialFetch?.racelist === "success" &&
-    (kyoteiFetch?.ok === true || kyoteiFetch?.field_diagnostics?.populated_fields?.length > 0);
+    racers.length >= 6;
   const screeningDebug = {
     race_fetch_success: officialFetch?.racelist === "success",
     kyoteibiyori_fetch_success: kyoteiFetch?.kyoteibiyori_fetch_success === true,
     href_extraction_success: !!hrefExtractionSuccess,
     parse_success: !!parseSuccess,
-    required_fields_ready: requiredFieldsReady,
-    score_computed: requiredFieldsReady && box234FitScore !== null,
+    core_fields_ready: coreFieldsReady,
+    hard_race_score_ready: hardRaceScore !== null,
     final_status: finalStatus,
     attempt_count: Number(entry?.attemptCount || 1),
+    core_fields_present: coreFieldsPresent.filter((row) => row.ready).map((row) => row.label),
+    core_fields_missing: coreFieldsMissing,
+    optional_fields_missing: optionalMissing,
+    why_unavailable: finalStatus === "UNAVAILABLE" ? coreFieldsMissing : [],
     official_fetch_status: officialFetch,
     kyoteibiyori_status: {
       ok: !!kyoteiFetch?.ok,
@@ -1265,14 +1403,18 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     hardRaceScore,
     boat1AnchorScore,
     box234FitScore,
-    fixed1234Probability: requiredFieldsReady ? fixed1234Probability : null,
+    fixed1234Probability,
     finalStatus,
     buyRecommendation: finalStatus,
     suggestedShape,
     positiveReasons,
-    negativeReasons: requiredFieldsReady ? negativeReasons : unavailableReasons,
+    negativeReasons,
     topReasons,
-    fixedShapeCandidates: shapeRows,
+    fixedShapeCandidates: [
+      { shape: "1-23-234", probability: suggestedShape === "1-23-234" && fixed1234Probability !== null ? fixed1234Probability : Math.max(0, (fixed1234Probability || 0) - 0.015) },
+      { shape: "1-24-234", probability: suggestedShape === "1-24-234" && fixed1234Probability !== null ? fixed1234Probability : Math.max(0, (fixed1234Probability || 0) - 0.02) },
+      { shape: "1-34-234", probability: suggestedShape === "1-34-234" && fixed1234Probability !== null ? fixed1234Probability : Math.max(0, (fixed1234Probability || 0) - 0.02) }
+    ],
     orderRowCount: orderRows.length,
     conservativeComposite: conservativeComposite === null ? null : Number(conservativeComposite.toFixed(1)),
     expandableReason:
@@ -5953,6 +6095,16 @@ export default function App() {
                             Negative: {row.negativeReasons.join(", ")}
                           </p>
                         ) : null}
+                        {row.screeningDebug?.final_status === "UNAVAILABLE" && Array.isArray(row.screeningDebug?.why_unavailable) && row.screeningDebug.why_unavailable.length > 0 ? (
+                          <p className="muted strategy-line">
+                            Why unavailable: {row.screeningDebug.why_unavailable.join(", ")}
+                          </p>
+                        ) : null}
+                        {Array.isArray(row.screeningDebug?.optional_fields_missing) && row.screeningDebug.optional_fields_missing.length > 0 ? (
+                          <p className="muted strategy-line">
+                            Optional missing: {row.screeningDebug.optional_fields_missing.join(", ")}
+                          </p>
+                        ) : null}
                         {!row.fetchFailed ? (
                           <div className="row-actions" style={{ marginTop: 10 }}>
                             <button className="fetch-btn" onClick={() => onOpenRecommendation(row.sourceData?.race || row)}>
@@ -5966,8 +6118,8 @@ export default function App() {
                             <div className="kv-row"><span>kyoteibiyori</span><strong>{row.screeningDebug.kyoteibiyori_fetch_success ? "ok" : "failed"}</strong></div>
                             <div className="kv-row"><span>href extraction</span><strong>{row.screeningDebug.href_extraction_success ? "ok" : "failed"}</strong></div>
                             <div className="kv-row"><span>parse</span><strong>{row.screeningDebug.parse_success ? "ok" : "failed"}</strong></div>
-                            <div className="kv-row"><span>required fields</span><strong>{row.screeningDebug.required_fields_ready ? "ready" : "missing"}</strong></div>
-                            <div className="kv-row"><span>score computed</span><strong>{row.screeningDebug.score_computed ? "yes" : "no"}</strong></div>
+                            <div className="kv-row"><span>core fields</span><strong>{row.screeningDebug.core_fields_ready ? "ready" : "missing"}</strong></div>
+                            <div className="kv-row"><span>score ready</span><strong>{row.screeningDebug.hard_race_score_ready ? "yes" : "no"}</strong></div>
                           </div>
                         ) : null}
                       </details>
