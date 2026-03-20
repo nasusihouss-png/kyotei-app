@@ -204,11 +204,26 @@ async function fetchRaceData(date, venueId, raceNo) {
   return body;
 }
 
-async function fetchRankingsData(date, mode = "hit_rate") {
-  const url = new URL(`${API_BASE}/rankings`);
-  url.searchParams.set("date", date);
-  url.searchParams.set("mode", mode);
-  return fetchJsonWithTimeout(url.toString(), { timeoutMs: 30000 });
+async function fetchHardRacePredictionData(date, venueId) {
+  const raceNos = Array.from({ length: 12 }, (_, index) => index + 1);
+  const settled = await Promise.allSettled(
+    raceNos.map((targetRaceNo) => fetchRaceData(date, venueId, targetRaceNo))
+  );
+  return raceNos.map((targetRaceNo, index) => {
+    const result = settled[index];
+    if (result?.status === "fulfilled") {
+      return {
+        raceNo: targetRaceNo,
+        ok: true,
+        data: result.value
+      };
+    }
+    return {
+      raceNo: targetRaceNo,
+      ok: false,
+      error: result?.reason?.message || "Failed to fetch race data"
+    };
+  });
 }
 
 async function fetchStatsData(filters = {}) {
@@ -954,6 +969,205 @@ function normalizeExactaCombo(value) {
   if (lanes.length !== 2) return "";
   if (lanes[0] === lanes[1]) return "";
   return lanes.join("-");
+}
+
+function clampNumber(min, max, value) {
+  return Math.max(min, Math.min(max, Number.isFinite(Number(value)) ? Number(value) : min));
+}
+
+function getHardRaceOrderRows(source = {}) {
+  const enhancement = source?.aiEnhancement && typeof source.aiEnhancement === "object"
+    ? source.aiEnhancement
+    : {};
+  const orderRows = Array.isArray(enhancement?.treeOrderProbabilities)
+    ? enhancement.treeOrderProbabilities
+    : Array.isArray(enhancement?.stage5_ticketing?.order_probabilities)
+      ? enhancement.stage5_ticketing.order_probabilities
+      : Array.isArray(source?.roleCandidates?.finish_order_candidates)
+        ? source.roleCandidates.finish_order_candidates
+        : [];
+  return orderRows
+    .map((row) => ({
+      combo: normalizeCombo(row?.combo),
+      probability: Number(row?.probability)
+    }))
+    .filter((row) => row.combo && Number.isFinite(row.probability) && row.probability > 0);
+}
+
+function getHardRaceFinishRoleRows(source = {}, role) {
+  const enhancement = source?.aiEnhancement && typeof source.aiEnhancement === "object"
+    ? source.aiEnhancement
+    : {};
+  const aggregated = enhancement?.aggregatedFinishProbabilities && typeof enhancement.aggregatedFinishProbabilities === "object"
+    ? enhancement.aggregatedFinishProbabilities
+    : enhancement?.stage5_ticketing?.aggregated_finish_probabilities && typeof enhancement.stage5_ticketing.aggregated_finish_probabilities === "object"
+      ? enhancement.stage5_ticketing.aggregated_finish_probabilities
+      : {};
+  const rows = Array.isArray(aggregated?.[role]) ? aggregated[role] : [];
+  return rows
+    .map((row) => ({
+      lane: parseLane(row?.lane),
+      weight: Number(row?.weight)
+    }))
+    .filter((row) => Number.isInteger(row.lane) && Number.isFinite(row.weight) && row.weight > 0);
+}
+
+function sumOrderProbability(orderRows, matcher) {
+  return Number(
+    orderRows.reduce((sum, row) => {
+      const combo = normalizeCombo(row?.combo);
+      if (!combo) return sum;
+      const [first, second, third] = combo.split("-").map((lane) => Number(lane));
+      if (![first, second, third].every((lane) => Number.isInteger(lane))) return sum;
+      return matcher({ first, second, third, combo, probability: Number(row?.probability) || 0 })
+        ? sum + (Number(row?.probability) || 0)
+        : sum;
+    }, 0).toFixed(4)
+  );
+}
+
+function sumFinishWeights(rows, lanes) {
+  const laneSet = new Set(lanes);
+  return Number(
+    rows.reduce((sum, row) => (
+      laneSet.has(Number(row?.lane)) ? sum + (Number(row?.weight) || 0) : sum
+    ), 0).toFixed(4)
+  );
+}
+
+function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
+  if (!entry?.ok || !entry?.data) {
+    return {
+      raceNo: entry?.raceNo ?? null,
+      venueName: venueNameFallback,
+      hardRaceScore: null,
+      boat1AnchorScore: null,
+      box234FitScore: null,
+      fixed1234Probability: null,
+      buyRecommendation: "SKIP",
+      suggestedShape: "SKIP",
+      positiveReasons: [],
+      negativeReasons: [entry?.error || "Race data unavailable"],
+      topReasons: [entry?.error || "Race data unavailable"],
+      expandableReason: "Screening skipped because race data could not be loaded.",
+      sourceData: null,
+      fetchFailed: true
+    };
+  }
+
+  const source = entry.data;
+  const enhancement = source?.aiEnhancement && typeof source.aiEnhancement === "object"
+    ? source.aiEnhancement
+    : {};
+  const orderRows = getHardRaceOrderRows(source);
+  const secondRows = getHardRaceFinishRoleRows(source, "second");
+  const thirdRows = getHardRaceFinishRoleRows(source, "third");
+  const hardRaceScore = Number(
+    enhancement?.hard_race_score ??
+    enhancement?.stage5_ticketing?.one_head_fixed_assessment?.hard_race_score ??
+    0
+  );
+  const boat1AnchorScore = Number(
+    enhancement?.boat1_trust_score ??
+    enhancement?.stage5_ticketing?.one_head_fixed_assessment?.boat1_trust_score ??
+    source?.boat1HeadSection?.boat1_head_score ??
+    0
+  );
+  const fixed1234Probability = sumOrderProbability(
+    orderRows,
+    ({ first, second, third }) => (
+      first === 1 &&
+      [2, 3, 4].includes(second) &&
+      [2, 3, 4].includes(third) &&
+      second !== third
+    )
+  );
+  const shapeRows = [
+    { shape: "1-23-234", second: [2, 3], third: [2, 3, 4] },
+    { shape: "1-24-234", second: [2, 4], third: [2, 3, 4] },
+    { shape: "1-34-234", second: [3, 4], third: [2, 3, 4] }
+  ].map((row) => ({
+    ...row,
+    probability: sumOrderProbability(
+      orderRows,
+      ({ first, second, third }) => (
+        first === 1 &&
+        row.second.includes(second) &&
+        row.third.includes(third) &&
+        second !== third
+      )
+    )
+  })).sort((a, b) => b.probability - a.probability);
+  const second234Weight = sumFinishWeights(secondRows, [2, 3, 4]);
+  const third234Weight = sumFinishWeights(thirdRows, [2, 3, 4]);
+  const topShape = shapeRows[0] || null;
+  const box234FitScore = Number(
+    clampNumber(
+      0,
+      100,
+      (
+        second234Weight * 42 +
+        third234Weight * 34 +
+        fixed1234Probability * 100 * 0.16 +
+        (topShape?.probability || 0) * 100 * 0.12
+      ).toFixed(1)
+    )
+  );
+  const conservativeComposite = (
+    hardRaceScore * 0.44 +
+    boat1AnchorScore * 0.34 +
+    box234FitScore * 0.22 +
+    fixed1234Probability * 100 * 0.15
+  );
+  const oneHeadFlag = String(
+    enhancement?.one_head_fixed_recommended ??
+    enhancement?.stage5_ticketing?.one_head_fixed_assessment?.one_head_fixed_recommended ??
+    ""
+  ).toUpperCase();
+  const buyRecommendation =
+    hardRaceScore >= 75 && boat1AnchorScore >= 70 && box234FitScore >= 57 && fixed1234Probability >= 0.08
+      ? "BUY"
+      : hardRaceScore >= 58 && boat1AnchorScore >= 58 && box234FitScore >= 45 && fixed1234Probability >= 0.045
+        ? "BORDERLINE"
+        : oneHeadFlag === "YES" && conservativeComposite >= 72
+          ? "BUY"
+          : oneHeadFlag === "BORDERLINE" && conservativeComposite >= 58
+            ? "BORDERLINE"
+            : "SKIP";
+  const suggestedShape =
+    buyRecommendation === "SKIP" || !topShape || topShape.probability < 0.025
+      ? "SKIP"
+      : topShape.shape;
+  const positiveReasons = Array.isArray(enhancement?.hard_race_positive_factors)
+    ? enhancement.hard_race_positive_factors.slice(0, 3)
+    : [];
+  const negativeReasons = Array.isArray(enhancement?.hard_race_negative_factors)
+    ? enhancement.hard_race_negative_factors.slice(0, 3)
+    : [];
+  const topReasons = [...positiveReasons, ...negativeReasons].slice(0, 4);
+
+  return {
+    raceNo: Number(source?.race?.raceNo ?? entry?.raceNo ?? null),
+    venueName: source?.race?.venueName || venueNameFallback,
+    hardRaceScore: Number.isFinite(hardRaceScore) ? hardRaceScore : null,
+    boat1AnchorScore: Number.isFinite(boat1AnchorScore) ? boat1AnchorScore : null,
+    box234FitScore,
+    fixed1234Probability,
+    buyRecommendation,
+    suggestedShape,
+    positiveReasons,
+    negativeReasons,
+    topReasons,
+    fixedShapeCandidates: shapeRows,
+    orderRowCount: orderRows.length,
+    conservativeComposite: Number(conservativeComposite.toFixed(1)),
+    expandableReason:
+      suggestedShape === "SKIP"
+        ? "Boat 1 trust or 2/3/4 underneath fit was not strong enough for conservative fixed-head screening."
+        : `Selected ${suggestedShape} because boat 1 anchor trust and the 2/3/4 underneath structure were the strongest conservative fit.`,
+    sourceData: source,
+    fetchFailed: false
+  };
 }
 
 function getSavedFinalRecommendedBets(row) {
@@ -3187,10 +3401,10 @@ export default function App() {
   }, [screen]);
 
   useEffect(() => {
-    if (screen === "rankings") {
+    if (screen === "hardRace") {
       loadRankings();
     }
-  }, [screen, date]);
+  }, [screen, date, venueId]);
 
   useEffect(() => {
     if (!verificationNotice) return;
@@ -3284,16 +3498,21 @@ export default function App() {
     setRankingsLoading(true);
     setRankingsError("");
     try {
-      const result = await fetchRankingsData(date, "hit_rate");
-      const rows = Array.isArray(result?.rankings)
-        ? result.rankings
-        : Array.isArray(result?.items)
-          ? result.items
-          : [];
+      const venueName = VENUES.find((v) => v.id === Number(venueId))?.name || String(venueId);
+      const result = await fetchHardRacePredictionData(date, venueId);
+      const rows = Array.isArray(result)
+        ? result.map((entry) => buildHardRaceScreeningRow(entry, venueName))
+        : [];
+      rows.sort((a, b) => {
+        const scoreDiff = (Number(b?.fixed1234Probability) || -1) - (Number(a?.fixed1234Probability) || -1);
+        if (Math.abs(scoreDiff) > 0.00001) return scoreDiff;
+        const hardDiff = (Number(b?.hardRaceScore) || -1) - (Number(a?.hardRaceScore) || -1);
+        if (Math.abs(hardDiff) > 0.00001) return hardDiff;
+        return (Number(a?.raceNo) || 99) - (Number(b?.raceNo) || 99);
+      });
       setRankingsData(rows);
     } catch (e) {
-      setRankingsError(e.message || "Failed to fetch rankings");
-      // keep last successful list for partial/stale display
+      setRankingsError(e.message || "Failed to fetch hard race prediction");
     } finally {
       setRankingsLoading(false);
     }
@@ -4150,6 +4369,7 @@ export default function App() {
           </div>
           <div className="screen-tabs">
             <button className={screen === "predict" ? "tab on" : "tab"} onClick={() => setScreen("predict")}>予想</button>
+            <button className={screen === "hardRace" ? "tab on" : "tab"} onClick={() => setScreen("hardRace")}>Hard Race Prediction</button>
             <button className={screen === "results" ? "tab on" : "tab"} onClick={() => setScreen("results")}>結果</button>
           </div>
         </section>
@@ -5548,53 +5768,79 @@ export default function App() {
           </>
         )}
 
-        {screen === "rankings" && (
+        {screen === "hardRace" && (
           <RenderGuard>
           <>
             {rankingsError && <div className="error-banner">{rankingsError}</div>}
             <section className="card">
               <div className="section-head recommend-head">
-                <h2>AIレースランキング</h2>
+                <div>
+                  <h2>Hard Race Prediction</h2>
+                  <p className="muted strategy-line">Best conservative races for 1-234-234</p>
+                </div>
                 <div className="row-actions">
-                  <span className="muted">{date} / hit_rate モード</span>
+                  <span className="muted">{date} / {VENUES.find((v) => v.id === Number(venueId))?.name || "-"}</span>
                   <button className="fetch-btn secondary" onClick={loadRankings} disabled={rankingsLoading}>
                     {rankingsLoading ? "更新中..." : "再取得"}
                   </button>
                 </div>
               </div>
+              <div className="controls-grid" style={{ marginBottom: 14 }}>
+                <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+                <label><span>場</span><select value={venueId} onChange={(e) => setVenueId(Number(e.target.value))}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
+              </div>
               {rankingsLoading ? (
-                <p className="muted">ランキングを読み込み中...</p>
+                <p className="muted">保守的な hard race 候補をスキャン中...</p>
               ) : rankingsData.length === 0 ? (
-                <p className="muted">ランキング対象レースがありません。</p>
+                <p className="muted">対象レースがありません。</p>
               ) : (
                 <div className="recommendation-list">
                   {rankingsData.map((row) => (
-                    <article className="recommend-card" key={`rk-${row.rank}-${row.venueId}-${row.raceNo}`}>
+                    <article className="recommend-card" key={`hard-race-${row.raceNo}`}>
                       <div className="recommend-card-head">
-                        <strong>#{row.rank} {row.venueId} {row.venueName || "-"} {row.raceNo}R</strong>
+                        <strong>{row.raceNo}R {row.venueName || "-"}</strong>
                         <div className="row-actions">
-                          {row.provisional ? <span className="status-pill status-unsettled">{row.provisional_label || "暫定"}</span> : null}
-                          {row.entry_changed ? <span className="status-pill risk-small">Entry changed</span> : null}
-                          <span className={`status-pill ${getRiskClass(row.decision_mode)}`}>{row.decision_mode || "-"}</span>
+                          <span className={`status-pill ${row.buyRecommendation === "BUY" ? "status-hit" : row.buyRecommendation === "BORDERLINE" ? "status-unsettled" : "risk-small"}`}>{row.buyRecommendation}</span>
                         </div>
                       </div>
                       <div className="kv-list">
-                        <div className="kv-row"><span>ranking_score</span><strong>{formatMaybeNumber(row.ranking_score, 2)}</strong></div>
-                        <div className="kv-row"><span>confidence</span><strong>{formatMaybeNumber(row.confidence, 2)}</strong></div>
-                        <div className="kv-row"><span>main_head</span><strong><LanePills lanes={[Number(row.main_head)]} /></strong></div>
-                        <div className="kv-row"><span>ticket_quality</span><strong>{formatMaybeNumber(row.ticket_quality, 2)}</strong></div>
-                        <div className="kv-row"><span>trap_score</span><strong>{formatMaybeNumber(row.trap_score, 2)}</strong></div>
-                        <div className="kv-row"><span>value_balance_score</span><strong>{formatMaybeNumber(row.value_balance_score, 2)}</strong></div>
-                        {row.entry_changed ? (
-                          <div className="kv-row"><span>進入変化</span><strong>{row.entry_change_type || "あり"}</strong></div>
+                        <div className="kv-row"><span>hard_race_score</span><strong>{formatMaybeNumber(row.hardRaceScore, 1)}</strong></div>
+                        <div className="kv-row"><span>boat1_anchor_score</span><strong>{formatMaybeNumber(row.boat1AnchorScore, 1)}</strong></div>
+                        <div className="kv-row"><span>box_234_fit_score</span><strong>{formatMaybeNumber(row.box234FitScore, 1)}</strong></div>
+                        <div className="kv-row"><span>fixed_1_234_probability</span><strong>{row.fixed1234Probability == null ? "--" : `${formatMaybeNumber(row.fixed1234Probability * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
+                      </div>
+                      <p className="muted strategy-line">{row.expandableReason}</p>
+                      <div className="chip-row" style={{ marginTop: 8 }}>
+                        {(Array.isArray(row.topReasons) ? row.topReasons : []).map((reason, index) => (
+                          <span className="chip chip-scenario" key={`hard-reason-${row.raceNo}-${index}`}>{reason}</span>
+                        ))}
+                      </div>
+                      <details style={{ marginTop: 10 }}>
+                        <summary>Why this race</summary>
+                        <div className="kv-list" style={{ marginTop: 10 }}>
+                          <div className="kv-row"><span>Top shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
+                          <div className="kv-row"><span>Composite</span><strong>{formatMaybeNumber(row.conservativeComposite, 1)}</strong></div>
+                          <div className="kv-row"><span>Shape candidates</span><strong>{Array.isArray(row.fixedShapeCandidates) ? row.fixedShapeCandidates.map((item) => `${item.shape} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "-"}</strong></div>
+                        </div>
+                        {Array.isArray(row.positiveReasons) && row.positiveReasons.length > 0 ? (
+                          <p className="muted strategy-line" style={{ marginTop: 10 }}>
+                            Positive: {row.positiveReasons.join(", ")}
+                          </p>
                         ) : null}
-                      </div>
-                      <p className="muted strategy-line">{row.summary || "-"}</p>
-                      <div className="row-actions">
-                        <button className="fetch-btn" onClick={() => onOpenRecommendation(row)}>
-                          詳細予想へ
-                        </button>
-                      </div>
+                        {Array.isArray(row.negativeReasons) && row.negativeReasons.length > 0 ? (
+                          <p className="muted strategy-line">
+                            Negative: {row.negativeReasons.join(", ")}
+                          </p>
+                        ) : null}
+                        {!row.fetchFailed ? (
+                          <div className="row-actions" style={{ marginTop: 10 }}>
+                            <button className="fetch-btn" onClick={() => onOpenRecommendation(row.sourceData?.race || row)}>
+                              詳細予想へ
+                            </button>
+                          </div>
+                        ) : null}
+                      </details>
                     </article>
                   ))}
                 </div>
