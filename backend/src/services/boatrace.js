@@ -702,7 +702,7 @@ function parseBeforeinfo(html) {
   };
 }
 
-export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, forceRefresh = false }) {
+export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, forceRefresh = false, screeningProfile = false }) {
   const totalStartedAt = Date.now();
   const cached = forceRefresh ? null : getCachedRaceData({ date, venueId, raceNo });
   if (cached) {
@@ -730,8 +730,12 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
   const beforeinfoUrl = `${BOATRACE_BASE}/owpc/pc/race/beforeinfo?rno=${rno}&jcd=${jcd}&hd=${hd}`;
 
   const officialFetchStartedAt = Date.now();
-  const officialTimeoutMs = Math.max(2000, Math.min(Number(timeoutMs) || 15000, 5000));
-  const beforeinfoTimeoutMs = Math.max(1500, Math.min(Number(timeoutMs) || 15000, 3200));
+  const officialTimeoutMs = screeningProfile
+    ? Math.max(2500, Math.min(Number(timeoutMs) || 15000, 8000))
+    : Math.max(2000, Math.min(Number(timeoutMs) || 15000, 5000));
+  const beforeinfoTimeoutMs = screeningProfile
+    ? Math.max(1800, Math.min(Number(timeoutMs) || 15000, 5000))
+    : Math.max(1500, Math.min(Number(timeoutMs) || 15000, 3200));
   const racelistHtml = await fetchHtml(racelistUrl, officialTimeoutMs);
   let beforeinfoHtml = null;
   let beforeinfoFetchError = null;
@@ -779,7 +783,9 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
   });
   const parseMs = Date.now() - parseStartedAt;
 
-  const kyoteiTimeoutMs = Math.min(Number(timeoutMs) || 15000, 2200);
+  const kyoteiTimeoutMs = screeningProfile
+    ? Math.min(Number(timeoutMs) || 15000, 4000)
+    : Math.min(Number(timeoutMs) || 15000, 2200);
   const kyoteiFetchStartedAt = Date.now();
   let kyoteiBiyori = {
     ok: false,
@@ -856,6 +862,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
         ok: !!kyoteiBiyori?.ok,
         kyoteibiyori_fetch_success: !!kyoteiBiyori?.ok,
         kyoteibiyori_error_reason: kyoteiBiyori?.fallbackReason || kyoteiBiyori?.error || null,
+        screening_profile: !!screeningProfile,
         url: kyoteiBiyori?.url || null,
         tried_urls: Array.isArray(kyoteiBiyori?.triedUrls) ? kyoteiBiyori.triedUrls : [],
         fallback_used: !!kyoteiBiyori?.fallbackUsed,

@@ -124,11 +124,19 @@ function createManualLapDraft() {
   return rows;
 }
 
-async function fetchRaceData(date, venueId, raceNo) {
+async function fetchRaceData(date, venueId, raceNo, options = {}) {
   const url = new URL(`${API_BASE}/race`);
   url.searchParams.set("date", date);
   url.searchParams.set("venueId", String(venueId));
   url.searchParams.set("raceNo", String(raceNo));
+  if (options?.forceRefresh) url.searchParams.set("forceRefresh", "1");
+  if (options?.screeningMode) url.searchParams.set("screening", String(options.screeningMode));
+  if (Number.isFinite(Number(options?.getRaceDataTimeoutMs))) {
+    url.searchParams.set("getRaceDataTimeoutMs", String(Number(options.getRaceDataTimeoutMs)));
+  }
+  if (Number.isFinite(Number(options?.dataFetchTimeoutMs))) {
+    url.searchParams.set("dataFetchTimeoutMs", String(Number(options.dataFetchTimeoutMs)));
+  }
 
   const requestUrl = url.toString();
   let response;
@@ -206,24 +214,65 @@ async function fetchRaceData(date, venueId, raceNo) {
 
 async function fetchHardRacePredictionData(date, venueId) {
   const raceNos = Array.from({ length: 12 }, (_, index) => index + 1);
-  const settled = await Promise.allSettled(
-    raceNos.map((targetRaceNo) => fetchRaceData(date, venueId, targetRaceNo))
-  );
-  return raceNos.map((targetRaceNo, index) => {
-    const result = settled[index];
-    if (result?.status === "fulfilled") {
-      return {
-        raceNo: targetRaceNo,
-        ok: true,
-        data: result.value
-      };
+  const concurrency = 2;
+  const rows = new Array(raceNos.length);
+  let cursor = 0;
+
+  async function fetchOneRace(targetRaceNo) {
+    const attempts = [
+      {
+        screeningMode: "hard_race",
+        getRaceDataTimeoutMs: 12000,
+        dataFetchTimeoutMs: 7500
+      },
+      {
+        screeningMode: "hard_race",
+        getRaceDataTimeoutMs: 14000,
+        dataFetchTimeoutMs: 8500,
+        forceRefresh: true
+      }
+    ];
+
+    let lastError = null;
+    for (let index = 0; index < attempts.length; index += 1) {
+      try {
+        const data = await fetchRaceData(date, venueId, targetRaceNo, attempts[index]);
+        return {
+          raceNo: targetRaceNo,
+          ok: true,
+          attemptCount: index + 1,
+          data
+        };
+      } catch (error) {
+        lastError = error;
+        const message = String(error?.message || "");
+        const maybeTimeout =
+          /timeout/i.test(message) ||
+          /timed out/i.test(message) ||
+          /get_race_data_timeout/i.test(String(error?.apiError?.step || ""));
+        if (!maybeTimeout || index === attempts.length - 1) break;
+      }
     }
+
     return {
       raceNo: targetRaceNo,
       ok: false,
-      error: result?.reason?.message || "Failed to fetch race data"
+      attemptCount: attempts.length,
+      error: lastError?.message || "Failed to fetch race data",
+      errorDetails: getApiErrorDetails(lastError)
     };
-  });
+  }
+
+  async function worker() {
+    while (cursor < raceNos.length) {
+      const currentIndex = cursor;
+      cursor += 1;
+      rows[currentIndex] = await fetchOneRace(raceNos[currentIndex]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, raceNos.length) }, () => worker()));
+  return rows;
 }
 
 async function fetchStatsData(filters = {}) {
@@ -1036,6 +1085,17 @@ function sumFinishWeights(rows, lanes) {
 }
 
 function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
+  const failedDebug = {
+    race_fetch_success: false,
+    kyoteibiyori_fetch_success: false,
+    href_extraction_success: false,
+    parse_success: false,
+    required_fields_ready: false,
+    score_computed: false,
+    final_status: "UNAVAILABLE",
+    attempt_count: Number(entry?.attemptCount || 0),
+    failure_message: entry?.error || "Race data unavailable"
+  };
   if (!entry?.ok || !entry?.data) {
     return {
       raceNo: entry?.raceNo ?? null,
@@ -1044,14 +1104,17 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       boat1AnchorScore: null,
       box234FitScore: null,
       fixed1234Probability: null,
-      buyRecommendation: "SKIP",
-      suggestedShape: "SKIP",
+      finalStatus: "UNAVAILABLE",
+      buyRecommendation: "UNAVAILABLE",
+      suggestedShape: null,
       positiveReasons: [],
       negativeReasons: [entry?.error || "Race data unavailable"],
       topReasons: [entry?.error || "Race data unavailable"],
       expandableReason: "Screening skipped because race data could not be loaded.",
       sourceData: null,
       fetchFailed: true
+      ,
+      screeningDebug: failedDebug
     };
   }
 
@@ -1059,20 +1122,26 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const enhancement = source?.aiEnhancement && typeof source.aiEnhancement === "object"
     ? source.aiEnhancement
     : {};
+  const kyoteiFetch = source?.source?.kyotei_biyori && typeof source.source.kyotei_biyori === "object"
+    ? source.source.kyotei_biyori
+    : {};
+  const officialFetch = source?.source?.official_fetch_status && typeof source.source.official_fetch_status === "object"
+    ? source.source.official_fetch_status
+    : {};
   const orderRows = getHardRaceOrderRows(source);
   const secondRows = getHardRaceFinishRoleRows(source, "second");
   const thirdRows = getHardRaceFinishRoleRows(source, "third");
-  const hardRaceScore = Number(
+  const hardRaceScoreRaw =
     enhancement?.hard_race_score ??
     enhancement?.stage5_ticketing?.one_head_fixed_assessment?.hard_race_score ??
-    0
-  );
-  const boat1AnchorScore = Number(
+    null;
+  const boat1AnchorScoreRaw =
     enhancement?.boat1_trust_score ??
     enhancement?.stage5_ticketing?.one_head_fixed_assessment?.boat1_trust_score ??
     source?.boat1HeadSection?.boat1_head_score ??
-    0
-  );
+    null;
+  const hardRaceScore = Number.isFinite(Number(hardRaceScoreRaw)) ? Number(hardRaceScoreRaw) : null;
+  const boat1AnchorScore = Number.isFinite(Number(boat1AnchorScoreRaw)) ? Number(boat1AnchorScoreRaw) : null;
   const fixed1234Probability = sumOrderProbability(
     orderRows,
     ({ first, second, third }) => (
@@ -1101,31 +1170,42 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const second234Weight = sumFinishWeights(secondRows, [2, 3, 4]);
   const third234Weight = sumFinishWeights(thirdRows, [2, 3, 4]);
   const topShape = shapeRows[0] || null;
-  const box234FitScore = Number(
-    clampNumber(
-      0,
-      100,
-      (
-        second234Weight * 42 +
-        third234Weight * 34 +
-        fixed1234Probability * 100 * 0.16 +
-        (topShape?.probability || 0) * 100 * 0.12
-      ).toFixed(1)
-    )
-  );
-  const conservativeComposite = (
-    hardRaceScore * 0.44 +
-    boat1AnchorScore * 0.34 +
-    box234FitScore * 0.22 +
-    fixed1234Probability * 100 * 0.15
-  );
+  const requiredFieldsReady =
+    hardRaceScore !== null &&
+    boat1AnchorScore !== null &&
+    orderRows.length > 0 &&
+    secondRows.length > 0 &&
+    thirdRows.length > 0;
+  const box234FitScore = requiredFieldsReady
+    ? Number(
+        clampNumber(
+          0,
+          100,
+          (
+            second234Weight * 42 +
+            third234Weight * 34 +
+            fixed1234Probability * 100 * 0.16 +
+            (topShape?.probability || 0) * 100 * 0.12
+          ).toFixed(1)
+        )
+      )
+    : null;
+  const conservativeComposite = requiredFieldsReady
+    ? (
+        hardRaceScore * 0.44 +
+        boat1AnchorScore * 0.34 +
+        box234FitScore * 0.22 +
+        fixed1234Probability * 100 * 0.15
+      )
+    : null;
   const oneHeadFlag = String(
     enhancement?.one_head_fixed_recommended ??
     enhancement?.stage5_ticketing?.one_head_fixed_assessment?.one_head_fixed_recommended ??
     ""
   ).toUpperCase();
-  const buyRecommendation =
-    hardRaceScore >= 75 && boat1AnchorScore >= 70 && box234FitScore >= 57 && fixed1234Probability >= 0.08
+  const finalStatus = !requiredFieldsReady
+    ? "UNAVAILABLE"
+    : hardRaceScore >= 75 && boat1AnchorScore >= 70 && box234FitScore >= 57 && fixed1234Probability >= 0.08
       ? "BUY"
       : hardRaceScore >= 58 && boat1AnchorScore >= 58 && box234FitScore >= 45 && fixed1234Probability >= 0.045
         ? "BORDERLINE"
@@ -1135,8 +1215,8 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
             ? "BORDERLINE"
             : "SKIP";
   const suggestedShape =
-    buyRecommendation === "SKIP" || !topShape || topShape.probability < 0.025
-      ? "SKIP"
+    finalStatus === "UNAVAILABLE" || finalStatus === "SKIP" || !topShape || topShape.probability < 0.025
+      ? null
       : topShape.shape;
   const positiveReasons = Array.isArray(enhancement?.hard_race_positive_factors)
     ? enhancement.hard_race_positive_factors.slice(0, 3)
@@ -1144,29 +1224,66 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const negativeReasons = Array.isArray(enhancement?.hard_race_negative_factors)
     ? enhancement.hard_race_negative_factors.slice(0, 3)
     : [];
-  const topReasons = [...positiveReasons, ...negativeReasons].slice(0, 4);
+  const unavailableReasons = [];
+  if (hardRaceScore === null) unavailableReasons.push("hard_race_score unavailable");
+  if (boat1AnchorScore === null) unavailableReasons.push("boat1_anchor_score unavailable");
+  if (orderRows.length === 0) unavailableReasons.push("order probabilities unavailable");
+  if (secondRows.length === 0 || thirdRows.length === 0) unavailableReasons.push("finish-role probabilities unavailable");
+  const topReasons = requiredFieldsReady
+    ? [...positiveReasons, ...negativeReasons].slice(0, 4)
+    : unavailableReasons.slice(0, 4);
+  const hrefExtractionSuccess =
+    kyoteiFetch?.request_diagnostics?.race_list_fetch_success === true ||
+    kyoteiFetch?.request_diagnostics?.race_list_match_found === true ||
+    Array.isArray(kyoteiFetch?.tried_urls) && kyoteiFetch.tried_urls.length > 0;
+  const parseSuccess =
+    officialFetch?.racelist === "success" &&
+    (kyoteiFetch?.ok === true || kyoteiFetch?.field_diagnostics?.populated_fields?.length > 0);
+  const screeningDebug = {
+    race_fetch_success: officialFetch?.racelist === "success",
+    kyoteibiyori_fetch_success: kyoteiFetch?.kyoteibiyori_fetch_success === true,
+    href_extraction_success: !!hrefExtractionSuccess,
+    parse_success: !!parseSuccess,
+    required_fields_ready: requiredFieldsReady,
+    score_computed: requiredFieldsReady && box234FitScore !== null,
+    final_status: finalStatus,
+    attempt_count: Number(entry?.attemptCount || 1),
+    official_fetch_status: officialFetch,
+    kyoteibiyori_status: {
+      ok: !!kyoteiFetch?.ok,
+      fallback_used: !!kyoteiFetch?.fallback_used,
+      fallback_reason: kyoteiFetch?.fallback_reason || kyoteiFetch?.kyoteibiyori_error_reason || null,
+      tried_urls: Array.isArray(kyoteiFetch?.tried_urls) ? kyoteiFetch.tried_urls : [],
+      populated_fields: Array.isArray(kyoteiFetch?.field_diagnostics?.populated_fields) ? kyoteiFetch.field_diagnostics.populated_fields : [],
+      failed_fields: Array.isArray(kyoteiFetch?.field_diagnostics?.failed_fields) ? kyoteiFetch.field_diagnostics.failed_fields : []
+    }
+  };
 
   return {
     raceNo: Number(source?.race?.raceNo ?? entry?.raceNo ?? null),
     venueName: source?.race?.venueName || venueNameFallback,
-    hardRaceScore: Number.isFinite(hardRaceScore) ? hardRaceScore : null,
-    boat1AnchorScore: Number.isFinite(boat1AnchorScore) ? boat1AnchorScore : null,
+    hardRaceScore,
+    boat1AnchorScore,
     box234FitScore,
-    fixed1234Probability,
-    buyRecommendation,
+    fixed1234Probability: requiredFieldsReady ? fixed1234Probability : null,
+    finalStatus,
+    buyRecommendation: finalStatus,
     suggestedShape,
     positiveReasons,
-    negativeReasons,
+    negativeReasons: requiredFieldsReady ? negativeReasons : unavailableReasons,
     topReasons,
     fixedShapeCandidates: shapeRows,
     orderRowCount: orderRows.length,
-    conservativeComposite: Number(conservativeComposite.toFixed(1)),
+    conservativeComposite: conservativeComposite === null ? null : Number(conservativeComposite.toFixed(1)),
     expandableReason:
-      suggestedShape === "SKIP"
-        ? "Boat 1 trust or 2/3/4 underneath fit was not strong enough for conservative fixed-head screening."
-        : `Selected ${suggestedShape} because boat 1 anchor trust and the 2/3/4 underneath structure were the strongest conservative fit.`,
+      finalStatus === "UNAVAILABLE"
+        ? "Screening data was not complete enough to score this race reliably."
+        : suggestedShape === null
+          ? "Boat 1 trust or 2/3/4 underneath fit was not strong enough for conservative fixed-head screening."
+          : `Selected ${suggestedShape} because boat 1 anchor trust and the 2/3/4 underneath structure were the strongest conservative fit.`,
     sourceData: source,
-    fetchFailed: false
+    fetchFailed: false,
+    screeningDebug
   };
 }
 
@@ -3504,6 +3621,9 @@ export default function App() {
         ? result.map((entry) => buildHardRaceScreeningRow(entry, venueName))
         : [];
       rows.sort((a, b) => {
+        const statusRank = (value) => (value === "BUY" ? 3 : value === "BORDERLINE" ? 2 : value === "SKIP" ? 1 : 0);
+        const statusDiff = statusRank(b?.finalStatus) - statusRank(a?.finalStatus);
+        if (statusDiff !== 0) return statusDiff;
         const scoreDiff = (Number(b?.fixed1234Probability) || -1) - (Number(a?.fixed1234Probability) || -1);
         if (Math.abs(scoreDiff) > 0.00001) return scoreDiff;
         const hardDiff = (Number(b?.hardRaceScore) || -1) - (Number(a?.hardRaceScore) || -1);
@@ -5800,15 +5920,15 @@ export default function App() {
                       <div className="recommend-card-head">
                         <strong>{row.raceNo}R {row.venueName || "-"}</strong>
                         <div className="row-actions">
-                          <span className={`status-pill ${row.buyRecommendation === "BUY" ? "status-hit" : row.buyRecommendation === "BORDERLINE" ? "status-unsettled" : "risk-small"}`}>{row.buyRecommendation}</span>
+                          <span className={`status-pill ${row.finalStatus === "BUY" ? "status-hit" : row.finalStatus === "BORDERLINE" ? "status-unsettled" : row.finalStatus === "UNAVAILABLE" ? "status-unsettled" : "risk-small"}`}>{row.finalStatus}</span>
                         </div>
                       </div>
                       <div className="kv-list">
-                        <div className="kv-row"><span>hard_race_score</span><strong>{formatMaybeNumber(row.hardRaceScore, 1)}</strong></div>
-                        <div className="kv-row"><span>boat1_anchor_score</span><strong>{formatMaybeNumber(row.boat1AnchorScore, 1)}</strong></div>
-                        <div className="kv-row"><span>box_234_fit_score</span><strong>{formatMaybeNumber(row.box234FitScore, 1)}</strong></div>
+                        <div className="kv-row"><span>hard_race_score</span><strong>{row.hardRaceScore == null ? "--" : formatMaybeNumber(row.hardRaceScore, 1)}</strong></div>
+                        <div className="kv-row"><span>boat1_anchor_score</span><strong>{row.boat1AnchorScore == null ? "--" : formatMaybeNumber(row.boat1AnchorScore, 1)}</strong></div>
+                        <div className="kv-row"><span>box_234_fit_score</span><strong>{row.box234FitScore == null ? "--" : formatMaybeNumber(row.box234FitScore, 1)}</strong></div>
                         <div className="kv-row"><span>fixed_1_234_probability</span><strong>{row.fixed1234Probability == null ? "--" : `${formatMaybeNumber(row.fixed1234Probability * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
+                        <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
                       </div>
                       <p className="muted strategy-line">{row.expandableReason}</p>
                       <div className="chip-row" style={{ marginTop: 8 }}>
@@ -5820,7 +5940,7 @@ export default function App() {
                         <summary>Why this race</summary>
                         <div className="kv-list" style={{ marginTop: 10 }}>
                           <div className="kv-row"><span>Top shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
-                          <div className="kv-row"><span>Composite</span><strong>{formatMaybeNumber(row.conservativeComposite, 1)}</strong></div>
+                          <div className="kv-row"><span>Composite</span><strong>{row.conservativeComposite == null ? "--" : formatMaybeNumber(row.conservativeComposite, 1)}</strong></div>
                           <div className="kv-row"><span>Shape candidates</span><strong>{Array.isArray(row.fixedShapeCandidates) ? row.fixedShapeCandidates.map((item) => `${item.shape} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "-"}</strong></div>
                         </div>
                         {Array.isArray(row.positiveReasons) && row.positiveReasons.length > 0 ? (
@@ -5838,6 +5958,16 @@ export default function App() {
                             <button className="fetch-btn" onClick={() => onOpenRecommendation(row.sourceData?.race || row)}>
                               詳細予想へ
                             </button>
+                          </div>
+                        ) : null}
+                        {row.screeningDebug ? (
+                          <div className="kv-list" style={{ marginTop: 10 }}>
+                            <div className="kv-row"><span>race fetch</span><strong>{row.screeningDebug.race_fetch_success ? "ok" : "failed"}</strong></div>
+                            <div className="kv-row"><span>kyoteibiyori</span><strong>{row.screeningDebug.kyoteibiyori_fetch_success ? "ok" : "failed"}</strong></div>
+                            <div className="kv-row"><span>href extraction</span><strong>{row.screeningDebug.href_extraction_success ? "ok" : "failed"}</strong></div>
+                            <div className="kv-row"><span>parse</span><strong>{row.screeningDebug.parse_success ? "ok" : "failed"}</strong></div>
+                            <div className="kv-row"><span>required fields</span><strong>{row.screeningDebug.required_fields_ready ? "ready" : "missing"}</strong></div>
+                            <div className="kv-row"><span>score computed</span><strong>{row.screeningDebug.score_computed ? "yes" : "no"}</strong></div>
                           </div>
                         ) : null}
                       </details>

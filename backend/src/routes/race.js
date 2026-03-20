@@ -9152,6 +9152,8 @@ raceRouter.get("/race", async (req, res, next) => {
     };
     const { date, venueId, raceNo, participationMode } = req.query;
     const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, false);
+    const screeningMode = String(req.query?.screening || "").toLowerCase();
+    const isHardRaceScreening = screeningMode === "hard_race";
 
     if (!date || !venueId || !raceNo) {
       return res.status(400).json({
@@ -9166,9 +9168,29 @@ raceRouter.get("/race", async (req, res, next) => {
     let data;
     try {
       failureWhere = "race.route:getRaceData";
-      const raceDataTimeoutMs = Math.min(Number(process.env.RACE_API_GETRACEDATA_TIMEOUT_MS || 9000), 9000);
+      const raceDataTimeoutMs = Math.max(
+        3000,
+        Math.min(
+          toInt(req.query?.getRaceDataTimeoutMs, Number(process.env.RACE_API_GETRACEDATA_TIMEOUT_MS || 9000)),
+          isHardRaceScreening ? 14000 : 9000
+        )
+      );
+      const dataFetchTimeoutMs = Math.max(
+        2500,
+        Math.min(
+          toInt(req.query?.dataFetchTimeoutMs, isHardRaceScreening ? 7500 : 5000),
+          isHardRaceScreening ? 8500 : 5000
+        )
+      );
       data = await withTimeout(
-        () => getRaceData({ date, venueId, raceNo, forceRefresh, timeoutMs: 5000 }),
+        () => getRaceData({
+          date,
+          venueId,
+          raceNo,
+          forceRefresh,
+          timeoutMs: dataFetchTimeoutMs,
+          screeningProfile: isHardRaceScreening
+        }),
         {
           timeoutMs: raceDataTimeoutMs,
           code: "get_race_data_timeout",
