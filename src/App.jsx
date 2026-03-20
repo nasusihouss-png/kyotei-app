@@ -1165,6 +1165,76 @@ function getUnderlyingBoatFit(racer = {}, lane) {
   return Number((clampNumber(0, 1, fit) * 100).toFixed(1));
 }
 
+function buildFixed1234Matrix({
+  fixed1234TotalProbability,
+  lane2Score,
+  lane3Score,
+  lane4Score
+}) {
+  if (!Number.isFinite(fixed1234TotalProbability) || fixed1234TotalProbability <= 0) {
+    return {
+      matrix: {},
+      total: null,
+      top4: [],
+      top4Total: null,
+      concentrationRatio: null
+    };
+  }
+
+  const secondWeightsBase = {
+    2: (Number(lane2Score) || 0) * 1.08,
+    3: (Number(lane3Score) || 0) * 1.0,
+    4: (Number(lane4Score) || 0) * 0.92
+  };
+  const thirdWeightsBase = {
+    2: (Number(lane2Score) || 0) * 0.94,
+    3: (Number(lane3Score) || 0) * 1.0,
+    4: (Number(lane4Score) || 0) * 0.98
+  };
+  const combos = [
+    "1-2-3",
+    "1-2-4",
+    "1-3-2",
+    "1-3-4",
+    "1-4-2",
+    "1-4-3"
+  ];
+  const rawRows = combos.map((combo) => {
+    const [, second, third] = combo.split("-").map(Number);
+    const secondWeight = secondWeightsBase[second] || 0;
+    const thirdWeight = thirdWeightsBase[third] || 0;
+    const compatibility =
+      second === 2 ? 1.08 :
+      second === 3 ? 1.03 :
+      0.95;
+    const thirdResidual =
+      third === 4 ? 1.03 :
+      third === 3 ? 1.0 :
+      0.97;
+    return {
+      combo,
+      raw: Math.max(0.0001, secondWeight * thirdWeight * compatibility * thirdResidual)
+    };
+  });
+  const rawTotal = rawRows.reduce((sum, row) => sum + row.raw, 0);
+  const matrixEntries = rawRows.map((row) => ({
+    combo: row.combo,
+    probability: Number(((row.raw / rawTotal) * fixed1234TotalProbability).toFixed(4))
+  })).sort((a, b) => b.probability - a.probability);
+  const top4 = matrixEntries.slice(0, 4);
+  const top4Total = Number(top4.reduce((sum, row) => sum + row.probability, 0).toFixed(4));
+  const concentrationRatio = fixed1234TotalProbability > 0
+    ? Number((top4Total / fixed1234TotalProbability).toFixed(4))
+    : null;
+  return {
+    matrix: Object.fromEntries(matrixEntries.map((row) => [row.combo, row.probability])),
+    total: Number(fixed1234TotalProbability.toFixed(4)),
+    top4,
+    top4Total,
+    concentrationRatio
+  };
+}
+
 function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const failedDebug = {
     race_fetch_success: false,
@@ -1304,20 +1374,35 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const fixed1234Probability = coreFieldsReady
     ? Number(
         clampNumber(
-          0.01,
-          0.48,
+          0.02,
+          0.74,
           (
-            (boat1AnchorScore / 100) * 0.2 +
-            (box234FitScore / 100) * 0.12 +
-            venueBias * 0.04 +
-            entryStable * 0.05 -
-            opponentPressure * 0.06 -
-            risk1 * 0.1 +
-            ((orderProbabilityOptional ?? 0) * 0.25)
+            (boat1AnchorScore / 100) * 0.26 +
+            (box234FitScore / 100) * 0.2 +
+            venueBias * 0.07 +
+            entryStable * 0.08 -
+            opponentPressure * 0.05 -
+            risk1 * 0.08 +
+            ((orderProbabilityOptional ?? 0) * 0.18)
           ).toFixed(4)
         )
       )
     : null;
+
+  const fixed1234MatrixData = coreFieldsReady
+    ? buildFixed1234Matrix({
+        fixed1234TotalProbability: fixed1234Probability,
+        lane2Score: underlyingFits[0]?.score,
+        lane3Score: underlyingFits[1]?.score,
+        lane4Score: underlyingFits[2]?.score
+      })
+    : {
+        matrix: {},
+        total: null,
+        top4: [],
+        top4Total: null,
+        concentrationRatio: null
+      };
 
   const hardRaceScore = coreFieldsReady
     ? Number(
@@ -1325,9 +1410,9 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
           0,
           100,
           (
-            boat1AnchorScore * 0.62 +
-            box234FitScore * 0.22 +
-            (fixed1234Probability * 100) * 0.16 -
+            boat1AnchorScore * 0.54 +
+            box234FitScore * 0.24 +
+            (fixed1234Probability * 100) * 0.22 -
             opponentPressure * 16
           ).toFixed(1)
         )
@@ -1343,11 +1428,23 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const suggestedShape = coreFieldsReady && box234FitScore >= 44 ? shapeBase : null;
   const conservativeComposite = hardRaceScore;
 
+  const buyStyleRecommendation = !coreFieldsReady
+    ? "UNAVAILABLE"
+    : boat1AnchorScore < 52 || fixed1234Probability < 0.18
+      ? "SKIP"
+      : fixed1234Probability >= 0.52 && (fixed1234MatrixData.concentrationRatio ?? 0) < 0.78
+        ? "BUY-6"
+        : fixed1234Probability >= 0.42 && (fixed1234MatrixData.top4Total ?? 0) >= 0.34
+          ? "BUY-4"
+          : fixed1234Probability >= 0.28
+            ? "BORDERLINE"
+            : "SKIP";
+
   const finalStatus = !coreFieldsReady
     ? "UNAVAILABLE"
-    : hardRaceScore >= 72 && boat1AnchorScore >= 67 && fixed1234Probability >= 0.14
+    : buyStyleRecommendation === "BUY-6" || buyStyleRecommendation === "BUY-4"
       ? "BUY"
-      : hardRaceScore >= 56 && boat1AnchorScore >= 57 && fixed1234Probability >= 0.08
+      : buyStyleRecommendation === "BORDERLINE"
         ? "BORDERLINE"
         : "SKIP";
 
@@ -1381,11 +1478,16 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     core_fields_ready: coreFieldsReady,
     hard_race_score_ready: hardRaceScore !== null,
     final_status: finalStatus,
+    buy_style_recommendation: buyStyleRecommendation,
     attempt_count: Number(entry?.attemptCount || 1),
     core_fields_present: coreFieldsPresent.filter((row) => row.ready).map((row) => row.label),
     core_fields_missing: coreFieldsMissing,
     optional_fields_missing: optionalMissing,
     why_unavailable: finalStatus === "UNAVAILABLE" ? coreFieldsMissing : [],
+    fixed1234_matrix: fixed1234MatrixData.matrix,
+    fixed1234_total_probability: fixed1234MatrixData.total,
+    fixed1234_top4_total: fixed1234MatrixData.top4Total,
+    fixed1234_concentration_ratio: fixed1234MatrixData.concentrationRatio,
     official_fetch_status: officialFetch,
     kyoteibiyori_status: {
       ok: !!kyoteiFetch?.ok,
@@ -1404,6 +1506,11 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     boat1AnchorScore,
     box234FitScore,
     fixed1234Probability,
+    fixed1234Matrix: fixed1234MatrixData.matrix,
+    fixed1234TotalProbability: fixed1234MatrixData.total,
+    fixed1234Top4: fixed1234MatrixData.top4,
+    fixed1234Top4Total: fixed1234MatrixData.top4Total,
+    buyStyleRecommendation,
     finalStatus,
     buyRecommendation: finalStatus,
     suggestedShape,
@@ -3766,7 +3873,10 @@ export default function App() {
         const statusRank = (value) => (value === "BUY" ? 3 : value === "BORDERLINE" ? 2 : value === "SKIP" ? 1 : 0);
         const statusDiff = statusRank(b?.finalStatus) - statusRank(a?.finalStatus);
         if (statusDiff !== 0) return statusDiff;
-        const scoreDiff = (Number(b?.fixed1234Probability) || -1) - (Number(a?.fixed1234Probability) || -1);
+        const buyStyleRank = (value) => (value === "BUY-6" ? 3 : value === "BUY-4" ? 2 : value === "BORDERLINE" ? 1 : 0);
+        const buyStyleDiff = buyStyleRank(b?.buyStyleRecommendation) - buyStyleRank(a?.buyStyleRecommendation);
+        if (buyStyleDiff !== 0) return buyStyleDiff;
+        const scoreDiff = (Number(b?.fixed1234TotalProbability) || -1) - (Number(a?.fixed1234TotalProbability) || -1);
         if (Math.abs(scoreDiff) > 0.00001) return scoreDiff;
         const hardDiff = (Number(b?.hardRaceScore) || -1) - (Number(a?.hardRaceScore) || -1);
         if (Math.abs(hardDiff) > 0.00001) return hardDiff;
@@ -6063,15 +6173,26 @@ export default function App() {
                         <strong>{row.raceNo}R {row.venueName || "-"}</strong>
                         <div className="row-actions">
                           <span className={`status-pill ${row.finalStatus === "BUY" ? "status-hit" : row.finalStatus === "BORDERLINE" ? "status-unsettled" : row.finalStatus === "UNAVAILABLE" ? "status-unsettled" : "risk-small"}`}>{row.finalStatus}</span>
+                          <span className={`status-pill ${row.buyStyleRecommendation === "BUY-6" || row.buyStyleRecommendation === "BUY-4" ? "status-hit" : row.buyStyleRecommendation === "BORDERLINE" ? "status-unsettled" : row.buyStyleRecommendation === "UNAVAILABLE" ? "status-unsettled" : "risk-small"}`}>{row.buyStyleRecommendation || "-"}</span>
                         </div>
                       </div>
                       <div className="kv-list">
                         <div className="kv-row"><span>hard_race_score</span><strong>{row.hardRaceScore == null ? "--" : formatMaybeNumber(row.hardRaceScore, 1)}</strong></div>
                         <div className="kv-row"><span>boat1_anchor_score</span><strong>{row.boat1AnchorScore == null ? "--" : formatMaybeNumber(row.boat1AnchorScore, 1)}</strong></div>
                         <div className="kv-row"><span>box_234_fit_score</span><strong>{row.box234FitScore == null ? "--" : formatMaybeNumber(row.box234FitScore, 1)}</strong></div>
-                        <div className="kv-row"><span>fixed_1_234_probability</span><strong>{row.fixed1234Probability == null ? "--" : `${formatMaybeNumber(row.fixed1234Probability * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>fixed1234_total_probability</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
                         <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
                       </div>
+                      {row.fixed1234Matrix && Object.keys(row.fixed1234Matrix).length > 0 ? (
+                        <div className="kv-list" style={{ marginTop: 10 }}>
+                          {["1-2-3", "1-2-4", "1-3-2", "1-3-4", "1-4-2", "1-4-3"].map((combo) => (
+                            <div className="kv-row" key={`matrix-${row.raceNo}-${combo}`}>
+                              <span>{combo}</span>
+                              <strong>{formatMaybeNumber((Number(row.fixed1234Matrix?.[combo]) || 0) * 100, 1)}%</strong>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                       <p className="muted strategy-line">{row.expandableReason}</p>
                       <div className="chip-row" style={{ marginTop: 8 }}>
                         {(Array.isArray(row.topReasons) ? row.topReasons : []).map((reason, index) => (
@@ -6083,8 +6204,15 @@ export default function App() {
                         <div className="kv-list" style={{ marginTop: 10 }}>
                           <div className="kv-row"><span>Top shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
                           <div className="kv-row"><span>Composite</span><strong>{row.conservativeComposite == null ? "--" : formatMaybeNumber(row.conservativeComposite, 1)}</strong></div>
+                          <div className="kv-row"><span>Buy style</span><strong>{row.buyStyleRecommendation || "-"}</strong></div>
+                          <div className="kv-row"><span>Top 4 total</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>Shape candidates</span><strong>{Array.isArray(row.fixedShapeCandidates) ? row.fixedShapeCandidates.map((item) => `${item.shape} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "-"}</strong></div>
                         </div>
+                        {Array.isArray(row.fixed1234Top4) && row.fixed1234Top4.length > 0 ? (
+                          <p className="muted strategy-line" style={{ marginTop: 10 }}>
+                            Top 4: {row.fixed1234Top4.map((item) => `${item.combo} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(", ")}
+                          </p>
+                        ) : null}
                         {Array.isArray(row.positiveReasons) && row.positiveReasons.length > 0 ? (
                           <p className="muted strategy-line" style={{ marginTop: 10 }}>
                             Positive: {row.positiveReasons.join(", ")}
