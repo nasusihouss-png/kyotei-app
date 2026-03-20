@@ -523,6 +523,10 @@ function buildCompatibilityWithHead(headBoat, row, headRow, escapeScore) {
     return {
       second_bonus: 0,
       third_bonus: 0,
+      compatibility_with_head_boost: 0,
+      inside_survival_when_attacked: 0,
+      sashi_priority_when_head1: 0,
+      outer_attack_follow_through: 0,
       reasons: []
     };
   }
@@ -548,20 +552,26 @@ function buildCompatibilityWithHead(headBoat, row, headRow, escapeScore) {
 
   let secondBonus = 0;
   let thirdBonus = 0;
+  let insideSurvivalWhenAttacked = 0;
+  let sashiPriorityWhenHead1 = 0;
+  let outerAttackFollowThrough = 0;
 
   if (headActualLane === 1) {
     secondBonus += laneFit2 * 0.1 + sashi * 0.12 + makuriSashi * 0.09 + startEdge * 0.35;
     thirdBonus += laneFit3 * 0.08 + nuki * 0.08 + safeRunBias * 0.18;
     if (lane === 2 || lane === 3) {
-      secondBonus += lane === 2 ? 0.052 : 0.038;
-      reasons.push(lane === 2 ? "head1_to_2_compatibility" : "inner_partner_second");
+      sashiPriorityWhenHead1 = lane === 2 ? 0.075 : 0.052;
+      secondBonus += sashiPriorityWhenHead1;
+      reasons.push(lane === 2 ? "head1_to_2_compatibility" : "head1_to_3_makuri_sashi");
     }
     if (lane === 4) {
-      thirdBonus += 0.03 + attackReadiness * 0.22;
+      outerAttackFollowThrough = 0.03 + attackReadiness * 0.18;
+      thirdBonus += outerAttackFollowThrough;
       reasons.push("outer_attack_flow_third");
     }
     if (lane >= 5) {
-      thirdBonus += 0.02 + nuki * 0.05;
+      outerAttackFollowThrough = 0.02 + nuki * 0.05 + (lane === 6 ? 0.016 : 0);
+      thirdBonus += outerAttackFollowThrough;
       reasons.push("outer_residual_third");
     }
   } else if (headActualLane === 4) {
@@ -586,29 +596,41 @@ function buildCompatibilityWithHead(headBoat, row, headRow, escapeScore) {
       }
     }
     if (lane === 1) {
-      secondBonus += 0.018;
-      thirdBonus += 0.022;
+      insideSurvivalWhenAttacked = 0.028;
+      secondBonus += insideSurvivalWhenAttacked;
+      thirdBonus += 0.024;
       reasons.push("head4_inside_survival");
     }
     if (lane >= 5) {
-      thirdBonus += 0.018 + nuki * 0.03;
+      outerAttackFollowThrough = 0.016 + nuki * 0.02;
+      thirdBonus += outerAttackFollowThrough;
       reasons.push("head4_outer_residual");
     }
   } else {
     const distance = Math.abs(lane - headActualLane);
     secondBonus += laneFit2 * 0.08 + turning * 0.06 + Math.max(0, 0.045 - distance * 0.01);
     thirdBonus += laneFit3 * 0.08 + straight * 0.05 + safeRunBias * 0.12;
+    if ((headActualLane === 3 || headActualLane === 4) && lane === 1) {
+      insideSurvivalWhenAttacked = 0.03 + Math.max(0, 0.42 - escapeScore) * 0.05;
+      secondBonus += insideSurvivalWhenAttacked;
+      reasons.push("inside_survival_when_attacked");
+    }
     if (lane < headActualLane) reasons.push("inside_of_head");
     if (lane > headActualLane) reasons.push("outside_residual");
   }
 
   secondBonus += Math.min(0.08, attackReadiness * 0.5);
   thirdBonus += Math.min(0.07, attackReadiness * 0.28 + nuki * 0.04);
+  const compatibilityWithHeadBoost = secondBonus + thirdBonus * 0.7;
   if (toNum(head?.lane_fit_1st, 0) >= 55 && headActualLane === 1) reasons.push("stable_head_shape");
 
   return {
     second_bonus: round(clamp(-0.04, 0.24, secondBonus), 4),
     third_bonus: round(clamp(-0.04, 0.22, thirdBonus), 4),
+    compatibility_with_head_boost: round(clamp(-0.04, 0.34, compatibilityWithHeadBoost), 4),
+    inside_survival_when_attacked: round(clamp(0, 0.08, insideSurvivalWhenAttacked), 4),
+    sashi_priority_when_head1: round(clamp(0, 0.1, sashiPriorityWhenHead1), 4),
+    outer_attack_follow_through: round(clamp(0, 0.09, outerAttackFollowThrough), 4),
     reasons
   };
 }
@@ -764,23 +786,48 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       toNum(laneFinishPriors?.first?.[lane], 1) * 0.08 -
       lateRisk * 0.12 -
       hiddenF * (lane === 1 ? 0.1 : 0.08);
+    const exhibitionFirstContributionBefore =
+      round(attackCapability * 0.08 + startEdge * 0.18, 4);
+    const coreFirstContributionBefore =
+      round(
+        laneFit1 * 0.24 +
+        lapHeadBoost * 0.3 +
+        monsterMotorFirstBonus * 0.78 +
+        (toNum(row?.motor_true, 0) / 100) * 0.14 +
+        toNum(laneFinishPriors?.first?.[lane], 1) * 0.08 +
+        boat1BaseFirstBonus,
+        4
+      );
 
     const firstPlaceScore =
       toNum(baseRoleProbabilities?.first?.[lane], 0) * 0.44 +
-      laneFit1 * 0.14 +
-      attackCapability * 0.04 +
-      lapHeadBoost * 0.38 +
+      laneFit1 * 0.1 +
+      attackCapability * 0.015 +
+      lapHeadBoost * 0.46 +
       monsterMotorFirstBonus * 0.72 +
-      motor2 * 0.18 +
-      (toNum(row?.motor_true, 0) / 100) * 0.08 +
-      startEdge * 0.12 +
-      toNum(row?.finish_role_bonuses?.firstPlaceBonus, 0) * 0.22 +
-      attackStDeltaBonus * 0.12 +
-      firstStyle * 0.04 +
-      toNum(laneFinishPriors?.first?.[lane], 1) * 0.2 +
+      motor2 * 0.24 +
+      (toNum(row?.motor_true, 0) / 100) * 0.12 +
+      startEdge * 0.05 +
+      toNum(row?.finish_role_bonuses?.firstPlaceBonus, 0) * 0.14 +
+      attackStDeltaBonus * 0.06 +
+      firstStyle * 0.02 +
+      toNum(laneFinishPriors?.first?.[lane], 1) * 0.28 +
       boat1BaseFirstBonus -
       lateRisk * 0.12 -
       hiddenF * (lane === 1 ? 0.1 : 0.08);
+    const exhibitionFirstContributionAfter =
+      round(attackCapability * 0.015 + startEdge * 0.05 + attackStDeltaBonus * 0.06, 4);
+    const coreFirstContributionAfter =
+      round(
+        laneFit1 * 0.1 +
+        lapHeadBoost * 0.46 +
+        monsterMotorFirstBonus * 0.72 +
+        motor2 * 0.24 +
+        (toNum(row?.motor_true, 0) / 100) * 0.12 +
+        toNum(laneFinishPriors?.first?.[lane], 1) * 0.28 +
+        boat1BaseFirstBonus,
+        4
+      );
     const secondPlaceScoreBeforeTuning =
       toNum(baseRoleProbabilities?.second?.[lane], 0) * 0.34 +
       laneFit2 * 0.14 +
@@ -797,6 +844,8 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       stableFinishBonus * 0.16 +
       tunedSurvivalAfterAttackBonus * 0.1 +
       toNum(primaryCompatibility?.second_bonus, 0) * 0.42 +
+      toNum(primaryCompatibility?.inside_survival_when_attacked, 0) * 0.28 +
+      toNum(primaryCompatibility?.sashi_priority_when_head1, 0) * 0.34 +
       toNum(row?.finish_role_bonuses?.secondPlaceBonus, 0) * 0.18 -
       instabilityStDeltaPenalty * 0.22 -
       lateRisk * 0.1 -
@@ -819,6 +868,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       stableFinishBonus * 0.34 +
       thirdStyle * 0.04 +
       toNum(primaryCompatibility?.third_bonus, 0) * 0.14 +
+      toNum(primaryCompatibility?.outer_attack_follow_through, 0) * 0.24 +
       toNum(row?.finish_role_bonuses?.thirdPlaceBonus, 0) * 0.12 -
       instabilityStDeltaPenalty * 0.16 -
       toNum(thirdExclusion?.penalty, 0) -
@@ -907,6 +957,9 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       instability_st_delta_penalty: round(instabilityStDeltaPenalty, 4),
       stable_finish_bonus: round(stableFinishBonus, 4),
       compatibility_with_head: round(toNum(primaryCompatibility?.second_bonus, 0), 4),
+      compatibility_with_head_boost: round(toNum(primaryCompatibility?.compatibility_with_head_boost, 0), 4),
+      inside_survival_when_attacked: round(toNum(primaryCompatibility?.inside_survival_when_attacked, 0), 4),
+      sashi_priority_when_head1: round(toNum(primaryCompatibility?.sashi_priority_when_head1, 0), 4),
       likely_head_survival_context: round(likelyHeadSurvivalContext, 4),
       attack_but_not_win_carryover: round(tunedAttackButNotWinCarryover, 4),
       survival_after_attack_bonus: round(tunedSurvivalAfterAttackBonus, 4),
@@ -944,6 +997,8 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
         third: round(insideSecondThirdRecoveryAfter.third, 4)
       },
       compatibility_with_head: round(toNum(primaryCompatibility?.third_bonus, 0), 4),
+      compatibility_with_head_boost: round(toNum(primaryCompatibility?.compatibility_with_head_boost, 0), 4),
+      outer_attack_follow_through: round(toNum(primaryCompatibility?.outer_attack_follow_through, 0), 4),
       exclusion_penalty: round(toNum(thirdExclusion?.penalty, 0), 4)
     };
     row.first_place_bonus_breakdown = {
@@ -951,10 +1006,15 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       attack_capability: round(attackCapability, 4),
       boat1_stability_bonus: round(toNum(row?.boat1_stability_bonus, 0), 4),
       boat1_delay_penalty: round(toNum(row?.boat1_delay_penalty, 0), 4),
+      outside_head_suppression_amount: round(toNum(row?.outside_head_suppression_amount, 0), 4),
       st_vs_result_failure_risk: round(toNum(stVsResultAdjustment?.failure_risk, 0), 4),
       lap_head_boost: round(lapHeadBoost, 4),
       monster_motor_first_bonus: round(monsterMotorFirstBonus, 4),
       boat1_base_first_bonus: round(boat1BaseFirstBonus, 4),
+      exhibition_contribution_before: exhibitionFirstContributionBefore,
+      exhibition_contribution_after: exhibitionFirstContributionAfter,
+      core_inside_motor_lap_contribution_before: coreFirstContributionBefore,
+      core_inside_motor_lap_contribution_after: coreFirstContributionAfter,
       start_edge: round(startEdge, 4),
       lane1stScore: round(laneFit1, 4),
       inside_lane_prior: round(toNum(laneFinishPriors?.first?.[lane], 1), 4)
@@ -973,9 +1033,40 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     };
   }
 
+  const secondPlaceCandidatesByHead = {};
+  const thirdPlaceCandidatesByHead = {};
+  for (const headCandidate of sortedHeadCandidates) {
+    const headKey = String(headCandidate.lane);
+    secondPlaceCandidatesByHead[headKey] = normalizeRows(
+      laneContexts
+        .filter((row) => boatNumberOf(row) !== headCandidate.lane)
+        .map((row) => ({
+          lane: row.lane,
+          weight:
+            toNum(row?.finish_role_scores?.second_place_score, 0) * 0.64 +
+            toNum(row?.compatibility_with_head?.[headKey]?.second_bonus, 0) * 0.9 +
+            toNum(row?.compatibility_with_head?.[headKey]?.compatibility_with_head_boost, 0) * 0.28
+        }))
+    ).slice(0, 4);
+    thirdPlaceCandidatesByHead[headKey] = normalizeRows(
+      laneContexts
+        .filter((row) => boatNumberOf(row) !== headCandidate.lane)
+        .map((row) => ({
+          lane: row.lane,
+          weight:
+            toNum(row?.finish_role_scores?.third_place_score, 0) * 0.68 +
+            toNum(row?.compatibility_with_head?.[headKey]?.third_bonus, 0) * 0.72 +
+            toNum(row?.compatibility_with_head?.[headKey]?.outer_attack_follow_through, 0) * 0.22 +
+            (actualLaneOf(row) === 6 ? 0.018 : 0)
+        }))
+    ).slice(0, 5);
+  }
+
   return {
     headCandidates: sortedHeadCandidates,
-    primaryHeadLane
+    primaryHeadLane,
+    secondPlaceCandidatesByHead,
+    thirdPlaceCandidatesByHead
   };
 }
 
@@ -1564,6 +1655,16 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, ac
   const boat1SurvivalBonus = boatNumberOf(row) === 1 && actualLane === 1
     ? toNum(row?.boat1_survival_bonus, 0)
     : 0;
+  const lane6HeadGate =
+    actualLane === 6
+      ? (
+          toNum(row?.monster_motor_first_bonus, 0) >= 0.1 &&
+          lapBoost >= 0.03 &&
+          motor2 >= 0.5 &&
+          toNum(row?.attack_readiness_bonus, 0) >= 0.08 &&
+          toNum(row?.outside_head_suppression_amount, 0) <= 0.03
+        )
+      : true;
 
   first += laneFit1 * 0.14 + motorTrue * 0.08 + motor2 * 0.16 + lapBoost * 0.28 + monsterMotorFirstBonus * 0.56 + attackStDeltaBonus * 0.1 + startEdge * 0.5 + boat1BaseFirstBonus - lateRisk * 0.28 - hiddenF * 0.16;
   second += laneFit2 * 0.16 + ippansen2renSupport * 0.18 + ippansen3renSupport * 0.14 + motor2 * 0.22 + turnEfficiency * 0.26 + startEdge * 0.18 + stretchBoost * 0.08 + attackStDeltaBonus * 0.1 + stableFinishBonus * 0.16 + boat1SurvivalBonus * 0.48 - instabilityStDeltaPenalty * 0.12 - lateRisk * 0.16 - hiddenF * 0.06;
@@ -1577,6 +1678,7 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, ac
 
   if (actualLane === 1) first += 0.2 + escapeScore * 0.16;
   if (actualLane >= 3) first -= outsideHeadSuppression * (actualLane === 3 ? 0.7 : actualLane === 4 ? 0.9 : 0.55);
+  if (actualLane === 6 && !lane6HeadGate) first -= 0.32;
 
   switch (scenario) {
     case "boat1_escape":
@@ -1658,7 +1760,8 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, ac
   return {
     first: Math.max(0.05, first),
     second: Math.max(0.05, second),
-    third: Math.max(0.05, third)
+    third: Math.max(0.05, third),
+    lane6_head_gate: lane6HeadGate ? 1 : 0
   };
 }
 
@@ -1691,6 +1794,7 @@ function aggregateScenarioFinishProbabilities(scenarioRows, laneMap, actualLaneM
         secondPlaceBonus: 0,
         thirdPlaceBonus: 0
       };
+      roleBonusByLane[String(lane)].lane6_head_gate = roleWeights?.lane6_head_gate ?? null;
       firstRows.push({
         lane,
         weight: toNum(baseProbs?.first?.[lane], 0) * roleWeights.first * toNum(laneFinishPriors?.first?.[lane], 1)
@@ -2906,7 +3010,29 @@ export function buildHitRateEnhancementContext({
       }
     },
     stage4_opponents: {
+      head_candidate: finishRoleFramework.primaryHeadLane,
       head_candidate_set: finishRoleFramework.headCandidates.map((row) => row.lane),
+      second_place_candidates_by_head: finishRoleFramework.secondPlaceCandidatesByHead,
+      third_place_candidates_by_head: finishRoleFramework.thirdPlaceCandidatesByHead,
+      lane6_head_promotion_debug: {
+        actual_lane6_boat: boatNumberOf(actualLaneMap.get(6)),
+        lane6_head_gate: actualLaneMap.get(6)
+          ? (
+              toNum(actualLaneMap.get(6)?.monster_motor_first_bonus, 0) >= 0.1 &&
+              toNum(actualLaneMap.get(6)?.finish_role_scores?.lap_head_boost, 0) >= 0.03 &&
+              (actualLaneMap.get(6)?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLaneMap.get(6)?.motor_raw?.motor2ren, 0) / 100) : 0) >= 0.5 &&
+              toNum(actualLaneMap.get(6)?.attack_readiness_bonus, 0) >= 0.08 &&
+              toNum(actualLaneMap.get(6)?.outside_head_suppression_amount, 0) <= 0.03
+            ) ? 1 : 0
+          : 0,
+        lane6_conditions: actualLaneMap.get(6) ? {
+          monster_motor_first_bonus: round(toNum(actualLaneMap.get(6)?.monster_motor_first_bonus, 0), 4),
+          lap_head_boost: round(toNum(actualLaneMap.get(6)?.finish_role_scores?.lap_head_boost, 0), 4),
+          motor2ren: round(actualLaneMap.get(6)?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLaneMap.get(6)?.motor_raw?.motor2ren, 0) / 100) : 0, 4),
+          attack_readiness_bonus: round(toNum(actualLaneMap.get(6)?.attack_readiness_bonus, 0), 4),
+          outside_head_suppression_amount: round(toNum(actualLaneMap.get(6)?.outside_head_suppression_amount, 0), 4)
+        } : null
+      },
       second_candidate_set: normalizeRows(laneContexts.map((row) => ({ lane: row.lane, weight: toNum(row?.finish_role_scores?.second_place_score, 0) }))).slice(0, 4).map((row) => row.lane),
       third_candidate_set: normalizeRows(laneContexts.map((row) => ({ lane: row.lane, weight: toNum(row?.finish_role_scores?.third_place_score, 0) }))).slice(0, 5).map((row) => row.lane),
       compatibility_with_head: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row.compatibility_with_head])),
