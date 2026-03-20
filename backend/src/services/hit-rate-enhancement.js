@@ -55,6 +55,13 @@ function average(values) {
   return valid.reduce((sum, value) => sum + value, 0) / valid.length;
 }
 
+function normalizePercentRate(value) {
+  if (!Number.isFinite(value)) return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric <= 1 ? numeric * 100 : numeric;
+}
+
 function getNormalizedAvgStRank(features) {
   if (Number.isFinite(features?.avg_st_rank)) return features.avg_st_rank;
   if (Number.isFinite(features?.lane_st_rank)) return features.lane_st_rank;
@@ -298,6 +305,51 @@ function buildCapabilityProfile(row, actualLaneMap) {
       slow_st_vs_neighbors: slowStVsNeighbors ? 1 : 0,
       fast_st_high_risk: fastSt && style === "makuri" ? 1 : 0
     }
+  };
+}
+
+function buildStAnalysisProfile(row) {
+  const style = String(row?.style || "balanced");
+  const stabilityRate = normalizePercentRate(
+    row?.stability_rate ??
+    row?.stabilityRate ??
+    row?.player_start_profile?.stability_rate
+  );
+  const breakoutRate = normalizePercentRate(
+    row?.breakout_rate ??
+    row?.breakoutRate ??
+    row?.player_start_profile?.breakout_rate
+  );
+  const delayRate = normalizePercentRate(
+    row?.delay_rate ??
+    row?.delayRate ??
+    row?.player_start_profile?.delay_rate
+  );
+  const lapSupport = row?.prediction_data_usage?.lapTime?.used
+    ? clamp(0, 1, Math.max(0, 6.86 - toNum(row?.motor_form?.lapTime, 6.86)) / 0.18)
+    : 0.4;
+  const attackPressureFromSt = clamp(
+    0,
+    0.18,
+    (Number.isFinite(breakoutRate) ? (breakoutRate / 100) * 0.11 : 0) +
+      Math.max(0, toNum(row?.attack_capability, 0)) * 0.04 +
+      lapSupport * 0.02 +
+      (style === "makuri" ? 0.024 : style === "makuri_sashi" ? 0.014 : style === "sashi" ? 0.008 : 0)
+  );
+  const boat1StabilityBonus = boatNumberOf(row) === 1
+    ? round(clamp(0, 0.12, Number.isFinite(stabilityRate) ? Math.max(0, stabilityRate - 45) * 0.0015 : 0), 4)
+    : 0;
+  const boat1DelayPenalty = boatNumberOf(row) === 1
+    ? round(clamp(0, 0.14, Number.isFinite(delayRate) ? Math.max(0, delayRate - 12) * 0.002 : 0), 4)
+    : 0;
+
+  return {
+    stability_rate: Number.isFinite(stabilityRate) ? round(stabilityRate, 2) : null,
+    breakout_rate: Number.isFinite(breakoutRate) ? round(breakoutRate, 2) : null,
+    delay_rate: Number.isFinite(delayRate) ? round(delayRate, 2) : null,
+    attack_pressure_from_st: round(attackPressureFromSt, 4),
+    boat1_stability_bonus: boat1StabilityBonus,
+    boat1_delay_penalty: boat1DelayPenalty
   };
 }
 
@@ -789,6 +841,12 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       attack_capability: round(attackCapability, 4),
       turn_efficiency: round(turnEfficiency, 4),
       recovery_power: round(recoveryPower, 4),
+      stability_rate: Number.isFinite(row?.stability_rate) ? round(row.stability_rate, 2) : null,
+      breakout_rate: Number.isFinite(row?.breakout_rate) ? round(row.breakout_rate, 2) : null,
+      delay_rate: Number.isFinite(row?.delay_rate) ? round(row.delay_rate, 2) : null,
+      attack_pressure_from_st: round(toNum(row?.attack_pressure_from_st, 0), 4),
+      boat1_stability_bonus: round(toNum(row?.boat1_stability_bonus, 0), 4),
+      boat1_delay_penalty: round(toNum(row?.boat1_delay_penalty, 0), 4),
       st_vs_result_adjustment: {
         second: round(toNum(stVsResultAdjustment?.second, 0), 4),
         third: round(toNum(stVsResultAdjustment?.third, 0), 4),
@@ -818,6 +876,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       style: row?.style || "balanced",
       attack_capability: round(attackCapability, 4),
       turn_efficiency: round(turnEfficiency, 4),
+      attack_pressure_from_st: round(toNum(row?.attack_pressure_from_st, 0), 4),
       st_vs_result_adjustment: round(toNum(stVsResultAdjustment?.second, 0), 4),
       lane2renScore: round(laneFit2, 4),
       motor2ren: round(motor2, 4),
@@ -843,6 +902,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     row.third_place_bonus_breakdown = {
       style: row?.style || "balanced",
       recovery_power: round(recoveryPower, 4),
+      attack_pressure_from_st: round(toNum(row?.attack_pressure_from_st, 0), 4),
       st_vs_result_adjustment: round(toNum(stVsResultAdjustment?.third, 0), 4),
       lane3renScore: round(laneFit3, 4),
       motor3ren_or_proxy: round(motor3Proxy, 4),
@@ -871,6 +931,8 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     row.first_place_bonus_breakdown = {
       style: row?.style || "balanced",
       attack_capability: round(attackCapability, 4),
+      boat1_stability_bonus: round(toNum(row?.boat1_stability_bonus, 0), 4),
+      boat1_delay_penalty: round(toNum(row?.boat1_delay_penalty, 0), 4),
       st_vs_result_failure_risk: round(toNum(stVsResultAdjustment?.failure_risk, 0), 4),
       lap_head_boost: round(lapHeadBoost, 4),
       monster_motor_first_bonus: round(monsterMotorFirstBonus, 4),
@@ -1155,6 +1217,7 @@ function buildUpsetSupport({ laneMap, enhancementBase, scenarioRows, aggregatedF
 
 function buildHardRaceAssessment({
   boat1Row,
+  actualLaneMap,
   venueBias,
   raceFlow,
   escapeScore,
@@ -1171,6 +1234,20 @@ function buildHardRaceAssessment({
   const actualLane = actualLaneOf(boat1Row);
   const actualLanePenalty = Math.max(0, actualLane - 1);
   const entryChanged = !!raceFlow?.entry_changed || actualLanePenalty > 0;
+  const boat1StartEdge = toNum(boat1Row?.start_edge, -1);
+  const nearbyBreakoutPressure = safeArray([2, 3, 4]).reduce(
+    (sum, lane) => sum + (toNum(actualLaneMap?.get(lane)?.breakout_rate, 0) / 100),
+    0
+  );
+  const boat1FastestSt = safeArray([1, 2, 3, 4, 5, 6]).every((lane) => {
+    if (lane === 1) return true;
+    const laneStartEdge = toNum(actualLaneMap?.get(lane)?.start_edge, -1);
+    return boat1StartEdge >= laneStartEdge;
+  });
+  const outsideMonsterMotorPressure = safeArray([2, 3, 4, 5, 6]).reduce((sum, lane) => {
+    const row = actualLaneMap?.get(lane);
+    return sum + Math.max(0, (toNum(row?.motor_raw?.motor2ren, 0) - 50) / 100);
+  }, 0);
   const lapSupport = boat1Row?.prediction_data_usage?.lapTime?.used
     ? clamp(0, 12, Math.max(0, 6.82 - toNum(boat1Row?.motor_form?.lapTime, 6.82)) * 42)
     : 0;
@@ -1195,6 +1272,7 @@ function buildHardRaceAssessment({
     escapeScore * 22 +
     toNum(boat1Row?.boat1_base_first_bonus, 0) * 95 +
     toNum(boat1Row?.boat1_survival_bonus, 0) * 78 +
+    toNum(boat1Row?.boat1_stability_bonus, 0) * 120 +
     toNum(venueBias?.venue_inside_finish_bias, 0) * 130 +
     lapSupport +
     exStSupport +
@@ -1205,7 +1283,9 @@ function buildHardRaceAssessment({
     actualLanePenalty * 13 +
     toNum(boat1Row?.late_risk, 0) * 36 +
     toNum(boat1Row?.hidden_F_flag, 0) * 15 +
+    toNum(boat1Row?.boat1_delay_penalty, 0) * 110 +
     toNum(boat1Row?.recent_L_penalty, 0) * 18 +
+    nearbyBreakoutPressure * 10 +
     outerAttackPressure * 20 +
     actualTwoSashiPriority * 16 +
     boat3HeadPriority * 14 +
@@ -1221,9 +1301,12 @@ function buildHardRaceAssessment({
   if (escapeScore >= 0.42) positiveFactors.push("strong boat1 escape");
   if (boat1Row?.prediction_data_usage?.lapTime?.used && toNum(boat1Row?.motor_form?.lapTime, 9) <= 6.79) positiveFactors.push("strong Lap Time");
   if (boat1Row?.prediction_data_usage?.motor2ren?.used && toNum(boat1Row?.motor_raw?.motor2ren, 0) >= 50) positiveFactors.push("strong motor");
+  if (toNum(boat1Row?.boat1_stability_bonus, 0) >= 0.045) positiveFactors.push("boat1 start stability");
 
   if (actualLanePenalty > 0 || entryChanged) negativeFactors.push("course movement risk");
   if (toNum(boat1Row?.hidden_F_flag, 0) === 1 || toNum(boat1Row?.recent_L_penalty, 0) > 0.04) negativeFactors.push("boat1 F risk");
+  if (toNum(boat1Row?.boat1_delay_penalty, 0) >= 0.03) negativeFactors.push("boat1 delay risk");
+  if (nearbyBreakoutPressure >= 1.2) negativeFactors.push("nearby breakout pressure");
   if (actualTwoSashiPriority >= 0.34) negativeFactors.push("strong 2-sashi pressure");
   if (boat3HeadPriority >= 0.34) negativeFactors.push("strong 3-makuri pressure");
   if (actualFourCadoPriority >= 0.3) negativeFactors.push("strong 4-cado pressure");
@@ -1235,6 +1318,7 @@ function buildHardRaceAssessment({
     escapeScore * 28 +
     toNum(boat1Row?.boat1_base_first_bonus, 0) * 92 +
     toNum(boat1Row?.boat1_survival_bonus, 0) * 75 +
+    toNum(boat1Row?.boat1_stability_bonus, 0) * 110 +
     toNum(venueBias?.venue_inside_finish_bias, 0) * 135 +
     toNum(venueBias?.venue_inside_second_third_bias, 0) * 85 +
     (entryChanged ? 0 : 7) +
@@ -1248,8 +1332,10 @@ function buildHardRaceAssessment({
   const hardRacePenalty =
     toNum(boat1Row?.late_risk, 0) * 32 +
     toNum(boat1Row?.hidden_F_flag, 0) * 14 +
+    toNum(boat1Row?.boat1_delay_penalty, 0) * 95 +
     toNum(boat1Row?.recent_L_penalty, 0) * 16 +
     actualLanePenalty * 12 +
+    nearbyBreakoutPressure * 8 +
     outerAttackPressure * 22 +
     actualTwoSashiPriority * 18 +
     boat3HeadPriority * 17 +
@@ -1257,12 +1343,40 @@ function buildHardRaceAssessment({
     toNum(selectedScenarioMap.get("outer_mix_chaos"), 0) * 24 +
     toNum(upsetSupport?.upset_score, 0) * 20;
   const hardRaceScore = round(clamp(0, 100, hardRaceBase - hardRacePenalty), 1);
+  const hardnessScore =
+    round(
+      clamp(
+        0,
+        10,
+        boat1TrustScore / 25 +
+          boat1TrustScore / 25 +
+          (boat1FastestSt ? 1.15 : -0.75) +
+          (Number.isFinite(boat1Row?.stability_rate) ? Math.max(0, boat1Row.stability_rate - 50) / 28 : 0) -
+          (Number.isFinite(boat1Row?.delay_rate) ? Math.max(0, boat1Row.delay_rate - 12) / 18 : 0) +
+          (boat1Row?.prediction_data_usage?.motor2ren?.used ? Math.max(0, toNum(boat1Row?.motor_raw?.motor2ren, 0) - 50) / 18 : 0) -
+          nearbyBreakoutPressure * 1.45 -
+          outsideMonsterMotorPressure * 0.95
+      ),
+      2
+    );
+  const buySkipRecommendation =
+    hardnessScore >= 8 ? "HARD" : hardnessScore >= 5 ? "SEMI-HARD" : hardnessScore >= 3 ? "NEUTRAL" : "SKIP";
+  const topReasons = [
+    ...positiveFactors.slice(0, 2),
+    ...negativeFactors.slice(0, 2)
+  ].slice(0, 4);
 
   return {
     hard_race_score: hardRaceScore,
+    hardness_score: hardnessScore,
     boat1_trust_score: boat1TrustScore,
     hard_race_positive_factors: positiveFactors,
     hard_race_negative_factors: negativeFactors,
+    top_reasons: topReasons,
+    buy_skip_recommendation: buySkipRecommendation,
+    boat1_fastest_st: boat1FastestSt,
+    nearby_breakout_pressure: round(nearbyBreakoutPressure, 4),
+    outside_motor_pressure: round(outsideMonsterMotorPressure, 4),
     one_head_fixed_recommended:
       hardRaceScore >= 75 ? "YES" : hardRaceScore >= 55 ? "BORDERLINE" : "NO",
     recommended_shape_bias:
@@ -1829,6 +1943,21 @@ export function buildHitRateEnhancementContext({
       course_change_occurred: actualLane !== lane,
       style_profile: styleProfile,
       player_start_profile: profile?.player_start_profile || null,
+      stability_rate: Number.isFinite(features?.stability_rate)
+        ? round(normalizePercentRate(features.stability_rate), 2)
+        : Number.isFinite(features?.stabilityRate)
+          ? round(normalizePercentRate(features.stabilityRate), 2)
+          : null,
+      breakout_rate: Number.isFinite(features?.breakout_rate)
+        ? round(normalizePercentRate(features.breakout_rate), 2)
+        : Number.isFinite(features?.breakoutRate)
+          ? round(normalizePercentRate(features.breakoutRate), 2)
+          : null,
+      delay_rate: Number.isFinite(features?.delay_rate)
+        ? round(normalizePercentRate(features.delay_rate), 2)
+        : Number.isFinite(features?.delayRate)
+          ? round(normalizePercentRate(features.delayRate), 2)
+          : null,
       lane_avgST: laneAvgSt,
       avg_st_rank: avgStRank,
       lane_st_rank: avgStRank,
@@ -1859,6 +1988,9 @@ export function buildHitRateEnhancementContext({
       attack_capability: 0,
       turn_efficiency: 0,
       recovery_power: 0,
+      attack_pressure_from_st: 0,
+      boat1_stability_bonus: 0,
+      boat1_delay_penalty: 0,
       st_vs_result_adjustment: {
         second: 0,
         third: 0,
@@ -1932,16 +2064,28 @@ export function buildHitRateEnhancementContext({
     Object.assign(row, buildStDeltaProfile(row));
     Object.assign(row, buildMonsterMotorProfile(row));
     Object.assign(row, buildCapabilityProfile(row, actualLaneMap));
+    Object.assign(row, buildStAnalysisProfile(row));
+    row.late_risk = round(
+      clamp(
+        0,
+        1,
+        toNum(row.late_risk, 0) +
+          (Number.isFinite(row.delay_rate) ? (row.delay_rate / 100) * 0.14 : 0) -
+          (Number.isFinite(row.stability_rate) ? (row.stability_rate / 100) * 0.035 : 0)
+      ),
+      4
+    );
     row.attack_readiness_bonus = round(
       clamp(
         0,
         0.22,
         Math.max(0, toNum(row.finish_role_bonuses?.leftGapAttackSupport, 0)) * 0.42 +
-          Math.max(0, toNum(row.finish_role_bonuses?.straightLineDelta, 0)) * 0.04 +
-          Math.max(0, toNum(row.finish_role_bonuses?.turningAbilityDelta, 0)) * 0.03 +
-          toNum(row.attack_capability, 0) * 0.08 +
-          toNum(row.attack_st_delta_bonus, 0) * 0.65 -
-          toNum(row.instability_st_delta_penalty, 0) * 0.22 +
+        Math.max(0, toNum(row.finish_role_bonuses?.straightLineDelta, 0)) * 0.04 +
+        Math.max(0, toNum(row.finish_role_bonuses?.turningAbilityDelta, 0)) * 0.03 +
+        toNum(row.attack_capability, 0) * 0.08 +
+        toNum(row.attack_pressure_from_st, 0) * 0.42 +
+        toNum(row.attack_st_delta_bonus, 0) * 0.65 -
+        toNum(row.instability_st_delta_penalty, 0) * 0.22 +
           toNum(row.monster_motor_attack_support, 0) * 0.48 +
           Math.max(
             toNum(row.finish_role_bonuses?.styleRoleFit?.first, 0),
@@ -1964,6 +2108,7 @@ export function buildHitRateEnhancementContext({
     return sum +
       toNum(row.style_pressure, 0) * (lane === 3 || lane === 4 ? 0.0035 : 0.0024) +
       Math.max(0, toNum(row.start_edge, 0)) * (lane === 3 || lane === 4 ? 0.24 : 0.16) +
+      toNum(row.attack_pressure_from_st, 0) * (lane === 2 ? 0.18 : lane === 3 || lane === 4 ? 0.3 : 0.12) +
       toNum(row.monster_motor_attack_support, 0) * (lane === 3 || lane === 4 ? 0.26 : 0.18) +
       toNum(row.hidden_F_flag, 0) * 0.025;
   }, 0);
@@ -2148,6 +2293,7 @@ export function buildHitRateEnhancementContext({
       Math.max(0, toNum(actualLane3Row?.start_edge, 0)) * 0.6 -
       toNum(actualLane3Row?.late_risk, 0) * 0.26 +
       toNum(actualLane3Row?.attack_readiness_bonus, 0) * 0.42 +
+      toNum(actualLane3Row?.attack_pressure_from_st, 0) * 0.42 +
       (startPatternContext.outer_attack_window ? 0.05 : 0) +
       Math.max(0, 0.45 - escapeScoreBeforeActualEntryAdjust) * 0.36
   );
@@ -2159,6 +2305,7 @@ export function buildHitRateEnhancementContext({
       (toNum(actualLane2Row?.style_profile?.makuri_sashi, 0) / 100) * 0.14 +
       Math.max(0, toNum(actualLane2Row?.start_edge, 0)) * 0.42 +
       Math.max(0, toNum(actualLane2Row?.ex_time_left_gap_advantage, 0)) * 0.38 +
+      toNum(actualLane2Row?.attack_pressure_from_st, 0) * 0.34 +
       (deepInEscapePenalty > 0 ? 0.06 : 0) +
       Math.max(0, 0.42 - escapeScore) * 0.18 -
       toNum(actualLane2Row?.late_risk, 0) * 0.24
@@ -2184,6 +2331,7 @@ export function buildHitRateEnhancementContext({
       (toNum(actualLane4Row?.lane_fit_1st, 0) / 100) * 0.18 +
       Math.max(0, toNum(actualLane4Row?.start_edge, 0)) * 0.34 +
       Math.max(0, toNum(actualLane4Row?.ex_time_left_gap_advantage, 0)) * 0.24 +
+      toNum(actualLane4Row?.attack_pressure_from_st, 0) * 0.36 +
       Math.max(0, toNum(actualLane4Row?.finish_role_bonuses?.straightLineDelta, 0)) * 0.08 +
       venueBias.venue_outer_attack_bias +
       (startPatternContext.outer_attack_window ? 0.05 : 0) -
@@ -2423,6 +2571,7 @@ export function buildHitRateEnhancementContext({
   });
   const hardRaceAssessment = buildHardRaceAssessment({
     boat1Row,
+    actualLaneMap,
     venueBias,
     raceFlow,
     escapeScore,
@@ -2492,6 +2641,12 @@ export function buildHitRateEnhancementContext({
         attack_capability: row.attack_capability,
         turn_efficiency: row.turn_efficiency,
         recovery_power: row.recovery_power,
+        stability_rate: row.stability_rate,
+        breakout_rate: row.breakout_rate,
+        delay_rate: row.delay_rate,
+        attack_pressure_from_st: row.attack_pressure_from_st,
+        boat1_stability_bonus: row.boat1_stability_bonus,
+        boat1_delay_penalty: row.boat1_delay_penalty,
         st_vs_result_adjustment: row.st_vs_result_adjustment,
         hidden_F_flag: row.hidden_F_flag,
         start_caution_penalty: row.start_caution_penalty,
@@ -2680,6 +2835,10 @@ export function buildHitRateEnhancementContext({
       selected_ticket_shape: null,
       shape_reason: null,
       one_head_fixed_assessment: hardRaceAssessment,
+      hardness_score: hardRaceAssessment.hardness_score,
+      buy_skip_recommendation: hardRaceAssessment.buy_skip_recommendation,
+      top_reasons: hardRaceAssessment.top_reasons,
+      top_2t_combinations: topExactaCandidates.slice(0, 4),
       finish_probabilities_by_scenario: treeAggregation.finishProbabilitiesByScenario,
       aggregated_finish_probabilities: treeAggregation.aggregatedFinishProbabilities,
       order_probabilities: treeAggregation.orderProbabilities,
@@ -2687,9 +2846,13 @@ export function buildHitRateEnhancementContext({
       upset_support: upsetSupport
     },
     hard_race_score: hardRaceAssessment.hard_race_score,
+    hardness_score: hardRaceAssessment.hardness_score,
     boat1_trust_score: hardRaceAssessment.boat1_trust_score,
     hard_race_positive_factors: hardRaceAssessment.hard_race_positive_factors,
     hard_race_negative_factors: hardRaceAssessment.hard_race_negative_factors,
+    top_reasons: hardRaceAssessment.top_reasons,
+    buy_skip_recommendation: hardRaceAssessment.buy_skip_recommendation,
+    top_2t_combinations: topExactaCandidates.slice(0, 4),
     one_head_fixed_recommended: hardRaceAssessment.one_head_fixed_recommended,
     confidence: toNum(confidence, 0),
     by_lane: Object.fromEntries(laneContexts.map((row) => [String(row.lane), row])),
@@ -2709,6 +2872,12 @@ export function buildHitRateEnhancementContext({
       attack_capability: row.attack_capability,
       turn_efficiency: row.turn_efficiency,
       recovery_power: row.recovery_power,
+      stability_rate: row.stability_rate,
+      breakout_rate: row.breakout_rate,
+      delay_rate: row.delay_rate,
+      attack_pressure_from_st: row.attack_pressure_from_st,
+      boat1_stability_bonus: row.boat1_stability_bonus,
+      boat1_delay_penalty: row.boat1_delay_penalty,
       st_vs_result_adjustment: row.st_vs_result_adjustment,
       style_profile: row.style_profile,
       ex_time_relative_gap: row.ex_time_relative_gap,
@@ -2898,11 +3067,16 @@ export function buildEnhancedTrifectaShapeRecommendation({
     enhancement?.hard_race_score ?? enhancement?.stage5_ticketing?.one_head_fixed_assessment?.hard_race_score,
     0
   );
+  const hardnessScore = toNum(
+    enhancement?.hardness_score ?? enhancement?.stage5_ticketing?.hardness_score,
+    0
+  );
   const oneHeadFixedRecommended = String(
     enhancement?.one_head_fixed_recommended ?? enhancement?.stage5_ticketing?.one_head_fixed_assessment?.one_head_fixed_recommended ?? ""
   ).toUpperCase();
   const oneHeadBias =
-    oneHeadFixedRecommended === "YES" ? 0.16 : oneHeadFixedRecommended === "BORDERLINE" ? 0.06 : -0.08;
+    (oneHeadFixedRecommended === "YES" ? 0.16 : oneHeadFixedRecommended === "BORDERLINE" ? 0.06 : -0.08) +
+    (hardnessScore >= 8 ? 0.08 : hardnessScore >= 5 ? 0.03 : hardnessScore < 3 ? -0.06 : 0);
 
   const templates = [];
   if (topFirst.lane === 1) {
@@ -2925,7 +3099,7 @@ export function buildEnhancedTrifectaShapeRecommendation({
       second: [2, 3],
       third: [2, 3, 4],
       why: "conservative 1-head fixed shape for hard race",
-      score: 0.7 + escapeScore * 0.36 + Math.max(0, hardRaceScore - 55) * 0.006 + firstDominance * 0.16 + oneHeadBias
+      score: 0.7 + escapeScore * 0.36 + Math.max(0, hardRaceScore - 55) * 0.006 + hardnessScore * 0.032 + firstDominance * 0.16 + oneHeadBias
     });
     templates.push({
       shape: "1-23-2345",
