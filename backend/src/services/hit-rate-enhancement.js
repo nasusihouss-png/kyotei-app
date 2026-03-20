@@ -684,15 +684,15 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       ? clamp(
           0,
           0.33,
-          0.13 +
+            0.13 +
             Math.max(0, 0.38 - escapeScore) * 0.13 +
             lapHeadBoost * 0.56 +
             Math.max(0, startEdge) * 0.16 +
-            toNum(row?.venue_inside_finish_bias, 0) * 0.65
+            toNum(row?.venue_inside_finish_bias, 0) * 0.84
         )
       : 0;
     const boat1SurvivalBonus = boatNumberOf(row) === 1 && actualLane === 1
-      ? clamp(0, 0.21, 0.065 + stableFinishBonus * 0.34 + laneFit2 * 0.04 + laneFit3 * 0.03 + toNum(row?.venue_inside_second_third_bias, 0) * 0.7)
+      ? clamp(0, 0.23, 0.07 + stableFinishBonus * 0.34 + laneFit2 * 0.04 + laneFit3 * 0.03 + toNum(row?.venue_inside_second_third_bias, 0) * 0.86)
       : 0;
     row.boat1_base_first_bonus = round(boat1BaseFirstBonus, 4);
     row.boat1_survival_bonus = round(boat1SurvivalBonus, 4);
@@ -715,11 +715,11 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
     const insideSecondThirdRecoveryAfter = {
       second:
         actualLane === 2 && primaryHeadLane === 1
-          ? clamp(0, 0.135, laneFit2 * 0.068 + Math.max(0, turning) * 0.048 + Math.max(0, 0.54 - escapeScore) * 0.022 + toNum(row?.venue_inside_second_third_bias, 0) * 0.8)
+          ? clamp(0, 0.145, laneFit2 * 0.068 + Math.max(0, turning) * 0.048 + Math.max(0, 0.54 - escapeScore) * 0.022 + toNum(row?.venue_inside_second_third_bias, 0) * 0.92)
           : 0,
       third:
         actualLane === 3 && primaryHeadLane === 1
-          ? clamp(0, 0.115, laneFit3 * 0.052 + Math.max(0, turning) * 0.04 + Math.max(0, straight) * 0.016 + toNum(row?.venue_inside_second_third_bias, 0) * 0.7)
+          ? clamp(0, 0.125, laneFit3 * 0.052 + Math.max(0, turning) * 0.04 + Math.max(0, straight) * 0.016 + toNum(row?.venue_inside_second_third_bias, 0) * 0.82)
           : 0
     };
     row.inside_second_third_recovery = {
@@ -864,6 +864,7 @@ function buildFinishRoleScores(laneContexts, laneMap, actualLaneMap, baseRolePro
       attack_pressure_from_st: round(toNum(row?.attack_pressure_from_st, 0), 4),
       boat1_stability_bonus: round(toNum(row?.boat1_stability_bonus, 0), 4),
       boat1_delay_penalty: round(toNum(row?.boat1_delay_penalty, 0), 4),
+      outside_head_suppression_amount: round(toNum(row?.outside_head_suppression_amount, 0), 4),
       st_vs_result_adjustment: {
         second: round(toNum(stVsResultAdjustment?.second, 0), 4),
         third: round(toNum(stVsResultAdjustment?.third, 0), 4),
@@ -1556,6 +1557,7 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, ac
   const monsterMotorFirstBonus = toNum(row?.monster_motor_first_bonus, 0);
   const turnEfficiency = toNum(row?.turn_efficiency, 0);
   const recoveryPower = toNum(row?.recovery_power, 0);
+  const outsideHeadSuppression = toNum(row?.outside_head_suppression_amount, 0);
   const boat1BaseFirstBonus = boatNumberOf(row) === 1 && actualLane === 1
     ? toNum(row?.boat1_base_first_bonus, 0)
     : 0;
@@ -1574,6 +1576,7 @@ function roleScenarioWeightsForLane(lane, row, scenario, events, escapeScore, ac
   third += toNum(finishRoleScores.third_place_score, 0) * 0.36 + toNum(compatibility.third_bonus, 0) * 0.84 + attackCarryoverThird - thirdExclusionPenalty;
 
   if (actualLane === 1) first += 0.2 + escapeScore * 0.16;
+  if (actualLane >= 3) first -= outsideHeadSuppression * (actualLane === 3 ? 0.7 : actualLane === 4 ? 0.9 : 0.55);
 
   switch (scenario) {
     case "boat1_escape":
@@ -1799,48 +1802,84 @@ function isStrongInsideVenue(value) {
   ].includes(normalized);
 }
 
+function getVenueInsideTier(value) {
+  const normalized = normalizeVenueName(value);
+  if ([
+    "tokuyama",
+    "omura",
+    "suminoe",
+    "ashiya",
+    "徳山",
+    "大村",
+    "住之江",
+    "芦屋"
+  ].includes(normalized)) {
+    return "strong";
+  }
+  if ([
+    "wakamatsu",
+    "tamagawa",
+    "若松",
+    "多摩川"
+  ].includes(normalized)) {
+    return "medium";
+  }
+  return isStrongInsideVenue(value) ? "medium" : "default";
+}
+
 function buildVenueBiasContext({ race, raceFlow, laneContexts }) {
   const windSpeed = Math.max(0, toNum(race?.windSpeed, 0));
   const waveHeight = Math.max(0, toNum(race?.waveHeight, 0));
   const entryChanged = !!raceFlow?.entry_changed;
   const venueName = race?.venueName || race?.stadiumName || race?.venue || null;
   const strongInsideVenue = isStrongInsideVenue(venueName);
+  const venueInsideTier = getVenueInsideTier(venueName);
+  const strongTierBoost = venueInsideTier === "strong" ? 1 : 0;
+  const mediumTierBoost = venueInsideTier === "medium" ? 1 : 0;
   const insideLocal = average(safeArray([1, 2, 3]).map((lane) => toNum(laneContexts.find((row) => actualLaneOf(row) === lane)?.lane_fit_local, NaN)));
   const outerLocal = average(safeArray([4, 5, 6]).map((lane) => toNum(laneContexts.find((row) => actualLaneOf(row) === lane)?.lane_fit_local, NaN)));
   const insideStrengthDelta = Number.isFinite(insideLocal) && Number.isFinite(outerLocal) ? insideLocal - outerLocal : 0;
   const venueEscapeBias = clamp(
     -0.04,
-    0.095,
+    0.115,
     insideStrengthDelta * 0.012 +
       (entryChanged ? -0.015 : 0.02) -
       windSpeed * 0.003 +
-      (strongInsideVenue ? 0.022 : 0)
+      (strongTierBoost ? 0.036 : mediumTierBoost ? 0.026 : strongInsideVenue ? 0.02 : 0)
   );
   const venueInsideFinishBias = clamp(
     0,
-    0.07,
+    0.088,
     Math.max(0, insideStrengthDelta) * 0.008 +
       (entryChanged ? 0 : 0.012) +
-      (strongInsideVenue ? 0.026 : 0.01)
+      (strongTierBoost ? 0.04 : mediumTierBoost ? 0.026 : strongInsideVenue ? 0.018 : 0.01)
   );
   const venueInsideSecondThirdBias = clamp(
     0,
-    0.055,
+    0.07,
     Math.max(0, insideStrengthDelta) * 0.006 +
       (entryChanged ? 0 : 0.008) +
-      (strongInsideVenue ? 0.02 : 0.008)
+      (strongTierBoost ? 0.03 : mediumTierBoost ? 0.02 : strongInsideVenue ? 0.014 : 0.008)
   );
-  const venueOuterAttackBias = clamp(0, 0.08, Math.max(0, -insideStrengthDelta) * 0.01 + Math.max(0, windSpeed - 4) * 0.006 + (String(raceFlow?.formation_pattern || "").includes("outside") ? 0.018 : 0));
+  const outsideHeadSuppression = clamp(
+    0,
+    0.08,
+    (strongTierBoost ? 0.045 : mediumTierBoost ? 0.024 : strongInsideVenue ? 0.015 : 0) +
+      Math.max(0, insideStrengthDelta) * 0.002
+  );
+  const venueOuterAttackBias = clamp(0, 0.08, Math.max(0, -insideStrengthDelta) * 0.01 + Math.max(0, windSpeed - 4) * 0.006 + (String(raceFlow?.formation_pattern || "").includes("outside") ? 0.018 : 0) - outsideHeadSuppression * 0.72);
   const turn1NarrowPenalty = clamp(0, 0.08, waveHeight * 0.01 + (entryChanged ? 0.015 : 0));
   const strongWindCaution = clamp(0, 0.12, Math.max(0, windSpeed - 5) * 0.02 + waveHeight * 0.01);
   const stabilityBoardBias = clamp(-0.03, 0.08, (windSpeed <= 3 ? 0.03 : 0) + (waveHeight <= 2 ? 0.025 : 0) - (entryChanged ? 0.03 : 0));
   return {
     venue_name: venueName,
     strong_inside_venue: strongInsideVenue ? 1 : 0,
+    venue_inside_tier: venueInsideTier,
     venue_escape_bias: round(venueEscapeBias, 4),
     venue_inside_finish_bias: round(venueInsideFinishBias, 4),
     venue_inside_second_third_bias: round(venueInsideSecondThirdBias, 4),
     venue_outer_attack_bias: round(venueOuterAttackBias, 4),
+    outside_head_suppression_amount: round(outsideHeadSuppression, 4),
     turn1_narrow_penalty: round(turn1NarrowPenalty, 4),
     strong_wind_caution: round(strongWindCaution, 4),
     stability_board_bias: round(stabilityBoardBias, 4)
@@ -2086,9 +2125,11 @@ export function buildHitRateEnhancementContext({
   });
   laneContexts.forEach((row) => {
     row.venue_name = venueBias.venue_name || null;
+    row.venue_inside_tier = venueBias.venue_inside_tier || "default";
     row.venue_escape_bias = venueBias.venue_escape_bias;
     row.venue_inside_finish_bias = venueBias.venue_inside_finish_bias;
     row.venue_inside_second_third_bias = venueBias.venue_inside_second_third_bias;
+    row.outside_head_suppression_amount = venueBias.outside_head_suppression_amount;
     row.finish_role_bonuses = buildRoleSpecificFinishBonuses(row, actualLaneMap);
     Object.assign(row, buildRacingStyleProfile(row));
     Object.assign(row, buildIppansenLaneSupport(row));
@@ -2326,7 +2367,8 @@ export function buildHitRateEnhancementContext({
       toNum(actualLane3Row?.attack_readiness_bonus, 0) * 0.28 +
       toNum(actualLane3Row?.attack_pressure_from_st, 0) * 0.24 +
       (startPatternContext.outer_attack_window ? 0.05 : 0) +
-      Math.max(0, 0.45 - escapeScoreBeforeActualEntryAdjust) * 0.36
+      Math.max(0, 0.45 - escapeScoreBeforeActualEntryAdjust) * 0.28 -
+      toNum(venueBias?.outside_head_suppression_amount, 0) * 0.62
   );
   const actualTwoSashiBasePriority = clamp(
     0,
@@ -2366,10 +2408,11 @@ export function buildHitRateEnhancementContext({
       Math.max(0, toNum(actualLane4Row?.finish_role_bonuses?.straightLineDelta, 0)) * 0.08 +
       venueBias.venue_outer_attack_bias +
       (startPatternContext.outer_attack_window ? 0.05 : 0) -
+      toNum(venueBias?.outside_head_suppression_amount, 0) * 0.7 -
       toNum(actualLane4Row?.late_risk, 0) * 0.16 -
       toNum(actualLane4Row?.hidden_F_flag, 0) * 0.08
   );
-  const actualFourBoostGate = entryStructureChanged || boatNumberOf(actualLane4Row) !== 4 || startPatternContext.outer_attack_window ? 1 : 0.12;
+  const actualFourBoostGate = entryStructureChanged || boatNumberOf(actualLane4Row) !== 4 || startPatternContext.outer_attack_window ? clamp(0.72, 1, 1 - toNum(venueBias?.outside_head_suppression_amount, 0) * 2.4) : 0.08;
   const actualFourCadoBoost = clamp(
     0,
     ACTUAL_ENTRY_TUNING.actual_four_cado_boost,
@@ -2381,6 +2424,7 @@ export function buildHitRateEnhancementContext({
       (actualLane4Row?.prediction_data_usage?.motor2ren?.used ? (toNum(actualLane4Row?.motor_raw?.motor2ren, 0) / 100) * 0.04 : 0) +
       actualFourAttackCaseStrength * 0.48 +
       (startPatternContext.outer_attack_window ? 0.03 : 0) -
+      toNum(venueBias?.outside_head_suppression_amount, 0) * 0.52 -
       toNum(actualLane4Row?.late_risk, 0) * 0.05) * actualFourBoostGate
   );
   const actualLane4CadoPriority = clamp(0, 1, actualFourCadoBasePriority + actualFourCadoBoost);
@@ -2539,24 +2583,32 @@ export function buildHitRateEnhancementContext({
   laneFinishPriors.second[2] = round(
     clamp(
       1.08,
-      1.18,
-      toNum(laneFinishPriors.second[2], 1.06) + toNum(venueBias?.venue_inside_second_third_bias, 0) * 0.44
+      1.22,
+      toNum(laneFinishPriors.second[2], 1.06) + toNum(venueBias?.venue_inside_second_third_bias, 0) * 0.62
     ),
     4
   );
   laneFinishPriors.third[2] = round(
     clamp(
       1.02,
-      1.12,
-      toNum(laneFinishPriors.third[2], 1.02) + toNum(venueBias?.venue_inside_second_third_bias, 0) * 0.24
+      1.15,
+      toNum(laneFinishPriors.third[2], 1.02) + toNum(venueBias?.venue_inside_second_third_bias, 0) * 0.34
     ),
     4
   );
   laneFinishPriors.third[3] = round(
     clamp(
       1.01,
-      1.1,
-      toNum(laneFinishPriors.third[3], 1.01) + toNum(venueBias?.venue_inside_second_third_bias, 0) * 0.18
+      1.13,
+      toNum(laneFinishPriors.third[3], 1.01) + toNum(venueBias?.venue_inside_second_third_bias, 0) * 0.26
+    ),
+    4
+  );
+  laneFinishPriors.third[6] = round(
+    clamp(
+      0.88,
+      0.98,
+      toNum(laneFinishPriors.third[6], 0.88) + toNum(venueBias?.venue_inside_second_third_bias, 0) * 0.12
     ),
     4
   );
@@ -2695,6 +2747,7 @@ export function buildHitRateEnhancementContext({
         attack_pressure_from_st: row.attack_pressure_from_st,
         boat1_stability_bonus: row.boat1_stability_bonus,
         boat1_delay_penalty: row.boat1_delay_penalty,
+        outside_head_suppression_amount: row.outside_head_suppression_amount,
         st_vs_result_adjustment: row.st_vs_result_adjustment,
         hidden_F_flag: row.hidden_F_flag,
         start_caution_penalty: row.start_caution_penalty,
@@ -2929,6 +2982,7 @@ export function buildHitRateEnhancementContext({
       attack_pressure_from_st: row.attack_pressure_from_st,
       boat1_stability_bonus: row.boat1_stability_bonus,
       boat1_delay_penalty: row.boat1_delay_penalty,
+      outside_head_suppression_amount: row.outside_head_suppression_amount,
       st_vs_result_adjustment: row.st_vs_result_adjustment,
       style_profile: row.style_profile,
       ex_time_relative_gap: row.ex_time_relative_gap,
