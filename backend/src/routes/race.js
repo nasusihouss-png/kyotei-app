@@ -2104,6 +2104,363 @@ function buildCanonicalEntryOrderMeta(racers, actualEntrySource = null) {
   };
 }
 
+function isFiniteNumber(value) {
+  return Number.isFinite(Number(value));
+}
+
+function inferSourceUrlForAudit(source = {}, sourceType = null) {
+  if (!source || typeof source !== "object") return null;
+  if (sourceType === "kyoteibiyori") {
+    const tried = source?.kyotei_biyori?.tried_urls;
+    return Array.isArray(tried) && tried.length > 0 ? tried[0] : null;
+  }
+  if (sourceType === "official_pre_race") {
+    const candidates = [
+      source?.official_fetch_status?.beforeinfo_url,
+      source?.official_fetch_status?.racelist_url
+    ];
+    return candidates.find((value) => value) || null;
+  }
+  return null;
+}
+
+function buildAuditField({
+  label,
+  sourceType = null,
+  sourceUrl = null,
+  sourceSection = null,
+  sourceRowLabel = null,
+  sourceBoatColumn = null,
+  rawCellText = null,
+  parsedRawText = null,
+  normalizedValue = null,
+  backendField = null,
+  frontendField = null,
+  predictionUsableField = null,
+  validationPassed = false,
+  predictionUsable = false,
+  reason = null
+}) {
+  return {
+    label,
+    source_type: sourceType,
+    source_url: sourceUrl,
+    matched_section_label: sourceSection,
+    matched_row_label: sourceRowLabel,
+    matched_boat_column: sourceBoatColumn,
+    raw_cell_text: rawCellText,
+    parsed_raw_text: parsedRawText,
+    normalized_value: normalizedValue,
+    backend_field: backendField,
+    frontend_display_field: frontendField,
+    prediction_usable_field: predictionUsableField,
+    validation_passed: !!validationPassed,
+    prediction_usable: !!predictionUsable,
+    reason: reason || (validationPassed ? "verified" : "unverified")
+  };
+}
+
+function buildMetaAuditField({
+  label,
+  meta,
+  fallbackValue,
+  backendField,
+  frontendField,
+  predictionUsableField,
+  source,
+  fallbackSourceType = "kyoteibiyori"
+}) {
+  const value = toNullableNum(meta?.value ?? fallbackValue);
+  const sourceType = meta?.source
+    ? String(meta.source).includes("boatrace") ? "official_pre_race" : fallbackSourceType
+    : null;
+  const validationPassed = meta?.is_usable === true;
+  return buildAuditField({
+    label,
+    sourceType,
+    sourceUrl: inferSourceUrlForAudit(source, sourceType),
+    sourceSection: meta?.source_section || null,
+    sourceRowLabel: meta?.source_row_label || null,
+    sourceBoatColumn: meta?.source_boat_column || null,
+    rawCellText: meta?.raw_cell_text ?? null,
+    parsedRawText: meta?.raw_cell_text ?? null,
+    normalizedValue: value,
+    backendField,
+    frontendField,
+    predictionUsableField,
+    validationPassed,
+    predictionUsable: validationPassed,
+    reason: meta?.reason || (validationPassed ? "verified" : "unverified")
+  });
+}
+
+function buildRangeAuditField({
+  label,
+  value,
+  backendField,
+  frontendField,
+  predictionUsableField,
+  lane,
+  sourceType = "official_racelist",
+  sourceSection = "racelist_row",
+  sourceRowLabel = null,
+  min = null,
+  max = null
+}) {
+  const numeric = toNullableNum(value);
+  const validationPassed =
+    numeric !== null &&
+    (min === null || numeric >= min) &&
+    (max === null || numeric <= max);
+  return buildAuditField({
+    label,
+    sourceType,
+    sourceSection,
+    sourceRowLabel,
+    sourceBoatColumn: lane,
+    rawCellText: value ?? null,
+    parsedRawText: value ?? null,
+    normalizedValue: numeric,
+    backendField,
+    frontendField,
+    predictionUsableField,
+    validationPassed,
+    predictionUsable: validationPassed,
+    reason: validationPassed ? "range_validated" : "missing_or_out_of_range"
+  });
+}
+
+function buildStrictDataAudit({ data, entryMeta, hitRateEnhancement }) {
+  const source = data?.source || {};
+  const racers = Array.isArray(data?.racers) ? data.racers : [];
+  const styleProfiles = hitRateEnhancement?.stage1_static?.style_profile_by_lane || {};
+  const startStates = hitRateEnhancement?.stage2_dynamic?.start_development_states || {};
+
+  const perBoat = racers.map((racer) => {
+    const lane = toInt(racer?.lane, null);
+    const meta = racer?.predictionFieldMeta && typeof racer.predictionFieldMeta === "object"
+      ? racer.predictionFieldMeta
+      : {};
+    const state = startStates?.[String(lane)] || {};
+    const styleProfile = styleProfiles?.[String(lane)] || {};
+    return {
+      boat: lane,
+      original_lane: lane,
+      actual_lane: toInt(entryMeta?.actual_lane_map?.[String(lane)], lane),
+      course_change_occurred: !!entryMeta?.per_boat_lane_map?.[String(lane)]?.course_change_occurred,
+      fields: {
+        actual_entry: buildAuditField({
+          label: "actual entry lane",
+          sourceType: entryMeta?.fallback_used ? null : "official_pre_race",
+          sourceUrl: inferSourceUrlForAudit(source, "official_pre_race"),
+          sourceSection: "beforeinfo_entry_course",
+          sourceRowLabel: "entry course",
+          sourceBoatColumn: lane,
+          rawCellText: entryMeta?.raw_text_by_lane?.[String(lane)] ?? null,
+          parsedRawText: entryMeta?.raw_text_by_lane?.[String(lane)] ?? null,
+          normalizedValue: toInt(entryMeta?.actual_lane_map?.[String(lane)], lane),
+          backendField: "entryMeta.actual_lane_map",
+          frontendField: "entryCourse / actualLane",
+          predictionUsableField: "entryMeta.actual_lane_map",
+          validationPassed: entryMeta?.validation?.validation_ok === true,
+          predictionUsable: entryMeta?.validation?.validation_ok === true,
+          reason: entryMeta?.validation?.validation_ok === true ? "verified" : entryMeta?.fallback_reason || "fallback_used"
+        }),
+        lapTime: buildMetaAuditField({
+          label: "lap time",
+          meta: meta?.lapTime,
+          fallbackValue: racer?.lapTime,
+          backendField: "racers[].lapTime",
+          frontendField: "playerComparisonRows.lapTime",
+          predictionUsableField: "predictionFieldMeta.lapTime",
+          source
+        }),
+        exhibitionST: buildMetaAuditField({
+          label: "exhibition ST",
+          meta: meta?.exhibitionST,
+          fallbackValue: racer?.exhibitionSt ?? racer?.exhibitionST,
+          backendField: "racers[].exhibitionSt",
+          frontendField: "playerComparisonRows.exhibitionSt",
+          predictionUsableField: "predictionFieldMeta.exhibitionST",
+          source
+        }),
+        exhibitionTime: buildMetaAuditField({
+          label: "exhibition time",
+          meta: meta?.exhibitionTime,
+          fallbackValue: racer?.exhibitionTime,
+          backendField: "racers[].exhibitionTime",
+          frontendField: "playerComparisonRows.exhibitionTime",
+          predictionUsableField: "predictionFieldMeta.exhibitionTime",
+          source
+        }),
+        motor2ren: buildMetaAuditField({
+          label: "motor 2-ren",
+          meta: meta?.motor2ren,
+          fallbackValue: racer?.motor2ren ?? racer?.motor2Rate,
+          backendField: "racers[].motor2ren",
+          frontendField: "playerComparisonRows.motor2ren",
+          predictionUsableField: "predictionFieldMeta.motor2ren",
+          source
+        }),
+        motor3ren: buildMetaAuditField({
+          label: "motor 3-ren",
+          meta: meta?.motor3ren,
+          fallbackValue: racer?.motor3ren ?? racer?.motor3Rate,
+          backendField: "racers[].motor3ren",
+          frontendField: "playerComparisonRows.motor3ren",
+          predictionUsableField: "predictionFieldMeta.motor3ren",
+          source
+        }),
+        nationwideWinRate: buildRangeAuditField({
+          label: "national win rate",
+          value: racer?.nationwideWinRate,
+          backendField: "racers[].nationwideWinRate",
+          frontendField: "playerComparisonRows.nationwideWinRate",
+          predictionUsableField: "features.nationwide_win_rate",
+          lane,
+          min: 0,
+          max: 100
+        }),
+        localWinRate: buildRangeAuditField({
+          label: "local win rate",
+          value: racer?.localWinRate,
+          backendField: "racers[].localWinRate",
+          frontendField: "playerComparisonRows.localWinRate",
+          predictionUsableField: "features.local_win_rate",
+          lane,
+          min: 0,
+          max: 100
+        }),
+        avgSt: buildRangeAuditField({
+          label: "average ST",
+          value: racer?.avgSt,
+          backendField: "racers[].avgSt",
+          frontendField: "playerComparisonRows.avgSt",
+          predictionUsableField: "features.avg_st",
+          lane,
+          min: 0,
+          max: 1
+        }),
+        fHoldCount: buildRangeAuditField({
+          label: "F count",
+          value: racer?.fHoldCount,
+          backendField: "racers[].fHoldCount",
+          frontendField: "playerComparisonRows.fHoldCount",
+          predictionUsableField: "features.f_hold_count",
+          lane,
+          min: 0,
+          max: 9
+        }),
+        ippansenLane3ren: buildMetaAuditField({
+          label: "ippansen lane 3-ren",
+          meta: meta?.lane3renScore || meta?.lane3renAvg,
+          fallbackValue: racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate,
+          backendField: "racers[].lane3renScore",
+          frontendField: "playerComparisonRows.lane3renScore",
+          predictionUsableField: "predictionFieldMeta.lane3renScore",
+          source,
+          fallbackSourceType: "lane_stat_source"
+        }),
+        stabilityRate: buildRangeAuditField({
+          label: "stability rate",
+          value: state?.stability_rate ?? racer?.stability_rate,
+          backendField: "hitRateEnhancement.stage2_dynamic.start_development_states[].stability_rate",
+          frontendField: "dataAudit only",
+          predictionUsableField: "enhancement.stability_rate",
+          lane,
+          sourceType: "derived_profile",
+          sourceSection: "start_profile",
+          min: 0,
+          max: 100
+        }),
+        breakoutRate: buildRangeAuditField({
+          label: "breakout rate",
+          value: state?.breakout_rate ?? racer?.breakout_rate,
+          backendField: "hitRateEnhancement.stage2_dynamic.start_development_states[].breakout_rate",
+          frontendField: "dataAudit only",
+          predictionUsableField: "enhancement.breakout_rate",
+          lane,
+          sourceType: "derived_profile",
+          sourceSection: "start_profile",
+          min: 0,
+          max: 100
+        }),
+        delayRate: buildRangeAuditField({
+          label: "delay rate",
+          value: state?.delay_rate ?? racer?.delay_rate,
+          backendField: "hitRateEnhancement.stage2_dynamic.start_development_states[].delay_rate",
+          frontendField: "dataAudit only",
+          predictionUsableField: "enhancement.delay_rate",
+          lane,
+          sourceType: "derived_profile",
+          sourceSection: "start_profile",
+          min: 0,
+          max: 100
+        }),
+        styleProfile: buildAuditField({
+          label: "style profile",
+          sourceType: "derived_profile",
+          sourceSection: "player_start_profile",
+          sourceBoatColumn: lane,
+          rawCellText: styleProfile,
+          parsedRawText: styleProfile,
+          normalizedValue: styleProfile,
+          backendField: "hitRateEnhancement.stage1_static.style_profile_by_lane",
+          frontendField: "dataAudit only",
+          predictionUsableField: "enhancement.style_profile",
+          validationPassed: styleProfile && typeof styleProfile === "object" && Object.keys(styleProfile).length > 0,
+          predictionUsable: styleProfile && typeof styleProfile === "object" && Object.keys(styleProfile).length > 0,
+          reason: styleProfile && typeof styleProfile === "object" && Object.keys(styleProfile).length > 0 ? "derived_profile_available" : "missing"
+        })
+      }
+    };
+  });
+
+  const summary = {
+    authoritative_sources: {
+      actual_entry_order: entryMeta?.authoritative_source || "official_beforeinfo_entry_course",
+      lap_time: "kyoteibiyori pre-race row 周回 only",
+      exhibition_st: "kyoteibiyori ST row only",
+      exhibition_time: "kyoteibiyori 展示 row only",
+      motor_rates: "official race-card source",
+      national_local_rates: "official race-card source",
+      avg_st: "official race-card source",
+      lane_stats: "validated lane-stat source only"
+    },
+    actual_entry: {
+      raw_source_text: entryMeta?.raw_actual_entry_source_text || null,
+      parsed_actual_entry_order: entryMeta?.actual_entry_order || [],
+      actual_lane_map: entryMeta?.actual_lane_map || {},
+      validation_passed: entryMeta?.validation?.validation_ok === true,
+      fallback_used: !!entryMeta?.fallback_used,
+      fallback_reason: entryMeta?.fallback_reason || null,
+      validation: entryMeta?.validation || {}
+    },
+    usable_fields: [],
+    unusable_fields: []
+  };
+
+  perBoat.forEach((row) => {
+    Object.values(row.fields).forEach((field) => {
+      const tag = `boat${row.boat}:${field.label}`;
+      if (field?.prediction_usable) summary.usable_fields.push(tag);
+      else summary.unusable_fields.push(tag);
+    });
+  });
+
+  return {
+    enabled: true,
+    policy: {
+      correctness_first: true,
+      canonical_mapping_only: true,
+      failed_parse_to_null: true,
+      frontend_must_not_guess: true
+    },
+    summary,
+    per_boat: perBoat
+  };
+}
+
 function summarizeSupplementalFieldUsage(snapshotPlayers = []) {
   const rows = Array.isArray(snapshotPlayers) ? snapshotPlayers : [];
   const fieldChecks = {
@@ -11144,6 +11501,11 @@ raceRouter.get("/race", async (req, res, next) => {
       : Array.isArray(candidateDistributions?.finish_probabilities_by_scenario_json)
         ? candidateDistributions.finish_probabilities_by_scenario_json
         : [];
+    const dataAudit = buildStrictDataAudit({
+      data,
+      entryMeta,
+      hitRateEnhancement
+    });
     routeTimings.prediction_build_ms = Date.now() - predictionStartedAt;
     routeTimings.total_response_ms = Date.now() - routeStartedAt;
     console.info(
@@ -11236,6 +11598,7 @@ raceRouter.get("/race", async (req, res, next) => {
       raw_actual_entry_source_text: entryMeta.raw_actual_entry_source_text,
       per_boat_lane_map: entryMeta.per_boat_lane_map,
       entry_debug: compactEntryDebug,
+      dataAudit,
       startSignalAnalysis: startSignals,
       recommendation_score,
       scenarioSuggestions: safeScenarioSuggestions,

@@ -1157,15 +1157,26 @@ function getUnderlyingBoatFit(racer = {}, lane) {
     if (local === null || national === null) return 0;
     return clampNumber(-0.08, 0.12, (local - national) / 10);
   })();
-  const laneBias = lane === 2 ? 0.18 : lane === 3 ? 0.14 : 0.08;
+  const turnEfficiency = isPredictionFieldVerified(racer, "lapTime")
+    ? clampNumber(0, 1, (0.4 - (toFiniteOrNull(racer?.kyoteiBiyoriLapTime ?? racer?.lapTime) || 0.4)) / 0.1)
+    : 0.5;
+  const stableFinish = (() => {
+    const exSt = toFiniteOrNull(racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt);
+    const avgSt = toFiniteOrNull(racer?.avgSt);
+    if (exSt === null || avgSt === null) return 0.45;
+    return clampNumber(0, 1, 1 - Math.min(0.05, Math.abs(avgSt - exSt)) / 0.05);
+  })();
+  const laneBias = lane === 2 ? 0.2 : lane === 3 ? 0.18 : lane === 4 ? 0.16 : 0.08;
   const fit =
-    (win.value * 0.42) +
-    ((motor.value ?? 0.48) * 0.28) +
-    ((start.value ?? 0.45) * 0.2) +
-    lane3renSupport * 0.1 +
+    (win.value * 0.29) +
+    ((motor.value ?? 0.48) * 0.2) +
+    ((start.value ?? 0.45) * 0.12) +
+    lane3renSupport * 0.18 +
+    turnEfficiency * 0.12 +
+    stableFinish * 0.09 +
     laneBias +
     localBonus -
-    getRacerRiskPenalty(racer) * 0.3;
+    getRacerRiskPenalty(racer) * 0.22;
   return Number((clampNumber(0, 1, fit) * 100).toFixed(1));
 }
 
@@ -1187,13 +1198,13 @@ function buildFixed1234Matrix({
 
   const secondWeightsBase = {
     2: (Number(lane2Score) || 0) * 1.08,
-    3: (Number(lane3Score) || 0) * 1.0,
-    4: (Number(lane4Score) || 0) * 0.92
+    3: (Number(lane3Score) || 0) * 1.02,
+    4: (Number(lane4Score) || 0) * 0.97
   };
   const thirdWeightsBase = {
-    2: (Number(lane2Score) || 0) * 0.94,
-    3: (Number(lane3Score) || 0) * 1.0,
-    4: (Number(lane4Score) || 0) * 0.98
+    2: (Number(lane2Score) || 0) * 0.96,
+    3: (Number(lane3Score) || 0) * 1.04,
+    4: (Number(lane4Score) || 0) * 1.03
   };
   const combos = [
     "1-2-3",
@@ -1209,12 +1220,12 @@ function buildFixed1234Matrix({
     const thirdWeight = thirdWeightsBase[third] || 0;
     const compatibility =
       second === 2 ? 1.08 :
-      second === 3 ? 1.03 :
-      0.95;
+      second === 3 ? 1.05 :
+      0.99;
     const thirdResidual =
-      third === 4 ? 1.03 :
-      third === 3 ? 1.0 :
-      0.97;
+      third === 4 ? 1.05 :
+      third === 3 ? 1.02 :
+      0.98;
     return {
       combo,
       raw: Math.max(0.0001, secondWeight * thirdWeight * compatibility * thirdResidual)
@@ -1254,12 +1265,17 @@ const HARD_RACE_DECISION_THRESHOLDS = {
 
 const HARD_RACE_RANK_THRESHOLDS = {
   a_anchor: 58,
-  a_total: 0.5,
-  a_top4: 0.38,
+  a_total: 0.4,
+  a_top4: 0.28,
   a_box: 46,
+  a_outside_risk_max: 36,
+  a_concentration: 55,
   b_anchor: 52,
-  b_total: 0.45,
-  b_top4: 0.32
+  b_total: 0.28,
+  b_top4: 0.2,
+  b_box: 42,
+  b_outside_risk_max: 50,
+  b_concentration: 44
 };
 
 function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId = null) {
@@ -1334,6 +1350,8 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const lane2 = racers.find((row) => Number(row?.lane) === 2) || null;
   const lane3 = racers.find((row) => Number(row?.lane) === 3) || null;
   const lane4 = racers.find((row) => Number(row?.lane) === 4) || null;
+  const lane5 = racers.find((row) => Number(row?.lane) === 5) || null;
+  const lane6 = racers.find((row) => Number(row?.lane) === 6) || null;
   const venueBias = getVenueInsideBias(source?.race?.venueName || venueNameFallback);
   const win1 = getRacerWinStrength(boat1 || {});
   const motor1 = getRacerMotorStrength(boat1 || {});
@@ -1347,7 +1365,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     { lane: 4, score: lane4 ? getUnderlyingBoatFit(lane4, 4) : null }
   ];
   const availableUnderlying = underlyingFits.filter((row) => Number.isFinite(row.score));
-  const opponentPressure = Number(
+  const box234AverageStrength = Number(
     availableUnderlying.reduce((sum, row) => sum + (Number(row.score) || 0), 0) /
     Math.max(1, availableUnderlying.length) /
     100
@@ -1355,6 +1373,8 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const orderRows = getHardRaceOrderRows(source);
   const secondRows = getHardRaceFinishRoleRows(source, "second");
   const thirdRows = getHardRaceFinishRoleRows(source, "third");
+  const secondWeightMap = new Map(secondRows.map((row) => [Number(row.lane), Number(row.weight) || 0]));
+  const thirdWeightMap = new Map(thirdRows.map((row) => [Number(row.lane), Number(row.weight) || 0]));
   const orderProbabilityOptional = orderRows.length > 0
     ? sumOrderProbability(
         orderRows,
@@ -1409,22 +1429,59 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     : null;
 
   const underlyingSorted = [...availableUnderlying].sort((a, b) => (b.score || 0) - (a.score || 0));
+  const lane2SecondSupport = clampNumber(0, 1, ((underlyingFits[0]?.score || 0) / 100) * 0.46 + (secondWeightMap.get(2) || 0) * 0.34 + venueBias * 0.08 + entryStable * 0.06);
+  const lane3SecondSupport = clampNumber(0, 1, ((underlyingFits[1]?.score || 0) / 100) * 0.38 + (secondWeightMap.get(3) || 0) * 0.34 + (thirdWeightMap.get(3) || 0) * 0.08 + venueBias * 0.06);
+  const lane4SecondSupport = clampNumber(0, 1, ((underlyingFits[2]?.score || 0) / 100) * 0.34 + (secondWeightMap.get(4) || 0) * 0.32 + (thirdWeightMap.get(4) || 0) * 0.1 + venueBias * 0.04);
+  const lane2ThirdSupport = clampNumber(0, 1, ((underlyingFits[0]?.score || 0) / 100) * 0.28 + (thirdWeightMap.get(2) || 0) * 0.4 + (secondWeightMap.get(2) || 0) * 0.08 + entryStable * 0.06);
+  const lane3ThirdSupport = clampNumber(0, 1, ((underlyingFits[1]?.score || 0) / 100) * 0.34 + (thirdWeightMap.get(3) || 0) * 0.42 + (secondWeightMap.get(3) || 0) * 0.08 + entryStable * 0.04);
+  const lane4ThirdSupport = clampNumber(0, 1, ((underlyingFits[2]?.score || 0) / 100) * 0.36 + (thirdWeightMap.get(4) || 0) * 0.42 + (secondWeightMap.get(4) || 0) * 0.06 + entryStable * 0.04);
   const box234FitScore = coreFieldsReady
     ? Number(
         clampNumber(
           0,
           100,
           (
-            (underlyingSorted[0]?.score || 0) * 0.42 +
-            (underlyingSorted[1]?.score || 0) * 0.33 +
-            (underlyingSorted[2]?.score || 0) * 0.15 +
-            venueBias * 10 +
-            entryStable * 6 +
-            ((finishRoleOptional?.second234 || 0) * 100) * 0.08 +
-            ((finishRoleOptional?.third234 || 0) * 100) * 0.05
+            lane2SecondSupport * 26 +
+            lane3SecondSupport * 16 +
+            lane4SecondSupport * 12 +
+            lane2ThirdSupport * 8 +
+            lane3ThirdSupport * 18 +
+            lane4ThirdSupport * 16 +
+            box234AverageStrength * 10 +
+            venueBias * 7 +
+            entryStable * 5 +
+            ((finishRoleOptional?.second234 || 0) * 100) * 0.06 +
+            ((finishRoleOptional?.third234 || 0) * 100) * 0.08
           ).toFixed(1)
         )
       )
+    : null;
+
+  const outsideHeuristicBase = [
+    { lane: 5, racer: lane5 },
+    { lane: 6, racer: lane6 }
+  ].map(({ lane, racer }) => {
+    const underneath = racer ? getUnderlyingBoatFit(racer, lane) : null;
+    const motor = getRacerMotorStrength(racer || {});
+    const start = getRacerStartStrength(racer || {});
+    return {
+      lane,
+      head: clampNumber(0, 1, ((underneath || 0) / 100) * 0.46 + (motor.value ?? 0.4) * 0.28 + (start.value ?? 0.4) * 0.14),
+      second: clampNumber(0, 1, ((underneath || 0) / 100) * 0.54 + (motor.value ?? 0.4) * 0.16 + (start.value ?? 0.4) * 0.1),
+      third: clampNumber(0, 1, ((underneath || 0) / 100) * 0.6 + (motor.value ?? 0.4) * 0.1)
+    };
+  });
+  const outsideHeadRiskProb = orderRows.length > 0
+    ? sumOrderProbability(orderRows, ({ first }) => [5, 6].includes(first))
+    : Number(clampNumber(0, 0.42, outsideHeuristicBase.reduce((sum, row) => sum + row.head, 0) * 0.18).toFixed(4));
+  const outsideSecondRiskProb = orderRows.length > 0
+    ? sumOrderProbability(orderRows, ({ first, second }) => first === 1 && [5, 6].includes(second))
+    : Number(clampNumber(0, 0.38, outsideHeuristicBase.reduce((sum, row) => sum + row.second, 0) * 0.16).toFixed(4));
+  const outsideThirdRiskProb = orderRows.length > 0
+    ? sumOrderProbability(orderRows, ({ first, third }) => first === 1 && [5, 6].includes(third))
+    : Number(clampNumber(0, 0.32, outsideHeuristicBase.reduce((sum, row) => sum + row.third, 0) * 0.14).toFixed(4));
+  const outsideBreakRisk = coreFieldsReady
+    ? Number(clampNumber(0, 100, ((outsideHeadRiskProb * 0.56) + (outsideSecondRiskProb * 0.29) + (outsideThirdRiskProb * 0.15)) * 100).toFixed(1))
     : null;
 
   const fixed1234Probability = coreFieldsReady
@@ -1433,13 +1490,15 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
           0.08,
           0.86,
           (
-            (boat1AnchorScore / 100) * 0.34 +
-            (box234FitScore / 100) * 0.29 +
-            venueBias * 0.12 +
-            entryStable * 0.12 -
-            opponentPressure * 0.035 -
-            risk1 * 0.06 +
-            ((orderProbabilityOptional ?? 0) * 0.12)
+            (boat1AnchorScore / 100) * 0.33 +
+            (box234FitScore / 100) * 0.32 +
+            venueBias * 0.1 +
+            entryStable * 0.1 -
+            (outsideHeadRiskProb * 0.09) -
+            (outsideSecondRiskProb * 0.07) -
+            (outsideThirdRiskProb * 0.03) -
+            risk1 * 0.04 +
+            ((orderProbabilityOptional ?? 0) * 0.16)
           ).toFixed(4)
         )
       )
@@ -1460,30 +1519,6 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
         concentrationRatio: null
       };
 
-  const hardRaceScore = coreFieldsReady
-    ? Number(
-        clampNumber(
-          0,
-          100,
-          (
-            boat1AnchorScore * 0.54 +
-            box234FitScore * 0.26 +
-            (fixed1234Probability * 100) * 0.24 -
-            opponentPressure * 11
-          ).toFixed(1)
-        )
-      )
-    : null;
-
-  const shapeBase =
-    underlyingSorted[0]?.lane === 4
-      ? "1-24-234"
-      : underlyingSorted[0]?.lane === 3 && (underlyingSorted[0]?.score || 0) - (underlyingSorted[1]?.score || 0) >= 4
-        ? "1-34-234"
-        : "1-23-234";
-  const suggestedShape = coreFieldsReady && box234FitScore >= 44 ? shapeBase : null;
-  const conservativeComposite = hardRaceScore;
-
   const top4Fixed1234Probability = fixed1234MatrixData.top4Total;
   const optionalDataPenalty = Number(
     clampNumber(
@@ -1499,17 +1534,56 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const riskAdjustment = Number(
     clampNumber(
       0,
-      0.12,
+      0.1,
       (
-        movementRisk * 0.18 +
-        Math.max(0, opponentPressure - 0.72) * 0.08 +
-        Math.max(0, risk1 - 0.11) * 0.12
+        movementRisk * 0.15 +
+        Math.max(0, (outsideBreakRisk ?? 0) - 48) / 100 * 0.08 +
+        Math.max(0, risk1 - 0.11) * 0.08
       ).toFixed(4)
     )
   );
   const adjustedFixed1234TotalProbability = fixed1234Probability === null
     ? null
     : Number(Math.max(0, fixed1234Probability - riskAdjustment - optionalDataPenalty).toFixed(4));
+  const fixed1234ShapeConcentration = coreFieldsReady
+    ? Number(
+        clampNumber(
+          0,
+          100,
+          (
+            (adjustedFixed1234TotalProbability ?? 0) * 100 * 0.42 +
+            ((top4Fixed1234Probability ?? 0) * 100) * 0.33 +
+            ((fixed1234MatrixData.concentrationRatio ?? 0) * 100) * 0.19 -
+            (outsideHeadRiskProb * 100) * 0.1 -
+            (outsideSecondRiskProb * 100) * 0.08
+          ).toFixed(1)
+        )
+      )
+    : null;
+
+  const hardRaceScore = coreFieldsReady
+    ? Number(
+        clampNumber(
+          0,
+          100,
+          (
+            boat1AnchorScore * 0.34 +
+            box234FitScore * 0.3 +
+            (fixed1234ShapeConcentration || 0) * 0.24 -
+            (outsideBreakRisk || 0) * 0.18
+          ).toFixed(1)
+        )
+      )
+    : null;
+
+  const shapeBase =
+    underlyingSorted[0]?.lane === 4
+      ? "1-24-234"
+      : underlyingSorted[0]?.lane === 3 && (underlyingSorted[0]?.score || 0) - (underlyingSorted[1]?.score || 0) >= 4
+        ? "1-34-234"
+        : "1-23-234";
+  const suggestedShape = coreFieldsReady && box234FitScore >= 44 ? shapeBase : null;
+  const conservativeComposite = hardRaceScore;
 
   const dominantConservativePattern =
     Array.isArray(fixed1234MatrixData.top4) && fixed1234MatrixData.top4.length > 0
@@ -1519,6 +1593,10 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   if (coreFieldsReady) {
     if (boat1AnchorScore < HARD_RACE_DECISION_THRESHOLDS.weak_anchor_skip) {
       skipReason = "boat1 anchor too weak";
+    } else if ((outsideBreakRisk ?? 0) >= 66) {
+      skipReason = "outside break risk too high";
+    } else if ((fixed1234ShapeConcentration ?? 0) < 28 && (box234FitScore ?? 0) < 38) {
+      skipReason = "fixed1234 shape too weak";
     } else if (
       (adjustedFixed1234TotalProbability ?? 0) < HARD_RACE_DECISION_THRESHOLDS.dominant_pattern_soft_total &&
       !(boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution && dominantConservativePattern)
@@ -1540,21 +1618,30 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     ? "UNAVAILABLE"
     : skipReason === "boat1 anchor too weak"
       ? "SKIP"
-      : (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_total &&
-          (top4Fixed1234Probability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_top4
+      : (boat1AnchorScore ?? 0) >= 58 &&
+          (box234FitScore ?? 0) >= 48 &&
+          (outsideBreakRisk ?? 100) <= 34 &&
+          (top4Fixed1234Probability ?? 0) >= 0.28 &&
+          (fixed1234ShapeConcentration ?? 0) >= 56
         ? "BUY-4"
-        : (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy6_total &&
-            (top4Fixed1234Probability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy6_top4
+        : (boat1AnchorScore ?? 0) >= 44 &&
+            (box234FitScore ?? 0) >= 42 &&
+            (outsideBreakRisk ?? 100) <= 48 &&
+            ((adjustedFixed1234TotalProbability ?? 0) >= 0.28 || (fixed1234ShapeConcentration ?? 0) >= 46)
           ? dominantConservativePattern ? "BUY-6" : "BORDERLINE"
-          : (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.borderline_total ||
-              ((adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.dominant_pattern_soft_total &&
-                dominantConservativePattern &&
-                boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution) ||
-              (boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.strong_anchor_override && dominantConservativePattern)
+          : (boat1AnchorScore ?? 0) >= 34 &&
+              (box234FitScore ?? 0) >= 36 &&
+              (outsideBreakRisk ?? 100) <= 62 &&
+              (
+                (fixed1234ShapeConcentration ?? 0) >= 34 ||
+                (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.borderline_total ||
+                ((adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.dominant_pattern_soft_total &&
+                  dominantConservativePattern &&
+                  boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution) ||
+                (boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.strong_anchor_override && dominantConservativePattern)
+              )
             ? "BORDERLINE"
-            : boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution && dominantConservativePattern
-              ? "BORDERLINE"
-              : "SKIP";
+            : "SKIP";
 
   const finalStatus = !coreFieldsReady
     ? "UNAVAILABLE"
@@ -1568,11 +1655,16 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     : (boat1AnchorScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_anchor &&
         (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_total &&
         (top4Fixed1234Probability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_top4 &&
-        (box234FitScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_box
+        (box234FitScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_box &&
+        (outsideBreakRisk ?? 100) <= HARD_RACE_RANK_THRESHOLDS.a_outside_risk_max &&
+        (fixed1234ShapeConcentration ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_concentration
       ? "A"
       : (boat1AnchorScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_anchor &&
           (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_total &&
-          (top4Fixed1234Probability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_top4
+          (top4Fixed1234Probability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_top4 &&
+          (box234FitScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_box &&
+          (outsideBreakRisk ?? 100) <= HARD_RACE_RANK_THRESHOLDS.b_outside_risk_max &&
+          (fixed1234ShapeConcentration ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_concentration
         ? "B"
         : "SKIP";
 
@@ -1588,7 +1680,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const negativeReasons = [];
   if (risk1 >= 0.12) negativeReasons.push("boat1 F/L risk");
   if (source?.entry_changed) negativeReasons.push("course movement risk");
-  if (opponentPressure >= 0.72) negativeReasons.push("2/3/4 pressure high");
+  if ((outsideBreakRisk ?? 0) >= 54) negativeReasons.push("outside 5/6 break risk");
   if (skipReason) negativeReasons.push(skipReason);
   if (optionalMissing.length > 0) negativeReasons.push("optional data missing only");
   const topReasons = coreFieldsReady
@@ -1613,14 +1705,28 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     hard_race_rank: hardRaceRank,
     old_decision: oldDecision,
     top4_fixed1234_probability: top4Fixed1234Probability,
+    fixed1234_shape_concentration: fixed1234ShapeConcentration,
+    outside_break_risk: outsideBreakRisk,
+    outside_head_risk: outsideHeadRiskProb,
+    outside_second_risk: outsideSecondRiskProb,
+    outside_third_risk: outsideThirdRiskProb,
     skip_reason: skipReason,
     optional_data_penalty: optionalDataPenalty,
     boat1_anchor_contribution: boat1AnchorScore,
+    box_234_fit_contribution: box234FitScore,
     fixed1234_total_contribution: adjustedFixed1234TotalProbability,
     top4_fixed1234_contribution: top4Fixed1234Probability,
     decision_reason:
       skipReason ||
-      (optionalMissing.length > 0 ? "optional data missing only" : "conservative structure acceptable"),
+      (buyStyleRecommendation === "BUY-4"
+        ? "strong 1-anchor with concentrated 1-234-234 top-4 shapes"
+        : buyStyleRecommendation === "BUY-6"
+          ? "boat1 anchor and 2/3/4 underneath group dominate the six-ticket structure"
+          : buyStyleRecommendation === "BORDERLINE"
+            ? "six-ticket structure remains playable but not dominant"
+            : optionalMissing.length > 0
+              ? "optional data missing only"
+              : "true weak 1-head structure"),
     positive_reasons: positiveReasons,
     negative_reasons: negativeReasons,
     attempt_count: Number(entry?.attemptCount || 1),
@@ -1654,6 +1760,8 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     fixed1234TotalProbability: fixed1234MatrixData.total,
     fixed1234Top4: fixed1234MatrixData.top4,
     fixed1234Top4Total: fixed1234MatrixData.top4Total,
+    fixed1234ShapeConcentration,
+    outsideBreakRisk,
     adjustedFixed1234TotalProbability,
     buyStyleRecommendation,
     hardRaceRank,
@@ -5528,6 +5636,58 @@ export default function App() {
                         </details>
                       ) : null}
                       {predictionDataUsageDebug ? <details style={{ marginBottom: 12 }}><summary>prediction data usage</summary><pre className="json-preview">{safePrettyJson(predictionDataUsageDebug)}</pre></details> : null}
+                      {data?.dataAudit ? (
+                        <details style={{ marginBottom: 12 }}>
+                          <summary>strict data audit</summary>
+                          <div style={{ marginTop: 10 }}>
+                            <div className="kv-list" style={{ marginBottom: 10 }}>
+                              <div className="kv-row"><span>actual entry validation</span><strong>{data?.dataAudit?.summary?.actual_entry?.validation_passed ? "passed" : "failed"}</strong></div>
+                              <div className="kv-row"><span>actual entry fallback</span><strong>{data?.dataAudit?.summary?.actual_entry?.fallback_used ? "yes" : "no"}</strong></div>
+                              <div className="kv-row"><span>fallback reason</span><strong>{data?.dataAudit?.summary?.actual_entry?.fallback_reason || "--"}</strong></div>
+                              <div className="kv-row"><span>usable fields</span><strong>{safeArray(data?.dataAudit?.summary?.usable_fields).length}</strong></div>
+                              <div className="kv-row"><span>unusable fields</span><strong>{safeArray(data?.dataAudit?.summary?.unusable_fields).length}</strong></div>
+                            </div>
+                            <div className="kv-list" style={{ marginBottom: 10 }}>
+                              <div className="kv-row"><span>actual entry order</span><strong>{Array.isArray(data?.dataAudit?.summary?.actual_entry?.parsed_actual_entry_order) ? data.dataAudit.summary.actual_entry.parsed_actual_entry_order.join("-") : "--"}</strong></div>
+                              <div className="kv-row"><span>actual lane map</span><strong><code>{formatDebugRawValue(data?.dataAudit?.summary?.actual_entry?.actual_lane_map || {})}</code></strong></div>
+                              <div className="kv-row"><span>raw entry source</span><strong><code>{formatDebugRawValue(data?.dataAudit?.summary?.actual_entry?.raw_source_text)}</code></strong></div>
+                            </div>
+                            <div className="table-wrap" style={{ marginBottom: 10 }}>
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th>Boat</th>
+                                    <th>Field</th>
+                                    <th>Source</th>
+                                    <th>Row</th>
+                                    <th>Raw</th>
+                                    <th>Normalized</th>
+                                    <th>Validated</th>
+                                    <th>Usable</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {safeArray(data?.dataAudit?.per_boat).flatMap((row) =>
+                                    Object.entries(row?.fields || {}).map(([fieldKey, field]) => (
+                                      <tr key={`audit-${row?.boat ?? "x"}-${fieldKey}`}>
+                                        <td>{row?.boat ?? "-"}</td>
+                                        <td>{field?.label || fieldKey}</td>
+                                        <td>{field?.source_type || "--"}</td>
+                                        <td>{field?.matched_row_label || field?.matched_section_label || "--"}</td>
+                                        <td><code>{formatDebugRawValue(field?.raw_cell_text)}</code></td>
+                                        <td><code>{formatDebugRawValue(field?.normalized_value)}</code></td>
+                                        <td>{field?.validation_passed ? "yes" : "no"}</td>
+                                        <td>{field?.prediction_usable ? "usable" : "unusable"}</td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                            <pre className="json-preview">{safePrettyJson(data?.dataAudit)}</pre>
+                          </div>
+                        </details>
+                      ) : null}
                       <details>
                         <summary>kyoteibiyori debug</summary>
                         <div style={{ marginTop: 10 }}>
@@ -6399,8 +6559,10 @@ export default function App() {
                         <div className="kv-row"><span>hard_race_score</span><strong>{row.hardRaceScore == null ? "--" : formatMaybeNumber(row.hardRaceScore, 1)}</strong></div>
                         <div className="kv-row"><span>boat1_anchor_score</span><strong>{row.boat1AnchorScore == null ? "--" : formatMaybeNumber(row.boat1AnchorScore, 1)}</strong></div>
                         <div className="kv-row"><span>box_234_fit_score</span><strong>{row.box234FitScore == null ? "--" : formatMaybeNumber(row.box234FitScore, 1)}</strong></div>
+                        <div className="kv-row"><span>outside_break_risk</span><strong>{row.outsideBreakRisk == null ? "--" : formatMaybeNumber(row.outsideBreakRisk, 1)}</strong></div>
                         <div className="kv-row"><span>fixed1234_total_probability</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
                         <div className="kv-row"><span>top4_fixed1234_probability</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>fixed1234_shape_concentration</span><strong>{row.fixed1234ShapeConcentration == null ? "--" : formatMaybeNumber(row.fixed1234ShapeConcentration, 1)}</strong></div>
                         <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
                         <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
                       </div>
@@ -6428,6 +6590,11 @@ export default function App() {
                           <div className="kv-row"><span>Composite</span><strong>{row.conservativeComposite == null ? "--" : formatMaybeNumber(row.conservativeComposite, 1)}</strong></div>
                           <div className="kv-row"><span>Buy style</span><strong>{row.buyStyleRecommendation || "-"}</strong></div>
                           <div className="kv-row"><span>Old decision</span><strong>{row.screeningDebug?.old_decision || "-"}</strong></div>
+                          <div className="kv-row"><span>outside_break_risk</span><strong>{row.outsideBreakRisk == null ? "--" : formatMaybeNumber(row.outsideBreakRisk, 1)}</strong></div>
+                          <div className="kv-row"><span>shape concentration</span><strong>{row.fixed1234ShapeConcentration == null ? "--" : formatMaybeNumber(row.fixed1234ShapeConcentration, 1)}</strong></div>
+                          <div className="kv-row"><span>outside head risk</span><strong>{row.screeningDebug?.outside_head_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_head_risk || 0) * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>outside 2nd risk</span><strong>{row.screeningDebug?.outside_second_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_second_risk || 0) * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>outside 3rd risk</span><strong>{row.screeningDebug?.outside_third_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_third_risk || 0) * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>Top 4 total</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>Shape candidates</span><strong>{Array.isArray(row.fixedShapeCandidates) ? row.fixedShapeCandidates.map((item) => `${item.shape} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "-"}</strong></div>
                         </div>
@@ -6456,8 +6623,11 @@ export default function App() {
                             Contributions:
                             {` optional penalty ${formatMaybeNumber((row.screeningDebug.optional_data_penalty || 0) * 100, 1)}%`}
                             {` / anchor ${formatMaybeNumber(row.screeningDebug.boat1_anchor_contribution, 1)}`}
+                            {` / box ${formatMaybeNumber(row.screeningDebug.box_234_fit_contribution, 1)}`}
+                            {` / outside risk ${formatMaybeNumber(row.screeningDebug.outside_break_risk, 1)}`}
                             {` / fixed total ${formatMaybeNumber((row.screeningDebug.fixed1234_total_contribution || 0) * 100, 1)}%`}
                             {` / top4 ${formatMaybeNumber((row.screeningDebug.top4_fixed1234_contribution || 0) * 100, 1)}%`}
+                            {` / concentration ${formatMaybeNumber(row.screeningDebug.fixed1234_shape_concentration, 1)}`}
                           </p>
                         ) : null}
                         {row.actualResult ? (
@@ -6493,6 +6663,7 @@ export default function App() {
                             <div className="kv-row"><span>score ready</span><strong>{row.screeningDebug.hard_race_score_ready ? "yes" : "no"}</strong></div>
                             <div className="kv-row"><span>rank</span><strong>{row.screeningDebug.hard_race_rank || "-"}</strong></div>
                             <div className="kv-row"><span>buy style</span><strong>{row.screeningDebug.buy_style_recommendation || "-"}</strong></div>
+                            <div className="kv-row"><span>decision reason</span><strong>{row.screeningDebug.decision_reason || "-"}</strong></div>
                             <div className="kv-row"><span>skip reason</span><strong>{row.screeningDebug.skip_reason || "-"}</strong></div>
                           </div>
                         ) : null}
