@@ -1252,6 +1252,16 @@ const HARD_RACE_DECISION_THRESHOLDS = {
   optional_penalty_cap: 0.02
 };
 
+const HARD_RACE_RANK_THRESHOLDS = {
+  a_anchor: 58,
+  a_total: 0.5,
+  a_top4: 0.38,
+  a_box: 46,
+  b_anchor: 52,
+  b_total: 0.45,
+  b_top4: 0.32
+};
+
 function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId = null) {
   const map = new Map();
   safeArray(rows).forEach((row) => {
@@ -1553,8 +1563,22 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       : buyStyleRecommendation === "BORDERLINE"
         ? "BORDERLINE"
         : "SKIP";
+  const hardRaceRank = !coreFieldsReady
+    ? "UNAVAILABLE"
+    : (boat1AnchorScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_anchor &&
+        (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_total &&
+        (top4Fixed1234Probability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_top4 &&
+        (box234FitScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_box
+      ? "A"
+      : (boat1AnchorScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_anchor &&
+          (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_total &&
+          (top4Fixed1234Probability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_top4
+        ? "B"
+        : "SKIP";
 
   const positiveReasons = [];
+  if (hardRaceRank === "A") positiveReasons.push("best 4-point tier");
+  if (hardRaceRank === "B") positiveReasons.push("acceptable 6-point tier");
   if (venueBias >= 0.7) positiveReasons.push("strong inside venue");
   if (boat1AnchorScore !== null && boat1AnchorScore >= 68) positiveReasons.push("boat1 anchor strong");
   if (!source?.entry_changed) positiveReasons.push("stable entry");
@@ -1586,6 +1610,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     hard_race_score_ready: hardRaceScore !== null,
     final_status: finalStatus,
     buy_style_recommendation: buyStyleRecommendation,
+    hard_race_rank: hardRaceRank,
     old_decision: oldDecision,
     top4_fixed1234_probability: top4Fixed1234Probability,
     skip_reason: skipReason,
@@ -1631,6 +1656,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     fixed1234Top4Total: fixed1234MatrixData.top4Total,
     adjustedFixed1234TotalProbability,
     buyStyleRecommendation,
+    hardRaceRank,
     skipReason,
     finalStatus,
     buyRecommendation: finalStatus,
@@ -2983,6 +3009,7 @@ export default function App() {
   const [rankingsError, setRankingsError] = useState("");
   const [rankingsData, setRankingsData] = useState([]);
   const [hardRaceCalibration, setHardRaceCalibration] = useState(null);
+  const [hardRaceTierFilter, setHardRaceTierFilter] = useState("ALL");
 
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
@@ -4033,6 +4060,9 @@ export default function App() {
           })
         : [];
       rows.sort((a, b) => {
+        const tierRank = (value) => (value === "A" ? 4 : value === "B" ? 3 : value === "SKIP" ? 2 : 0);
+        const tierDiff = tierRank(b?.hardRaceRank) - tierRank(a?.hardRaceRank);
+        if (tierDiff !== 0) return tierDiff;
         const statusRank = (value) => (value === "BUY" ? 3 : value === "BORDERLINE" ? 2 : value === "SKIP" ? 1 : 0);
         const statusDiff = statusRank(b?.finalStatus) - statusRank(a?.finalStatus);
         if (statusDiff !== 0) return statusDiff;
@@ -4062,6 +4092,11 @@ export default function App() {
       setRankingsLoading(false);
     }
   };
+
+  const filteredHardRaceRows = useMemo(() => {
+    if (hardRaceTierFilter === "ALL") return rankingsData;
+    return rankingsData.filter((row) => String(row?.hardRaceRank || "UNAVAILABLE") === hardRaceTierFilter);
+  }, [rankingsData, hardRaceTierFilter]);
 
   const onOpenRecommendation = async (row) => {
     const nextVenueId = Number(row?.venueId);
@@ -6333,30 +6368,34 @@ export default function App() {
               <div className="controls-grid" style={{ marginBottom: 14 }}>
                 <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
                 <label><span>場</span><select value={venueId} onChange={(e) => setVenueId(Number(e.target.value))}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
+                <label><span>Rank filter</span><select value={hardRaceTierFilter} onChange={(e) => setHardRaceTierFilter(e.target.value)}><option value="ALL">All</option><option value="A">A rank</option><option value="B">B rank</option><option value="SKIP">C rank / SKIP</option></select></label>
               </div>
               {hardRaceCalibration?.reviewedCount > 0 ? (
                 <div className="kv-list" style={{ marginBottom: 14 }}>
                   <div className="kv-row"><span>reviewed races</span><strong>{hardRaceCalibration.reviewedCount}</strong></div>
                   <div className="kv-row"><span>inside-six hit rate</span><strong>{formatMaybeNumber(hardRaceCalibration.insideSixHitRate, 1)}%</strong></div>
                   <div className="kv-row"><span>false skip rate</span><strong>{formatMaybeNumber(hardRaceCalibration.falseSkipRate, 1)}%</strong></div>
+                  <div className="kv-row"><span>visible races</span><strong>{filteredHardRaceRows.length}</strong></div>
                 </div>
               ) : null}
               {rankingsLoading ? (
                 <p className="muted">保守的な hard race 候補をスキャン中...</p>
-              ) : rankingsData.length === 0 ? (
+              ) : filteredHardRaceRows.length === 0 ? (
                 <p className="muted">対象レースがありません。</p>
               ) : (
                 <div className="recommendation-list">
-                  {rankingsData.map((row) => (
+                  {filteredHardRaceRows.map((row) => (
                     <article className="recommend-card" key={`hard-race-${row.raceNo}`}>
                       <div className="recommend-card-head">
                         <strong>{row.raceNo}R {row.venueName || "-"}</strong>
                         <div className="row-actions">
+                          <span className={`status-pill ${row.hardRaceRank === "A" ? "status-hit" : row.hardRaceRank === "B" ? "status-unsettled" : "risk-small"}`}>{row.hardRaceRank || "-"}</span>
                           <span className={`status-pill ${row.finalStatus === "BUY" ? "status-hit" : row.finalStatus === "BORDERLINE" ? "status-unsettled" : row.finalStatus === "UNAVAILABLE" ? "status-unsettled" : "risk-small"}`}>{row.finalStatus}</span>
                           <span className={`status-pill ${row.buyStyleRecommendation === "BUY-6" || row.buyStyleRecommendation === "BUY-4" ? "status-hit" : row.buyStyleRecommendation === "BORDERLINE" ? "status-unsettled" : row.buyStyleRecommendation === "UNAVAILABLE" ? "status-unsettled" : "risk-small"}`}>{row.buyStyleRecommendation || "-"}</span>
                         </div>
                       </div>
                       <div className="kv-list">
+                        <div className="kv-row"><span>rank</span><strong>{row.hardRaceRank || "--"}</strong></div>
                         <div className="kv-row"><span>hard_race_score</span><strong>{row.hardRaceScore == null ? "--" : formatMaybeNumber(row.hardRaceScore, 1)}</strong></div>
                         <div className="kv-row"><span>boat1_anchor_score</span><strong>{row.boat1AnchorScore == null ? "--" : formatMaybeNumber(row.boat1AnchorScore, 1)}</strong></div>
                         <div className="kv-row"><span>box_234_fit_score</span><strong>{row.box234FitScore == null ? "--" : formatMaybeNumber(row.box234FitScore, 1)}</strong></div>
@@ -6384,6 +6423,7 @@ export default function App() {
                       <details style={{ marginTop: 10 }}>
                         <summary>Why this race</summary>
                         <div className="kv-list" style={{ marginTop: 10 }}>
+                          <div className="kv-row"><span>Rank</span><strong>{row.hardRaceRank || "-"}</strong></div>
                           <div className="kv-row"><span>Top shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
                           <div className="kv-row"><span>Composite</span><strong>{row.conservativeComposite == null ? "--" : formatMaybeNumber(row.conservativeComposite, 1)}</strong></div>
                           <div className="kv-row"><span>Buy style</span><strong>{row.buyStyleRecommendation || "-"}</strong></div>
@@ -6451,6 +6491,7 @@ export default function App() {
                             <div className="kv-row"><span>parse</span><strong>{row.screeningDebug.parse_success ? "ok" : "failed"}</strong></div>
                             <div className="kv-row"><span>core fields</span><strong>{row.screeningDebug.core_fields_ready ? "ready" : "missing"}</strong></div>
                             <div className="kv-row"><span>score ready</span><strong>{row.screeningDebug.hard_race_score_ready ? "yes" : "no"}</strong></div>
+                            <div className="kv-row"><span>rank</span><strong>{row.screeningDebug.hard_race_rank || "-"}</strong></div>
                             <div className="kv-row"><span>buy style</span><strong>{row.screeningDebug.buy_style_recommendation || "-"}</strong></div>
                             <div className="kv-row"><span>skip reason</span><strong>{row.screeningDebug.skip_reason || "-"}</strong></div>
                           </div>
