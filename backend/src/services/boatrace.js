@@ -520,6 +520,56 @@ function setCachedRaceData(params, data) {
   });
 }
 
+function logFetchEvent(label, payload = {}) {
+  console.info("[RACE_FETCH]", JSON.stringify({
+    label,
+    ...payload
+  }));
+}
+
+async function fetchHtmlWithRetriesLogged({
+  label,
+  urls,
+  timeoutMs = 15000,
+  retryCount = 3,
+  debugSink = null,
+  routeMeta = {}
+}) {
+  const startedAt = Date.now();
+  logFetchEvent(`${label}:start`, {
+    timeout_ms: timeoutMs,
+    retry_count: retryCount,
+    urls,
+    ...routeMeta
+  });
+  try {
+    const result = await fetchHtmlWithRetries(urls, timeoutMs, retryCount, debugSink);
+    logFetchEvent(`${label}:success`, {
+      elapsed_ms: Date.now() - startedAt,
+      success_url: result?.url || null,
+      attempted_urls: debugSink?.attempted_urls || result?.attempted || [],
+      ...routeMeta
+    });
+    return {
+      ...result,
+      elapsedMs: Date.now() - startedAt
+    };
+  } catch (error) {
+    logFetchEvent(`${label}:failure`, {
+      elapsed_ms: Date.now() - startedAt,
+      attempted_urls: debugSink?.attempted_urls || [],
+      message: String(error?.message || error),
+      ...routeMeta
+    });
+    throw error;
+  } finally {
+    logFetchEvent(`${label}:end`, {
+      elapsed_ms: Date.now() - startedAt,
+      ...routeMeta
+    });
+  }
+}
+
 function missingRequiredFields(racer) {
   const missing = [];
 
@@ -788,8 +838,19 @@ export async function getRaceData({
   artifactCollector = null
 }) {
   const totalStartedAt = Date.now();
+  const routeMeta = {
+    service: "getRaceData",
+    date,
+    venueId: Number(venueId),
+    raceNo: Number(raceNo)
+  };
+  logFetchEvent("getRaceData:start", routeMeta);
   const cached = forceRefresh ? null : getCachedRaceData({ date, venueId, raceNo });
   if (cached) {
+    logFetchEvent("getRaceData:cache_hit", {
+      elapsed_ms: Date.now() - totalStartedAt,
+      ...routeMeta
+    });
     return {
       ...cached,
       source: {
@@ -823,17 +884,40 @@ export async function getRaceData({
     ? Math.max(1800, Math.min(Number(timeoutMs) || 15000, 5000))
     : Math.max(1500, Math.min(Number(timeoutMs) || 15000, 3200));
   const racelistFetchDebug = {};
-  const racelistFetch = await fetchHtmlWithRetries([racelistUrl, racelistSpUrl], officialTimeoutMs, 3, racelistFetchDebug);
-  const racelistHtml = racelistFetch.html;
-  let beforeinfoHtml = null;
-  let beforeinfoFetchError = null;
   const beforeinfoFetchDebug = {};
-  try {
-    const beforeinfoFetch = await fetchHtmlWithRetries([beforeinfoUrl, beforeinfoSpUrl], beforeinfoTimeoutMs, 3, beforeinfoFetchDebug);
-    beforeinfoHtml = beforeinfoFetch.html;
-  } catch (error) {
-    beforeinfoFetchError = String(error?.message || error);
+  const [racelistResult, beforeinfoResult] = await Promise.allSettled([
+    fetchHtmlWithRetriesLogged({
+      label: "boatrace_racelist",
+      urls: [racelistUrl, racelistSpUrl],
+      timeoutMs: officialTimeoutMs,
+      retryCount: 3,
+      debugSink: racelistFetchDebug,
+      routeMeta
+    }),
+    fetchHtmlWithRetriesLogged({
+      label: "boatrace_beforeinfo",
+      urls: [beforeinfoUrl, beforeinfoSpUrl],
+      timeoutMs: beforeinfoTimeoutMs,
+      retryCount: 3,
+      debugSink: beforeinfoFetchDebug,
+      routeMeta
+    })
+  ]);
+  if (racelistResult.status !== "fulfilled") {
+    logFetchEvent("getRaceData:official_failure", {
+      stage: "racelist",
+      elapsed_ms: Date.now() - totalStartedAt,
+      message: String(racelistResult.reason?.message || racelistResult.reason),
+      ...routeMeta
+    });
+    throw racelistResult.reason;
   }
+  const racelistFetch = racelistResult.value;
+  const racelistHtml = racelistFetch.html;
+  const beforeinfoHtml = beforeinfoResult.status === "fulfilled" ? beforeinfoResult.value.html : null;
+  const beforeinfoFetchError = beforeinfoResult.status === "rejected"
+    ? String(beforeinfoResult.reason?.message || beforeinfoResult.reason)
+    : null;
   const officialBaseFetchMs = Date.now() - officialFetchStartedAt;
 
   const parseStartedAt = Date.now();
@@ -886,6 +970,10 @@ export async function getRaceData({
     error: null
   };
   if (includeKyoteiBiyori) {
+    logFetchEvent("kyoteibiyori:start", {
+      timeout_ms: kyoteiTimeoutMs,
+      ...routeMeta
+    });
     try {
       kyoteiBiyori = await fetchKyoteiBiyoriRaceData({
         date,
@@ -903,7 +991,25 @@ export async function getRaceData({
         fallbackUsed: true,
         error: String(error?.message || error)
       };
+      logFetchEvent("kyoteibiyori:failure", {
+        elapsed_ms: Date.now() - kyoteiFetchStartedAt,
+        message: kyoteiBiyori.error,
+        ...routeMeta
+      });
     }
+    if (kyoteiBiyori?.ok) {
+      logFetchEvent("kyoteibiyori:success", {
+        elapsed_ms: Date.now() - kyoteiFetchStartedAt,
+        url: kyoteiBiyori?.url || null,
+        tried_urls: Array.isArray(kyoteiBiyori?.triedUrls) ? kyoteiBiyori.triedUrls : [],
+        ...routeMeta
+      });
+    }
+    logFetchEvent("kyoteibiyori:end", {
+      elapsed_ms: Date.now() - kyoteiFetchStartedAt,
+      ok: !!kyoteiBiyori?.ok,
+      ...routeMeta
+    });
   }
   const kyoteibiyoriFetchMs = Date.now() - kyoteiFetchStartedAt;
   let mergedWithKyoteiBiyori = mergedRacers;
@@ -950,6 +1056,11 @@ export async function getRaceData({
         parsing_ms: parseMs,
         kyoteibiyori_fetch_ms: kyoteibiyoriFetchMs,
         total_response_ms: Date.now() - totalStartedAt
+      },
+      fetch_timings: {
+        boatrace_racelist_ms: racelistFetch?.elapsedMs ?? null,
+        boatrace_beforeinfo_ms: beforeinfoResult.status === "fulfilled" ? beforeinfoResult.value?.elapsedMs ?? null : null,
+        kyoteibiyori_ms: kyoteibiyoriFetchMs
       },
       kyotei_biyori: {
         ok: !!kyoteiBiyori?.ok,
@@ -1017,5 +1128,12 @@ export async function getRaceData({
     };
   }
   setCachedRaceData({ date, venueId, raceNo }, result);
+  logFetchEvent("getRaceData:end", {
+    elapsed_ms: Date.now() - totalStartedAt,
+    cache_hit: false,
+    official_ok: true,
+    kyoteibiyori_ok: !!kyoteiBiyori?.ok,
+    ...routeMeta
+  });
   return result;
 }

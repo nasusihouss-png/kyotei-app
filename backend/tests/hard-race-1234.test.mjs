@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildHardRace1234Response } from "../src/services/hard-race-1234.js";
+import { buildHardRace1234Response } from "../src/services/hard-race-1234-v2.js";
 
 const baseData = {
   source: {
@@ -33,9 +33,32 @@ const result = await buildHardRace1234Response({
 assert.equal(result.data_status, "PARTIAL");
 assert.ok(Number.isFinite(Number(result.boat1_escape_trust)));
 assert.ok(Number.isFinite(Number(result.opponent_234_fit)));
+assert.ok(Number.isFinite(Number(result.pair23_fit)));
+assert.ok(Number.isFinite(Number(result.pair24_fit)));
+assert.ok(Number.isFinite(Number(result.pair34_fit)));
+assert.ok(Number.isFinite(Number(result.kill_escape_risk)));
+assert.ok(Number.isFinite(Number(result.shape_shuffle_risk)));
+assert.ok(Number.isFinite(Number(result.box_hit_score)));
+assert.ok(Number.isFinite(Number(result.shape_focus_score)));
 assert.ok(Number.isFinite(Number(result.fixed1234_total_probability)));
+assert.ok(Number.isFinite(Number(result.top4_fixed1234_probability)));
+assert.ok(Number.isFinite(Number(result.fixed1234_shape_concentration)));
+assert.ok(Number.isFinite(Number(result.p_123)));
+assert.ok(Number.isFinite(Number(result.p_124)));
+assert.ok(Number.isFinite(Number(result.p_132)));
+assert.ok(Number.isFinite(Number(result.p_134)));
+assert.ok(Number.isFinite(Number(result.p_142)));
+assert.ok(Number.isFinite(Number(result.p_143)));
 assert.equal(Object.keys(result.fixed1234_matrix).length, 6);
+assert.equal(
+  result.fixed1234_shape_concentration,
+  Number((result.top4_fixed1234_probability / result.fixed1234_total_probability).toFixed(4))
+);
 assert.ok(["BUY-4", "BUY-6", "BORDERLINE", "SKIP"].includes(result.decision));
 assert.ok(Array.isArray(result.missing_fields));
+assert.equal(typeof result.features?.evaluation_targets?.y_box6, "number");
+assert.equal(typeof result.features?.evaluation_targets?.y_top4, "number");
+assert.equal(typeof result.features?.evaluation_targets?.y_buy6, "number");
+assert.equal(typeof result.features?.evaluation_targets?.y_buy4, "number");
 
 console.log("hard-race-1234 ok");

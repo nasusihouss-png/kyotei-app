@@ -92,7 +92,7 @@ import {
   buildHitRateEnhancementContext,
   buildScenarioTreeOrderCandidates
 } from "../services/hit-rate-enhancement.js";
-import { buildHardRace1234Response } from "../services/hard-race-1234.js";
+import { buildHardRace1234Response } from "../services/hard-race-1234-v2.js";
 
 export const raceRouter = Router();
 
@@ -9542,6 +9542,15 @@ raceRouter.get("/race", async (req, res, next) => {
         )
       );
       artifactCollector = isHardRaceScreening ? {} : null;
+      console.info("[RACE_ROUTE][fetch_start]", JSON.stringify({
+        route: "/api/race",
+        date,
+        venueId: toInt(venueId, null),
+        raceNo: toInt(raceNo, null),
+        screening: screeningMode || null,
+        raceDataTimeoutMs,
+        dataFetchTimeoutMs
+      }));
       data = await withTimeout(
         () => getRaceData({
           date,
@@ -9564,17 +9573,115 @@ raceRouter.get("/race", async (req, res, next) => {
       routeTimings.official_base_fetch_ms = toNullableNum(data?.source?.timings?.official_base_fetch_ms);
       routeTimings.kyoteibiyori_fetch_ms = toNullableNum(data?.source?.timings?.kyoteibiyori_fetch_ms);
       routeTimings.parsing_ms = toNullableNum(data?.source?.timings?.parsing_ms);
+      console.info("[RACE_ROUTE][fetch_success]", JSON.stringify({
+        route: "/api/race",
+        date,
+        venueId: toInt(venueId, null),
+        raceNo: toInt(raceNo, null),
+        official_fetch_status: data?.source?.official_fetch_status || {},
+        kyotei_ok: !!data?.source?.kyotei_biyori?.ok
+      }));
       if (isHardRaceScreening) {
         const predictionStartedAt = Date.now();
-        const hardRace1234 = await buildHardRace1234Response({
-          data,
-          date,
-          venueId,
-          raceNo,
-          artifactCollector
-        });
+        let hardRace1234;
+        try {
+          hardRace1234 = await buildHardRace1234Response({
+            data,
+            date,
+            venueId,
+            raceNo,
+            artifactCollector
+          });
+        } catch (hardRaceErr) {
+          hardRace1234 = {
+            race_no: toInt(raceNo, null),
+            status: "DATA_ERROR",
+            data_status: data?.source?.official_fetch_status?.racelist === "success" ? "PARTIAL" : "DATA_ERROR",
+            boat1_escape_trust: null,
+            opponent_234_fit: null,
+            pair23_fit: null,
+            pair24_fit: null,
+            pair34_fit: null,
+            kill_escape_risk: null,
+            shape_shuffle_risk: null,
+            makuri_risk: null,
+            outside_break_risk: null,
+            box_hit_score: null,
+            shape_focus_score: null,
+            fixed1234_total_probability: null,
+            top4_fixed1234_probability: null,
+            fixed1234_shape_concentration: null,
+            p_123: null,
+            p_124: null,
+            p_132: null,
+            p_134: null,
+            p_142: null,
+            p_143: null,
+            fixed1234_matrix: {},
+            fixed1234_top4: [],
+            suggested_shape: null,
+            decision: data?.source?.official_fetch_status?.racelist === "success" ? "PARTIAL" : "DATA_ERROR",
+            decision_reason: String(hardRaceErr?.message || hardRaceErr || "hard race response build failed"),
+            missing_fields: ["hard_race_response"],
+            missing_field_details: {
+              hard_race_response: {
+                reason: "not calculated",
+                source: "route",
+                lane: null,
+                field: "hard_race_response"
+              }
+            },
+            metric_status: {},
+            source_summary: {
+              primary: {
+                source: "boatrace",
+                racelist: data?.source?.official_fetch_status?.racelist || "unknown",
+                beforeinfo: data?.source?.official_fetch_status?.beforeinfo || "unknown"
+              },
+              supplement: {
+                source: "kyoteibiyori",
+                fetch_ok: !!data?.source?.kyotei_biyori?.ok
+              },
+              source_priority: [
+                "boatrace > kyoteibiyori",
+                "official overlap wins",
+                "kyoteibiyori only supplements missing traits"
+              ]
+            },
+            fetched_urls: artifactCollector?.fetched_urls || {},
+            fetch_timings: data?.source?.fetch_timings || data?.source?.timings || {},
+            raw_saved_paths: {},
+            parsed_saved_paths: {},
+            normalized_data: null,
+            features: {},
+            scores: {},
+            screeningDebug: {
+              fetch_success: data?.source?.official_fetch_status?.racelist === "success",
+              parse_success: false,
+              score_success: false,
+              decision_reason: String(hardRaceErr?.message || hardRaceErr || "hard race response build failed"),
+              missing_required_scores: ["hard_race_response"]
+            }
+          };
+          console.error("[RACE_ROUTE][hard_race_fail_open]", JSON.stringify({
+            route: "/api/race",
+            date,
+            venueId: toInt(venueId, null),
+            raceNo: toInt(raceNo, null),
+            message: hardRace1234.decision_reason
+          }));
+        }
         routeTimings.prediction_build_ms = Date.now() - predictionStartedAt;
         routeTimings.total_response_ms = Date.now() - routeStartedAt;
+        console.info("[RACE_ROUTE][response_end]", JSON.stringify({
+          route: "/api/race",
+          date,
+          venueId: toInt(venueId, null),
+          raceNo: toInt(raceNo, null),
+          data_status: hardRace1234?.data_status || null,
+          decision: hardRace1234?.decision || null,
+          total_response_ms: routeTimings.total_response_ms
+        }));
         return res.json({
           source: data.source || {},
           race: data.race,
@@ -9585,6 +9692,14 @@ raceRouter.get("/race", async (req, res, next) => {
         });
       }
     } catch (fetchErr) {
+      console.error("[RACE_ROUTE][fetch_failure]", JSON.stringify({
+        route: "/api/race",
+        date,
+        venueId: toInt(venueId, null),
+        raceNo: toInt(raceNo, null),
+        where: failureWhere,
+        message: String(fetchErr?.message || fetchErr)
+      }));
       failureWhere = "race.route:loadRaceSnapshotFallback";
       const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });
       if (!fallback) throw fetchErr;
@@ -11541,11 +11656,24 @@ raceRouter.get("/race", async (req, res, next) => {
           boat1_escape_trust: null,
           box_234_fit_score: null,
           opponent_234_fit: null,
+          pair23_fit: null,
+          pair24_fit: null,
+          pair34_fit: null,
+          kill_escape_risk: null,
+          shape_shuffle_risk: null,
           makuri_risk: null,
           outside_break_risk: null,
+          box_hit_score: null,
+          shape_focus_score: null,
           fixed1234_total_probability: null,
           top4_fixed1234_probability: null,
           fixed1234_shape_concentration: null,
+          p_123: null,
+          p_124: null,
+          p_132: null,
+          p_134: null,
+          p_142: null,
+          p_143: null,
           suggested_shape: null,
           recommendation: null,
           decision: null,
