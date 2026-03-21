@@ -1239,6 +1239,19 @@ function buildFixed1234Matrix({
   };
 }
 
+const HARD_RACE_DECISION_THRESHOLDS = {
+  buy4_total: 0.4,
+  buy4_top4: 0.28,
+  buy6_total: 0.28,
+  buy6_top4: 0.2,
+  borderline_total: 0.22,
+  dominant_pattern_soft_total: 0.18,
+  strong_anchor_override: 46,
+  weak_anchor_skip: 22,
+  soft_anchor_caution: 30,
+  optional_penalty_cap: 0.02
+};
+
 function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId = null) {
   const map = new Map();
   safeArray(rows).forEach((row) => {
@@ -1462,6 +1475,17 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const conservativeComposite = hardRaceScore;
 
   const top4Fixed1234Probability = fixed1234MatrixData.top4Total;
+  const optionalDataPenalty = Number(
+    clampNumber(
+      0,
+      HARD_RACE_DECISION_THRESHOLDS.optional_penalty_cap,
+      (
+        (orderProbabilityOptional === null ? 0.008 : 0) +
+        (!finishRoleOptional ? 0.008 : 0) +
+        (!kyoteiFetch?.kyoteibiyori_fetch_success ? 0.006 : 0)
+      ).toFixed(4)
+    )
+  );
   const riskAdjustment = Number(
     clampNumber(
       0,
@@ -1475,30 +1499,52 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   );
   const adjustedFixed1234TotalProbability = fixed1234Probability === null
     ? null
-    : Number(Math.max(0, fixed1234Probability - riskAdjustment).toFixed(4));
+    : Number(Math.max(0, fixed1234Probability - riskAdjustment - optionalDataPenalty).toFixed(4));
 
+  const dominantConservativePattern =
+    Array.isArray(fixed1234MatrixData.top4) && fixed1234MatrixData.top4.length > 0
+      ? ["1-2-3", "1-3-2", "1-2-4", "1-3-4"].includes(fixed1234MatrixData.top4[0]?.combo)
+      : false;
   let skipReason = null;
   if (coreFieldsReady) {
-    if (boat1AnchorScore < 48) {
+    if (boat1AnchorScore < HARD_RACE_DECISION_THRESHOLDS.weak_anchor_skip) {
       skipReason = "boat1 anchor too weak";
-    } else if (boat1AnchorScore < 58 && (adjustedFixed1234TotalProbability ?? 0) < 0.6) {
-      skipReason = "boat1 anchor below conservative threshold";
-    } else if ((adjustedFixed1234TotalProbability ?? 0) < 0.5) {
-      skipReason = "fixed1234 total too low";
+    } else if (
+      (adjustedFixed1234TotalProbability ?? 0) < HARD_RACE_DECISION_THRESHOLDS.dominant_pattern_soft_total &&
+      !(boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution && dominantConservativePattern)
+    ) {
+      skipReason = "true weak 1-head structure";
     }
   }
+  const oldDecision = !coreFieldsReady
+    ? "UNAVAILABLE"
+    : adjustedFixed1234TotalProbability >= 0.75
+      ? "BUY-4"
+      : adjustedFixed1234TotalProbability >= 0.6
+        ? "BUY-6"
+        : adjustedFixed1234TotalProbability >= 0.5
+          ? "BORDERLINE"
+          : "SKIP";
 
   const buyStyleRecommendation = !coreFieldsReady
     ? "UNAVAILABLE"
-    : skipReason
-      ? ((adjustedFixed1234TotalProbability ?? 0) >= 0.5 && boat1AnchorScore >= 54 ? "BORDERLINE" : "SKIP")
-      : (adjustedFixed1234TotalProbability ?? 0) >= 0.75
+    : skipReason === "boat1 anchor too weak"
+      ? "SKIP"
+      : (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_total &&
+          (top4Fixed1234Probability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_top4
         ? "BUY-4"
-        : (adjustedFixed1234TotalProbability ?? 0) >= 0.6
-          ? ((fixed1234MatrixData.concentrationRatio ?? 0) >= 0.79 ? "BUY-4" : "BUY-6")
-          : (adjustedFixed1234TotalProbability ?? 0) >= 0.5
+        : (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy6_total &&
+            (top4Fixed1234Probability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy6_top4
+          ? dominantConservativePattern ? "BUY-6" : "BORDERLINE"
+          : (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.borderline_total ||
+              ((adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.dominant_pattern_soft_total &&
+                dominantConservativePattern &&
+                boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution) ||
+              (boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.strong_anchor_override && dominantConservativePattern)
             ? "BORDERLINE"
-            : "SKIP";
+            : boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution && dominantConservativePattern
+              ? "BORDERLINE"
+              : "SKIP";
 
   const finalStatus = !coreFieldsReady
     ? "UNAVAILABLE"
@@ -1520,7 +1566,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   if (source?.entry_changed) negativeReasons.push("course movement risk");
   if (opponentPressure >= 0.72) negativeReasons.push("2/3/4 pressure high");
   if (skipReason) negativeReasons.push(skipReason);
-  if (optionalMissing.length > 0) negativeReasons.push(...optionalMissing.slice(0, 2).map((item) => `${item} missing`));
+  if (optionalMissing.length > 0) negativeReasons.push("optional data missing only");
   const topReasons = coreFieldsReady
     ? [...positiveReasons, ...negativeReasons].slice(0, 4)
     : coreFieldsMissing.slice(0, 4);
@@ -1540,8 +1586,16 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     hard_race_score_ready: hardRaceScore !== null,
     final_status: finalStatus,
     buy_style_recommendation: buyStyleRecommendation,
+    old_decision: oldDecision,
     top4_fixed1234_probability: top4Fixed1234Probability,
     skip_reason: skipReason,
+    optional_data_penalty: optionalDataPenalty,
+    boat1_anchor_contribution: boat1AnchorScore,
+    fixed1234_total_contribution: adjustedFixed1234TotalProbability,
+    top4_fixed1234_contribution: top4Fixed1234Probability,
+    decision_reason:
+      skipReason ||
+      (optionalMissing.length > 0 ? "optional data missing only" : "conservative structure acceptable"),
     positive_reasons: positiveReasons,
     negative_reasons: negativeReasons,
     attempt_count: Number(entry?.attemptCount || 1),
@@ -6333,6 +6387,7 @@ export default function App() {
                           <div className="kv-row"><span>Top shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
                           <div className="kv-row"><span>Composite</span><strong>{row.conservativeComposite == null ? "--" : formatMaybeNumber(row.conservativeComposite, 1)}</strong></div>
                           <div className="kv-row"><span>Buy style</span><strong>{row.buyStyleRecommendation || "-"}</strong></div>
+                          <div className="kv-row"><span>Old decision</span><strong>{row.screeningDebug?.old_decision || "-"}</strong></div>
                           <div className="kv-row"><span>Top 4 total</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>Shape candidates</span><strong>{Array.isArray(row.fixedShapeCandidates) ? row.fixedShapeCandidates.map((item) => `${item.shape} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "-"}</strong></div>
                         </div>
@@ -6354,6 +6409,15 @@ export default function App() {
                         {row.skipReason ? (
                           <p className="muted strategy-line">
                             Skip reason: {row.skipReason}
+                          </p>
+                        ) : null}
+                        {row.screeningDebug ? (
+                          <p className="muted strategy-line">
+                            Contributions:
+                            {` optional penalty ${formatMaybeNumber((row.screeningDebug.optional_data_penalty || 0) * 100, 1)}%`}
+                            {` / anchor ${formatMaybeNumber(row.screeningDebug.boat1_anchor_contribution, 1)}`}
+                            {` / fixed total ${formatMaybeNumber((row.screeningDebug.fixed1234_total_contribution || 0) * 100, 1)}%`}
+                            {` / top4 ${formatMaybeNumber((row.screeningDebug.top4_fixed1234_contribution || 0) * 100, 1)}%`}
                           </p>
                         ) : null}
                         {row.actualResult ? (
