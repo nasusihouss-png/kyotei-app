@@ -92,6 +92,7 @@ import {
   buildHitRateEnhancementContext,
   buildScenarioTreeOrderCandidates
 } from "../services/hit-rate-enhancement.js";
+import { buildHardRace1234Response } from "../services/hard-race-1234.js";
 
 export const raceRouter = Router();
 
@@ -9497,6 +9498,7 @@ raceRouter.get("/race", async (req, res, next) => {
   let temporaryFeaturePipelineDebug = null;
   try {
     const routeStartedAt = Date.now();
+    let artifactCollector = null;
     const routeTimings = {
       official_base_fetch_ms: null,
       kyoteibiyori_fetch_ms: null,
@@ -9539,6 +9541,7 @@ raceRouter.get("/race", async (req, res, next) => {
           isHardRaceScreening ? 8500 : 5000
         )
       );
+      artifactCollector = isHardRaceScreening ? {} : null;
       data = await withTimeout(
         () => getRaceData({
           date,
@@ -9546,7 +9549,9 @@ raceRouter.get("/race", async (req, res, next) => {
           raceNo,
           forceRefresh,
           timeoutMs: dataFetchTimeoutMs,
-          screeningProfile: isHardRaceScreening
+          screeningProfile: isHardRaceScreening,
+          includeKyoteiBiyori: true,
+          artifactCollector
         }),
         {
           timeoutMs: raceDataTimeoutMs,
@@ -9559,6 +9564,26 @@ raceRouter.get("/race", async (req, res, next) => {
       routeTimings.official_base_fetch_ms = toNullableNum(data?.source?.timings?.official_base_fetch_ms);
       routeTimings.kyoteibiyori_fetch_ms = toNullableNum(data?.source?.timings?.kyoteibiyori_fetch_ms);
       routeTimings.parsing_ms = toNullableNum(data?.source?.timings?.parsing_ms);
+      if (isHardRaceScreening) {
+        const predictionStartedAt = Date.now();
+        const hardRace1234 = await buildHardRace1234Response({
+          data,
+          date,
+          venueId,
+          raceNo,
+          artifactCollector
+        });
+        routeTimings.prediction_build_ms = Date.now() - predictionStartedAt;
+        routeTimings.total_response_ms = Date.now() - routeStartedAt;
+        return res.json({
+          source: data.source || {},
+          race: data.race,
+          racers: data.racers,
+          hardRace1234,
+          ...hardRace1234,
+          routeTiming: routeTimings
+        });
+      }
     } catch (fetchErr) {
       failureWhere = "race.route:loadRaceSnapshotFallback";
       const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });

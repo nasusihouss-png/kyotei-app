@@ -1472,6 +1472,34 @@ function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId =
 }
 
 function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
+  if (entry?.ok && entry?.data?.hardRace1234) {
+    return finalizeHardRaceContractRow({
+      raceNo: entry?.data?.hardRace1234?.race_no ?? entry?.raceNo ?? null,
+      venueName: entry?.data?.race?.venueName || venueNameFallback,
+      status: entry?.data?.hardRace1234?.status || "FETCHED",
+      data_status: entry?.data?.hardRace1234?.data_status || "OK",
+      boat1EscapeTrust: entry?.data?.hardRace1234?.boat1_escape_trust ?? null,
+      opponent234Fit: entry?.data?.hardRace1234?.opponent_234_fit ?? null,
+      outsideBreakRisk: entry?.data?.hardRace1234?.outside_break_risk ?? null,
+      makuriRisk: entry?.data?.hardRace1234?.makuri_risk ?? null,
+      fixed1234TotalProbability: entry?.data?.hardRace1234?.fixed1234_total_probability ?? null,
+      top4Fixed1234Probability: entry?.data?.hardRace1234?.top4_fixed1234_probability ?? null,
+      fixed1234ShapeConcentration: entry?.data?.hardRace1234?.fixed1234_shape_concentration ?? null,
+      fixed1234Matrix: entry?.data?.hardRace1234?.fixed1234_matrix ?? {},
+      fixed1234Top4: entry?.data?.hardRace1234?.fixed1234_top4 ?? [],
+      suggestedShape: entry?.data?.hardRace1234?.suggested_shape ?? null,
+      recommendation: entry?.data?.hardRace1234?.decision ?? null,
+      decision: entry?.data?.hardRace1234?.decision ?? null,
+      decision_reason: entry?.data?.hardRace1234?.decision_reason ?? null,
+      missing_fields: entry?.data?.hardRace1234?.missing_fields ?? [],
+      screeningDebug: entry?.data?.hardRace1234?.screeningDebug ?? {},
+      source_summary: entry?.data?.hardRace1234?.source_summary ?? {},
+      fetched_urls: entry?.data?.hardRace1234?.fetched_urls ?? {},
+      raw_saved_paths: entry?.data?.hardRace1234?.raw_saved_paths ?? {},
+      normalized_data: entry?.data?.hardRace1234?.normalized_data ?? null
+    });
+  }
+
   const failedDebug = {
     race_fetch_success: false,
     kyoteibiyori_fetch_success: false,

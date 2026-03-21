@@ -2038,7 +2038,7 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
   });
 }
 
-export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeoutMs = 12000 }) {
+export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeoutMs = 12000, artifactCollector = null }) {
   try {
     const startedAt = nowMs();
     const hardTimeoutMs = Math.max(250, Math.min(Number(timeoutMs) || 12000, 4000));
@@ -2132,6 +2132,12 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       const indexStartedAt = nowMs();
       indexHtml = await fetchText(indexUrl, getRemainingTimeoutMs(1800));
       diagnostics.timings.index_fetch_ms = elapsedMs(indexStartedAt);
+      if (artifactCollector && typeof artifactCollector === "object") {
+        artifactCollector.raw = {
+          ...(artifactCollector.raw || {}),
+          kyoteibiyori_index: indexHtml
+        };
+      }
       diagnostics.fetch_results.race_ichiran.ok = true;
       diagnostics.fetch_results.race_ichiran.has_placeholder = indexHtml.includes("placeholder");
       diagnostics.actual_fetch_paths.push("race_ichiran_shell");
@@ -2165,6 +2171,12 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
             timeoutMs: ajaxTimeoutMs
           });
           diagnostics.timings.ajax_fetch_ms = elapsedMs(ajaxFetchStartedAt);
+          if (artifactCollector && typeof artifactCollector === "object") {
+            artifactCollector.raw = {
+              ...(artifactCollector.raw || {}),
+              kyoteibiyori_ajax: ajaxPayload
+            };
+          }
           const ajaxParseStartedAt = nowMs();
           const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
           diagnostics.timings.ajax_parse_ms = elapsedMs(ajaxParseStartedAt);
@@ -2199,6 +2211,12 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
             const fetchStartedAt = nowMs();
             const html = await fetchText(url, tabTimeoutMs);
             const fetchDurationMs = elapsedMs(fetchStartedAt);
+            if (artifactCollector && typeof artifactCollector === "object") {
+              artifactCollector.raw = {
+                ...(artifactCollector.raw || {}),
+                [label === "lane_stats_tab" ? "kyoteibiyori_lane_stats" : "kyoteibiyori_pre_race"]: html
+              };
+            }
             if (label === "lane_stats_tab") diagnostics.timings.lane_stats_fetch_ms = fetchDurationMs;
             else diagnostics.timings.pre_race_fetch_ms = fetchDurationMs;
             const parseStartedAt = nowMs();

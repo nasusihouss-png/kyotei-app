@@ -8,6 +8,32 @@ import {
 const BOATRACE_BASE = "https://www.boatrace.jp";
 const BOATRACE_CACHE_TTL_MS = Number(process.env.BOATRACE_CACHE_TTL_MS || 45000);
 const raceDataCache = new Map();
+const VENUE_NAME_MAP = {
+  1: "Kiryu",
+  2: "Toda",
+  3: "Edogawa",
+  4: "Heiwajima",
+  5: "Tamagawa",
+  6: "Hamanako",
+  7: "Gamagori",
+  8: "Tokoname",
+  9: "Tsu",
+  10: "Mikuni",
+  11: "Biwako",
+  12: "Suminoe",
+  13: "Amagasaki",
+  14: "Naruto",
+  15: "Marugame",
+  16: "Kojima",
+  17: "Miyajima",
+  18: "Tokuyama",
+  19: "Shimonoseki",
+  20: "Wakamatsu",
+  21: "Ashiya",
+  22: "Fukuoka",
+  23: "Karatsu",
+  24: "Omura"
+};
 
 function buildEmptyBeforeinfo() {
   return {
@@ -371,6 +397,27 @@ function extractFHoldCountFromRow($, $cells) {
   return 0;
 }
 
+function extractLHoldCountFromRow($, $cells) {
+  const $stCellPrimary = $cells.filter("td.is-lineH2").eq(0);
+  const stLinesPrimary = extractLinesFromCell($, $stCellPrimary);
+  const normalized = normalizeDigits(stLinesPrimary.join(" ")).replace(/\s+/g, " ").trim().toUpperCase();
+  if (!normalized) return 0;
+
+  const patterns = [
+    /(?:^|\s)L\.?(\d{1,2})(?:\s|$)/,
+    /L\s*[:/ ]\s*(\d{1,2})/,
+    /F\d{1,2}L(\d{1,2})/
+  ];
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match) {
+      const count = Number(match[1]);
+      if (Number.isFinite(count) && count >= 0) return count;
+    }
+  }
+  return 0;
+}
+
 function normalizeDate(dateInput) {
   const compact = String(dateInput).replace(/-/g, "");
   if (!/^\d{8}$/.test(compact)) {
@@ -417,6 +464,32 @@ async function fetchHtml(url, timeoutMs = 15000) {
   });
 
   return data;
+}
+
+async function fetchHtmlWithRetries(urls, timeoutMs = 15000, retryCount = 3, debugSink = null) {
+  let lastError = null;
+  const attempted = [];
+
+  for (const url of urls) {
+    for (let attempt = 1; attempt <= retryCount; attempt += 1) {
+      attempted.push({ url, attempt });
+      try {
+        const html = await fetchHtml(url, timeoutMs);
+        if (debugSink && typeof debugSink === "object") {
+          debugSink.last_success_url = url;
+          debugSink.attempted_urls = attempted;
+        }
+        return { html, url, attempted };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+  }
+
+  if (debugSink && typeof debugSink === "object") {
+    debugSink.attempted_urls = attempted;
+  }
+  throw lastError;
 }
 
 function cloneJson(value) {
@@ -521,6 +594,7 @@ function parseRacersFromRacelist(html) {
     const boatLines = extractLinesFromCell($, $stats.eq(4));
     const avgStResult = extractAvgStForRow($, $cells);
     const fHoldCount = extractFHoldCountFromRow($, $cells);
+    const lHoldCount = extractLHoldCountFromRow($, $cells);
 
     const parsed = {
       lane,
@@ -531,6 +605,7 @@ function parseRacersFromRacelist(html) {
       age,
       weight,
       fHoldCount,
+      lHoldCount,
       avgSt: avgStResult.value,
       nationwideWinRate: toNumber(nationwideLines[0]),
       localWinRate: toNumber(localLines[0]),
@@ -702,7 +777,16 @@ function parseBeforeinfo(html) {
   };
 }
 
-export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, forceRefresh = false, screeningProfile = false }) {
+export async function getRaceData({
+  date,
+  venueId,
+  raceNo,
+  timeoutMs = 15000,
+  forceRefresh = false,
+  screeningProfile = false,
+  includeKyoteiBiyori = true,
+  artifactCollector = null
+}) {
   const totalStartedAt = Date.now();
   const cached = forceRefresh ? null : getCachedRaceData({ date, venueId, raceNo });
   if (cached) {
@@ -728,6 +812,8 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
 
   const racelistUrl = `${BOATRACE_BASE}/owpc/pc/race/racelist?rno=${rno}&jcd=${jcd}&hd=${hd}`;
   const beforeinfoUrl = `${BOATRACE_BASE}/owpc/pc/race/beforeinfo?rno=${rno}&jcd=${jcd}&hd=${hd}`;
+  const racelistSpUrl = `${BOATRACE_BASE}/owsp/sp/race/racelist?rno=${rno}&jcd=${jcd}&hd=${hd}`;
+  const beforeinfoSpUrl = `${BOATRACE_BASE}/owsp/sp/race/beforeinfo?rno=${rno}&jcd=${jcd}&hd=${hd}`;
 
   const officialFetchStartedAt = Date.now();
   const officialTimeoutMs = screeningProfile
@@ -736,11 +822,15 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
   const beforeinfoTimeoutMs = screeningProfile
     ? Math.max(1800, Math.min(Number(timeoutMs) || 15000, 5000))
     : Math.max(1500, Math.min(Number(timeoutMs) || 15000, 3200));
-  const racelistHtml = await fetchHtml(racelistUrl, officialTimeoutMs);
+  const racelistFetchDebug = {};
+  const racelistFetch = await fetchHtmlWithRetries([racelistUrl, racelistSpUrl], officialTimeoutMs, 3, racelistFetchDebug);
+  const racelistHtml = racelistFetch.html;
   let beforeinfoHtml = null;
   let beforeinfoFetchError = null;
+  const beforeinfoFetchDebug = {};
   try {
-    beforeinfoHtml = await fetchHtml(beforeinfoUrl, beforeinfoTimeoutMs);
+    const beforeinfoFetch = await fetchHtmlWithRetries([beforeinfoUrl, beforeinfoSpUrl], beforeinfoTimeoutMs, 3, beforeinfoFetchDebug);
+    beforeinfoHtml = beforeinfoFetch.html;
   } catch (error) {
     beforeinfoFetchError = String(error?.message || error);
   }
@@ -795,22 +885,25 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
     fallbackUsed: true,
     error: null
   };
-  try {
-    kyoteiBiyori = await fetchKyoteiBiyoriRaceData({
-      date,
-      venueId,
-      raceNo,
-      timeoutMs: kyoteiTimeoutMs
-    });
-  } catch (error) {
-    kyoteiBiyori = {
-      ok: false,
-      url: null,
-      byLane: new Map(),
-      tableDiagnostics: [],
-      fallbackUsed: true,
-      error: String(error?.message || error)
-    };
+  if (includeKyoteiBiyori) {
+    try {
+      kyoteiBiyori = await fetchKyoteiBiyoriRaceData({
+        date,
+        venueId,
+        raceNo,
+        timeoutMs: kyoteiTimeoutMs,
+        artifactCollector
+      });
+    } catch (error) {
+      kyoteiBiyori = {
+        ok: false,
+        url: null,
+        byLane: new Map(),
+        tableDiagnostics: [],
+        fallbackUsed: true,
+        error: String(error?.message || error)
+      };
+    }
   }
   const kyoteibiyoriFetchMs = Date.now() - kyoteiFetchStartedAt;
   let mergedWithKyoteiBiyori = mergedRacers;
@@ -882,7 +975,9 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
         racelist: "success",
         beforeinfo: beforeinfoHtml ? "success" : "fallback",
         beforeinfo_fetch_error: beforeinfoFetchError,
-        beforeinfo_parse_error: beforeinfoParseError
+        beforeinfo_parse_error: beforeinfoParseError,
+        racelist_attempted_urls: racelistFetchDebug?.attempted_urls || [],
+        beforeinfo_attempted_urls: beforeinfoFetchDebug?.attempted_urls || []
       },
       actual_entry: beforeinfo.actualEntry,
       start_display_source: "official_pre_race_info",
@@ -895,6 +990,7 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
     race: {
       date: `${hd.slice(0, 4)}-${hd.slice(4, 6)}-${hd.slice(6, 8)}`,
       venueId: Number(venueId),
+      venueName: VENUE_NAME_MAP[Number(venueId)] || null,
       raceNo: rno,
       weather: beforeinfo.weather.weather,
       windSpeed: beforeinfo.weather.windSpeed,
@@ -904,6 +1000,22 @@ export async function getRaceData({ date, venueId, raceNo, timeoutMs = 15000, fo
     racers: mergedWithKyoteiBiyori,
     kyoteibiyori_debug: kyoteiBiyoriDebug
   };
+  if (artifactCollector && typeof artifactCollector === "object") {
+    artifactCollector.fetched_urls = {
+      ...(artifactCollector.fetched_urls || {}),
+      boatrace: {
+        racelist: racelistUrl,
+        racelist_sp: racelistSpUrl,
+        beforeinfo: beforeinfoUrl,
+        beforeinfo_sp: beforeinfoSpUrl
+      }
+    };
+    artifactCollector.raw = {
+      ...(artifactCollector.raw || {}),
+      boatrace_racelist: racelistHtml,
+      boatrace_beforeinfo: beforeinfoHtml
+    };
+  }
   setCachedRaceData({ date, venueId, raceNo }, result);
   return result;
 }
