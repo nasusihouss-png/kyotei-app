@@ -230,6 +230,12 @@ async function fetchHardRacePredictionData(date, venueId) {
         getRaceDataTimeoutMs: 14000,
         dataFetchTimeoutMs: 8500,
         forceRefresh: true
+      },
+      {
+        screeningMode: "hard_race",
+        getRaceDataTimeoutMs: 17000,
+        dataFetchTimeoutMs: 10000,
+        forceRefresh: true
       }
     ];
 
@@ -245,6 +251,12 @@ async function fetchHardRacePredictionData(date, venueId) {
         };
       } catch (error) {
         lastError = error;
+        console.warn("[HardRace][fetch_retry]", {
+          raceNo: targetRaceNo,
+          attempt: index + 1,
+          message: error?.message || String(error || "unknown_error"),
+          details: getApiErrorDetails(error)
+        });
         const message = String(error?.message || "");
         const maybeTimeout =
           /timeout/i.test(message) ||
@@ -259,7 +271,8 @@ async function fetchHardRacePredictionData(date, venueId) {
       ok: false,
       attemptCount: attempts.length,
       error: lastError?.message || "Failed to fetch race data",
-      errorDetails: getApiErrorDetails(lastError)
+      errorDetails: getApiErrorDetails(lastError),
+      rawResponse: lastError?.apiError?.payload || null
     };
   }
 
@@ -1291,12 +1304,25 @@ const HARD_RACE_RANK_THRESHOLDS = {
 };
 
 function finalizeHardRaceContractRow(row = {}) {
+  const majorScores = [
+    row?.hardRaceScore ?? row?.hard_race_score,
+    row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score,
+    row?.box234FitScore ?? row?.box_234_fit_score,
+    row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability
+  ];
+  const allMajorScoresMissing = majorScores.every((value) => toFiniteOrNull(value) === null);
+  const inputStatus = row?.status || row?.finalStatus || row?.data_status || "UNAVAILABLE";
+  const derivedDataStatus =
+    inputStatus === "DATA_ERROR" || row?.fetchFailed || allMajorScoresMissing
+      ? "DATA_ERROR"
+      : "OK";
   const normalized = {
     raceNo: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
     race_no: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
     venueName: row?.venueName || "-",
-    status: row?.status || row?.finalStatus || "UNAVAILABLE",
-    finalStatus: row?.finalStatus || row?.status || "UNAVAILABLE",
+    status: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : inputStatus,
+    finalStatus: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.finalStatus || row?.status || "UNAVAILABLE"),
+    data_status: derivedDataStatus,
     hardRaceScore: toFiniteOrNull(row?.hardRaceScore ?? row?.hard_race_score),
     hard_race_score: toFiniteOrNull(row?.hardRaceScore ?? row?.hard_race_score),
     boat1AnchorScore: toFiniteOrNull(row?.boat1AnchorScore ?? row?.boat1_anchor_score),
@@ -1311,8 +1337,10 @@ function finalizeHardRaceContractRow(row = {}) {
     top4_fixed1234_probability: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),
     suggestedShape: row?.suggestedShape ?? row?.suggested_shape ?? null,
     suggested_shape: row?.suggestedShape ?? row?.suggested_shape ?? null,
-    recommendation: row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE",
-    buyStyleRecommendation: row?.buyStyleRecommendation || row?.recommendation || "UNAVAILABLE",
+    recommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),
+    buyStyleRecommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.buyStyleRecommendation || row?.recommendation || "UNAVAILABLE"),
+    decision: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.decision || row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),
+    decision_reason: row?.decision_reason || row?.screeningDebug?.decision_reason || null,
     errors: Array.isArray(row?.errors) ? row.errors : [],
     missing_fields: Array.isArray(row?.missing_fields) ? row.missing_fields : [],
     fetchFailed: !!row?.fetchFailed,
@@ -1340,9 +1368,17 @@ function finalizeHardRaceContractRow(row = {}) {
     parse_success: normalized.screeningDebug.parse_success ?? !normalized.fetchFailed,
     score_success: normalized.screeningDebug.score_success ?? (normalized.hardRaceScore !== null),
     missing_fields: normalized.missing_fields,
+    data_status: normalized.data_status,
     final_status: normalized.finalStatus,
     ...normalized.screeningDebug
   };
+  if (normalized.data_status === "DATA_ERROR" && !normalized.decision_reason) {
+    normalized.decision_reason = normalized.errors.length > 0
+      ? `Data error: ${normalized.errors.join(", ")}`
+      : normalized.missing_fields.length > 0
+        ? `Data error: missing ${normalized.missing_fields.join(", ")}`
+        : "Data error: required screening fields are unavailable";
+  }
   return normalized;
 }
 
@@ -1407,7 +1443,10 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       sourceData: null,
       fetchFailed: true,
       status: "UNAVAILABLE",
+      data_status: "DATA_ERROR",
       recommendation: "UNAVAILABLE",
+      decision: "DATA_ERROR",
+      decision_reason: entry?.error || "Race data unavailable",
       errors: [entry?.error || "Race data unavailable"],
       missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"],
       screeningDebug: failedDebug
@@ -1703,7 +1742,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
           : "SKIP";
 
   const buyStyleRecommendation = !coreFieldsReady
-    ? "UNAVAILABLE"
+    ? "DATA_ERROR"
     : skipReason === "boat1 escape trust too weak"
       ? "SKIP"
       : (boat1EscapeTrust ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_escape_trust &&
@@ -1722,14 +1761,14 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
             : "SKIP";
 
   const finalStatus = !coreFieldsReady
-    ? "UNAVAILABLE"
+    ? "DATA_ERROR"
     : buyStyleRecommendation === "BUY-6" || buyStyleRecommendation === "BUY-4"
       ? "BUY"
       : buyStyleRecommendation === "BORDERLINE"
         ? "BORDERLINE"
         : "SKIP";
   const hardRaceRank = !coreFieldsReady
-    ? "UNAVAILABLE"
+    ? "DATA_ERROR"
     : (boat1EscapeTrust ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_anchor &&
         (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_total &&
         (top4Fixed1234Probability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_top4 &&
@@ -1836,6 +1875,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     raceNo: Number(source?.race?.raceNo ?? entry?.raceNo ?? null),
     venueName: source?.race?.venueName || venueNameFallback,
     status: finalStatus,
+    data_status: finalStatus === "DATA_ERROR" ? "DATA_ERROR" : "OK",
     hardRaceScore,
     boat1AnchorScore: boat1EscapeTrust,
     boat1EscapeTrust,
@@ -1853,6 +1893,8 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     adjustedFixed1234TotalProbability,
     buyStyleRecommendation,
     recommendation: buyStyleRecommendation,
+    decision: buyStyleRecommendation,
+    decision_reason: screeningDebug.decision_reason,
     hardRaceRank,
     skipReason,
     finalStatus,
@@ -4246,10 +4288,13 @@ export default function App() {
               baseRow = finalizeHardRaceContractRow({
                 raceNo: entry?.raceNo ?? null,
                 venueName,
-                status: "UNAVAILABLE",
-                finalStatus: "UNAVAILABLE",
-                recommendation: "UNAVAILABLE",
-                buyStyleRecommendation: "UNAVAILABLE",
+                status: "DATA_ERROR",
+                finalStatus: "DATA_ERROR",
+                data_status: "DATA_ERROR",
+                recommendation: "DATA_ERROR",
+                buyStyleRecommendation: "DATA_ERROR",
+                decision: "DATA_ERROR",
+                decision_reason: rowError?.message || "hard_race_row_build_failed",
                 errors: [rowError?.message || "hard_race_row_build_failed"],
                 missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"],
                 fetchFailed: !entry?.ok,
@@ -4257,7 +4302,8 @@ export default function App() {
                   race_fetch_success: !!entry?.ok,
                   parse_success: false,
                   score_success: false,
-                  final_status: "UNAVAILABLE",
+                  data_status: "DATA_ERROR",
+                  final_status: "DATA_ERROR",
                   missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"]
                 }
               });
@@ -4306,10 +4352,10 @@ export default function App() {
         const tierRank = (value) => (value === "A" ? 4 : value === "B" ? 3 : value === "SKIP" ? 2 : 0);
         const tierDiff = tierRank(b?.hardRaceRank) - tierRank(a?.hardRaceRank);
         if (tierDiff !== 0) return tierDiff;
-        const statusRank = (value) => (value === "BUY" ? 3 : value === "BORDERLINE" ? 2 : value === "SKIP" ? 1 : 0);
+        const statusRank = (value) => (value === "BUY" ? 4 : value === "BORDERLINE" ? 3 : value === "SKIP" ? 2 : value === "DATA_ERROR" ? 1 : 0);
         const statusDiff = statusRank(b?.finalStatus) - statusRank(a?.finalStatus);
         if (statusDiff !== 0) return statusDiff;
-        const buyStyleRank = (value) => (value === "BUY-6" ? 3 : value === "BUY-4" ? 2 : value === "BORDERLINE" ? 1 : 0);
+        const buyStyleRank = (value) => (value === "BUY-6" ? 4 : value === "BUY-4" ? 3 : value === "BORDERLINE" ? 2 : value === "SKIP" ? 1 : 0);
         const buyStyleDiff = buyStyleRank(b?.buyStyleRecommendation) - buyStyleRank(a?.buyStyleRecommendation);
         if (buyStyleDiff !== 0) return buyStyleDiff;
         const scoreDiff = (Number(b?.fixed1234TotalProbability) || -1) - (Number(a?.fixed1234TotalProbability) || -1);
@@ -6684,9 +6730,9 @@ export default function App() {
                       <div className="recommend-card-head">
                         <strong>{row.raceNo}R {row.venueName || "-"}</strong>
                         <div className="row-actions">
-                          <span className={`status-pill ${row.hardRaceRank === "A" ? "status-hit" : row.hardRaceRank === "B" ? "status-unsettled" : "risk-small"}`}>{row.hardRaceRank || "-"}</span>
-                          <span className={`status-pill ${row.finalStatus === "BUY" ? "status-hit" : row.finalStatus === "BORDERLINE" ? "status-unsettled" : row.finalStatus === "UNAVAILABLE" ? "status-unsettled" : "risk-small"}`}>{row.finalStatus}</span>
-                          <span className={`status-pill ${row.buyStyleRecommendation === "BUY-6" || row.buyStyleRecommendation === "BUY-4" ? "status-hit" : row.buyStyleRecommendation === "BORDERLINE" ? "status-unsettled" : row.buyStyleRecommendation === "UNAVAILABLE" ? "status-unsettled" : "risk-small"}`}>{row.buyStyleRecommendation || "-"}</span>
+                          <span className={`status-pill ${row.hardRaceRank === "A" ? "status-hit" : row.hardRaceRank === "B" ? "status-unsettled" : row.hardRaceRank === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{row.hardRaceRank || "-"}</span>
+                          <span className={`status-pill ${row.finalStatus === "BUY" ? "status-hit" : row.finalStatus === "BORDERLINE" ? "status-unsettled" : row.finalStatus === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{row.finalStatus}</span>
+                          <span className={`status-pill ${row.buyStyleRecommendation === "BUY-6" || row.buyStyleRecommendation === "BUY-4" ? "status-hit" : row.buyStyleRecommendation === "BORDERLINE" ? "status-unsettled" : row.buyStyleRecommendation === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{row.buyStyleRecommendation || "-"}</span>
                         </div>
                       </div>
                       <div className="kv-list">
@@ -6699,6 +6745,7 @@ export default function App() {
                         <div className="kv-row"><span>fixed1234_total_probability</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
                         <div className="kv-row"><span>top4_fixed1234_probability</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
                         <div className="kv-row"><span>fixed1234_shape_concentration</span><strong>{row.fixed1234ShapeConcentration == null ? "--" : formatMaybeNumber(row.fixed1234ShapeConcentration, 1)}</strong></div>
+                        <div className="kv-row"><span>data_status</span><strong>{row.data_status || "--"}</strong></div>
                         <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
                         <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
                       </div>
@@ -6725,6 +6772,8 @@ export default function App() {
                           <div className="kv-row"><span>Top shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
                           <div className="kv-row"><span>Composite</span><strong>{row.conservativeComposite == null ? "--" : formatMaybeNumber(row.conservativeComposite, 1)}</strong></div>
                           <div className="kv-row"><span>Buy style</span><strong>{row.buyStyleRecommendation || "-"}</strong></div>
+                          <div className="kv-row"><span>Decision</span><strong>{row.decision || "-"}</strong></div>
+                          <div className="kv-row"><span>Data status</span><strong>{row.data_status || "-"}</strong></div>
                           <div className="kv-row"><span>Old decision</span><strong>{row.screeningDebug?.old_decision || "-"}</strong></div>
                           <div className="kv-row"><span>boat1_escape_trust</span><strong>{row.boat1EscapeTrust == null ? "--" : formatMaybeNumber(row.boat1EscapeTrust, 1)}</strong></div>
                           <div className="kv-row"><span>opponent_234_fit</span><strong>{row.opponent234Fit == null ? "--" : formatMaybeNumber(row.opponent234Fit, 1)}</strong></div>
@@ -6755,6 +6804,11 @@ export default function App() {
                         {row.skipReason ? (
                           <p className="muted strategy-line">
                             Skip reason: {row.skipReason}
+                          </p>
+                        ) : null}
+                        {row.decision_reason ? (
+                          <p className="muted strategy-line">
+                            Decision reason: {row.decision_reason}
                           </p>
                         ) : null}
                         {Array.isArray(row.errors) && row.errors.length > 0 ? (

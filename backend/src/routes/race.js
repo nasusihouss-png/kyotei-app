@@ -11510,6 +11510,7 @@ raceRouter.get("/race", async (req, res, next) => {
       ? {
           race_no: toInt(data?.race?.raceNo, null),
           status: "FETCHED",
+          data_status: "OK",
           hard_race_score: null,
           boat1_anchor_score: null,
           box_234_fit_score: null,
@@ -11517,6 +11518,8 @@ raceRouter.get("/race", async (req, res, next) => {
           top4_fixed1234_probability: null,
           suggested_shape: null,
           recommendation: null,
+          decision: null,
+          decision_reason: null,
           errors: [],
           missing_fields: []
         }
