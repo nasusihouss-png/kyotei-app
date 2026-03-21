@@ -1332,7 +1332,11 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       venueName: venueNameFallback,
       hardRaceScore: null,
       boat1AnchorScore: null,
+      boat1EscapeTrust: null,
       box234FitScore: null,
+      makuriRisk: null,
+      outsideBreakRisk: null,
+      fixed1234ShapeConcentration: null,
       fixed1234Probability: null,
       finalStatus: "UNAVAILABLE",
       buyRecommendation: "UNAVAILABLE",
@@ -1815,7 +1819,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       { shape: "1-24-234", probability: suggestedShape === "1-24-234" && fixed1234Probability !== null ? fixed1234Probability : Math.max(0, (fixed1234Probability || 0) - 0.02) },
       { shape: "1-34-234", probability: suggestedShape === "1-34-234" && fixed1234Probability !== null ? fixed1234Probability : Math.max(0, (fixed1234Probability || 0) - 0.02) }
     ],
-    orderRowCount: orderRows.length,
+    orderRowCount: 0,
     conservativeComposite: conservativeComposite === null ? null : Number(conservativeComposite.toFixed(1)),
     expandableReason:
       finalStatus === "UNAVAILABLE"
