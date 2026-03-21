@@ -1374,16 +1374,16 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const fixed1234Probability = coreFieldsReady
     ? Number(
         clampNumber(
-          0.02,
-          0.74,
+          0.08,
+          0.86,
           (
-            (boat1AnchorScore / 100) * 0.26 +
-            (box234FitScore / 100) * 0.2 +
-            venueBias * 0.07 +
-            entryStable * 0.08 -
-            opponentPressure * 0.05 -
-            risk1 * 0.08 +
-            ((orderProbabilityOptional ?? 0) * 0.18)
+            (boat1AnchorScore / 100) * 0.34 +
+            (box234FitScore / 100) * 0.24 +
+            venueBias * 0.1 +
+            entryStable * 0.11 -
+            opponentPressure * 0.06 -
+            risk1 * 0.09 +
+            ((orderProbabilityOptional ?? 0) * 0.12)
           ).toFixed(4)
         )
       )
@@ -1428,15 +1428,42 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const suggestedShape = coreFieldsReady && box234FitScore >= 44 ? shapeBase : null;
   const conservativeComposite = hardRaceScore;
 
+  const top4Fixed1234Probability = fixed1234MatrixData.top4Total;
+  const riskAdjustment = Number(
+    clampNumber(
+      0,
+      0.12,
+      (
+        movementRisk * 0.26 +
+        Math.max(0, opponentPressure - 0.67) * 0.12 +
+        Math.max(0, risk1 - 0.08) * 0.18
+      ).toFixed(4)
+    )
+  );
+  const adjustedFixed1234TotalProbability = fixed1234Probability === null
+    ? null
+    : Number(Math.max(0, fixed1234Probability - riskAdjustment).toFixed(4));
+
+  let skipReason = null;
+  if (coreFieldsReady) {
+    if (boat1AnchorScore < 48) {
+      skipReason = "boat1 anchor too weak";
+    } else if (boat1AnchorScore < 58 && (adjustedFixed1234TotalProbability ?? 0) < 0.6) {
+      skipReason = "boat1 anchor below conservative threshold";
+    } else if ((adjustedFixed1234TotalProbability ?? 0) < 0.5) {
+      skipReason = "fixed1234 total too low";
+    }
+  }
+
   const buyStyleRecommendation = !coreFieldsReady
     ? "UNAVAILABLE"
-    : boat1AnchorScore < 52 || fixed1234Probability < 0.18
-      ? "SKIP"
-      : fixed1234Probability >= 0.52 && (fixed1234MatrixData.concentrationRatio ?? 0) < 0.78
-        ? "BUY-6"
-        : fixed1234Probability >= 0.42 && (fixed1234MatrixData.top4Total ?? 0) >= 0.34
-          ? "BUY-4"
-          : fixed1234Probability >= 0.28
+    : skipReason
+      ? ((adjustedFixed1234TotalProbability ?? 0) >= 0.5 && boat1AnchorScore >= 54 ? "BORDERLINE" : "SKIP")
+      : (adjustedFixed1234TotalProbability ?? 0) >= 0.75
+        ? "BUY-4"
+        : (adjustedFixed1234TotalProbability ?? 0) >= 0.6
+          ? ((fixed1234MatrixData.concentrationRatio ?? 0) >= 0.79 ? "BUY-4" : "BUY-6")
+          : (adjustedFixed1234TotalProbability ?? 0) >= 0.5
             ? "BORDERLINE"
             : "SKIP";
 
@@ -1459,6 +1486,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   if (risk1 >= 0.12) negativeReasons.push("boat1 F/L risk");
   if (source?.entry_changed) negativeReasons.push("course movement risk");
   if (opponentPressure >= 0.72) negativeReasons.push("2/3/4 pressure high");
+  if (skipReason) negativeReasons.push(skipReason);
   if (optionalMissing.length > 0) negativeReasons.push(...optionalMissing.slice(0, 2).map((item) => `${item} missing`));
   const topReasons = coreFieldsReady
     ? [...positiveReasons, ...negativeReasons].slice(0, 4)
@@ -1479,6 +1507,10 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     hard_race_score_ready: hardRaceScore !== null,
     final_status: finalStatus,
     buy_style_recommendation: buyStyleRecommendation,
+    top4_fixed1234_probability: top4Fixed1234Probability,
+    skip_reason: skipReason,
+    positive_reasons: positiveReasons,
+    negative_reasons: negativeReasons,
     attempt_count: Number(entry?.attemptCount || 1),
     core_fields_present: coreFieldsPresent.filter((row) => row.ready).map((row) => row.label),
     core_fields_missing: coreFieldsMissing,
@@ -1510,7 +1542,9 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     fixed1234TotalProbability: fixed1234MatrixData.total,
     fixed1234Top4: fixed1234MatrixData.top4,
     fixed1234Top4Total: fixed1234MatrixData.top4Total,
+    adjustedFixed1234TotalProbability,
     buyStyleRecommendation,
+    skipReason,
     finalStatus,
     buyRecommendation: finalStatus,
     suggestedShape,
@@ -6181,6 +6215,7 @@ export default function App() {
                         <div className="kv-row"><span>boat1_anchor_score</span><strong>{row.boat1AnchorScore == null ? "--" : formatMaybeNumber(row.boat1AnchorScore, 1)}</strong></div>
                         <div className="kv-row"><span>box_234_fit_score</span><strong>{row.box234FitScore == null ? "--" : formatMaybeNumber(row.box234FitScore, 1)}</strong></div>
                         <div className="kv-row"><span>fixed1234_total_probability</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>top4_fixed1234_probability</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
                         <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
                       </div>
                       {row.fixed1234Matrix && Object.keys(row.fixed1234Matrix).length > 0 ? (
@@ -6221,6 +6256,11 @@ export default function App() {
                         {Array.isArray(row.negativeReasons) && row.negativeReasons.length > 0 ? (
                           <p className="muted strategy-line">
                             Negative: {row.negativeReasons.join(", ")}
+                          </p>
+                        ) : null}
+                        {row.skipReason ? (
+                          <p className="muted strategy-line">
+                            Skip reason: {row.skipReason}
                           </p>
                         ) : null}
                         {row.screeningDebug?.final_status === "UNAVAILABLE" && Array.isArray(row.screeningDebug?.why_unavailable) && row.screeningDebug.why_unavailable.length > 0 ? (
