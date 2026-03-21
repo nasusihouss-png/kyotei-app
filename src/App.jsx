@@ -1304,17 +1304,22 @@ const HARD_RACE_RANK_THRESHOLDS = {
 };
 
 function finalizeHardRaceContractRow(row = {}) {
-  const majorScores = [
-    row?.hardRaceScore ?? row?.hard_race_score,
-    row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score,
-    row?.box234FitScore ?? row?.box_234_fit_score,
-    row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability
-  ];
-  const allMajorScoresMissing = majorScores.every((value) => toFiniteOrNull(value) === null);
+  const requiredScoreMap = {
+    boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
+    opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),
+    outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),
+    fixed1234_total_probability: toFiniteOrNull(row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability)
+  };
+  const missingRequiredScores = Object.entries(requiredScoreMap)
+    .filter(([, value]) => value === null)
+    .map(([field]) => field);
+  const allMajorScoresMissing = missingRequiredScores.length === Object.keys(requiredScoreMap).length;
   const inputStatus = row?.status || row?.finalStatus || row?.data_status || "UNAVAILABLE";
   const derivedDataStatus =
     inputStatus === "DATA_ERROR" || row?.fetchFailed || allMajorScoresMissing
       ? "DATA_ERROR"
+      : missingRequiredScores.length > 0
+        ? "PARTIAL"
       : "OK";
   const normalized = {
     raceNo: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
@@ -1331,10 +1336,23 @@ function finalizeHardRaceContractRow(row = {}) {
     boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
     box234FitScore: toFiniteOrNull(row?.box234FitScore ?? row?.box_234_fit_score),
     box_234_fit_score: toFiniteOrNull(row?.box234FitScore ?? row?.box_234_fit_score),
+    opponent234Fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),
+    opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),
+    makuriRisk: toFiniteOrNull(row?.makuriRisk ?? row?.makuri_risk),
+    makuri_risk: toFiniteOrNull(row?.makuriRisk ?? row?.makuri_risk),
+    outsideBreakRisk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),
+    outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),
     fixed1234TotalProbability: toFiniteOrNull(row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),
     fixed1234_total_probability: toFiniteOrNull(row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),
     top4Fixed1234Probability: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),
     top4_fixed1234_probability: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),
+    fixed1234Top4Total: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),
+    fixed1234ShapeConcentration: toFiniteOrNull(row?.fixed1234ShapeConcentration ?? row?.fixed1234_shape_concentration),
+    fixed1234_shape_concentration: toFiniteOrNull(row?.fixed1234ShapeConcentration ?? row?.fixed1234_shape_concentration),
+    fixed1234Matrix: row?.fixed1234Matrix && typeof row.fixed1234Matrix === "object" ? row.fixed1234Matrix : (row?.fixed1234_matrix && typeof row.fixed1234_matrix === "object" ? row.fixed1234_matrix : {}),
+    fixed1234_matrix: row?.fixed1234Matrix && typeof row.fixed1234Matrix === "object" ? row.fixed1234Matrix : (row?.fixed1234_matrix && typeof row.fixed1234_matrix === "object" ? row.fixed1234_matrix : {}),
+    fixed1234Top4: Array.isArray(row?.fixed1234Top4) ? row.fixed1234Top4 : (Array.isArray(row?.fixed1234_top4) ? row.fixed1234_top4 : []),
+    fixed1234_top4: Array.isArray(row?.fixed1234Top4) ? row.fixed1234Top4 : (Array.isArray(row?.fixed1234_top4) ? row.fixed1234_top4 : []),
     suggestedShape: row?.suggestedShape ?? row?.suggested_shape ?? null,
     suggested_shape: row?.suggestedShape ?? row?.suggested_shape ?? null,
     recommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),
@@ -1352,15 +1370,20 @@ function finalizeHardRaceContractRow(row = {}) {
     "status",
     "hard_race_score",
     "boat1_anchor_score",
+    "boat1_escape_trust",
+    "opponent_234_fit",
+    "makuri_risk",
+    "outside_break_risk",
     "box_234_fit_score",
     "fixed1234_total_probability",
     "top4_fixed1234_probability",
+    "fixed1234_shape_concentration",
     "suggested_shape",
     "recommendation"
   ];
   const missingFields = [...normalized.missing_fields];
   requiredFields.forEach((field) => {
-    if (!(field in normalized)) missingFields.push(field);
+    if (!(field in normalized) || normalized[field] == null) missingFields.push(field);
   });
   normalized.missing_fields = [...new Set(missingFields)];
   normalized.screeningDebug = {
@@ -1368,9 +1391,26 @@ function finalizeHardRaceContractRow(row = {}) {
     parse_success: normalized.screeningDebug.parse_success ?? !normalized.fetchFailed,
     score_success: normalized.screeningDebug.score_success ?? (normalized.hardRaceScore !== null),
     missing_fields: normalized.missing_fields,
+    missing_required_scores: missingRequiredScores,
     data_status: normalized.data_status,
     final_status: normalized.finalStatus,
     ...normalized.screeningDebug
+  };
+  normalized.screeningDebug.response_payload = {
+    race_no: normalized.race_no,
+    data_status: normalized.data_status,
+    hard_race_score: normalized.hard_race_score,
+    boat1_escape_trust: normalized.boat1_escape_trust,
+    opponent_234_fit: normalized.opponent_234_fit,
+    makuri_risk: normalized.makuri_risk,
+    outside_break_risk: normalized.outside_break_risk,
+    fixed1234_total_probability: normalized.fixed1234_total_probability,
+    top4_fixed1234_probability: normalized.top4_fixed1234_probability,
+    fixed1234_shape_concentration: normalized.fixed1234_shape_concentration,
+    suggested_shape: normalized.suggested_shape,
+    decision: normalized.decision,
+    decision_reason: normalized.decision_reason,
+    missing_fields: normalized.missing_fields
   };
   if (normalized.data_status === "DATA_ERROR" && !normalized.decision_reason) {
     normalized.decision_reason = normalized.errors.length > 0
@@ -1378,8 +1418,30 @@ function finalizeHardRaceContractRow(row = {}) {
       : normalized.missing_fields.length > 0
         ? `Data error: missing ${normalized.missing_fields.join(", ")}`
         : "Data error: required screening fields are unavailable";
+  } else if (normalized.data_status === "PARTIAL" && !normalized.decision_reason) {
+    normalized.decision_reason = normalized.missing_fields.length > 0
+      ? `Partial screening: missing ${normalized.missing_fields.join(", ")}`
+      : "Partial screening: some required scores are unavailable";
   }
   return normalized;
+}
+
+function getHardRaceFieldState(row, fieldName) {
+  const missingFields = new Set(Array.isArray(row?.missing_fields) ? row.missing_fields : []);
+  const screeningDebug = row?.screeningDebug && typeof row.screeningDebug === "object" ? row.screeningDebug : {};
+  const missingRequiredScores = new Set(Array.isArray(screeningDebug?.missing_required_scores) ? screeningDebug.missing_required_scores : []);
+  const optionalMissing = Array.isArray(screeningDebug?.optional_fields_missing) ? screeningDebug.optional_fields_missing : [];
+  if (missingFields.has(fieldName) || missingRequiredScores.has(fieldName)) {
+    if (optionalMissing.length > 0) return "missing source data";
+    return "not calculated";
+  }
+  return "API field missing";
+}
+
+function renderHardRaceMetric(row, fieldName, value, formatter) {
+  if (value != null) return formatter(value);
+  const reason = getHardRaceFieldState(row, fieldName);
+  return <span title={reason}>-- ({reason})</span>;
 }
 
 function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId = null) {
@@ -1448,7 +1510,19 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       decision: "DATA_ERROR",
       decision_reason: entry?.error || "Race data unavailable",
       errors: [entry?.error || "Race data unavailable"],
-      missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"],
+      missing_fields: [
+        "hard_race_score",
+        "boat1_anchor_score",
+        "boat1_escape_trust",
+        "box_234_fit_score",
+        "opponent_234_fit",
+        "makuri_risk",
+        "outside_break_risk",
+        "fixed1234_total_probability",
+        "top4_fixed1234_probability",
+        "fixed1234_shape_concentration",
+        "suggested_shape"
+      ],
       screeningDebug: failedDebug
     });
   }
@@ -1855,11 +1929,48 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     core_fields_present: coreFieldsPresent.filter((row) => row.ready).map((row) => row.label),
     core_fields_missing: coreFieldsMissing,
     optional_fields_missing: optionalMissing,
-    why_unavailable: finalStatus === "UNAVAILABLE" ? coreFieldsMissing : [],
+    why_unavailable: finalStatus === "DATA_ERROR" ? coreFieldsMissing : [],
     fixed1234_matrix: fixed1234MatrixData.matrix,
     fixed1234_total_probability: fixed1234MatrixData.total,
     fixed1234_top4_total: fixed1234MatrixData.top4Total,
     fixed1234_concentration_ratio: fixed1234MatrixData.concentrationRatio,
+    raw_inputs: {
+      race_no: Number(source?.race?.raceNo ?? entry?.raceNo ?? null),
+      venue_name: source?.race?.venueName || venueNameFallback,
+      entry_changed: !!source?.entry_changed,
+      official_fetch_status: officialFetch?.racelist || null,
+      kyoteibiyori_fetch_ok: !!kyoteiFetch?.kyoteibiyori_fetch_success
+    },
+    normalized_inputs: {
+      venue_bias: venueBias,
+      entry_stable: entryStable,
+      movement_risk: movementRisk,
+      risk1,
+      box234_average_strength: box234AverageStrength,
+      core_fields_present: coreFieldsPresent.filter((row) => row.ready).map((row) => row.label),
+      optional_fields_missing: optionalMissing
+    },
+    features: {
+      lane2_second_support: lane2SecondSupport,
+      lane3_second_support: lane3SecondSupport,
+      lane4_second_support: lane4SecondSupport,
+      lane2_third_support: lane2ThirdSupport,
+      lane3_third_support: lane3ThirdSupport,
+      lane4_third_support: lane4ThirdSupport,
+      outside_head_risk_prob: outsideHeadRiskProb,
+      outside_second_risk_prob: outsideSecondRiskProb,
+      outside_third_risk_prob: outsideThirdRiskProb
+    },
+    scores: {
+      hard_race_score: hardRaceScore,
+      boat1_escape_trust: boat1EscapeTrust,
+      opponent_234_fit: opponent234Fit,
+      makuri_risk: makuriRisk,
+      outside_break_risk: outsideBreakRisk,
+      fixed1234_total_probability: fixed1234MatrixData.total,
+      top4_fixed1234_probability: top4Fixed1234Probability,
+      fixed1234_shape_concentration: fixed1234ShapeConcentration
+    },
     official_fetch_status: officialFetch,
     kyoteibiyori_status: {
       ok: !!kyoteiFetch?.ok,
@@ -1875,7 +1986,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     raceNo: Number(source?.race?.raceNo ?? entry?.raceNo ?? null),
     venueName: source?.race?.venueName || venueNameFallback,
     status: finalStatus,
-    data_status: finalStatus === "DATA_ERROR" ? "DATA_ERROR" : "OK",
+    data_status: finalStatus === "DATA_ERROR" ? "DATA_ERROR" : optionalMissing.length > 0 ? "PARTIAL" : "OK",
     hardRaceScore,
     boat1AnchorScore: boat1EscapeTrust,
     boat1EscapeTrust,
@@ -1922,9 +2033,14 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     missing_fields: [
       hardRaceScore === null ? "hard_race_score" : null,
       boat1EscapeTrust === null ? "boat1_anchor_score" : null,
+      boat1EscapeTrust === null ? "boat1_escape_trust" : null,
       box234FitScore === null ? "box_234_fit_score" : null,
+      opponent234Fit === null ? "opponent_234_fit" : null,
+      makuriRisk === null ? "makuri_risk" : null,
+      outsideBreakRisk === null ? "outside_break_risk" : null,
       fixed1234MatrixData.total === null ? "fixed1234_total_probability" : null,
       fixed1234MatrixData.top4Total === null ? "top4_fixed1234_probability" : null,
+      fixed1234ShapeConcentration === null ? "fixed1234_shape_concentration" : null,
       suggestedShape === null ? "suggested_shape" : null
     ].filter(Boolean),
     screeningDebug
@@ -4296,7 +4412,19 @@ export default function App() {
                 decision: "DATA_ERROR",
                 decision_reason: rowError?.message || "hard_race_row_build_failed",
                 errors: [rowError?.message || "hard_race_row_build_failed"],
-                missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"],
+                missing_fields: [
+                  "hard_race_score",
+                  "boat1_anchor_score",
+                  "boat1_escape_trust",
+                  "box_234_fit_score",
+                  "opponent_234_fit",
+                  "makuri_risk",
+                  "outside_break_risk",
+                  "fixed1234_total_probability",
+                  "top4_fixed1234_probability",
+                  "fixed1234_shape_concentration",
+                  "suggested_shape"
+                ],
                 fetchFailed: !entry?.ok,
                 screeningDebug: {
                   race_fetch_success: !!entry?.ok,
@@ -4304,7 +4432,19 @@ export default function App() {
                   score_success: false,
                   data_status: "DATA_ERROR",
                   final_status: "DATA_ERROR",
-                  missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"]
+                  missing_fields: [
+                    "hard_race_score",
+                    "boat1_anchor_score",
+                    "boat1_escape_trust",
+                    "box_234_fit_score",
+                    "opponent_234_fit",
+                    "makuri_risk",
+                    "outside_break_risk",
+                    "fixed1234_total_probability",
+                    "top4_fixed1234_probability",
+                    "fixed1234_shape_concentration",
+                    "suggested_shape"
+                  ]
                 }
               });
             }
@@ -4338,6 +4478,19 @@ export default function App() {
             };
           })
         : [];
+      rows.forEach((row) => {
+        console.info("[HardRace][row_debug]", {
+          race: `${date || "-"} ${row?.venueName || venueName} ${row?.raceNo ?? row?.race_no ?? "-"}R`,
+          raw_inputs: row?.screeningDebug?.raw_inputs || null,
+          normalized_inputs: row?.screeningDebug?.normalized_inputs || null,
+          features: row?.screeningDebug?.features || null,
+          scores: row?.screeningDebug?.scores || null,
+          response_payload: row?.screeningDebug?.response_payload || null,
+          missing_fields: row?.missing_fields || [],
+          data_status: row?.data_status || null,
+          decision_reason: row?.decision_reason || null
+        });
+      });
       rows.forEach((row) => {
         if ((Array.isArray(row?.missing_fields) && row.missing_fields.length > 0) || (Array.isArray(row?.errors) && row.errors.length > 0)) {
           console.warn("[HardRace][row_missing_fields]", {
@@ -6737,14 +6890,14 @@ export default function App() {
                       </div>
                       <div className="kv-list">
                         <div className="kv-row"><span>rank</span><strong>{row.hardRaceRank || "--"}</strong></div>
-                        <div className="kv-row"><span>hard_race_score</span><strong>{row.hardRaceScore == null ? "--" : formatMaybeNumber(row.hardRaceScore, 1)}</strong></div>
-                        <div className="kv-row"><span>boat1_escape_trust</span><strong>{row.boat1EscapeTrust == null ? "--" : formatMaybeNumber(row.boat1EscapeTrust, 1)}</strong></div>
-                        <div className="kv-row"><span>opponent_234_fit</span><strong>{row.opponent234Fit == null ? "--" : formatMaybeNumber(row.opponent234Fit, 1)}</strong></div>
-                        <div className="kv-row"><span>makuri_risk</span><strong>{row.makuriRisk == null ? "--" : formatMaybeNumber(row.makuriRisk, 1)}</strong></div>
-                        <div className="kv-row"><span>outside_break_risk</span><strong>{row.outsideBreakRisk == null ? "--" : formatMaybeNumber(row.outsideBreakRisk, 1)}</strong></div>
-                        <div className="kv-row"><span>fixed1234_total_probability</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>top4_fixed1234_probability</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>fixed1234_shape_concentration</span><strong>{row.fixed1234ShapeConcentration == null ? "--" : formatMaybeNumber(row.fixed1234ShapeConcentration, 1)}</strong></div>
+                        <div className="kv-row"><span>hard_race_score</span><strong>{renderHardRaceMetric(row, "hard_race_score", row.hardRaceScore, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                        <div className="kv-row"><span>boat1_escape_trust</span><strong>{renderHardRaceMetric(row, "boat1_escape_trust", row.boat1EscapeTrust, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                        <div className="kv-row"><span>opponent_234_fit</span><strong>{renderHardRaceMetric(row, "opponent_234_fit", row.opponent234Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                        <div className="kv-row"><span>makuri_risk</span><strong>{renderHardRaceMetric(row, "makuri_risk", row.makuriRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                        <div className="kv-row"><span>outside_break_risk</span><strong>{renderHardRaceMetric(row, "outside_break_risk", row.outsideBreakRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                        <div className="kv-row"><span>fixed1234_total_probability</span><strong>{renderHardRaceMetric(row, "fixed1234_total_probability", row.fixed1234TotalProbability, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
+                        <div className="kv-row"><span>top4_fixed1234_probability</span><strong>{renderHardRaceMetric(row, "top4_fixed1234_probability", row.fixed1234Top4Total, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
+                        <div className="kv-row"><span>fixed1234_shape_concentration</span><strong>{renderHardRaceMetric(row, "fixed1234_shape_concentration", row.fixed1234ShapeConcentration, (value) => formatMaybeNumber(value, 1))}</strong></div>
                         <div className="kv-row"><span>data_status</span><strong>{row.data_status || "--"}</strong></div>
                         <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
                         <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
@@ -6775,15 +6928,15 @@ export default function App() {
                           <div className="kv-row"><span>Decision</span><strong>{row.decision || "-"}</strong></div>
                           <div className="kv-row"><span>Data status</span><strong>{row.data_status || "-"}</strong></div>
                           <div className="kv-row"><span>Old decision</span><strong>{row.screeningDebug?.old_decision || "-"}</strong></div>
-                          <div className="kv-row"><span>boat1_escape_trust</span><strong>{row.boat1EscapeTrust == null ? "--" : formatMaybeNumber(row.boat1EscapeTrust, 1)}</strong></div>
-                          <div className="kv-row"><span>opponent_234_fit</span><strong>{row.opponent234Fit == null ? "--" : formatMaybeNumber(row.opponent234Fit, 1)}</strong></div>
-                          <div className="kv-row"><span>makuri_risk</span><strong>{row.makuriRisk == null ? "--" : formatMaybeNumber(row.makuriRisk, 1)}</strong></div>
-                          <div className="kv-row"><span>outside_break_risk</span><strong>{row.outsideBreakRisk == null ? "--" : formatMaybeNumber(row.outsideBreakRisk, 1)}</strong></div>
-                          <div className="kv-row"><span>shape concentration</span><strong>{row.fixed1234ShapeConcentration == null ? "--" : formatMaybeNumber(row.fixed1234ShapeConcentration, 1)}</strong></div>
+                          <div className="kv-row"><span>boat1_escape_trust</span><strong>{renderHardRaceMetric(row, "boat1_escape_trust", row.boat1EscapeTrust, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                          <div className="kv-row"><span>opponent_234_fit</span><strong>{renderHardRaceMetric(row, "opponent_234_fit", row.opponent234Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                          <div className="kv-row"><span>makuri_risk</span><strong>{renderHardRaceMetric(row, "makuri_risk", row.makuriRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                          <div className="kv-row"><span>outside_break_risk</span><strong>{renderHardRaceMetric(row, "outside_break_risk", row.outsideBreakRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                          <div className="kv-row"><span>shape concentration</span><strong>{renderHardRaceMetric(row, "fixed1234_shape_concentration", row.fixed1234ShapeConcentration, (value) => formatMaybeNumber(value, 1))}</strong></div>
                           <div className="kv-row"><span>outside head risk</span><strong>{row.screeningDebug?.outside_head_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_head_risk || 0) * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>outside 2nd risk</span><strong>{row.screeningDebug?.outside_second_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_second_risk || 0) * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>outside 3rd risk</span><strong>{row.screeningDebug?.outside_third_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_third_risk || 0) * 100, 1)}%`}</strong></div>
-                          <div className="kv-row"><span>Top 4 total</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>Top 4 total</span><strong>{renderHardRaceMetric(row, "top4_fixed1234_probability", row.fixed1234Top4Total, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                           <div className="kv-row"><span>Shape candidates</span><strong>{Array.isArray(row.fixedShapeCandidates) ? row.fixedShapeCandidates.map((item) => `${item.shape} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "-"}</strong></div>
                         </div>
                         {Array.isArray(row.fixed1234Top4) && row.fixed1234Top4.length > 0 ? (

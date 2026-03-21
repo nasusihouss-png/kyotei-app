@@ -1,0 +1,252 @@
+warning: in the working copy of 'backend/src/routes/race.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/App.jsx', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/backend/src/routes/race.js b/backend/src/routes/race.js[m
+[1mindex 7c868c8..96239d8 100644[m
+[1m--- a/backend/src/routes/race.js[m
+[1m+++ b/backend/src/routes/race.js[m
+[36m@@ -11513,9 +11513,14 @@[m [mraceRouter.get("/race", async (req, res, next) => {[m
+           data_status: "OK",[m
+           hard_race_score: null,[m
+           boat1_anchor_score: null,[m
+[32m+[m[32m          boat1_escape_trust: null,[m
+           box_234_fit_score: null,[m
+[32m+[m[32m          opponent_234_fit: null,[m
+[32m+[m[32m          makuri_risk: null,[m
+[32m+[m[32m          outside_break_risk: null,[m
+           fixed1234_total_probability: null,[m
+           top4_fixed1234_probability: null,[m
+[32m+[m[32m          fixed1234_shape_concentration: null,[m
+           suggested_shape: null,[m
+           recommendation: null,[m
+           decision: null,[m
+[1mdiff --git a/src/App.jsx b/src/App.jsx[m
+[1mindex 1e8b49c..0b17de3 100644[m
+[1m--- a/src/App.jsx[m
+[1m+++ b/src/App.jsx[m
+[36m@@ -1304,17 +1304,22 @@[m [mconst HARD_RACE_RANK_THRESHOLDS = {[m
+ };[m
+ [m
+ function finalizeHardRaceContractRow(row = {}) {[m
+[31m-  const majorScores = [[m
+[31m-    row?.hardRaceScore ?? row?.hard_race_score,[m
+[31m-    row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score,[m
+[31m-    row?.box234FitScore ?? row?.box_234_fit_score,[m
+[31m-    row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability[m
+[31m-  ];[m
+[31m-  const allMajorScoresMissing = majorScores.every((value) => toFiniteOrNull(value) === null);[m
+[32m+[m[32m  const requiredScoreMap = {[m
+[32m+[m[32m    boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),[m
+[32m+[m[32m    opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),[m
+[32m+[m[32m    outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),[m
+[32m+[m[32m    fixed1234_total_probability: toFiniteOrNull(row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability)[m
+[32m+[m[32m  };[m
+[32m+[m[32m  const missingRequiredScores = Object.entries(requiredScoreMap)[m
+[32m+[m[32m    .filter(([, value]) => value === null)[m
+[32m+[m[32m    .map(([field]) => field);[m
+[32m+[m[32m  const allMajorScoresMissing = missingRequiredScores.length === Object.keys(requiredScoreMap).length;[m
+   const inputStatus = row?.status || row?.finalStatus || row?.data_status || "UNAVAILABLE";[m
+   const derivedDataStatus =[m
+     inputStatus === "DATA_ERROR" || row?.fetchFailed || allMajorScoresMissing[m
+       ? "DATA_ERROR"[m
+[32m+[m[32m      : missingRequiredScores.length > 0[m
+[32m+[m[32m        ? "PARTIAL"[m
+       : "OK";[m
+   const normalized = {[m
+     raceNo: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,[m
+[36m@@ -1331,10 +1336,23 @@[m [mfunction finalizeHardRaceContractRow(row = {}) {[m
+     boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),[m
+     box234FitScore: toFiniteOrNull(row?.box234FitScore ?? row?.box_234_fit_score),[m
+     box_234_fit_score: toFiniteOrNull(row?.box234FitScore ?? row?.box_234_fit_score),[m
+[32m+[m[32m    opponent234Fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),[m
+[32m+[m[32m    opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),[m
+[32m+[m[32m    makuriRisk: toFiniteOrNull(row?.makuriRisk ?? row?.makuri_risk),[m
+[32m+[m[32m    makuri_risk: toFiniteOrNull(row?.makuriRisk ?? row?.makuri_risk),[m
+[32m+[m[32m    outsideBreakRisk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),[m
+[32m+[m[32m    outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),[m
+     fixed1234TotalProbability: toFiniteOrNull(row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),[m
+     fixed1234_total_probability: toFiniteOrNull(row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),[m
+     top4Fixed1234Probability: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),[m
+     top4_fixed1234_probability: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),[m
+[32m+[m[32m    fixed1234Top4Total: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),[m
+[32m+[m[32m    fixed1234ShapeConcentration: toFiniteOrNull(row?.fixed1234ShapeConcentration ?? row?.fixed1234_shape_concentration),[m
+[32m+[m[32m    fixed1234_shape_concentration: toFiniteOrNull(row?.fixed1234ShapeConcentration ?? row?.fixed1234_shape_concentration),[m
+[32m+[m[32m    fixed1234Matrix: row?.fixed1234Matrix && typeof row.fixed1234Matrix === "object" ? row.fixed1234Matrix : (row?.fixed1234_matrix && typeof row.fixed1234_matrix === "object" ? row.fixed1234_matrix : {}),[m
+[32m+[m[32m    fixed1234_matrix: row?.fixed1234Matrix && typeof row.fixed1234Matrix === "object" ? row.fixed1234Matrix : (row?.fixed1234_matrix && typeof row.fixed1234_matrix === "object" ? row.fixed1234_matrix : {}),[m
+[32m+[m[32m    fixed1234Top4: Array.isArray(row?.fixed1234Top4) ? row.fixed1234Top4 : (Array.isArray(row?.fixed1234_top4) ? row.fixed1234_top4 : []),[m
+[32m+[m[32m    fixed1234_top4: Array.isArray(row?.fixed1234Top4) ? row.fixed1234Top4 : (Array.isArray(row?.fixed1234_top4) ? row.fixed1234_top4 : []),[m
+     suggestedShape: row?.suggestedShape ?? row?.suggested_shape ?? null,[m
+     suggested_shape: row?.suggestedShape ?? row?.suggested_shape ?? null,[m
+     recommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),[m
+[36m@@ -1352,15 +1370,20 @@[m [mfunction finalizeHardRaceContractRow(row = {}) {[m
+     "status",[m
+     "hard_race_score",[m
+     "boat1_anchor_score",[m
+[32m+[m[32m    "boat1_escape_trust",[m
+[32m+[m[32m    "opponent_234_fit",[m
+[32m+[m[32m    "makuri_risk",[m
+[32m+[m[32m    "outside_break_risk",[m
+     "box_234_fit_score",[m
+     "fixed1234_total_probability",[m
+     "top4_fixed1234_probability",[m
+[32m+[m[32m    "fixed1234_shape_concentration",[m
+     "suggested_shape",[m
+     "recommendation"[m
+   ];[m
+   const missingFields = [...normalized.missing_fields];[m
+   requiredFields.forEach((field) => {[m
+[31m-    if (!(field in normalized)) missingFields.push(field);[m
+[32m+[m[32m    if (!(field in normalized) || normalized[field] == null) missingFields.push(field);[m
+   });[m
+   normalized.missing_fields = [...new Set(missingFields)];[m
+   normalized.screeningDebug = {[m
+[36m@@ -1368,20 +1391,59 @@[m [mfunction finalizeHardRaceContractRow(row = {}) {[m
+     parse_success: normalized.screeningDebug.parse_success ?? !normalized.fetchFailed,[m
+     score_success: normalized.screeningDebug.score_success ?? (normalized.hardRaceScore !== null),[m
+     missing_fields: normalized.missing_fields,[m
+[32m+[m[32m    missing_required_scores: missingRequiredScores,[m
+     data_status: normalized.data_status,[m
+     final_status: normalized.finalStatus,[m
+     ...normalized.screeningDebug[m
+   };[m
+[32m+[m[32m  normalized.screeningDebug.response_payload = {[m
+[32m+[m[32m    race_no: normalized.race_no,[m
+[32m+[m[32m    data_status: normalized.data_status,[m
+[32m+[m[32m    hard_race_score: normalized.hard_race_score,[m
+[32m+[m[32m    boat1_escape_trust: normalized.boat1_escape_trust,[m
+[32m+[m[32m    opponent_234_fit: normalized.opponent_234_fit,[m
+[32m+[m[32m    makuri_risk: normalized.makuri_risk,[m
+[32m+[m[32m    outside_break_risk: normalized.outside_break_risk,[m
+[32m+[m[32m    fixed1234_total_probability: normalized.fixed1234_total_probability,[m
+[32m+[m[32m    top4_fixed1234_probability: normalized.top4_fixed1234_probability,[m
+[32m+[m[32m    fixed1234_shape_concentration: normalized.fixed1234_shape_concentration,[m
+[32m+[m[32m    suggested_shape: normalized.suggested_shape,[m
+[32m+[m[32m    decision: normalized.decision,[m
+[32m+[m[32m    decision_reason: normalized.decision_reason,[m
+[32m+[m[32m    missing_fields: normalized.missing_fields[m
+[32m+[m[32m  };[m
+   if (normalized.data_status === "DATA_ERROR" && !normalized.decision_reason) {[m
+     normalized.decision_reason = normalized.errors.length > 0[m
+       ? `Data error: ${normalized.errors.join(", ")}`[m
+       : normalized.missing_fields.length > 0[m
+         ? `Data error: missing ${normalized.missing_fields.join(", ")}`[m
+         : "Data error: required screening fields are unavailable";[m
+[32m+[m[32m  } else if (normalized.data_status === "PARTIAL" && !normalized.decision_reason) {[m
+[32m+[m[32m    normalized.decision_reason = normalized.missing_fields.length > 0[m
+[32m+[m[32m      ? `Partial screening: missing ${normalized.missing_fields.join(", ")}`[m
+[32m+[m[32m      : "Partial screening: some required scores are unavailable";[m
+   }[m
+   return normalized;[m
+ }[m
+ [m
+[32m+[m[32mfunction getHardRaceFieldState(row, fieldName) {[m
+[32m+[m[32m  const missingFields = new Set(Array.isArray(row?.missing_fields) ? row.missing_fields : []);[m
+[32m+[m[32m  const screeningDebug = row?.screeningDebug && typeof row.screeningDebug === "object" ? row.screeningDebug : {};[m
+[32m+[m[32m  const missingRequiredScores = new Set(Array.isArray(screeningDebug?.missing_required_scores) ? screeningDebug.missing_required_scores : []);[m
+[32m+[m[32m  const optionalMissing = Array.isArray(screeningDebug?.optional_fields_missing) ? screeningDebug.optional_fields_missing : [];[m
+[32m+[m[32m  if (missingFields.has(fieldName) || missingRequiredScores.has(fieldName)) {[m
+[32m+[m[32m    if (optionalMissing.length > 0) return "missing source data";[m
+[32m+[m[32m    return "not calculated";[m
+[32m+[m[32m  }[m
+[32m+[m[32m  return "API field missing";[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction renderHardRaceMetric(row, fieldName, value, formatter) {[m
+[32m+[m[32m  if (value != null) return formatter(value);[m
+[32m+[m[32m  const reason = getHardRaceFieldState(row, fieldName);[m
+[32m+[m[32m  return <span title={reason}>-- ({reason})</span>;[m
+[32m+[m[32m}[m
+[32m+[m
+ function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId = null) {[m
+   const map = new Map();[m
+   safeArray(rows).forEach((row) => {[m
+[36m@@ -1448,7 +1510,19 @@[m [mfunction buildHardRaceScreeningRow(entry, venueNameFallback = "-") {[m
+       decision: "DATA_ERROR",[m
+       decision_reason: entry?.error || "Race data unavailable",[m
+       errors: [entry?.error || "Race data unavailable"],[m
+[31m-      missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"],[m
+[32m+[m[32m      missing_fields: [[m
+[32m+[m[32m        "hard_race_score",[m
+[32m+[m[32m        "boat1_anchor_score",[m
+[32m+[m[32m        "boat1_escape_trust",[m
+[32m+[m[32m        "box_234_fit_score",[m
+[32m+[m[32m        "opponent_234_fit",[m
+[32m+[m[32m        "makuri_risk",[m
+[32m+[m[32m        "outside_break_risk",[m
+[32m+[m[32m        "fixed1234_total_probability",[m
+[32m+[m[32m        "top4_fixed1234_probability",[m
+[32m+[m[32m        "fixed1234_shape_concentration",[m
+[32m+[m[32m        "suggested_shape"[m
+[32m+[m[32m      ],[m
+       screeningDebug: failedDebug[m
+     });[m
+   }[m
+[36m@@ -1855,11 +1929,48 @@[m [mfunction buildHardRaceScreeningRow(entry, venueNameFallback = "-") {[m
+     core_fields_present: coreFieldsPresent.filter((row) => row.ready).map((row) => row.label),[m
+     core_fields_missing: coreFieldsMissing,[m
+     optional_fields_missing: optionalMissing,[m
+[31m-    why_unavailable: finalStatus === "UNAVAILABLE" ? coreFieldsMissing : [],[m
+[32m+[m[32m    why_unavailable: finalStatus === "DATA_ERROR" ? coreFieldsMissing : [],[m
+     fixed1234_matrix: fixed1234MatrixData.matrix,[m
+     fixed1234_total_probability: fixed1234MatrixData.total,[m
+     fixed1234_top4_total: fixed1234MatrixData.top4Total,[m
+     fixed1234_concentration_ratio: fixed1234MatrixData.concentrationRatio,[m
+[32m+[m[32m    raw_inputs: {[m
+[32m+[m[32m      race_no: Number(source?.race?.raceNo ?? entry?.raceNo ?? null),[m
+[32m+[m[32m      venue_name: source?.race?.venueName || venueNameFallback,[m
+[32m+[m[32m      entry_changed: !!source?.entry_changed,[m
+[32m+[m[32m      official_fetch_status: officialFetch?.racelist || null,[m
+[32m+[m[32m      kyoteibiyori_fetch_ok: !!kyoteiFetch?.kyoteibiyori_fetch_success[m
+[32m+[m[32m    },[m
+[32m+[m[32m    normalized_inputs: {[m
+[32m+[m[32m      venue_bias: venueBias,[m
+[32m+[m[32m      entry_stable: entryStable,[m
+[32m+[m[32m      movement_risk: movementRisk,[m
+[32m+[m[32m      risk1,[m
+[32m+[m[32m      box234_average_strength: box234AverageStrength,[m
+[32m+[m[32m      core_fields_present: coreFieldsPresent.filter((row) => row.ready).map((row) => row.label),[m
+[32m+[m[32m      optional_fields_missing: optionalMissing[m
+[32m+[m[32m    },[m
+[32m+[m[32m    features: {[m
+[32m+[m[32m      lane2_second_support: lane2SecondSupport,[m
+[32m+[m[32m      lane3_second_support: lane3SecondSupport,[m
+[32m+[m[32m      lane4_second_support: lane4SecondSupport,[m
+[32m+[m[32m      lane2_third_support: lane2ThirdSupport,[m
+[32m+[m[32m      lane3_third_support: lane3ThirdSupport,[m
+[32m+[m[32m      lane4_third_support: lane4ThirdSupport,[m
+[32m+[m[32m      outside_head_risk_prob: outsideHeadRiskProb,[m
+[32m+[m[32m      outside_second_risk_prob: outsideSecondRiskProb,[m
+[32m+[m[32m      outside_third_risk_prob: outsideThirdRiskProb[m
+[32m+[m[32m    },[m
+[32m+[m[32m    scores: {[m
+[32m+[m[32m      hard_race_score: hardRaceScore,[m
+[32m+[m[32m      boat1_escape_trust: boat1EscapeTrust,[m
+[32m+[m[32m      opponent_234_fit: opponent234Fit,[m
+[32m+[m[32m      makuri_risk: makuriRisk,[m
+[32m+[m[32m      outside_break_risk: outsideBreakRisk,[m
+[32m+[m[32m      fixed1234_total_probability: fixed1234MatrixData.total,[m
+[32m+[m[32m      top4_fixed1234_probability: top4Fixed1234Probability,[m
+[32m+[m[32m      fixed1234_shape_concentration: fixed1234ShapeConcentration[m
+[32m+[m[32m    },[m
+     official_fetch_status: officialFetch,[m
+     kyoteibiyori_status: {[m
+       ok: !!kyoteiFetch?.ok,[m
+[36m@@ -1875,7 +1986,7 @@[m [mfunction buildHardRaceScreeningRow(entry, venueNameFallback = "-") {[m
+     raceNo: Number(source?.race?.raceNo ?? entry?.raceNo ?? null),[m
+     venueName: source?.race?.venueName || venueNameFallback,[m
+     status: finalStatus,[m
+[31m-    data_status: finalStatus === "DATA_ERROR" ? "DATA_ERROR" : "OK",[m
+[32m+[m[32m    data_status: finalStatus === "DATA_ERROR" ? "DATA_ERROR" : optionalMissing.length > 0 ? "PARTIAL" : "OK",[m
+     hardRaceScore,[m
+     boat1AnchorScore: boat1EscapeTrust,[m
+     boat1EscapeTrust,[m
+[36m@@ -1922,9 +2033,14 @@[m [mfunction buildHardRaceScreeningRow(entry, venueNameFallback = "-") {[m
+     missing_fields: [[m
+       hardRaceScore === null ? "hard_race_score" : null,[m
+       boat1EscapeTrust === null ? "boat1_anchor_score" : null,[m
+[32m+[m[32m      boat1EscapeTrust === null ? "boat1_escape_trust" : null,[m
+       box234FitScore === null ? "box_234_fit_score" : null,[m
+[32m+[m[32m      opponent234Fit === null ? "opponent_234_fit" : null,[m
+[32m+[m[32m      makuriRisk === null ? "makuri_risk" : null,[m
+[32m+[m[32m      outsideBreakRisk === null ? "outside_break_risk" : null,[m
+       fixed1234MatrixData.total === null ? "fixed1234_total_probability" : null,[m
+       fixed1234MatrixData.top4Total === null ? "top4_fixed1234_probabil
