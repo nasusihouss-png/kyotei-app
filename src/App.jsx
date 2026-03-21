@@ -1148,6 +1148,9 @@ function getUnderlyingBoatFit(racer = {}, lane) {
   const win = getRacerWinStrength(racer);
   const motor = getRacerMotorStrength(racer);
   const start = getRacerStartStrength(racer);
+  const lane3renSupport = isPredictionFieldVerified(racer, "lane3renScore", "lane3renAvg")
+    ? clampNumber(0, 1, (toFiniteOrNull(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate) || 0) / 100)
+    : 0;
   const localBonus = (() => {
     const local = toFiniteOrNull(racer?.localWinRate);
     const national = toFiniteOrNull(racer?.nationwideWinRate);
@@ -1159,9 +1162,10 @@ function getUnderlyingBoatFit(racer = {}, lane) {
     (win.value * 0.42) +
     ((motor.value ?? 0.48) * 0.28) +
     ((start.value ?? 0.45) * 0.2) +
+    lane3renSupport * 0.1 +
     laneBias +
     localBonus -
-    getRacerRiskPenalty(racer) * 0.4;
+    getRacerRiskPenalty(racer) * 0.3;
   return Number((clampNumber(0, 1, fit) * 100).toFixed(1));
 }
 
@@ -1233,6 +1237,33 @@ function buildFixed1234Matrix({
     top4Total,
     concentrationRatio
   };
+}
+
+function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId = null) {
+  const map = new Map();
+  safeArray(rows).forEach((row) => {
+    const rowDate = String(row?.race_date || "").slice(0, 10);
+    const rowVenueId = Number(row?.venue_id);
+    if (selectedDate && rowDate !== String(selectedDate)) return;
+    if (Number.isInteger(Number(selectedVenueId)) && rowVenueId !== Number(selectedVenueId)) return;
+    const key = makeRaceKey({
+      race_id: row?.race_id,
+      race_date: row?.race_date,
+      venue_id: row?.venue_id,
+      race_no: row?.race_no
+    });
+    const actualResult = normalizeCombo(
+      row?.confirmed_result ||
+      row?.verification?.confirmed_result ||
+      (Array.isArray(row?.actual_result) ? row.actual_result.join("-") : "")
+    );
+    map.set(key, {
+      raceId: row?.race_id || null,
+      actualResult: actualResult || null,
+      verificationStatus: row?.verification_status || null
+    });
+  });
+  return map;
 }
 
 function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
@@ -1341,13 +1372,14 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
           0,
           100,
           (
-            win1.value * 34 +
-            (motor1.value ?? 0.46) * 26 +
-            (start1.value ?? 0.45) * 18 +
-            venueBias * 14 +
-            entryStable * 10 -
-            risk1 * 42 -
-            movementRisk * 26
+            win1.value * 31 +
+            (motor1.value ?? 0.46) * 22 +
+            (start1.value ?? 0.45) * 14 +
+            (isPredictionFieldVerified(boat1, "lapTime") ? clampNumber(0, 1, (0.39 - (toFiniteOrNull(boat1?.kyoteiBiyoriLapTime ?? boat1?.lapTime) || 0.39)) / 0.09) : 0.5) * 16 +
+            venueBias * 15 +
+            entryStable * 11 -
+            risk1 * 28 -
+            movementRisk * 18
           ).toFixed(1)
         )
       )
@@ -1363,9 +1395,10 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
             (underlyingSorted[0]?.score || 0) * 0.42 +
             (underlyingSorted[1]?.score || 0) * 0.33 +
             (underlyingSorted[2]?.score || 0) * 0.15 +
-            venueBias * 8 +
+            venueBias * 10 +
             entryStable * 6 +
-            ((finishRoleOptional?.second234 || 0) * 100) * 0.08
+            ((finishRoleOptional?.second234 || 0) * 100) * 0.08 +
+            ((finishRoleOptional?.third234 || 0) * 100) * 0.05
           ).toFixed(1)
         )
       )
@@ -1378,11 +1411,11 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
           0.86,
           (
             (boat1AnchorScore / 100) * 0.34 +
-            (box234FitScore / 100) * 0.24 +
-            venueBias * 0.1 +
-            entryStable * 0.11 -
-            opponentPressure * 0.06 -
-            risk1 * 0.09 +
+            (box234FitScore / 100) * 0.29 +
+            venueBias * 0.12 +
+            entryStable * 0.12 -
+            opponentPressure * 0.035 -
+            risk1 * 0.06 +
             ((orderProbabilityOptional ?? 0) * 0.12)
           ).toFixed(4)
         )
@@ -1411,9 +1444,9 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
           100,
           (
             boat1AnchorScore * 0.54 +
-            box234FitScore * 0.24 +
-            (fixed1234Probability * 100) * 0.22 -
-            opponentPressure * 16
+            box234FitScore * 0.26 +
+            (fixed1234Probability * 100) * 0.24 -
+            opponentPressure * 11
           ).toFixed(1)
         )
       )
@@ -1434,9 +1467,9 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       0,
       0.12,
       (
-        movementRisk * 0.26 +
-        Math.max(0, opponentPressure - 0.67) * 0.12 +
-        Math.max(0, risk1 - 0.08) * 0.18
+        movementRisk * 0.18 +
+        Math.max(0, opponentPressure - 0.72) * 0.08 +
+        Math.max(0, risk1 - 0.11) * 0.12
       ).toFixed(4)
     )
   );
@@ -2895,6 +2928,7 @@ export default function App() {
   const [rankingsLoading, setRankingsLoading] = useState(false);
   const [rankingsError, setRankingsError] = useState("");
   const [rankingsData, setRankingsData] = useState([]);
+  const [hardRaceCalibration, setHardRaceCalibration] = useState(null);
 
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
@@ -3899,9 +3933,50 @@ export default function App() {
     setRankingsError("");
     try {
       const venueName = VENUES.find((v) => v.id === Number(venueId))?.name || String(venueId);
-      const result = await fetchHardRacePredictionData(date, venueId);
+      const [result, historyData] = await Promise.all([
+        fetchHardRacePredictionData(date, venueId),
+        fetchHistoryData({ includeInvalidated: adminMode }).catch(() => null)
+      ]);
+      if (historyData && Array.isArray(historyData?.items)) {
+        setHistory(historyData.items);
+      }
+      const historyMap = buildHardRaceHistoryMap(
+        Array.isArray(historyData?.items) ? historyData.items : history,
+        date,
+        venueId
+      );
       const rows = Array.isArray(result)
-        ? result.map((entry) => buildHardRaceScreeningRow(entry, venueName))
+        ? result.map((entry) => {
+            const baseRow = buildHardRaceScreeningRow(entry, venueName);
+            const key = makeRaceKey({
+              race_id: baseRow?.sourceData?.raceId || null,
+              race_date: date,
+              venue_id: venueId,
+              race_no: baseRow?.raceNo
+            });
+            const review = historyMap.get(key) || null;
+            const actualResult = review?.actualResult || null;
+            const inSixTargetSet = actualResult
+              ? safeSetHas(new Set(Object.keys(baseRow?.fixed1234Matrix || {})), actualResult)
+              : null;
+            const reviewMissType = actualResult && !inSixTargetSet
+              ? baseRow.finalStatus === "SKIP" && String(actualResult).startsWith("1-")
+                ? "boat1 survived but fixed1234 model too low"
+                : actualResult && /^1-[234]-[234]$/.test(actualResult)
+                  ? "2/3/4 underneath fit stronger than predicted"
+                  : /^1-/.test(String(actualResult))
+                    ? "inside survival underweighted"
+                    : "outside danger or attack pressure realized"
+              : actualResult && inSixTargetSet && baseRow.finalStatus === "SKIP"
+                ? "skip may have been too pessimistic"
+                : null;
+            return {
+              ...baseRow,
+              actualResult,
+              actualInsideSixTarget: inSixTargetSet,
+              reviewMissType
+            };
+          })
         : [];
       rows.sort((a, b) => {
         const statusRank = (value) => (value === "BUY" ? 3 : value === "BORDERLINE" ? 2 : value === "SKIP" ? 1 : 0);
@@ -3917,6 +3992,16 @@ export default function App() {
         return (Number(a?.raceNo) || 99) - (Number(b?.raceNo) || 99);
       });
       setRankingsData(rows);
+      const reviewedRows = rows.filter((row) => row.actualResult);
+      const hitInsideSix = reviewedRows.filter((row) => row.actualInsideSixTarget === true).length;
+      const falseSkips = reviewedRows.filter((row) => row.actualInsideSixTarget === true && row.finalStatus === "SKIP").length;
+      setHardRaceCalibration({
+        reviewedCount: reviewedRows.length,
+        insideSixHitCount: hitInsideSix,
+        falseSkipCount: falseSkips,
+        insideSixHitRate: reviewedRows.length ? Number(((hitInsideSix / reviewedRows.length) * 100).toFixed(1)) : null,
+        falseSkipRate: reviewedRows.length ? Number(((falseSkips / reviewedRows.length) * 100).toFixed(1)) : null
+      });
     } catch (e) {
       setRankingsError(e.message || "Failed to fetch hard race prediction");
     } finally {
@@ -6195,6 +6280,13 @@ export default function App() {
                 <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
                 <label><span>場</span><select value={venueId} onChange={(e) => setVenueId(Number(e.target.value))}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
               </div>
+              {hardRaceCalibration?.reviewedCount > 0 ? (
+                <div className="kv-list" style={{ marginBottom: 14 }}>
+                  <div className="kv-row"><span>reviewed races</span><strong>{hardRaceCalibration.reviewedCount}</strong></div>
+                  <div className="kv-row"><span>inside-six hit rate</span><strong>{formatMaybeNumber(hardRaceCalibration.insideSixHitRate, 1)}%</strong></div>
+                  <div className="kv-row"><span>false skip rate</span><strong>{formatMaybeNumber(hardRaceCalibration.falseSkipRate, 1)}%</strong></div>
+                </div>
+              ) : null}
               {rankingsLoading ? (
                 <p className="muted">保守的な hard race 候補をスキャン中...</p>
               ) : rankingsData.length === 0 ? (
@@ -6217,6 +6309,7 @@ export default function App() {
                         <div className="kv-row"><span>fixed1234_total_probability</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
                         <div className="kv-row"><span>top4_fixed1234_probability</span><strong>{row.fixed1234Top4Total == null ? "--" : `${formatMaybeNumber(row.fixed1234Top4Total * 100, 1)}%`}</strong></div>
                         <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
+                        <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
                       </div>
                       {row.fixed1234Matrix && Object.keys(row.fixed1234Matrix).length > 0 ? (
                         <div className="kv-list" style={{ marginTop: 10 }}>
@@ -6263,6 +6356,12 @@ export default function App() {
                             Skip reason: {row.skipReason}
                           </p>
                         ) : null}
+                        {row.actualResult ? (
+                          <p className="muted strategy-line">
+                            Review: {row.actualInsideSixTarget ? "actual result was inside fixed-1234 target set" : "actual result was outside fixed-1234 target set"}
+                            {row.reviewMissType ? ` / ${row.reviewMissType}` : ""}
+                          </p>
+                        ) : null}
                         {row.screeningDebug?.final_status === "UNAVAILABLE" && Array.isArray(row.screeningDebug?.why_unavailable) && row.screeningDebug.why_unavailable.length > 0 ? (
                           <p className="muted strategy-line">
                             Why unavailable: {row.screeningDebug.why_unavailable.join(", ")}
@@ -6288,6 +6387,8 @@ export default function App() {
                             <div className="kv-row"><span>parse</span><strong>{row.screeningDebug.parse_success ? "ok" : "failed"}</strong></div>
                             <div className="kv-row"><span>core fields</span><strong>{row.screeningDebug.core_fields_ready ? "ready" : "missing"}</strong></div>
                             <div className="kv-row"><span>score ready</span><strong>{row.screeningDebug.hard_race_score_ready ? "yes" : "no"}</strong></div>
+                            <div className="kv-row"><span>buy style</span><strong>{row.screeningDebug.buy_style_recommendation || "-"}</strong></div>
+                            <div className="kv-row"><span>skip reason</span><strong>{row.screeningDebug.skip_reason || "-"}</strong></div>
                           </div>
                         ) : null}
                       </details>
