@@ -1287,6 +1287,62 @@ const HARD_RACE_RANK_THRESHOLDS = {
   b_concentration: 44
 };
 
+function finalizeHardRaceContractRow(row = {}) {
+  const normalized = {
+    raceNo: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
+    race_no: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
+    venueName: row?.venueName || "-",
+    status: row?.status || row?.finalStatus || "UNAVAILABLE",
+    finalStatus: row?.finalStatus || row?.status || "UNAVAILABLE",
+    hardRaceScore: toFiniteOrNull(row?.hardRaceScore ?? row?.hard_race_score),
+    hard_race_score: toFiniteOrNull(row?.hardRaceScore ?? row?.hard_race_score),
+    boat1AnchorScore: toFiniteOrNull(row?.boat1AnchorScore ?? row?.boat1_anchor_score),
+    boat1_anchor_score: toFiniteOrNull(row?.boat1AnchorScore ?? row?.boat1_anchor_score),
+    boat1EscapeTrust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
+    boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
+    box234FitScore: toFiniteOrNull(row?.box234FitScore ?? row?.box_234_fit_score),
+    box_234_fit_score: toFiniteOrNull(row?.box234FitScore ?? row?.box_234_fit_score),
+    fixed1234TotalProbability: toFiniteOrNull(row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),
+    fixed1234_total_probability: toFiniteOrNull(row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),
+    top4Fixed1234Probability: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),
+    top4_fixed1234_probability: toFiniteOrNull(row?.fixed1234Top4Total ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),
+    suggestedShape: row?.suggestedShape ?? row?.suggested_shape ?? null,
+    suggested_shape: row?.suggestedShape ?? row?.suggested_shape ?? null,
+    recommendation: row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE",
+    buyStyleRecommendation: row?.buyStyleRecommendation || row?.recommendation || "UNAVAILABLE",
+    errors: Array.isArray(row?.errors) ? row.errors : [],
+    missing_fields: Array.isArray(row?.missing_fields) ? row.missing_fields : [],
+    fetchFailed: !!row?.fetchFailed,
+    screeningDebug: row?.screeningDebug && typeof row.screeningDebug === "object" ? row.screeningDebug : {}
+  };
+
+  const requiredFields = [
+    "race_no",
+    "status",
+    "hard_race_score",
+    "boat1_anchor_score",
+    "box_234_fit_score",
+    "fixed1234_total_probability",
+    "top4_fixed1234_probability",
+    "suggested_shape",
+    "recommendation"
+  ];
+  const missingFields = [...normalized.missing_fields];
+  requiredFields.forEach((field) => {
+    if (!(field in normalized)) missingFields.push(field);
+  });
+  normalized.missing_fields = [...new Set(missingFields)];
+  normalized.screeningDebug = {
+    fetch_success: normalized.fetchFailed ? false : normalized.screeningDebug.fetch_success ?? normalized.screeningDebug.race_fetch_success ?? true,
+    parse_success: normalized.screeningDebug.parse_success ?? !normalized.fetchFailed,
+    score_success: normalized.screeningDebug.score_success ?? (normalized.hardRaceScore !== null),
+    missing_fields: normalized.missing_fields,
+    final_status: normalized.finalStatus,
+    ...normalized.screeningDebug
+  };
+  return normalized;
+}
+
 function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId = null) {
   const map = new Map();
   safeArray(rows).forEach((row) => {
@@ -1327,7 +1383,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     failure_message: entry?.error || "Race data unavailable"
   };
   if (!entry?.ok || !entry?.data) {
-    return {
+    return finalizeHardRaceContractRow({
       raceNo: entry?.raceNo ?? null,
       venueName: venueNameFallback,
       hardRaceScore: null,
@@ -1347,8 +1403,12 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       expandableReason: "Screening skipped because race data could not be loaded.",
       sourceData: null,
       fetchFailed: true,
+      status: "UNAVAILABLE",
+      recommendation: "UNAVAILABLE",
+      errors: [entry?.error || "Race data unavailable"],
+      missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"],
       screeningDebug: failedDebug
-    };
+    });
   }
 
   const source = entry.data;
@@ -1789,9 +1849,10 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     }
   };
 
-  return {
+  return finalizeHardRaceContractRow({
     raceNo: Number(source?.race?.raceNo ?? entry?.raceNo ?? null),
     venueName: source?.race?.venueName || venueNameFallback,
+    status: finalStatus,
     hardRaceScore,
     boat1AnchorScore: boat1EscapeTrust,
     boat1EscapeTrust,
@@ -1800,12 +1861,14 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     fixed1234Probability,
     fixed1234Matrix: fixed1234MatrixData.matrix,
     fixed1234TotalProbability: fixed1234MatrixData.total,
+    top4Fixed1234Probability,
     fixed1234Top4: fixed1234MatrixData.top4,
     fixed1234Top4Total: fixed1234MatrixData.top4Total,
     fixed1234ShapeConcentration,
     outsideBreakRisk,
     adjustedFixed1234TotalProbability,
     buyStyleRecommendation,
+    recommendation: buyStyleRecommendation,
     hardRaceRank,
     skipReason,
     finalStatus,
@@ -1829,8 +1892,17 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
           : `Selected ${suggestedShape} because boat 1 anchor trust and the 2/3/4 underneath structure were the strongest conservative fit.`,
     sourceData: source,
     fetchFailed: false,
+    errors: [],
+    missing_fields: [
+      hardRaceScore === null ? "hard_race_score" : null,
+      boat1EscapeTrust === null ? "boat1_anchor_score" : null,
+      box234FitScore === null ? "box_234_fit_score" : null,
+      fixed1234MatrixData.total === null ? "fixed1234_total_probability" : null,
+      fixed1234MatrixData.top4Total === null ? "top4_fixed1234_probability" : null,
+      suggestedShape === null ? "suggested_shape" : null
+    ].filter(Boolean),
     screeningDebug
-  };
+  });
 }
 
 function getSavedFinalRecommendedBets(row) {
@@ -4178,7 +4250,34 @@ export default function App() {
       );
       const rows = Array.isArray(result)
         ? result.map((entry) => {
-            const baseRow = buildHardRaceScreeningRow(entry, venueName);
+            let baseRow;
+            try {
+              baseRow = buildHardRaceScreeningRow(entry, venueName);
+            } catch (rowError) {
+              console.error("[HardRace][row_build_failed]", {
+                raceNo: entry?.raceNo ?? null,
+                message: rowError?.message || String(rowError || "unknown_error"),
+                entry
+              });
+              baseRow = finalizeHardRaceContractRow({
+                raceNo: entry?.raceNo ?? null,
+                venueName,
+                status: "UNAVAILABLE",
+                finalStatus: "UNAVAILABLE",
+                recommendation: "UNAVAILABLE",
+                buyStyleRecommendation: "UNAVAILABLE",
+                errors: [rowError?.message || "hard_race_row_build_failed"],
+                missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"],
+                fetchFailed: !entry?.ok,
+                screeningDebug: {
+                  race_fetch_success: !!entry?.ok,
+                  parse_success: false,
+                  score_success: false,
+                  final_status: "UNAVAILABLE",
+                  missing_fields: ["hard_race_score", "boat1_anchor_score", "box_234_fit_score", "fixed1234_total_probability", "top4_fixed1234_probability", "suggested_shape"]
+                }
+              });
+            }
             const key = makeRaceKey({
               race_id: baseRow?.sourceData?.raceId || null,
               race_date: date,
@@ -4209,6 +4308,16 @@ export default function App() {
             };
           })
         : [];
+      rows.forEach((row) => {
+        if ((Array.isArray(row?.missing_fields) && row.missing_fields.length > 0) || (Array.isArray(row?.errors) && row.errors.length > 0)) {
+          console.warn("[HardRace][row_missing_fields]", {
+            raceNo: row?.raceNo ?? row?.race_no ?? null,
+            status: row?.status || row?.finalStatus || "UNAVAILABLE",
+            missing_fields: row?.missing_fields || [],
+            errors: row?.errors || []
+          });
+        }
+      });
       rows.sort((a, b) => {
         const tierRank = (value) => (value === "A" ? 4 : value === "B" ? 3 : value === "SKIP" ? 2 : 0);
         const tierDiff = tierRank(b?.hardRaceRank) - tierRank(a?.hardRaceRank);
@@ -6663,6 +6772,16 @@ export default function App() {
                             Skip reason: {row.skipReason}
                           </p>
                         ) : null}
+                        {Array.isArray(row.errors) && row.errors.length > 0 ? (
+                          <p className="muted strategy-line">
+                            Errors: {row.errors.join(", ")}
+                          </p>
+                        ) : null}
+                        {Array.isArray(row.missing_fields) && row.missing_fields.length > 0 ? (
+                          <p className="muted strategy-line">
+                            Missing fields: {row.missing_fields.join(", ")}
+                          </p>
+                        ) : null}
                         {row.screeningDebug ? (
                           <p className="muted strategy-line">
                             Contributions:
@@ -6706,7 +6825,9 @@ export default function App() {
                             <div className="kv-row"><span>href extraction</span><strong>{row.screeningDebug.href_extraction_success ? "ok" : "failed"}</strong></div>
                             <div className="kv-row"><span>parse</span><strong>{row.screeningDebug.parse_success ? "ok" : "failed"}</strong></div>
                             <div className="kv-row"><span>core fields</span><strong>{row.screeningDebug.core_fields_ready ? "ready" : "missing"}</strong></div>
+                            <div className="kv-row"><span>fetch success</span><strong>{row.screeningDebug.fetch_success ?? row.screeningDebug.race_fetch_success ? "yes" : "no"}</strong></div>
                             <div className="kv-row"><span>score ready</span><strong>{row.screeningDebug.hard_race_score_ready ? "yes" : "no"}</strong></div>
+                            <div className="kv-row"><span>score success</span><strong>{row.screeningDebug.score_success ?? row.screeningDebug.hard_race_score_ready ? "yes" : "no"}</strong></div>
                             <div className="kv-row"><span>rank</span><strong>{row.screeningDebug.hard_race_rank || "-"}</strong></div>
                             <div className="kv-row"><span>buy style</span><strong>{row.screeningDebug.buy_style_recommendation || "-"}</strong></div>
                             <div className="kv-row"><span>decision reason</span><strong>{row.screeningDebug.decision_reason || "-"}</strong></div>

@@ -11506,6 +11506,21 @@ raceRouter.get("/race", async (req, res, next) => {
       entryMeta,
       hitRateEnhancement
     });
+    const hardRaceResponseContract = isHardRaceScreening
+      ? {
+          race_no: toInt(data?.race?.raceNo, null),
+          status: "FETCHED",
+          hard_race_score: null,
+          boat1_anchor_score: null,
+          box_234_fit_score: null,
+          fixed1234_total_probability: null,
+          top4_fixed1234_probability: null,
+          suggested_shape: null,
+          recommendation: null,
+          errors: [],
+          missing_fields: []
+        }
+      : null;
     routeTimings.prediction_build_ms = Date.now() - predictionStartedAt;
     routeTimings.total_response_ms = Date.now() - routeStartedAt;
     console.info(
@@ -11599,6 +11614,7 @@ raceRouter.get("/race", async (req, res, next) => {
       per_boat_lane_map: entryMeta.per_boat_lane_map,
       entry_debug: compactEntryDebug,
       dataAudit,
+      hardRaceResponseContract,
       startSignalAnalysis: startSignals,
       recommendation_score,
       scenarioSuggestions: safeScenarioSuggestions,
