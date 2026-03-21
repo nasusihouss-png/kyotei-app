@@ -1260,15 +1260,18 @@ function buildFixed1234Matrix({
 }
 
 const HARD_RACE_DECISION_THRESHOLDS = {
-  buy4_total: 0.4,
-  buy4_top4: 0.28,
-  buy6_total: 0.28,
+  buy4_escape_trust: 56,
+  buy4_opponent_fit: 50,
+  buy4_outside_break_max: 35,
+  buy4_top4: 0.26,
+  buy4_shape_concentration: 48,
+  buy6_escape_trust: 50,
+  buy6_opponent_fit: 45,
+  buy6_outside_break_max: 45,
   buy6_top4: 0.2,
-  borderline_total: 0.22,
-  dominant_pattern_soft_total: 0.18,
-  strong_anchor_override: 46,
-  weak_anchor_skip: 22,
-  soft_anchor_caution: 30,
+  borderline_escape_trust: 45,
+  borderline_opponent_fit: 36,
+  borderline_outside_break_max: 55,
   optional_penalty_cap: 0.02
 };
 
@@ -1648,6 +1651,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
         )
       )
     : null;
+  const opponent234Fit = box234FitScore;
 
   const hardRaceScore = coreFieldsReady
     ? Number(
@@ -1655,11 +1659,11 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
           0,
           100,
           (
-            boat1AnchorScore * 0.34 +
-            box234FitScore * 0.3 +
-            (fixed1234ShapeConcentration || 0) * 0.24 -
-            (makuriRisk || 0) * 0.1 -
-            (outsideBreakRisk || 0) * 0.18
+            boat1EscapeTrust * 0.28 +
+            opponent234Fit * 0.36 +
+            (fixed1234ShapeConcentration || 0) * 0.18 -
+            (outsideBreakRisk || 0) * 0.14 -
+            (makuriRisk || 0) * 0.04
           ).toFixed(1)
         )
       )
@@ -1680,19 +1684,12 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       : false;
   let skipReason = null;
   if (coreFieldsReady) {
-    if (boat1AnchorScore < HARD_RACE_DECISION_THRESHOLDS.weak_anchor_skip) {
-      skipReason = "boat1 anchor too weak";
-    } else if ((makuriRisk ?? 0) >= 68) {
-      skipReason = "makuri risk too high";
-    } else if ((outsideBreakRisk ?? 0) >= 66) {
+    if ((boat1EscapeTrust ?? 0) < HARD_RACE_DECISION_THRESHOLDS.borderline_escape_trust) {
+      skipReason = "boat1 escape trust too weak";
+    } else if ((outsideBreakRisk ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.borderline_outside_break_max) {
       skipReason = "outside break risk too high";
-    } else if ((fixed1234ShapeConcentration ?? 0) < 28 && (box234FitScore ?? 0) < 38) {
-      skipReason = "fixed1234 shape too weak";
-    } else if (
-      (adjustedFixed1234TotalProbability ?? 0) < HARD_RACE_DECISION_THRESHOLDS.dominant_pattern_soft_total &&
-      !(boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution && dominantConservativePattern)
-    ) {
-      skipReason = "true weak 1-head structure";
+    } else if ((opponent234Fit ?? 0) < HARD_RACE_DECISION_THRESHOLDS.borderline_opponent_fit) {
+      skipReason = "2/3/4 underneath fit too weak";
     }
   }
   const oldDecision = !coreFieldsReady
@@ -1707,33 +1704,20 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
 
   const buyStyleRecommendation = !coreFieldsReady
     ? "UNAVAILABLE"
-    : skipReason === "boat1 anchor too weak"
+    : skipReason === "boat1 escape trust too weak"
       ? "SKIP"
-      : (boat1AnchorScore ?? 0) >= 58 &&
-          (box234FitScore ?? 0) >= 48 &&
-          (makuriRisk ?? 100) <= 42 &&
-          (outsideBreakRisk ?? 100) <= 34 &&
-          (top4Fixed1234Probability ?? 0) >= 0.28 &&
-          (fixed1234ShapeConcentration ?? 0) >= 56
+      : (boat1EscapeTrust ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_escape_trust &&
+          (opponent234Fit ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_opponent_fit &&
+          (outsideBreakRisk ?? 100) <= HARD_RACE_DECISION_THRESHOLDS.buy4_outside_break_max &&
+          (((top4Fixed1234Probability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_top4) || ((fixed1234ShapeConcentration ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy4_shape_concentration))
         ? "BUY-4"
-        : (boat1AnchorScore ?? 0) >= 44 &&
-            (box234FitScore ?? 0) >= 42 &&
-            (makuriRisk ?? 100) <= 56 &&
-            (outsideBreakRisk ?? 100) <= 48 &&
-            ((adjustedFixed1234TotalProbability ?? 0) >= 0.28 || (fixed1234ShapeConcentration ?? 0) >= 46)
-          ? dominantConservativePattern ? "BUY-6" : "BORDERLINE"
-          : (boat1AnchorScore ?? 0) >= 34 &&
-              (box234FitScore ?? 0) >= 36 &&
-              (makuriRisk ?? 100) <= 70 &&
-              (outsideBreakRisk ?? 100) <= 62 &&
-              (
-                (fixed1234ShapeConcentration ?? 0) >= 34 ||
-                (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.borderline_total ||
-                ((adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.dominant_pattern_soft_total &&
-                  dominantConservativePattern &&
-                  boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.soft_anchor_caution) ||
-                (boat1AnchorScore >= HARD_RACE_DECISION_THRESHOLDS.strong_anchor_override && dominantConservativePattern)
-              )
+        : (boat1EscapeTrust ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy6_escape_trust &&
+            (opponent234Fit ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.buy6_opponent_fit &&
+            (outsideBreakRisk ?? 100) <= HARD_RACE_DECISION_THRESHOLDS.buy6_outside_break_max
+          ? "BUY-6"
+          : (boat1EscapeTrust ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.borderline_escape_trust &&
+              (outsideBreakRisk ?? 100) < HARD_RACE_DECISION_THRESHOLDS.borderline_outside_break_max &&
+              (opponent234Fit ?? 0) >= HARD_RACE_DECISION_THRESHOLDS.borderline_opponent_fit
             ? "BORDERLINE"
             : "SKIP";
 
@@ -1746,19 +1730,17 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
         : "SKIP";
   const hardRaceRank = !coreFieldsReady
     ? "UNAVAILABLE"
-    : (boat1AnchorScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_anchor &&
+    : (boat1EscapeTrust ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_anchor &&
         (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_total &&
         (top4Fixed1234Probability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_top4 &&
-        (box234FitScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_box &&
-        (makuriRisk ?? 100) <= 42 &&
+        (opponent234Fit ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_box &&
         (outsideBreakRisk ?? 100) <= HARD_RACE_RANK_THRESHOLDS.a_outside_risk_max &&
         (fixed1234ShapeConcentration ?? 0) >= HARD_RACE_RANK_THRESHOLDS.a_concentration
       ? "A"
-      : (boat1AnchorScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_anchor &&
+      : (boat1EscapeTrust ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_anchor &&
           (adjustedFixed1234TotalProbability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_total &&
           (top4Fixed1234Probability ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_top4 &&
-          (box234FitScore ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_box &&
-          (makuriRisk ?? 100) <= 56 &&
+          (opponent234Fit ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_box &&
           (outsideBreakRisk ?? 100) <= HARD_RACE_RANK_THRESHOLDS.b_outside_risk_max &&
           (fixed1234ShapeConcentration ?? 0) >= HARD_RACE_RANK_THRESHOLDS.b_concentration
         ? "B"
@@ -1777,7 +1759,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
   const negativeReasons = [];
   if (risk1 >= 0.12) negativeReasons.push("boat1 F/L risk");
   if (source?.entry_changed) negativeReasons.push("course movement risk");
-  if ((makuriRisk ?? 0) >= 54) negativeReasons.push("high 3/4 makuri pressure");
+  if ((makuriRisk ?? 0) >= 62) negativeReasons.push("high 3/4 makuri pressure");
   if ((outsideBreakRisk ?? 0) >= 54) negativeReasons.push("outside 5/6 break risk");
   if (skipReason) negativeReasons.push(skipReason);
   if (optionalMissing.length > 0) negativeReasons.push("optional data missing only");
@@ -1805,6 +1787,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     top4_fixed1234_probability: top4Fixed1234Probability,
     fixed1234_shape_concentration: fixed1234ShapeConcentration,
     boat1_escape_trust: boat1EscapeTrust,
+    opponent_234_fit: opponent234Fit,
     makuri_risk: makuriRisk,
     outside_break_risk: outsideBreakRisk,
     outside_head_risk: outsideHeadRiskProb,
@@ -1813,7 +1796,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     skip_reason: skipReason,
     optional_data_penalty: optionalDataPenalty,
     boat1_anchor_contribution: boat1EscapeTrust,
-    box_234_fit_contribution: box234FitScore,
+    box_234_fit_contribution: opponent234Fit,
     fixed1234_total_contribution: adjustedFixed1234TotalProbability,
     top4_fixed1234_contribution: top4Fixed1234Probability,
     decision_reason:
@@ -1821,12 +1804,12 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       (buyStyleRecommendation === "BUY-4"
         ? "strong 1-anchor with concentrated 1-234-234 top-4 shapes"
         : buyStyleRecommendation === "BUY-6"
-          ? "boat1 escape trust and 2/3/4 underneath group dominate the six-ticket structure"
+          ? "boat1 escape trust and 2/3/4 underneath group fit the six-ticket structure"
           : buyStyleRecommendation === "BORDERLINE"
-            ? "six-ticket structure remains playable but not dominant"
+            ? "boat1 escape trust is usable and 2/3/4 fit remains acceptable"
             : optionalMissing.length > 0
               ? "optional data missing only"
-              : "true weak 1-head structure"),
+              : "boat1 escape or 2/3/4 six-ticket fit is too weak"),
     positive_reasons: positiveReasons,
     negative_reasons: negativeReasons,
     attempt_count: Number(entry?.attemptCount || 1),
@@ -1856,7 +1839,8 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     hardRaceScore,
     boat1AnchorScore: boat1EscapeTrust,
     boat1EscapeTrust,
-    box234FitScore,
+    box234FitScore: opponent234Fit,
+    opponent234Fit,
     makuriRisk,
     fixed1234Probability,
     fixed1234Matrix: fixed1234MatrixData.matrix,
@@ -6709,7 +6693,7 @@ export default function App() {
                         <div className="kv-row"><span>rank</span><strong>{row.hardRaceRank || "--"}</strong></div>
                         <div className="kv-row"><span>hard_race_score</span><strong>{row.hardRaceScore == null ? "--" : formatMaybeNumber(row.hardRaceScore, 1)}</strong></div>
                         <div className="kv-row"><span>boat1_escape_trust</span><strong>{row.boat1EscapeTrust == null ? "--" : formatMaybeNumber(row.boat1EscapeTrust, 1)}</strong></div>
-                        <div className="kv-row"><span>box_234_fit_score</span><strong>{row.box234FitScore == null ? "--" : formatMaybeNumber(row.box234FitScore, 1)}</strong></div>
+                        <div className="kv-row"><span>opponent_234_fit</span><strong>{row.opponent234Fit == null ? "--" : formatMaybeNumber(row.opponent234Fit, 1)}</strong></div>
                         <div className="kv-row"><span>makuri_risk</span><strong>{row.makuriRisk == null ? "--" : formatMaybeNumber(row.makuriRisk, 1)}</strong></div>
                         <div className="kv-row"><span>outside_break_risk</span><strong>{row.outsideBreakRisk == null ? "--" : formatMaybeNumber(row.outsideBreakRisk, 1)}</strong></div>
                         <div className="kv-row"><span>fixed1234_total_probability</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
@@ -6743,6 +6727,7 @@ export default function App() {
                           <div className="kv-row"><span>Buy style</span><strong>{row.buyStyleRecommendation || "-"}</strong></div>
                           <div className="kv-row"><span>Old decision</span><strong>{row.screeningDebug?.old_decision || "-"}</strong></div>
                           <div className="kv-row"><span>boat1_escape_trust</span><strong>{row.boat1EscapeTrust == null ? "--" : formatMaybeNumber(row.boat1EscapeTrust, 1)}</strong></div>
+                          <div className="kv-row"><span>opponent_234_fit</span><strong>{row.opponent234Fit == null ? "--" : formatMaybeNumber(row.opponent234Fit, 1)}</strong></div>
                           <div className="kv-row"><span>makuri_risk</span><strong>{row.makuriRisk == null ? "--" : formatMaybeNumber(row.makuriRisk, 1)}</strong></div>
                           <div className="kv-row"><span>outside_break_risk</span><strong>{row.outsideBreakRisk == null ? "--" : formatMaybeNumber(row.outsideBreakRisk, 1)}</strong></div>
                           <div className="kv-row"><span>shape concentration</span><strong>{row.fixed1234ShapeConcentration == null ? "--" : formatMaybeNumber(row.fixed1234ShapeConcentration, 1)}</strong></div>
@@ -6787,7 +6772,7 @@ export default function App() {
                             Contributions:
                             {` optional penalty ${formatMaybeNumber((row.screeningDebug.optional_data_penalty || 0) * 100, 1)}%`}
                             {` / escape trust ${formatMaybeNumber(row.screeningDebug.boat1_escape_trust ?? row.screeningDebug.boat1_anchor_contribution, 1)}`}
-                            {` / box ${formatMaybeNumber(row.screeningDebug.box_234_fit_contribution, 1)}`}
+                            {` / opponent234 ${formatMaybeNumber(row.screeningDebug.opponent_234_fit ?? row.screeningDebug.box_234_fit_contribution, 1)}`}
                             {` / makuri risk ${formatMaybeNumber(row.screeningDebug.makuri_risk, 1)}`}
                             {` / outside risk ${formatMaybeNumber(row.screeningDebug.outside_break_risk, 1)}`}
                             {` / fixed total ${formatMaybeNumber((row.screeningDebug.fixed1234_total_contribution || 0) * 100, 1)}%`}
