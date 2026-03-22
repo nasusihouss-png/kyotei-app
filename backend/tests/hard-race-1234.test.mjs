@@ -55,6 +55,16 @@ assert.equal(
   Number((result.top4_fixed1234_probability / result.fixed1234_total_probability).toFixed(4))
 );
 assert.ok(["BUY-4", "BUY-6", "BORDERLINE", "SKIP"].includes(result.decision));
+assert.ok(typeof result.fallback_used?.used === "boolean");
+assert.ok(Array.isArray(result.fallback_used?.fields));
+assert.ok(Array.isArray(result.head_candidates));
+assert.ok(Array.isArray(result.head_opponents));
+assert.ok(typeof result.hard_mode?.active === "boolean");
+assert.ok(typeof result.open_mode?.active === "boolean");
+assert.ok(result.source_summary?.hard_race_fallback);
+assert.equal(typeof result.features?.p1_escape, "number");
+assert.equal(typeof result.features?.top4_share_within_fixed1234, "number");
+assert.equal(typeof result.features?.conditional_probabilities?.p_1st_1, "number");
 assert.ok(Array.isArray(result.missing_fields));
 assert.equal(typeof result.features?.evaluation_targets?.y_box6, "number");
 assert.equal(typeof result.features?.evaluation_targets?.y_top4, "number");

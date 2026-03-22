@@ -10,63 +10,11 @@ const DEBUG_ROOT = path.resolve(__dirname, "../../debug/hard-race-1234");
 const FIXED_COMBOS = ["1-2-3", "1-2-4", "1-3-2", "1-3-4", "1-4-2", "1-4-3"];
 const FIXED_TOP4_COUNT = 4;
 const HARD_RACE_V2_WEIGHTS = {
-  opponent_pairs: { pair23: 0.29, pair24: 0.34, pair34: 0.37 },
+  opponent_pairs: { pair23: 0.31, pair24: 0.34, pair34: 0.35 },
   opponent_roles: {
-    lane2_second: 0.31,
-    lane3_attack: 0.31,
-    lane4_develop: 0.38
-  },
-  kill_escape: {
-    lane3_makuri: 0.46,
-    lane3_makurisashi: 0.14,
-    lane3_breakout: 0.12,
-    lane3_st: 0.14,
-    lane3_motor2: 0.14,
-    lane4_makuri: 0.08,
-    lane4_makurisashi: 0.12,
-    lane4_breakout: 0.34,
-    lane4_st: 0.18,
-    lane4_motor2: 0.1,
-    lane4_lane3rentai: 0.18,
-    lane3_trigger: 65,
-    lane4_trigger: 69,
-    lane3_pressure: 0.78,
-    lane4_pressure: 0.4,
-    boat1_vulnerability: 0.46
-  },
-  boat1_escape_adjustment: {
-    kill_penalty_trigger: 26,
-    kill_penalty_rate: 0.12,
-    shape_penalty_trigger: 48,
-    shape_penalty_rate: 0.03,
-    shape_penalty_cap: 2,
-    outside_head_penalty_trigger: 20,
-    outside_head_penalty_rate: 0.18,
-    outside_head_penalty_cap: 6
-  },
-  shape_shuffle: {
-    lane3_makurisashi: 0.24,
-    lane4_breakout: 0.24,
-    lane3_lane3rentai: 0.14,
-    lane4_lane3rentai: 0.14,
-    fit_gap_vs2_lane3: 0.11,
-    fit_gap_vs2_lane4: 0.1,
-    pair_gap: 0.07
-  },
-  outside_break: {
-    head: 0.45,
-    second: 0.4,
-    third: 0.15,
-    pair23_guard: 0.02,
-    pair24_guard: 0.03
-  },
-  box_hit: {
-    boat1_escape_trust: 0.28,
-    opponent_234_fit: 0.42,
-    outside_guard: 0.16,
-    kill_escape_guard: 0.08,
-    shape_shuffle_guard: 0.06,
-    scale: 0.84
+    lane2_second: 0.34,
+    lane3_attack: 0.33,
+    lane4_develop: 0.33
   },
   combo_multiplier: {
     "1-2-3": 1.03,
@@ -79,36 +27,20 @@ const HARD_RACE_V2_WEIGHTS = {
 };
 const HARD_RACE_V2_DECISION_THRESHOLDS = {
   buy4: {
-    boat1_escape_trust: 44,
-    opponent_234_fit: 58,
-    outside_break_risk_max: 20,
-    box_hit_score_min: 0.56,
-    fixed1234_total_probability_min: 0.34,
-    top4_fixed1234_probability_min: 0.27,
-    shape_focus_score_min: 0.6,
-    shape_concentration_min: 0.62
+    p1_escape_min: 0.53,
+    fixed1234_total_probability_min: 0.31,
+    outside_break_risk_max: 0.22,
+    top4_fixed1234_probability_min: 0.25,
+    top4_share_within_fixed1234_min: 0.7
   },
   buy6: {
-    boat1_escape_trust: 44,
-    opponent_234_fit: 58,
-    outside_break_risk_max: 20,
-    fixed1234_total_probability_min: 0.34,
-    box_hit_score_min: 0.56
+    p1_escape_min: 0.53,
+    fixed1234_total_probability_min: 0.31,
+    outside_break_risk_max: 0.22
   },
   borderline: {
-    boat1_escape_trust: 40,
-    opponent_234_fit: 52,
-    outside_break_risk_max: 26,
-    fixed1234_total_probability_min: 0.28,
-    box_hit_score_min: 0.5
-  },
-  false_negative_review: {
-    opponent_234_fit_high: 56,
-    outside_break_risk_low: 24,
-    pair24_fit_high: 58,
-    pair34_fit_high: 57,
-    p124_high: 0.055,
-    fixed1234_total_probability_high: 0.31
+    p1_escape_min: 0.45,
+    fixed1234_total_probability_min: 0.26
   }
 };
 const VENUE_INNER_BIAS = {
@@ -211,7 +143,7 @@ async function fetchOfficialRaceResult({ date, venueId, raceNo, timeoutMs = 6000
       if (combo) return;
       const cells = $(tr).children("th,td");
       const heading = normalizeText(cells.eq(0).text());
-      if (!/3連単/.test(heading)) return;
+      if (!heading.includes("3") && !heading.includes("三")) return;
       const rowText = normalizeText($(tr).text());
       const match = rowText.match(/([1-6])\D+([1-6])\D+([1-6])/);
       if (match) combo = `${match[1]}-${match[2]}-${match[3]}`;
@@ -227,7 +159,7 @@ async function fetchOfficialRaceResult({ date, venueId, raceNo, timeoutMs = 6000
   }
 }
 
-function buildSourceSummary({ data, normalizedLanes, resultFetch }) {
+function buildSourceSummary({ data, normalizedLanes, resultFetch, fallbackSummary = null }) {
   const kyotei = data?.source?.kyotei_biyori || {};
   const official = data?.source?.official_fetch_status || {};
   const supplementalCoveredLanes = normalizedLanes.filter((lane) => {
@@ -261,8 +193,14 @@ function buildSourceSummary({ data, normalizedLanes, resultFetch }) {
     source_priority: [
       "boatrace > kyoteibiyori",
       "official overlap wins",
-      "kyoteibiyori only supplements missing traits"
+      "kyoteibiyori only supplements missing traits",
+      fallbackSummary?.used ? "fallback applied to unresolved hard-race metrics" : "fallback not needed"
     ],
+    hard_race_fallback: fallbackSummary || {
+      used: false,
+      fields: [],
+      details: {}
+    },
     fetch_timings: data?.source?.fetch_timings || data?.source?.timings || {}
   };
 }
@@ -477,6 +415,30 @@ function lowerBetterScore(value, min = 0, max = 30) {
   return value === null ? null : clamp(0, 100, ((max - value) / Math.max(1, max - min)) * 100);
 }
 
+function normalizedPercent(value, min = 0, max = 100) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return null;
+  return clamp(0, 1, (Number(value) - min) / Math.max(1e-9, max - min));
+}
+
+function invertNormalized(value, min = 0, max = 100) {
+  const normalized = normalizedPercent(value, min, max);
+  return normalized === null ? null : clamp(0, 1, 1 - normalized);
+}
+
+function weightedAverage(values) {
+  const present = values.filter((row) => row && row.value !== null && Number.isFinite(Number(row.weight)) && row.weight > 0);
+  if (!present.length) return null;
+  const totalWeight = present.reduce((sum, row) => sum + row.weight, 0);
+  return totalWeight > 0 ? present.reduce((sum, row) => sum + row.value * row.weight, 0) / totalWeight : null;
+}
+
+function normalizeWeights(weightMap) {
+  const entries = Object.entries(weightMap || {}).filter(([, value]) => Number.isFinite(Number(value)) && Number(value) > 0);
+  const total = entries.reduce((sum, [, value]) => sum + Number(value), 0);
+  if (!(total > 0)) return Object.fromEntries(entries.map(([key]) => [key, 0]));
+  return Object.fromEntries(entries.map(([key, value]) => [key, Number(value) / total]));
+}
+
 function laneFitScore(row, lane) {
   const f = row?.features || {};
   const course3 = f.course_3rentai_rate?.value;
@@ -522,6 +484,88 @@ function pairFitScore({ leftFit, rightFit, leftSupport = [], rightSupport = [], 
     { value: scoreBlend(rightSupport.map((value) => ({ value, weight: 1 }))), weight: 0.14 },
     { value: balance, weight: balancePenalty }
   ]);
+}
+
+function estimateBoat1EscapeAffinity(boat1, challenger) {
+  if (!boat1 || !challenger) return null;
+  const boat1St = inverseStScore(boat1?.features?.avg_st?.value ?? null);
+  const challengerSt = inverseStScore(challenger?.features?.avg_st?.value ?? null);
+  return scoreBlend([
+    { value: normalizedPercent(boat1?.features?.local_win_rate?.value ?? null, 3, 8) * 100, weight: 0.28 },
+    { value: normalizedPercent(boat1?.features?.motor_2ren?.value ?? null, 20, 60) * 100, weight: 0.2 },
+    { value: normalizedPercent(boat1?.features?.boat_2ren?.value ?? null, 20, 60) * 100, weight: 0.14 },
+    { value: normalizedPercent(challenger?.features?.course_3rentai_rate?.value ?? null, 20, 80) * 100, weight: 0.12 },
+    { value: clamp(0, 100, 100 - Math.max(0, (challengerSt || 50) - (boat1St || 50))), weight: 0.16 },
+    { value: clamp(0, 100, 100 - Math.max(0, (challenger?.features?.motor_2ren?.value ?? 40) - (boat1?.features?.motor_2ren?.value ?? 40))), weight: 0.1 }
+  ]);
+}
+
+function fallbackPairFit({ laneA, laneB, boat1 }) {
+  return round(scoreBlend([
+    { value: laneA?.features?.course_3rentai_rate?.value ?? null, weight: 0.22 },
+    { value: laneB?.features?.course_3rentai_rate?.value ?? null, weight: 0.22 },
+    { value: inverseStScore(laneA?.features?.avg_st?.value ?? null), weight: 0.12 },
+    { value: inverseStScore(laneB?.features?.avg_st?.value ?? null), weight: 0.12 },
+    { value: laneA?.features?.motor_2ren?.value ?? null, weight: 0.1 },
+    { value: laneB?.features?.motor_2ren?.value ?? null, weight: 0.1 },
+    { value: estimateBoat1EscapeAffinity(boat1, laneA), weight: 0.06 },
+    { value: estimateBoat1EscapeAffinity(boat1, laneB), weight: 0.06 }
+  ]), 1);
+}
+
+function buildFallbackTracker() {
+  return {
+    used: false,
+    items: [],
+    byField: {}
+  };
+}
+
+function markFallback(tracker, field, formula) {
+  tracker.used = true;
+  tracker.byField[field] = formula;
+  tracker.items.push({ field, type: "fallback", formula });
+}
+
+function resolveMetricWithFallback({ field, primaryValue, fallbackValue, fallbackFormula, tracker }) {
+  if (primaryValue !== null) {
+    return { value: primaryValue, sourceType: "primary", fallbackUsed: false };
+  }
+  if (fallbackValue !== null) {
+    markFallback(tracker, field, fallbackFormula);
+    return { value: fallbackValue, sourceType: "fallback", fallbackUsed: true };
+  }
+  return { value: null, sourceType: "missing", fallbackUsed: false };
+}
+
+function summarizeMetricSource(primary, resolved) {
+  if (resolved?.fallbackUsed) return `${primary} + fallback`;
+  if (resolved?.value !== null) return primary;
+  return `${primary} missing`;
+}
+
+function buildHeadCandidate(laneRow, laneFit, venueInsideBias) {
+  const lane = laneRow?.lane;
+  const laneBias = lane === 1 ? venueInsideBias : clamp(0, 100, 74 - ((lane - 1) * 9));
+  const stScore = inverseStScore(laneRow?.features?.avg_st?.value ?? null);
+  const attackScore = scoreBlend([
+    { value: laneFit, weight: 0.24 },
+    { value: percentFromRate(laneRow?.features?.national_win_rate?.value ?? null), weight: 0.18 },
+    { value: percentFromRate(laneRow?.features?.local_win_rate?.value ?? null), weight: 0.15 },
+    { value: stScore, weight: 0.14 },
+    { value: laneRow?.features?.motor_2ren?.value ?? null, weight: 0.1 },
+    { value: laneRow?.features?.boat_2ren?.value ?? null, weight: 0.08 },
+    { value: laneRow?.features?.course_3rentai_rate?.value ?? null, weight: 0.05 },
+    { value: laneRow?.features?.breakout_rate?.value ?? null, weight: 0.03 },
+    { value: laneRow?.features?.makuri_rate?.value ?? null, weight: 0.03 }
+  ]);
+  return {
+    lane,
+    score: round(scoreBlend([
+      { value: attackScore, weight: 0.78 },
+      { value: laneBias, weight: 0.22 }
+    ]), 1)
+  };
 }
 
 function comboProbability({ combo, secondWeights, thirdWeights, pair23Fit, pair24Fit, pair34Fit }) {
@@ -592,66 +636,119 @@ function computeScores(normalized, sourceSummary) {
       decision_reason: "missing source data",
       missing_fields: missingFields,
       missing_field_details: missingFieldDetails,
-      metric_status: metricDetails
+      metric_status: metricDetails,
+      fallback_used: { used: false, fields: [], details: {} },
+      head_candidates: [],
+      head_opponents: [],
+      hard_mode: { active: false },
+      open_mode: { active: false }
     };
   }
 
+  const fallbackTracker = buildFallbackTracker();
   const boat1Features = boat1.features;
-  const baseBoat1EscapeTrust = round(scoreBlend([
-    { value: percentFromRate(boat1Features.national_win_rate.value), weight: 0.23 },
-    { value: percentFromRate(boat1Features.local_win_rate.value), weight: 0.16 },
-    { value: inverseStScore(boat1Features.avg_st.value), weight: 0.17 },
-    { value: lowerBetterScore((boat1Features.f_count.value || 0) * 10 + (boat1Features.l_count.value || 0) * 8), weight: 0.11 },
-    { value: boat1Features.motor_2ren.value, weight: 0.13 },
-    { value: boat1Features.motor_3ren.value, weight: 0.06 },
-    { value: boat1Features.boat_2ren.value, weight: 0.05 },
-    { value: boat1Features.boat_3ren.value, weight: 0.03 },
-    { value: normalized?.venue?.inside_bias?.value !== null ? normalized.venue.inside_bias.value * 100 : null, weight: 0.06 }
-  ]), 1);
+  const venueInsideBias = normalized?.venue?.inside_bias?.value !== null ? normalized.venue.inside_bias.value * 100 : null;
 
   const fit2 = laneFitScore(lane2, 2);
   const fit3 = laneFitScore(lane3, 3);
   const fit4 = laneFitScore(lane4, 4);
   const fit5 = laneFitScore(lane5, 4);
   const fit6 = laneFitScore(lane6, 4);
-  const pair23Fit = round(pairFitScore({
+
+  const lane1BaseStrength = weightedAverage([
+    { value: normalizedPercent(boat1Features.local_win_rate.value, 4, 8.5), weight: 0.35 },
+    { value: normalizedPercent(boat1Features.national_win_rate.value, 4, 8.5), weight: 0.25 },
+    { value: normalizedPercent(boat1Features.motor_2ren.value, 20, 60), weight: 0.18 },
+    { value: normalizedPercent(boat1Features.boat_2ren.value, 20, 60), weight: 0.12 },
+    { value: normalizedPercent(venueInsideBias, 50, 76), weight: 0.1 }
+  ]);
+  const stEdge = weightedAverage([
+    { value: invertNormalized(boat1Features.avg_st.value, 0.11, 0.24), weight: 0.7 },
+    { value: normalizedPercent(weightedAverage([
+      { value: lane2?.features?.avg_st?.value ?? null, weight: 0.4 },
+      { value: lane3?.features?.avg_st?.value ?? null, weight: 0.35 },
+      { value: lane4?.features?.avg_st?.value ?? null, weight: 0.25 }
+    ]), 0.11, 0.24), weight: 0.3 }
+  ]);
+  const startStability = weightedAverage([
+    { value: invertNormalized((boat1Features.f_count.value || 0) * 0.75 + (boat1Features.l_count.value || 0) * 0.4, 0, 2.5), weight: 0.55 },
+    { value: invertNormalized(boat1Features.avg_st.value, 0.11, 0.24), weight: 0.45 }
+  ]);
+  const motorBoatEdge = weightedAverage([
+    { value: normalizedPercent(boat1Features.motor_2ren.value, 20, 60), weight: 0.5 },
+    { value: normalizedPercent(boat1Features.boat_2ren.value, 20, 60), weight: 0.3 },
+    { value: normalizedPercent(boat1Features.motor_3ren.value, 25, 70), weight: 0.12 },
+    { value: normalizedPercent(boat1Features.boat_3ren.value, 25, 70), weight: 0.08 }
+  ]);
+  const localCourseBias = normalizedPercent(venueInsideBias, 50, 76);
+  const flSafety = weightedAverage([
+    { value: invertNormalized(boat1Features.f_count.value || 0, 0, 2), weight: 0.7 },
+    { value: invertNormalized(boat1Features.l_count.value || 0, 0, 2), weight: 0.3 }
+  ]);
+
+  const pair23Primary = round(pairFitScore({
     leftFit: fit2,
     rightFit: fit3,
     leftSupport: [lane2?.features?.sashi_rate?.value, lane2?.features?.stability_rate?.value, lane2?.features?.lane_3rentai_rate?.value],
     rightSupport: [lane3?.features?.makurisashi_rate?.value, lane3?.features?.lane_3rentai_rate?.value, lane3?.features?.motor_3ren?.value]
   }), 1);
-  const pair24Fit = round(pairFitScore({
+  const pair24Primary = round(pairFitScore({
     leftFit: fit2,
     rightFit: fit4,
     leftSupport: [lane2?.features?.sashi_rate?.value, lane2?.features?.lane_3rentai_rate?.value, lane2?.features?.motor_2ren?.value],
     rightSupport: [lane4?.features?.breakout_rate?.value, lane4?.features?.lane_3rentai_rate?.value, lane4?.features?.stability_rate?.value]
   }), 1);
-  const pair34Fit = round(pairFitScore({
+  const pair34Primary = round(pairFitScore({
     leftFit: fit3,
     rightFit: fit4,
     leftSupport: [lane3?.features?.makuri_rate?.value, lane3?.features?.makurisashi_rate?.value, lane3?.features?.lane_3rentai_rate?.value],
     rightSupport: [lane4?.features?.breakout_rate?.value, lane4?.features?.stability_rate?.value, lane4?.features?.lane_3rentai_rate?.value]
   }), 1);
+  const pair23Resolved = resolveMetricWithFallback({
+    field: "pair23_fit",
+    primaryValue: pair23Primary,
+    fallbackValue: fallbackPairFit({ laneA: lane2, laneB: lane3, boat1 }),
+    fallbackFormula: "boatrace course_3rentai + avgST + motor + boat1 escape affinity",
+    tracker: fallbackTracker
+  });
+  const pair24Resolved = resolveMetricWithFallback({
+    field: "pair24_fit",
+    primaryValue: pair24Primary,
+    fallbackValue: fallbackPairFit({ laneA: lane2, laneB: lane4, boat1 }),
+    fallbackFormula: "boatrace course_3rentai + avgST + motor + boat1 escape affinity",
+    tracker: fallbackTracker
+  });
+  const pair34Resolved = resolveMetricWithFallback({
+    field: "pair34_fit",
+    primaryValue: pair34Primary,
+    fallbackValue: fallbackPairFit({ laneA: lane3, laneB: lane4, boat1 }),
+    fallbackFormula: "boatrace course_3rentai + avgST + motor + boat1 escape affinity",
+    tracker: fallbackTracker
+  });
+  const pair23Fit = pair23Resolved.value;
+  const pair24Fit = pair24Resolved.value;
+  const pair34Fit = pair34Resolved.value;
+
   const lane2SecondRemain = round(scoreBlend([
-    { value: fit2, weight: 0.3 },
-    { value: lane2?.features?.sashi_rate?.value, weight: 0.24 },
+    { value: fit2, weight: 0.29 },
+    { value: lane2?.features?.sashi_rate?.value, weight: 0.27 },
     { value: lane2?.features?.lane_3rentai_rate?.value, weight: 0.18 },
     { value: lane2?.features?.stability_rate?.value, weight: 0.12 },
-    { value: lane2?.features?.motor_2ren?.value, weight: 0.16 }
+    { value: lane2?.features?.motor_2ren?.value, weight: 0.14 }
   ]), 1);
   const lane3AttackRemain = round(scoreBlend([
-    { value: fit3, weight: 0.26 },
+    { value: fit3, weight: 0.23 },
     { value: pair23Fit, weight: 0.12 },
-    { value: lane3?.features?.makuri_rate?.value, weight: 0.2 },
+    { value: lane3?.features?.makuri_rate?.value, weight: 0.24 },
     { value: lane3?.features?.makurisashi_rate?.value, weight: 0.2 },
-    { value: lane3?.features?.lane_3rentai_rate?.value, weight: 0.12 },
+    { value: lane3?.features?.lane_3rentai_rate?.value, weight: 0.11 },
     { value: inverseStScore(lane3?.features?.avg_st?.value ?? null), weight: 0.1 }
   ]), 1);
   const lane4DevelopRemain = round(scoreBlend([
-    { value: fit4, weight: 0.22 },
+    { value: fit4, weight: 0.2 },
     { value: pair24Fit, weight: 0.18 },
-    { value: pair34Fit, weight: 0.18 },
-    { value: lane4?.features?.breakout_rate?.value, weight: 0.18 },
+    { value: pair34Fit, weight: 0.16 },
+    { value: lane4?.features?.breakout_rate?.value, weight: 0.22 },
     { value: lane4?.features?.lane_3rentai_rate?.value, weight: 0.14 },
     { value: lane4?.features?.stability_rate?.value, weight: 0.1 }
   ]), 1);
@@ -660,146 +757,166 @@ function computeScores(normalized, sourceSummary) {
     { value: lane3AttackRemain, weight: HARD_RACE_V2_WEIGHTS.opponent_roles.lane3_attack },
     { value: lane4DevelopRemain, weight: HARD_RACE_V2_WEIGHTS.opponent_roles.lane4_develop },
     { value: pair23Fit, weight: HARD_RACE_V2_WEIGHTS.opponent_pairs.pair23 * 0.35 },
-    { value: pair24Fit, weight: HARD_RACE_V2_WEIGHTS.opponent_pairs.pair24 * 0.45 },
-    { value: pair34Fit, weight: HARD_RACE_V2_WEIGHTS.opponent_pairs.pair34 * 0.5 }
+    { value: pair24Fit, weight: HARD_RACE_V2_WEIGHTS.opponent_pairs.pair24 * 0.4 },
+    { value: pair34Fit, weight: HARD_RACE_V2_WEIGHTS.opponent_pairs.pair34 * 0.4 }
   ]), 1);
 
-  const lane3KillBase = scoreBlend([
-    { value: lane3?.features?.makuri_rate?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane3_makuri },
-    { value: lane3?.features?.makurisashi_rate?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane3_makurisashi },
-    { value: lane3?.features?.breakout_rate?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane3_breakout },
-    { value: inverseStScore(lane3?.features?.avg_st?.value ?? null), weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane3_st },
-    { value: lane3?.features?.motor_2ren?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane3_motor2 }
-  ]);
-  const lane4KillBase = scoreBlend([
-    { value: lane4?.features?.makuri_rate?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane4_makuri },
-    { value: lane4?.features?.makurisashi_rate?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane4_makurisashi },
-    { value: lane4?.features?.breakout_rate?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane4_breakout },
-    { value: inverseStScore(lane4?.features?.avg_st?.value ?? null), weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane4_st },
-    { value: lane4?.features?.motor_2ren?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane4_motor2 },
-    { value: lane4?.features?.lane_3rentai_rate?.value, weight: HARD_RACE_V2_WEIGHTS.kill_escape.lane4_lane3rentai }
-  ]);
-  const boat1Vulnerability = clamp(0, 100, 68 - (baseBoat1EscapeTrust ?? 68));
-  const killEscapeRisk = round(clamp(
-    0,
-    100,
-    Math.max(0, (lane3KillBase || 0) - HARD_RACE_V2_WEIGHTS.kill_escape.lane3_trigger) * HARD_RACE_V2_WEIGHTS.kill_escape.lane3_pressure +
-      Math.max(0, (lane4KillBase || 0) - HARD_RACE_V2_WEIGHTS.kill_escape.lane4_trigger) * HARD_RACE_V2_WEIGHTS.kill_escape.lane4_pressure +
-      boat1Vulnerability * HARD_RACE_V2_WEIGHTS.kill_escape.boat1_vulnerability
-  ), 1);
-  const shapeShuffleRisk = round(scoreBlend([
-    { value: lane3?.features?.makurisashi_rate?.value, weight: HARD_RACE_V2_WEIGHTS.shape_shuffle.lane3_makurisashi },
-    { value: lane4?.features?.breakout_rate?.value, weight: HARD_RACE_V2_WEIGHTS.shape_shuffle.lane4_breakout },
-    { value: lane3?.features?.lane_3rentai_rate?.value, weight: HARD_RACE_V2_WEIGHTS.shape_shuffle.lane3_lane3rentai },
-    { value: lane4?.features?.lane_3rentai_rate?.value, weight: HARD_RACE_V2_WEIGHTS.shape_shuffle.lane4_lane3rentai },
-    { value: clamp(0, 100, Math.abs((fit3 || 50) - (fit2 || 50)) * 1.2), weight: HARD_RACE_V2_WEIGHTS.shape_shuffle.fit_gap_vs2_lane3 },
-    { value: clamp(0, 100, Math.abs((fit4 || 50) - (fit2 || 50)) * 1.2), weight: HARD_RACE_V2_WEIGHTS.shape_shuffle.fit_gap_vs2_lane4 },
-    { value: clamp(0, 100, Math.abs((pair23Fit || 50) - (pair24Fit || 50))), weight: HARD_RACE_V2_WEIGHTS.shape_shuffle.pair_gap }
+  const killEscapePrimary = round(scoreBlend([
+    { value: normalizedPercent(lane3?.features?.makuri_rate?.value ?? null, 20, 80) * 100, weight: 0.28 },
+    { value: normalizedPercent(lane3?.features?.makurisashi_rate?.value ?? null, 15, 75) * 100, weight: 0.14 },
+    { value: normalizedPercent(lane4?.features?.breakout_rate?.value ?? null, 20, 80) * 100, weight: 0.2 },
+    { value: normalizedPercent(lane3?.features?.motor_2ren?.value ?? null, 20, 60) * 100, weight: 0.08 },
+    { value: normalizedPercent(lane4?.features?.motor_2ren?.value ?? null, 20, 60) * 100, weight: 0.08 },
+    { value: normalizedPercent(lane3?.features?.course_3rentai_rate?.value ?? null, 20, 80) * 100, weight: 0.08 },
+    { value: normalizedPercent(lane4?.features?.course_3rentai_rate?.value ?? null, 20, 80) * 100, weight: 0.08 },
+    { value: invertNormalized(boat1Features.avg_st.value, 0.11, 0.24) === null ? null : (1 - invertNormalized(boat1Features.avg_st.value, 0.11, 0.24)) * 100, weight: 0.06 }
   ]), 1);
-  const boat1KillPenalty = round(
-    Math.max(
-      0,
-      ((killEscapeRisk || 0) - HARD_RACE_V2_WEIGHTS.boat1_escape_adjustment.kill_penalty_trigger) *
-        HARD_RACE_V2_WEIGHTS.boat1_escape_adjustment.kill_penalty_rate
-    ),
-    1
-  );
-  const boat1ShapePenalty = round(
-    clamp(
-      0,
-      HARD_RACE_V2_WEIGHTS.boat1_escape_adjustment.shape_penalty_cap,
-      ((shapeShuffleRisk || 0) - HARD_RACE_V2_WEIGHTS.boat1_escape_adjustment.shape_penalty_trigger) *
-        HARD_RACE_V2_WEIGHTS.boat1_escape_adjustment.shape_penalty_rate
-    ),
-    1
-  );
-  const outsideHeadBoat1Penalty = round(
-    clamp(
-      0,
-      HARD_RACE_V2_WEIGHTS.boat1_escape_adjustment.outside_head_penalty_cap,
-      ((scoreBlend([
-        { value: fit5, weight: 0.4 },
-        { value: fit6, weight: 0.4 },
-        { value: lane5?.features?.breakout_rate?.value, weight: 0.1 },
-        { value: lane6?.features?.breakout_rate?.value, weight: 0.1 }
-      ]) || 0) - HARD_RACE_V2_WEIGHTS.boat1_escape_adjustment.outside_head_penalty_trigger) *
-        HARD_RACE_V2_WEIGHTS.boat1_escape_adjustment.outside_head_penalty_rate
-    ),
-    1
-  );
-  const boat1EscapeTrust = round(
-    clamp(0, 100, (baseBoat1EscapeTrust || 0) - (boat1KillPenalty || 0) - (boat1ShapePenalty || 0) - (outsideHeadBoat1Penalty || 0)),
-    1
-  );
-  const makuriRisk = round(scoreBlend([
-    { value: killEscapeRisk, weight: 0.62 },
-    { value: shapeShuffleRisk, weight: 0.38 }
+  const killEscapeFallback = round(scoreBlend([
+    { value: normalizedPercent(lane3?.features?.course_3rentai_rate?.value ?? null, 20, 80) * 100, weight: 0.24 },
+    { value: normalizedPercent(lane4?.features?.course_3rentai_rate?.value ?? null, 20, 80) * 100, weight: 0.24 },
+    { value: inverseStScore(lane3?.features?.avg_st?.value ?? null), weight: 0.12 },
+    { value: inverseStScore(lane4?.features?.avg_st?.value ?? null), weight: 0.12 },
+    { value: lane3?.features?.motor_2ren?.value ?? null, weight: 0.12 },
+    { value: lane4?.features?.motor_2ren?.value ?? null, weight: 0.1 },
+    { value: clamp(0, 100, 100 - (estimateBoat1EscapeAffinity(boat1, lane3) || 50)), weight: 0.06 }
   ]), 1);
+  const killEscapeResolved = resolveMetricWithFallback({
+    field: "kill_escape_risk",
+    primaryValue: killEscapePrimary,
+    fallbackValue: killEscapeFallback,
+    fallbackFormula: "boatrace course_3rentai + avgST + motor + inverse 1-escape affinity",
+    tracker: fallbackTracker
+  });
+  const killEscapeRisk = killEscapeResolved.value;
 
-  const outsideHead = scoreBlend([
-    { value: fit5, weight: 0.36 },
-    { value: fit6, weight: 0.36 },
+  const shapeShufflePrimary = round(scoreBlend([
+    { value: normalizedPercent(lane3?.features?.makurisashi_rate?.value ?? null, 15, 75) * 100, weight: 0.26 },
+    { value: normalizedPercent(lane4?.features?.breakout_rate?.value ?? null, 20, 80) * 100, weight: 0.24 },
+    { value: lane3?.features?.lane_3rentai_rate?.value ?? null, weight: 0.12 },
+    { value: lane4?.features?.lane_3rentai_rate?.value ?? null, weight: 0.12 },
+    { value: clamp(0, 100, Math.abs((fit3 || 50) - (fit2 || 50)) * 1.1), weight: 0.14 },
+    { value: clamp(0, 100, Math.abs((fit4 || 50) - (fit2 || 50)) * 1.1), weight: 0.12 }
+  ]), 1);
+  const shapeShuffleFallback = round(scoreBlend([
+    { value: clamp(0, 100, Math.abs((pair23Fit || 50) - (pair24Fit || 50)) * 1.15), weight: 0.26 },
+    { value: clamp(0, 100, Math.abs((pair24Fit || 50) - (pair34Fit || 50)) * 1.05), weight: 0.22 },
+    { value: clamp(0, 100, Math.abs((fit3 || 50) - (fit4 || 50))), weight: 0.18 },
+    { value: lane3?.features?.course_3rentai_rate?.value ?? null, weight: 0.16 },
+    { value: lane4?.features?.course_3rentai_rate?.value ?? null, weight: 0.18 }
+  ]), 1);
+  const shapeShuffleResolved = resolveMetricWithFallback({
+    field: "shape_shuffle_risk",
+    primaryValue: shapeShufflePrimary,
+    fallbackValue: shapeShuffleFallback,
+    fallbackFormula: "pair fit gap + lane fit gap + boatrace course_3rentai",
+    tracker: fallbackTracker
+  });
+  const shapeShuffleRisk = shapeShuffleResolved.value;
+
+  const outsideHeadRisk = round(scoreBlend([
+    { value: fit5, weight: 0.32 },
+    { value: fit6, weight: 0.32 },
     { value: lane5?.features?.breakout_rate?.value, weight: 0.1 },
     { value: lane6?.features?.breakout_rate?.value, weight: 0.1 },
-    { value: inverseStScore(lane5?.features?.avg_st?.value ?? null), weight: 0.04 },
-    { value: inverseStScore(lane6?.features?.avg_st?.value ?? null), weight: 0.04 }
-  ]);
-  const outsideSecond = scoreBlend([
-    { value: lane5?.features?.course_3rentai_rate?.value, weight: 0.22 },
-    { value: lane6?.features?.course_3rentai_rate?.value, weight: 0.22 },
-    { value: lane5?.features?.lane_3rentai_rate?.value, weight: 0.12 },
-    { value: lane6?.features?.lane_3rentai_rate?.value, weight: 0.12 },
-    { value: inverseStScore(lane5?.features?.avg_st?.value ?? null), weight: 0.12 },
-    { value: inverseStScore(lane6?.features?.avg_st?.value ?? null), weight: 0.12 },
-    { value: lane5?.features?.motor_2ren?.value, weight: 0.1 },
-    { value: lane6?.features?.motor_2ren?.value, weight: 0.1 }
-  ]);
-  const outsideThird = scoreBlend([
-    { value: lane5?.features?.course_3rentai_rate?.value, weight: 0.2 },
-    { value: lane6?.features?.course_3rentai_rate?.value, weight: 0.2 },
-    { value: lane5?.features?.lane_3rentai_rate?.value, weight: 0.16 },
-    { value: lane6?.features?.lane_3rentai_rate?.value, weight: 0.16 },
-    { value: lane5?.features?.stability_rate?.value, weight: 0.1 },
-    { value: lane6?.features?.stability_rate?.value, weight: 0.1 },
-    { value: lane5?.features?.boat_2ren?.value, weight: 0.04 },
-    { value: lane6?.features?.boat_2ren?.value, weight: 0.04 }
-  ]);
+    { value: inverseStScore(lane5?.features?.avg_st?.value ?? null), weight: 0.08 },
+    { value: inverseStScore(lane6?.features?.avg_st?.value ?? null), weight: 0.08 }
+  ]), 1);
   const outsideBreakRisk = round(clamp(
     0,
-    100,
-    (outsideHead || 0) * HARD_RACE_V2_WEIGHTS.outside_break.head +
-      (outsideSecond || 0) * HARD_RACE_V2_WEIGHTS.outside_break.second +
-      (outsideThird || 0) * HARD_RACE_V2_WEIGHTS.outside_break.third +
-      Math.max(0, 68 - (pair23Fit || 52)) * HARD_RACE_V2_WEIGHTS.outside_break.pair23_guard +
-      Math.max(0, 68 - (pair24Fit || 52)) * HARD_RACE_V2_WEIGHTS.outside_break.pair24_guard
-  ), 1);
+    1,
+    weightedAverage([
+      { value: normalizedPercent(outsideHeadRisk, 15, 75), weight: 0.45 },
+      { value: normalizedPercent(weightedAverage([
+        { value: lane5?.features?.course_3rentai_rate?.value ?? null, weight: 0.5 },
+        { value: lane6?.features?.course_3rentai_rate?.value ?? null, weight: 0.5 }
+      ]), 20, 75), weight: 0.3 },
+      { value: normalizedPercent(weightedAverage([
+        { value: lane5?.features?.motor_2ren?.value ?? null, weight: 0.5 },
+        { value: lane6?.features?.motor_2ren?.value ?? null, weight: 0.5 }
+      ]), 20, 60), weight: 0.15 },
+      { value: normalizedPercent(clamp(0, 100, 100 - ((pair23Fit || 50) * 0.45 + (pair24Fit || 50) * 0.55)), 0, 100), weight: 0.1 }
+    ]) || 0
+  ), 4);
 
-  const fixedBase = scoreBlend([
-    { value: boat1EscapeTrust, weight: HARD_RACE_V2_WEIGHTS.box_hit.boat1_escape_trust },
-    { value: opponent234Fit, weight: HARD_RACE_V2_WEIGHTS.box_hit.opponent_234_fit },
-    { value: clamp(0, 100, 100 - outsideBreakRisk), weight: HARD_RACE_V2_WEIGHTS.box_hit.outside_guard },
-    { value: clamp(0, 100, 100 - (killEscapeRisk || 50)), weight: HARD_RACE_V2_WEIGHTS.box_hit.kill_escape_guard },
-    { value: clamp(0, 100, 100 - (shapeShuffleRisk || 50)), weight: HARD_RACE_V2_WEIGHTS.box_hit.shape_shuffle_guard }
+  const p1EscapeScore = weightedAverage([
+    { value: lane1BaseStrength, weight: 0.30 },
+    { value: stEdge, weight: 0.18 },
+    { value: startStability, weight: 0.14 },
+    { value: motorBoatEdge, weight: 0.1 },
+    { value: localCourseBias, weight: 0.1 },
+    { value: flSafety, weight: 0.08 },
+    { value: killEscapeRisk === null ? null : 1 - (killEscapeRisk / 100), weight: 0.18 },
+    { value: outsideHeadRisk === null ? null : 1 - (outsideHeadRisk / 100), weight: 0.07 },
+    { value: shapeShuffleRisk === null ? null : 1 - (shapeShuffleRisk / 100), weight: 0.05 }
   ]);
-  const boxHitScore = round(clamp(0, 0.9, ((fixedBase || 0) / 100) * HARD_RACE_V2_WEIGHTS.box_hit.scale), 4);
+  const p1Escape = round(clamp(0, 1, p1EscapeScore ?? 0), 4);
+  const boat1EscapeTrust = round((p1Escape || 0) * 100, 1);
+  const makuriRisk = round(scoreBlend([
+    { value: killEscapeRisk, weight: 0.64 },
+    { value: shapeShuffleRisk, weight: 0.36 }
+  ]), 1);
+  const boxHitScore = round(clamp(
+    0,
+    1,
+    (p1Escape || 0) * clamp(0.45, 1, 0.72 + (normalizedPercent(opponent234Fit, 45, 75) || 0) * 0.22 - (outsideBreakRisk || 0) * 0.14 - ((killEscapeRisk || 0) / 100) * 0.1)
+  ), 4);
 
-  const secondWeights = {
-    2: Math.max(0.01, (fit2 || 35) * 0.55 + (lane2?.features?.sashi_rate?.value || 35) * 0.35 + (lane2?.features?.stability_rate?.value || 45) * 0.1),
-    3: Math.max(0.01, (fit3 || 35) * 0.5 + (lane3?.features?.makuri_rate?.value || 35) * 0.28 + (lane3?.features?.makurisashi_rate?.value || 35) * 0.22),
-    4: Math.max(0.01, (fit4 || 35) * 0.52 + (lane4?.features?.breakout_rate?.value || 35) * 0.26 + (lane4?.features?.stability_rate?.value || 45) * 0.22)
-  };
-  const thirdWeights = {
-    2: Math.max(0.01, (fit2 || 35) * 0.38 + (lane2?.features?.lane_3rentai_rate?.value || 40) * 0.42 + (lane2?.features?.stability_rate?.value || 45) * 0.2),
-    3: Math.max(0.01, (fit3 || 35) * 0.4 + (lane3?.features?.lane_3rentai_rate?.value || 40) * 0.32 + (lane3?.features?.makurisashi_rate?.value || 35) * 0.28),
-    4: Math.max(0.01, (fit4 || 35) * 0.44 + (lane4?.features?.lane_3rentai_rate?.value || 40) * 0.4 + (lane4?.features?.breakout_rate?.value || 35) * 0.16)
+  const secondWeights = normalizeWeights({
+    2: Math.max(0.0001, lane2SecondRemain || 0.0001),
+    3: Math.max(0.0001, lane3AttackRemain || 0.0001),
+    4: Math.max(0.0001, lane4DevelopRemain || 0.0001)
+  });
+  const thirdConditionalWeights = {
+    "2": normalizeWeights({
+      3: Math.max(0.0001, weightedAverage([
+        { value: pair23Fit, weight: 0.44 },
+        { value: fit3, weight: 0.24 },
+        { value: lane3?.features?.lane_3rentai_rate?.value ?? null, weight: 0.18 },
+        { value: lane3?.features?.makurisashi_rate?.value ?? null, weight: 0.14 }
+      ]) || 0.0001),
+      4: Math.max(0.0001, weightedAverage([
+        { value: pair24Fit, weight: 0.48 },
+        { value: fit4, weight: 0.22 },
+        { value: lane4?.features?.lane_3rentai_rate?.value ?? null, weight: 0.18 },
+        { value: lane4?.features?.breakout_rate?.value ?? null, weight: 0.12 }
+      ]) || 0.0001)
+    }),
+    "3": normalizeWeights({
+      2: Math.max(0.0001, weightedAverage([
+        { value: pair23Fit, weight: 0.46 },
+        { value: fit2, weight: 0.22 },
+        { value: lane2?.features?.lane_3rentai_rate?.value ?? null, weight: 0.18 },
+        { value: lane2?.features?.stability_rate?.value ?? null, weight: 0.14 }
+      ]) || 0.0001),
+      4: Math.max(0.0001, weightedAverage([
+        { value: pair34Fit, weight: 0.48 },
+        { value: fit4, weight: 0.22 },
+        { value: lane4?.features?.lane_3rentai_rate?.value ?? null, weight: 0.16 },
+        { value: lane4?.features?.breakout_rate?.value ?? null, weight: 0.14 }
+      ]) || 0.0001)
+    }),
+    "4": normalizeWeights({
+      2: Math.max(0.0001, weightedAverage([
+        { value: pair24Fit, weight: 0.5 },
+        { value: fit2, weight: 0.22 },
+        { value: lane2?.features?.lane_3rentai_rate?.value ?? null, weight: 0.16 },
+        { value: lane2?.features?.sashi_rate?.value ?? null, weight: 0.12 }
+      ]) || 0.0001),
+      3: Math.max(0.0001, weightedAverage([
+        { value: pair34Fit, weight: 0.48 },
+        { value: fit3, weight: 0.2 },
+        { value: lane3?.features?.lane_3rentai_rate?.value ?? null, weight: 0.16 },
+        { value: lane3?.features?.makurisashi_rate?.value ?? null, weight: 0.16 }
+      ]) || 0.0001)
+    })
   };
 
-  const rawMatrix = Object.fromEntries(
-    FIXED_COMBOS.map((combo) => [combo, comboProbability({ combo, secondWeights, thirdWeights, pair23Fit, pair24Fit, pair34Fit })])
-  );
-  const rawTotal = Object.values(rawMatrix).reduce((sum, value) => sum + value, 0);
   const fixed1234Matrix = Object.fromEntries(
-    Object.entries(rawMatrix).map(([combo, raw]) => [combo, round(rawTotal > 0 ? (raw / rawTotal) * boxHitScore : 0, 4)])
+    FIXED_COMBOS.map((combo) => {
+      const [, second, third] = combo.split("-").map((item) => Number(item));
+      const probability = (p1Escape || 0) * (secondWeights[second] || 0) * (thirdConditionalWeights[String(second)]?.[third] || 0);
+      return [combo, round(probability, 4)];
+    })
   );
   const p123 = fixed1234Matrix["1-2-3"] || 0;
   const p124 = fixed1234Matrix["1-2-4"] || 0;
@@ -812,32 +929,18 @@ function computeScores(normalized, sourceSummary) {
     .sort((a, b) => (b.probability || 0) - (a.probability || 0))
     .slice(0, FIXED_TOP4_COUNT);
   const fixedTop4Set = new Set(fixed1234Top4.map((row) => row.combo));
-  const shapeFocusScore = round(fixed1234Top4.reduce((sum, row) => sum + (row.probability || 0), 0), 4);
   const top4Fixed1234Probability = round(fixed1234Top4.reduce((sum, row) => sum + (row.probability || 0), 0), 4);
-  const fixed1234TotalProbability = boxHitScore;
-  const fixed1234ShapeConcentration = round(boxHitScore > 0 ? shapeFocusScore / boxHitScore : null, 4);
-  const strongestShapeShare = round(boxHitScore > 0 ? (fixed1234Top4[0]?.probability || 0) / boxHitScore : null, 4);
-  const top2ShapeShare = round(
-    boxHitScore > 0 ? fixed1234Top4.slice(0, 2).reduce((sum, row) => sum + (row.probability || 0), 0) / boxHitScore : null,
-    4
-  );
-  const lane4CoverageShare = round(boxHitScore > 0 ? (p124 + p142 + p143) / boxHitScore : null, 4);
-  const refinedShapeFocusScore = round(clamp(
-    0,
-    0.95,
-    ((fixed1234ShapeConcentration || 0) * 0.55) +
-      ((strongestShapeShare || 0) * 0.16) +
-      ((top2ShapeShare || 0) * 0.14) +
-      ((lane4CoverageShare || 0) * 0.15)
-  ), 4);
+  const fixed1234TotalProbability = round(Object.values(fixed1234Matrix).reduce((sum, value) => sum + (value || 0), 0), 4);
+  const fixed1234ShapeConcentration = round(fixed1234TotalProbability > 0 ? top4Fixed1234Probability / fixed1234TotalProbability : null, 4);
+  const refinedShapeFocusScore = fixed1234ShapeConcentration;
   const suggestedShape =
     p124 >= p123 && p124 >= p134 && p124 >= p142
       ? "1-24-234"
       : fixed1234Top4[0]?.combo === "1-4-2" || fixed1234Top4[0]?.combo === "1-4-3"
         ? "1-24-234"
         : fixed1234Top4[0]?.combo === "1-3-2" || fixed1234Top4[0]?.combo === "1-3-4"
-        ? "1-34-234"
-        : "1-23-234";
+          ? "1-34-234"
+          : "1-23-234";
 
   const supplementMissing = [];
   for (const lane of normalized?.lanes || []) {
@@ -845,72 +948,103 @@ function computeScores(normalized, sourceSummary) {
       if (lane?.features?.[key]?.value === null) supplementMissing.push(`lane${lane.lane}.${key}`);
     }
   }
-  const dataStatus = supplementMissing.length > 0 ? "PARTIAL" : "OK";
+  const criticalPartialFields = [];
+  if (pair23Resolved.sourceType === "missing" || pair23Resolved.fallbackUsed) criticalPartialFields.push("pair23_fit");
+  if (pair24Resolved.sourceType === "missing" || pair24Resolved.fallbackUsed) criticalPartialFields.push("pair24_fit");
+  if (pair34Resolved.sourceType === "missing" || pair34Resolved.fallbackUsed) criticalPartialFields.push("pair34_fit");
+  if (killEscapeResolved.sourceType === "missing" || killEscapeResolved.fallbackUsed) criticalPartialFields.push("kill_escape_risk");
+  if (shapeShuffleResolved.sourceType === "missing" || shapeShuffleResolved.fallbackUsed) criticalPartialFields.push("shape_shuffle_risk");
+  const unresolvedCriticalFields = [];
+  if (pair23Resolved.sourceType === "missing") unresolvedCriticalFields.push("pair23_fit");
+  if (pair24Resolved.sourceType === "missing") unresolvedCriticalFields.push("pair24_fit");
+  if (pair34Resolved.sourceType === "missing") unresolvedCriticalFields.push("pair34_fit");
+  if (killEscapeResolved.sourceType === "missing") unresolvedCriticalFields.push("kill_escape_risk");
+  if (shapeShuffleResolved.sourceType === "missing") unresolvedCriticalFields.push("shape_shuffle_risk");
+  const dataStatus =
+    unresolvedCriticalFields.length > 0
+      ? "DATA_ERROR"
+      : supplementMissing.length > 0 || criticalPartialFields.length > 0
+        ? "PARTIAL"
+        : "OK";
+  const mode = (p1Escape || 0) < 0.4 || ((killEscapeRisk || 0) / 100) > 0.58 ? "OPEN" : "HARD";
 
   let decision = "SKIP";
   const buy4Thresholds = HARD_RACE_V2_DECISION_THRESHOLDS.buy4;
   const buy6Thresholds = HARD_RACE_V2_DECISION_THRESHOLDS.buy6;
   const borderlineThresholds = HARD_RACE_V2_DECISION_THRESHOLDS.borderline;
-  const falseNegativeBuy6Rescue =
-    (opponent234Fit || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.opponent_234_fit_high &&
-    (outsideBreakRisk || 100) <= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.outside_break_risk_low &&
-    (fixed1234TotalProbability || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.fixed1234_total_probability_high &&
-    (
-      (pair24Fit || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.pair24_fit_high ||
-      (pair34Fit || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.pair34_fit_high ||
-      (p124 || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.p124_high
-    );
   const buy6GatePassed =
-    boat1EscapeTrust >= buy6Thresholds.boat1_escape_trust &&
-    opponent234Fit >= buy6Thresholds.opponent_234_fit &&
-    outsideBreakRisk <= buy6Thresholds.outside_break_risk_max &&
-    fixed1234TotalProbability >= buy6Thresholds.fixed1234_total_probability_min &&
-    boxHitScore >= buy6Thresholds.box_hit_score_min;
+    (p1Escape || 0) >= buy6Thresholds.p1_escape_min &&
+    (fixed1234TotalProbability || 0) >= buy6Thresholds.fixed1234_total_probability_min &&
+    (outsideBreakRisk || 1) <= buy6Thresholds.outside_break_risk_max;
 
   if (
     buy6GatePassed &&
-    top4Fixed1234Probability >= buy4Thresholds.top4_fixed1234_probability_min &&
-    fixed1234ShapeConcentration >= buy4Thresholds.shape_concentration_min &&
-    refinedShapeFocusScore >= buy4Thresholds.shape_focus_score_min
+    (top4Fixed1234Probability || 0) >= buy4Thresholds.top4_fixed1234_probability_min &&
+    (fixed1234ShapeConcentration || 0) >= buy4Thresholds.top4_share_within_fixed1234_min
   ) {
     decision = "BUY-4";
-  } else if (buy6GatePassed || falseNegativeBuy6Rescue) {
+  } else if (buy6GatePassed) {
     decision = "BUY-6";
   } else if (
-    boat1EscapeTrust >= borderlineThresholds.boat1_escape_trust &&
-    opponent234Fit >= borderlineThresholds.opponent_234_fit &&
-    outsideBreakRisk <= borderlineThresholds.outside_break_risk_max &&
-    fixed1234TotalProbability >= borderlineThresholds.fixed1234_total_probability_min &&
-    boxHitScore >= borderlineThresholds.box_hit_score_min
+    (p1Escape || 0) >= borderlineThresholds.p1_escape_min &&
+    (fixed1234TotalProbability || 0) >= borderlineThresholds.fixed1234_total_probability_min
   ) {
     decision = "BORDERLINE";
   }
+  if (mode === "OPEN") decision = "SKIP";
+  if (dataStatus === "DATA_ERROR") decision = "DATA_ERROR";
 
   const actualCombo = normalized?.result?.combo || null;
   const yBox6 = actualCombo && FIXED_COMBOS.includes(actualCombo) ? 1 : 0;
   const yTop4 = actualCombo && fixedTop4Set.has(actualCombo) ? 1 : 0;
   const yBuy6 = yBox6;
   const yBuy4 = yTop4;
-  const falseNegativeCase =
-    actualCombo === "1-2-4" &&
-    (opponent234Fit || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.opponent_234_fit_high &&
-    (outsideBreakRisk || 100) <= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.outside_break_risk_low &&
-    !["BUY-6", "BUY-4"].includes(decision);
+  const falseNegativeCase = false;
+
+  const headCandidates = (normalized?.lanes || [])
+    .map((laneRow) => buildHeadCandidate(laneRow, laneFitScore(laneRow, laneRow.lane <= 4 ? laneRow.lane : 4), venueInsideBias || 62))
+    .sort((a, b) => (b.score || 0) - (a.score || 0));
+  const openHeadCandidates = headCandidates.slice(0, 2);
+  const openOpponentCandidates = (normalized?.lanes || [])
+    .filter((laneRow) => !openHeadCandidates.some((head) => head.lane === laneRow.lane))
+    .map((laneRow) => ({
+      lane: laneRow.lane,
+      score: round(scoreBlend([
+        { value: laneFitScore(laneRow, laneRow.lane <= 4 ? laneRow.lane : 4), weight: 0.34 },
+        { value: laneRow?.features?.course_3rentai_rate?.value ?? null, weight: 0.22 },
+        { value: laneRow?.features?.lane_3rentai_rate?.value ?? null, weight: 0.18 },
+        { value: inverseStScore(laneRow?.features?.avg_st?.value ?? null), weight: 0.14 },
+        { value: laneRow?.features?.motor_2ren?.value ?? null, weight: 0.12 }
+      ]), 1)
+    }))
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, 3);
 
   const decisionReason =
-    dataStatus === "PARTIAL"
-      ? "missing source data"
-      : decision === "BUY-4"
-        ? "box hit and top-4 focus both passed"
-        : decision === "BUY-6"
-          ? falseNegativeBuy6Rescue
-            ? "rescued by strong 1-234-234 hit pattern despite prior skip tendency"
-            : "box-hit gate passed for 1-234-234 six-ticket buy"
-          : decision === "BORDERLINE"
-            ? "box fit is present but buy gate is still short"
-            : "1-234-234 fit is not strong enough";
+    dataStatus === "DATA_ERROR"
+      ? "critical hard-race metrics could not be determined"
+      : mode === "OPEN"
+      ? "Open Race / Chaos Mode triggered"
+      : dataStatus === "PARTIAL"
+        ? "missing source data"
+        : decision === "BUY-4"
+          ? "hard mode top4 concentration passed"
+          : decision === "BUY-6"
+            ? "hard mode six-ticket gate passed"
+            : decision === "BORDERLINE"
+              ? "box fit is present but buy gate is still short"
+              : "1-234-234 fit is not strong enough";
 
-  const missingFields = supplementMissing;
+  const missingFields = [
+    ...supplementMissing,
+    ...criticalPartialFields.map((field) => `computed.${field}`),
+    ...unresolvedCriticalFields.map((field) => `unresolved.${field}`)
+  ];
+  const fallbackSummary = {
+    used: fallbackTracker.used,
+    fields: Object.keys(fallbackTracker.byField),
+    details: fallbackTracker.byField
+  };
   const computed = {
     scores: {
       boat1_escape_trust: boat1EscapeTrust,
@@ -941,10 +1075,27 @@ function computeScores(normalized, sourceSummary) {
       lane2_second_remain: lane2SecondRemain,
       lane3_attack_remain: lane3AttackRemain,
       lane4_develop_remain: lane4DevelopRemain,
-      outside_head_risk_base: round(outsideHead, 2),
-      outside_second_risk_base: round(outsideSecond, 2),
-      outside_third_risk_base: round(outsideThird, 2),
+      p1_escape: p1Escape,
+      p1_escape_score: boat1EscapeTrust,
+      lane1_base_strength: round((lane1BaseStrength || 0) * 100, 1),
+      st_edge: round((stEdge || 0) * 100, 1),
+      start_stability: round((startStability || 0) * 100, 1),
+      motor_boat_edge: round((motorBoatEdge || 0) * 100, 1),
+      local_course_bias: round((localCourseBias || 0) * 100, 1),
+      fl_safety: round((flSafety || 0) * 100, 1),
+      outside_head_risk: round((outsideHeadRisk || 0) / 100, 4),
       supplement_missing_count: supplementMissing.length,
+      top4_share_within_fixed1234: fixed1234ShapeConcentration,
+      second_candidate_scores: {
+        lane2_sashi_nokori: lane2SecondRemain,
+        lane3_seme_nokori: lane3AttackRemain,
+        lane4_tenkai_nokori: lane4DevelopRemain
+      },
+      conditional_probabilities: {
+        p_1st_1: p1Escape,
+        p_2nd_given_1st1: secondWeights,
+        p_3rd_given_1st1_2nd: thirdConditionalWeights
+      },
       evaluation_targets: {
         y_box6: yBox6,
         y_top4: yTop4,
@@ -954,31 +1105,30 @@ function computeScores(normalized, sourceSummary) {
       false_negative_review: {
         actual_combo: actualCombo,
         false_negative_case: falseNegativeCase,
-        matched_pattern: actualCombo === "1-2-4",
-        opponent_234_fit_high: (opponent234Fit || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.opponent_234_fit_high,
-        outside_break_risk_low: (outsideBreakRisk || 100) <= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.outside_break_risk_low,
-        pair24_fit_high: (pair24Fit || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.pair24_fit_high,
-        p_124_high: (p124 || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.p124_high,
-        fixed1234_total_probability_high: (fixed1234TotalProbability || 0) >= HARD_RACE_V2_DECISION_THRESHOLDS.false_negative_review.fixed1234_total_probability_high,
-        buy6_rescue_thresholds_met: buy6GatePassed,
-        buy6_rescue_triggered: falseNegativeBuy6Rescue
+        matched_pattern: actualCombo === "1-2-4"
       },
       boat1_escape_breakdown: {
-        raw_base_trust: baseBoat1EscapeTrust,
-        kill_escape_penalty: boat1KillPenalty,
-        shape_shuffle_penalty: boat1ShapePenalty,
-        outside_head_penalty: outsideHeadBoat1Penalty
+        formula: "0.30*lane1_base_strength + 0.18*st_edge + 0.14*start_stability + 0.10*motor_boat_edge + 0.10*local_course_bias + 0.08*fl_safety - 0.18*kill_escape_risk - 0.07*outside_head_risk - 0.05*shape_shuffle_risk",
+        source_summary: {
+          pair23_fit: summarizeMetricSource("kyoteibiyori/boatrace mix", pair23Resolved),
+          pair24_fit: summarizeMetricSource("kyoteibiyori/boatrace mix", pair24Resolved),
+          pair34_fit: summarizeMetricSource("kyoteibiyori/boatrace mix", pair34Resolved),
+          kill_escape_risk: summarizeMetricSource("kyoteibiyori/boatrace mix", killEscapeResolved),
+          shape_shuffle_risk: summarizeMetricSource("kyoteibiyori/boatrace mix", shapeShuffleResolved)
+        }
       },
       operational_policy: {
-        candidate_decisions: ["BUY-4", "BUY-6", "BORDERLINE"],
-        sort_by: "box_hit_score_desc",
-        adopt_top_n: "3-5"
+        candidate_decisions: ["BUY-4", "BUY-6", "BORDERLINE", "SKIP"],
+        mode
       },
       reviewed_coefficients: {
         weights: HARD_RACE_V2_WEIGHTS,
         thresholds: HARD_RACE_V2_DECISION_THRESHOLDS
       },
-      source_summary: sourceSummary
+      source_summary: {
+        ...(sourceSummary || {}),
+        hard_race_fallback: fallbackSummary
+      }
     },
     fixed1234_matrix: fixed1234Matrix,
     fixed1234_top4: fixed1234Top4,
@@ -987,7 +1137,24 @@ function computeScores(normalized, sourceSummary) {
     decision,
     hard_race_rank: decision === "BUY-4" ? "A" : ["BUY-6", "BORDERLINE"].includes(decision) ? "B" : "SKIP",
     decision_reason: decisionReason,
-    missing_fields: missingFields
+    missing_fields: missingFields,
+    fallback_used: fallbackSummary,
+    head_candidates: openHeadCandidates,
+    head_opponents: openOpponentCandidates,
+    hard_mode: {
+      active: mode === "HARD",
+      p1_escape: p1Escape,
+      fixed1234_total_probability: fixed1234TotalProbability,
+      top4_fixed1234_probability: top4Fixed1234Probability,
+      top4_share_within_fixed1234: fixed1234ShapeConcentration,
+      decision
+    },
+    open_mode: {
+      active: mode === "OPEN",
+      trigger: mode === "OPEN" ? ((p1Escape || 0) < 0.4 ? "P1_escape < 0.40" : "kill_escape_risk > 0.58") : null,
+      head_candidates: openHeadCandidates,
+      head_opponents: openOpponentCandidates
+    }
   };
   return {
     ...computed,
@@ -999,7 +1166,6 @@ function computeScores(normalized, sourceSummary) {
     })
   };
 }
-
 export async function buildHardRace1234Response({ data, date, venueId, raceNo, artifactCollector = null }) {
   const artifactDir = buildArtifactDir({ date, venueId, raceNo });
   const startedAt = Date.now();
@@ -1026,6 +1192,7 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo, a
     normalizedData = normalizeRaceData({ data, resultFetch });
     sourceSummary = buildSourceSummary({ data, normalizedLanes: normalizedData.lanes, resultFetch });
     computed = computeScores(normalizedData, sourceSummary);
+    sourceSummary = buildSourceSummary({ data, normalizedLanes: normalizedData.lanes, resultFetch, fallbackSummary: computed.fallback_used });
     saved = saveArtifacts({
       dir: artifactDir,
       raw: {
@@ -1073,6 +1240,11 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo, a
       decision: "DATA_ERROR",
       decision_reason: String(error?.message || error || "hard race build failed"),
       missing_fields: ["hard_race_build"],
+      fallback_used: { used: false, fields: [], details: {} },
+      head_candidates: [],
+      head_opponents: [],
+      hard_mode: { active: false },
+      open_mode: { active: false },
       missing_field_details: {
         ...missingFieldDetails,
         hard_race_build: {
@@ -1105,6 +1277,7 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo, a
         p_143: { value: null, status: "missing", reason: "not calculated" }
       }
     };
+    sourceSummary = buildSourceSummary({ data, normalizedLanes: normalizedData.lanes, resultFetch, fallbackSummary: computed.fallback_used });
   }
 
   const fetchTimings = {
@@ -1141,6 +1314,11 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo, a
     hard_race_rank: computed.hard_race_rank || null,
     decision: computed.decision,
     decision_reason: computed.decision_reason,
+    fallback_used: computed.fallback_used,
+    head_candidates: computed.head_candidates,
+    head_opponents: computed.head_opponents,
+    hard_mode: computed.hard_mode,
+    open_mode: computed.open_mode,
     missing_fields: computed.missing_fields,
     missing_field_details: computed.missing_field_details || {},
     metric_status: computed.metric_status || {},
@@ -1174,3 +1352,4 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo, a
     }
   };
 }
+
