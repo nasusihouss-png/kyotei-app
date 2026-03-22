@@ -670,6 +670,8 @@ function computeScores(normalized, sourceSummary) {
       fallback_used: { used: false, fields: [], details: {} },
       head_candidates: [],
       head_opponents: [],
+      head_candidate_ranking: [],
+      outside_danger_scenarios: [],
       hard_mode: { active: false },
       open_mode: { active: false }
     };
@@ -1146,6 +1148,12 @@ function computeScores(normalized, sourceSummary) {
     fields: Object.keys(fallbackTracker.byField),
     details: fallbackTracker.byField
   };
+  const outsideDangerScenarios = [
+    { label: "5,6 head", risk: round((outsideHeadRisk || 0) / 100, 4) },
+    { label: "5,6 2nd", risk: outsideSecondRisk },
+    { label: "5,6 3rd", risk: outsideThirdRisk },
+    { label: "box break", risk: outsideBoxBreakRisk }
+  ].sort((a, b) => (b.risk || 0) - (a.risk || 0));
   const raceRankScore = round(scoreBlend([
     { value: (headProbMap[1] || 0) * 100, weight: 0.24 },
     { value: pairSupportFit, weight: 0.26 },
@@ -1299,8 +1307,10 @@ function computeScores(normalized, sourceSummary) {
     operational_pick: operationalPick,
     missing_fields: missingFields,
     fallback_used: fallbackSummary,
+    head_candidate_ranking: headCandidates,
     head_candidates: openHeadCandidates,
     head_opponents: openOpponentCandidates,
+    outside_danger_scenarios: outsideDangerScenarios,
     hard_mode: {
       active: mode === "HARD",
       p1_escape: p1Escape,
@@ -1418,6 +1428,8 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo, a
       fallback_used: { used: false, fields: [], details: {} },
       head_candidates: [],
       head_opponents: [],
+      head_candidate_ranking: [],
+      outside_danger_scenarios: [],
       hard_mode: { active: false },
       open_mode: { active: false },
       missing_field_details: {
@@ -1516,6 +1528,8 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo, a
     fallback_used: computed.fallback_used,
     head_candidates: computed.head_candidates,
     head_opponents: computed.head_opponents,
+    head_candidate_ranking: computed.head_candidate_ranking,
+    outside_danger_scenarios: computed.outside_danger_scenarios,
     hard_mode: computed.hard_mode,
     open_mode: computed.open_mode,
     missing_fields: computed.missing_fields,

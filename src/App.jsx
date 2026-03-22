@@ -1403,7 +1403,9 @@ function finalizeHardRaceContractRow(row = {}) {
     open_mode: row?.open_mode ?? {},
     hard_mode: row?.hard_mode ?? {},
     head_candidates: Array.isArray(row?.head_candidates) ? row.head_candidates : [],
+    head_candidate_ranking: Array.isArray(row?.head_candidate_ranking) ? row.head_candidate_ranking : [],
     head_opponents: Array.isArray(row?.head_opponents) ? row.head_opponents : [],
+    outside_danger_scenarios: Array.isArray(row?.outside_danger_scenarios) ? row.outside_danger_scenarios : [],
     fallback_used: row?.fallback_used ?? {},
     source_summary: row?.source_summary ?? {},
     recommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),
@@ -4694,12 +4696,43 @@ export default function App() {
       const reviewedRows = rows.filter((row) => row.actualResult);
       const hitInsideSix = reviewedRows.filter((row) => row.actualInsideSixTarget === true).length;
       const falseSkips = reviewedRows.filter((row) => row.actualInsideSixTarget === true && row.finalStatus === "SKIP").length;
+      const buy6Rows = reviewedRows.filter((row) => row.buyStyleRecommendation === "BUY-6");
+      const buy4Rows = reviewedRows.filter((row) => row.buyStyleRecommendation === "BUY-4");
+      const borderlinePlusRows = reviewedRows.filter((row) => ["BUY-4", "BUY-6", "BORDERLINE"].includes(String(row?.buyStyleRecommendation || "")));
+      const skipRows = reviewedRows.filter((row) => row.buyStyleRecommendation === "SKIP");
+      const buy6InsideHits = buy6Rows.filter((row) => row.actualInsideSixTarget === true).length;
+      const buy4Top4Hits = buy4Rows.filter((row) => {
+        const actual = String(row?.actualResult || "");
+        return actual && Array.isArray(row?.fixed1234Top4) && row.fixed1234Top4.some((item) => item?.combo === actual);
+      }).length;
+      const borderlinePlusInsideHits = borderlinePlusRows.filter((row) => row.actualInsideSixTarget === true).length;
+      const skipInsideHits = skipRows.filter((row) => row.actualInsideSixTarget === true).length;
+      const headHitRows = reviewedRows.filter((row) => {
+        const actualHead = Number(String(row?.actualResult || "").split("-")[0] || NaN);
+        const ranking = Array.isArray(row?.head_candidate_ranking) && row.head_candidate_ranking.length > 0
+          ? row.head_candidate_ranking
+          : [1, 2, 3, 4, 5, 6].map((lane) => ({ lane, probability: Number(row?.[`head_prob_${lane}`] || 0) }))
+            .sort((a, b) => (b?.probability || 0) - (a?.probability || 0));
+        return actualHead && ranking[0]?.lane === actualHead;
+      }).length;
+      const outsideActualRows = reviewedRows.filter((row) => /(^5-|^6-|-[56]-)/.test(String(row?.actualResult || "")));
+      const outsideDetectedHits = outsideActualRows.filter((row) =>
+        Number(row?.outsideHeadRisk || 0) >= 0.22 ||
+        Number(row?.outside2ndRisk || 0) >= 0.28 ||
+        Number(row?.outsideBoxBreakRisk || 0) >= 0.3
+      ).length;
       setHardRaceCalibration({
         reviewedCount: reviewedRows.length,
         insideSixHitCount: hitInsideSix,
         falseSkipCount: falseSkips,
         insideSixHitRate: reviewedRows.length ? Number(((hitInsideSix / reviewedRows.length) * 100).toFixed(1)) : null,
-        falseSkipRate: reviewedRows.length ? Number(((falseSkips / reviewedRows.length) * 100).toFixed(1)) : null
+        falseSkipRate: reviewedRows.length ? Number(((falseSkips / reviewedRows.length) * 100).toFixed(1)) : null,
+        buy6InsideHitRate: buy6Rows.length ? Number(((buy6InsideHits / buy6Rows.length) * 100).toFixed(1)) : null,
+        buy4Top4HitRate: buy4Rows.length ? Number(((buy4Top4Hits / buy4Rows.length) * 100).toFixed(1)) : null,
+        borderlinePlusInsideHitRate: borderlinePlusRows.length ? Number(((borderlinePlusInsideHits / borderlinePlusRows.length) * 100).toFixed(1)) : null,
+        skipInsideRate: skipRows.length ? Number(((skipInsideHits / skipRows.length) * 100).toFixed(1)) : null,
+        headHitRate: reviewedRows.length ? Number(((headHitRows / reviewedRows.length) * 100).toFixed(1)) : null,
+        outsideDetectionRate: outsideActualRows.length ? Number(((outsideDetectedHits / outsideActualRows.length) * 100).toFixed(1)) : null
       });
     } catch (e) {
       setRankingsError(e.message || "Failed to fetch hard race prediction");
@@ -7042,6 +7075,12 @@ export default function App() {
                   <div className="kv-row"><span>reviewed races</span><strong>{hardRaceCalibration.reviewedCount}</strong></div>
                   <div className="kv-row"><span>inside-six hit rate</span><strong>{formatMaybeNumber(hardRaceCalibration.insideSixHitRate, 1)}%</strong></div>
                   <div className="kv-row"><span>false skip rate</span><strong>{formatMaybeNumber(hardRaceCalibration.falseSkipRate, 1)}%</strong></div>
+                  <div className="kv-row"><span>BUY-6 6点内</span><strong>{formatMaybeNumber(hardRaceCalibration.buy6InsideHitRate, 1)}%</strong></div>
+                  <div className="kv-row"><span>BUY-4 4点内</span><strong>{formatMaybeNumber(hardRaceCalibration.buy4Top4HitRate, 1)}%</strong></div>
+                  <div className="kv-row"><span>BORDERLINE以上 6点内</span><strong>{formatMaybeNumber(hardRaceCalibration.borderlinePlusInsideHitRate, 1)}%</strong></div>
+                  <div className="kv-row"><span>SKIP中 6点内</span><strong>{formatMaybeNumber(hardRaceCalibration.skipInsideRate, 1)}%</strong></div>
+                  <div className="kv-row"><span>1頭一致率</span><strong>{formatMaybeNumber(hardRaceCalibration.headHitRate, 1)}%</strong></div>
+                  <div className="kv-row"><span>5,6侵入検知率</span><strong>{formatMaybeNumber(hardRaceCalibration.outsideDetectionRate, 1)}%</strong></div>
                   <div className="kv-row"><span>visible races</span><strong>{filteredHardRaceRows.length}</strong></div>
                 </div>
               ) : null}
@@ -7126,7 +7165,7 @@ export default function App() {
                           <div className="kv-row"><span>Data status</span><strong>{row.data_status || "-"}</strong></div>
                           <div className="kv-row"><span>Confidence</span><strong>{row.confidence_status || row.data_status || "-"}</strong></div>
                           <div className="kv-row"><span>P1 Head</span><strong>{row.head_prob_1 == null ? "--" : `${formatMaybeNumber(row.head_prob_1 * 100, 1)}%`}</strong></div>
-                          <div className="kv-row"><span>Head ranking</span><strong>{[1,2,3,4,5,6].map((lane) => `#${lane} ${formatMaybeNumber((row[`head_prob_${lane}`] || 0) * 100, 1)}%`).join(" / ")}</strong></div>
+                          <div className="kv-row"><span>Head ranking</span><strong>{Array.isArray(row.head_candidate_ranking) && row.head_candidate_ranking.length > 0 ? row.head_candidate_ranking.map((item) => `${item.lane}号艇 ${formatMaybeNumber((item.probability || 0) * 100, 1)}%`).join(" / ") : [1,2,3,4,5,6].map((lane) => `#${lane} ${formatMaybeNumber((row[`head_prob_${lane}`] || 0) * 100, 1)}%`).join(" / ")}</strong></div>
                           <div className="kv-row"><span>Old decision</span><strong>{row.screeningDebug?.old_decision || "-"}</strong></div>
                           <div className="kv-row"><span>boat1_escape_trust</span><strong>{renderHardRaceMetric(row, "boat1_escape_trust", row.boat1EscapeTrust, (value) => formatMaybeNumber(value, 1))}</strong></div>
                           <div className="kv-row"><span>opponent_234_fit</span><strong>{renderHardRaceMetric(row, "opponent_234_fit", row.opponent234Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
@@ -7166,6 +7205,11 @@ export default function App() {
                           {` / 3着 ${row.outside3rdRisk == null ? "--" : `${formatMaybeNumber(row.outside3rdRisk * 100, 1)}%`}`}
                           {` / box break ${row.outsideBoxBreakRisk == null ? "--" : `${formatMaybeNumber(row.outsideBoxBreakRisk * 100, 1)}%`}`}
                         </p>
+                        {Array.isArray(row.outside_danger_scenarios) && row.outside_danger_scenarios.length > 0 ? (
+                          <p className="muted strategy-line">
+                            Danger ranking: {row.outside_danger_scenarios.map((item) => `${item.label} ${formatMaybeNumber((item.risk || 0) * 100, 1)}%`).join(" / ")}
+                          </p>
+                        ) : null}
                         <p className="muted strategy-line">
                           Fallback used: {row.fallback_used?.used ? `yes (${Array.isArray(row.fallback_used?.fields) ? row.fallback_used.fields.join(", ") : "-"})` : "no"}
                         </p>
