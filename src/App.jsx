@@ -1326,12 +1326,14 @@ function finalizeHardRaceContractRow(row = {}) {
     .map(([field]) => field);
   const allMajorScoresMissing = missingRequiredScores.length === Object.keys(requiredScoreMap).length;
   const inputStatus = row?.status || row?.finalStatus || row?.data_status || "UNAVAILABLE";
+  const apiConfidenceStatus = row?.confidence_status || row?.data_status || null;
   const derivedDataStatus =
-    inputStatus === "DATA_ERROR" || row?.fetchFailed || allMajorScoresMissing
+    apiConfidenceStatus ||
+    (inputStatus === "DATA_ERROR" || row?.fetchFailed || allMajorScoresMissing
       ? "DATA_ERROR"
       : missingRequiredScores.length > 0
         ? "PARTIAL"
-      : "OK";
+      : "OK");
   const normalized = {
     raceNo: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
     race_no: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
@@ -1339,8 +1341,9 @@ function finalizeHardRaceContractRow(row = {}) {
     status: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : inputStatus,
     finalStatus: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.finalStatus || row?.status || "UNAVAILABLE"),
     data_status: derivedDataStatus,
-    hardRaceScore: toFiniteOrNull(row?.hardRaceScore ?? row?.hard_race_score),
-    hard_race_score: toFiniteOrNull(row?.hardRaceScore ?? row?.hard_race_score),
+    confidence_status: row?.confidence_status || derivedDataStatus,
+    hardRaceScore: null,
+    hard_race_score: null,
     boat1AnchorScore: toFiniteOrNull(row?.boat1AnchorScore ?? row?.boat1_anchor_score),
     boat1_anchor_score: toFiniteOrNull(row?.boat1AnchorScore ?? row?.boat1_anchor_score),
     boat1EscapeTrust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
@@ -1355,12 +1358,26 @@ function finalizeHardRaceContractRow(row = {}) {
     pair24_fit: toFiniteOrNull(row?.pair24Fit ?? row?.pair24_fit),
     pair34Fit: toFiniteOrNull(row?.pair34Fit ?? row?.pair34_fit),
     pair34_fit: toFiniteOrNull(row?.pair34Fit ?? row?.pair34_fit),
+    head_prob_1: toFiniteOrNull(row?.headProb1 ?? row?.head_prob_1),
+    head_prob_2: toFiniteOrNull(row?.headProb2 ?? row?.head_prob_2),
+    head_prob_3: toFiniteOrNull(row?.headProb3 ?? row?.head_prob_3),
+    head_prob_4: toFiniteOrNull(row?.headProb4 ?? row?.head_prob_4),
+    head_prob_5: toFiniteOrNull(row?.headProb5 ?? row?.head_prob_5),
+    head_prob_6: toFiniteOrNull(row?.headProb6 ?? row?.head_prob_6),
     killEscapeRisk: toFiniteOrNull(row?.killEscapeRisk ?? row?.kill_escape_risk),
     kill_escape_risk: toFiniteOrNull(row?.killEscapeRisk ?? row?.kill_escape_risk),
     shapeShuffleRisk: toFiniteOrNull(row?.shapeShuffleRisk ?? row?.shape_shuffle_risk),
     shape_shuffle_risk: toFiniteOrNull(row?.shapeShuffleRisk ?? row?.shape_shuffle_risk),
     makuriRisk: toFiniteOrNull(row?.makuriRisk ?? row?.makuri_risk),
     makuri_risk: toFiniteOrNull(row?.makuriRisk ?? row?.makuri_risk),
+    outsideHeadRisk: toFiniteOrNull(row?.outsideHeadRisk ?? row?.outside_head_risk),
+    outside_head_risk: toFiniteOrNull(row?.outsideHeadRisk ?? row?.outside_head_risk),
+    outside2ndRisk: toFiniteOrNull(row?.outside2ndRisk ?? row?.outside_2nd_risk),
+    outside_2nd_risk: toFiniteOrNull(row?.outside2ndRisk ?? row?.outside_2nd_risk),
+    outside3rdRisk: toFiniteOrNull(row?.outside3rdRisk ?? row?.outside_3rd_risk),
+    outside_3rd_risk: toFiniteOrNull(row?.outside3rdRisk ?? row?.outside_3rd_risk),
+    outsideBoxBreakRisk: toFiniteOrNull(row?.outsideBoxBreakRisk ?? row?.outside_box_break_risk),
+    outside_box_break_risk: toFiniteOrNull(row?.outsideBoxBreakRisk ?? row?.outside_box_break_risk),
     outsideBreakRisk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),
     outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),
     boxHitScore: toFiniteOrNull(row?.boxHitScore ?? row?.box_hit_score ?? row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),
@@ -1382,6 +1399,13 @@ function finalizeHardRaceContractRow(row = {}) {
     suggested_shape: row?.suggestedShape ?? row?.suggested_shape ?? null,
     hardRaceRank: row?.hardRaceRank ?? row?.hard_race_rank ?? row?.screeningDebug?.hard_race_rank ?? null,
     hard_race_rank: row?.hardRaceRank ?? row?.hard_race_rank ?? row?.screeningDebug?.hard_race_rank ?? null,
+    operational_pick: row?.operational_pick ?? row?.operationalPick ?? row?.features?.operational_policy?.operational_pick ?? null,
+    open_mode: row?.open_mode ?? {},
+    hard_mode: row?.hard_mode ?? {},
+    head_candidates: Array.isArray(row?.head_candidates) ? row.head_candidates : [],
+    head_opponents: Array.isArray(row?.head_opponents) ? row.head_opponents : [],
+    fallback_used: row?.fallback_used ?? {},
+    source_summary: row?.source_summary ?? {},
     recommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),
     buyStyleRecommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.buyStyleRecommendation || row?.recommendation || "UNAVAILABLE"),
     decision: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.decision || row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),
@@ -1402,9 +1426,19 @@ function finalizeHardRaceContractRow(row = {}) {
     "pair23_fit",
     "pair24_fit",
     "pair34_fit",
+    "head_prob_1",
+    "head_prob_2",
+    "head_prob_3",
+    "head_prob_4",
+    "head_prob_5",
+    "head_prob_6",
     "kill_escape_risk",
     "shape_shuffle_risk",
     "makuri_risk",
+    "outside_head_risk",
+    "outside_2nd_risk",
+    "outside_3rd_risk",
+    "outside_box_break_risk",
     "outside_break_risk",
     "box_hit_score",
     "shape_focus_score",
@@ -1422,7 +1456,7 @@ function finalizeHardRaceContractRow(row = {}) {
   normalized.screeningDebug = {
     fetch_success: normalized.fetchFailed ? false : normalized.screeningDebug.fetch_success ?? normalized.screeningDebug.race_fetch_success ?? true,
     parse_success: normalized.screeningDebug.parse_success ?? !normalized.fetchFailed,
-    score_success: normalized.screeningDebug.score_success ?? (normalized.hardRaceScore !== null),
+    score_success: normalized.screeningDebug.score_success ?? (normalized.boxHitScore !== null),
     missing_fields: normalized.missing_fields,
     missing_required_scores: missingRequiredScores,
     data_status: normalized.data_status,
@@ -1432,7 +1466,7 @@ function finalizeHardRaceContractRow(row = {}) {
   normalized.screeningDebug.response_payload = {
     race_no: normalized.race_no,
     data_status: normalized.data_status,
-    hard_race_score: normalized.hard_race_score,
+    confidence_status: normalized.confidence_status,
     boat1_escape_trust: normalized.boat1_escape_trust,
     opponent_234_fit: normalized.opponent_234_fit,
     pair23_fit: normalized.pair23_fit,
@@ -7025,12 +7059,21 @@ export default function App() {
                           {row.adoptedForOperation ? <span className="status-pill status-hit">TOP採用</span> : null}
                           <span className={`status-pill ${row.hardRaceRank === "A" ? "status-hit" : row.hardRaceRank === "B" ? "status-unsettled" : row.hardRaceRank === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{row.hardRaceRank || "-"}</span>
                           <span className={`status-pill ${row.finalStatus === "BUY" ? "status-hit" : row.finalStatus === "BORDERLINE" ? "status-unsettled" : row.finalStatus === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{row.finalStatus}</span>
-                          <span className={`status-pill ${row.buyStyleRecommendation === "BUY-6" || row.buyStyleRecommendation === "BUY-4" ? "status-hit" : row.buyStyleRecommendation === "BORDERLINE" ? "status-unsettled" : row.buyStyleRecommendation === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{row.buyStyleRecommendation || "-"}</span>
+                          <span className={`status-pill ${row.buyStyleRecommendation === "BUY-6" || row.buyStyleRecommendation === "BUY-4" ? "status-hit" : row.buyStyleRecommendation === "BORDERLINE" ? "status-unsettled" : row.buyStyleRecommendation === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{`${row.buyStyleRecommendation || "-"}${row.confidence_status ? ` (${row.confidence_status})` : ""}`}</span>
                         </div>
                       </div>
+                      <div className="kv-list" style={{ marginBottom: 10 }}>
+                        <div className="kv-row"><span>Rank</span><strong>{row.hardRaceRank || "--"}</strong></div>
+                        <div className="kv-row"><span>Decision</span><strong>{row.buyStyleRecommendation || "--"}</strong></div>
+                        <div className="kv-row"><span>Confidence status</span><strong>{row.confidence_status || row.data_status || "--"}</strong></div>
+                        <div className="kv-row"><span>P1 Head</span><strong>{row.head_prob_1 == null ? "--" : `${formatMaybeNumber(row.head_prob_1 * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>Box Hit 1234</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>Outside Break Risk</span><strong>{row.outsideBoxBreakRisk == null ? "--" : `${formatMaybeNumber(row.outsideBoxBreakRisk * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>Suggested shape</span><strong>{row.suggestedShape || "--"}</strong></div>
+                        <div className="kv-row"><span>Top 2 shapes</span><strong>{Array.isArray(row.fixed1234Top4) && row.fixed1234Top4.length > 0 ? row.fixed1234Top4.slice(0, 2).map((item) => `${item.combo} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "--"}</strong></div>
+                        <div className="kv-row"><span>Operational pick</span><strong>{row.operational_pick || (row.open_mode?.active ? "穴モード" : "見送り")}</strong></div>
+                      </div>
                       <div className="kv-list">
-                        <div className="kv-row"><span>rank</span><strong>{row.hardRaceRank || "--"}</strong></div>
-                        <div className="kv-row"><span>hard_race_score</span><strong>{renderHardRaceMetric(row, "hard_race_score", row.hardRaceScore, (value) => formatMaybeNumber(value, 1))}</strong></div>
                         <div className="kv-row"><span>boat1_escape_trust</span><strong>{renderHardRaceMetric(row, "boat1_escape_trust", row.boat1EscapeTrust, (value) => formatMaybeNumber(value, 1))}</strong></div>
                         <div className="kv-row"><span>opponent_234_fit</span><strong>{renderHardRaceMetric(row, "opponent_234_fit", row.opponent234Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
                         <div className="kv-row"><span>pair23_fit</span><strong>{renderHardRaceMetric(row, "pair23_fit", row.pair23Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
@@ -7040,22 +7083,28 @@ export default function App() {
                         <div className="kv-row"><span>shape_shuffle_risk</span><strong>{renderHardRaceMetric(row, "shape_shuffle_risk", row.shapeShuffleRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
                         <div className="kv-row"><span>makuri_risk</span><strong>{renderHardRaceMetric(row, "makuri_risk", row.makuriRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
                         <div className="kv-row"><span>outside_break_risk</span><strong>{renderHardRaceMetric(row, "outside_break_risk", row.outsideBreakRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
+                        <div className="kv-row"><span>outside_head_risk</span><strong>{row.outsideHeadRisk == null ? "--" : `${formatMaybeNumber(row.outsideHeadRisk * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>outside_2nd_risk</span><strong>{row.outside2ndRisk == null ? "--" : `${formatMaybeNumber(row.outside2ndRisk * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>outside_3rd_risk</span><strong>{row.outside3rdRisk == null ? "--" : `${formatMaybeNumber(row.outside3rdRisk * 100, 1)}%`}</strong></div>
+                        <div className="kv-row"><span>outside_box_break_risk</span><strong>{row.outsideBoxBreakRisk == null ? "--" : `${formatMaybeNumber(row.outsideBoxBreakRisk * 100, 1)}%`}</strong></div>
                         <div className="kv-row"><span>box_hit_score</span><strong>{renderHardRaceMetric(row, "box_hit_score", row.boxHitScore, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
-                        <div className="kv-row"><span>operational pick</span><strong>{row.adoptedForOperation ? `YES (top ${row.adoptionTargetCount})` : row.candidateEligible ? "candidate" : "watch"}</strong></div>
                         <div className="kv-row"><span>shape_focus_score</span><strong>{renderHardRaceMetric(row, "shape_focus_score", row.shapeFocusScore, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                         <div className="kv-row"><span>fixed1234_total_probability</span><strong>{renderHardRaceMetric(row, "fixed1234_total_probability", row.fixed1234TotalProbability, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                         <div className="kv-row"><span>top4_fixed1234_probability</span><strong>{renderHardRaceMetric(row, "top4_fixed1234_probability", row.fixed1234Top4Total, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                         <div className="kv-row"><span>top4_share_within_fixed1234</span><strong>{renderHardRaceMetric(row, "fixed1234_shape_concentration", row.fixed1234ShapeConcentration, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                         <div className="kv-row"><span>data_status</span><strong>{row.data_status || "--"}</strong></div>
+                        <div className="kv-row"><span>confidence_status</span><strong>{row.confidence_status || row.data_status || "--"}</strong></div>
                         <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
                         <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
                       </div>
                       {row.fixed1234Matrix && Object.keys(row.fixed1234Matrix).length > 0 ? (
                         <div className="kv-list" style={{ marginTop: 10 }}>
-                          {["1-2-3", "1-2-4", "1-3-2", "1-3-4", "1-4-2", "1-4-3"].map((combo) => (
+                          {Object.entries(row.fixed1234Matrix)
+                            .sort((a, b) => (b?.[1] || 0) - (a?.[1] || 0))
+                            .map(([combo, probability]) => (
                             <div className="kv-row" key={`matrix-${row.raceNo}-${combo}`}>
                               <span>{combo}</span>
-                              <strong>{formatMaybeNumber((Number(row.fixed1234Matrix?.[combo]) || 0) * 100, 1)}%</strong>
+                              <strong>{formatMaybeNumber((Number(probability) || 0) * 100, 1)}%</strong>
                             </div>
                           ))}
                         </div>
@@ -7075,6 +7124,9 @@ export default function App() {
                           <div className="kv-row"><span>Buy style</span><strong>{row.buyStyleRecommendation || "-"}</strong></div>
                           <div className="kv-row"><span>Decision</span><strong>{row.decision || "-"}</strong></div>
                           <div className="kv-row"><span>Data status</span><strong>{row.data_status || "-"}</strong></div>
+                          <div className="kv-row"><span>Confidence</span><strong>{row.confidence_status || row.data_status || "-"}</strong></div>
+                          <div className="kv-row"><span>P1 Head</span><strong>{row.head_prob_1 == null ? "--" : `${formatMaybeNumber(row.head_prob_1 * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>Head ranking</span><strong>{[1,2,3,4,5,6].map((lane) => `#${lane} ${formatMaybeNumber((row[`head_prob_${lane}`] || 0) * 100, 1)}%`).join(" / ")}</strong></div>
                           <div className="kv-row"><span>Old decision</span><strong>{row.screeningDebug?.old_decision || "-"}</strong></div>
                           <div className="kv-row"><span>boat1_escape_trust</span><strong>{renderHardRaceMetric(row, "boat1_escape_trust", row.boat1EscapeTrust, (value) => formatMaybeNumber(value, 1))}</strong></div>
                           <div className="kv-row"><span>opponent_234_fit</span><strong>{renderHardRaceMetric(row, "opponent_234_fit", row.opponent234Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
@@ -7089,16 +7141,37 @@ export default function App() {
                           <div className="kv-row"><span>shape focus</span><strong>{renderHardRaceMetric(row, "shape_focus_score", row.shapeFocusScore, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                           <div className="kv-row"><span>Top4 share within fixed1234</span><strong>{renderHardRaceMetric(row, "fixed1234_shape_concentration", row.fixed1234ShapeConcentration, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                           <div className="kv-row"><span>outside head risk</span><strong>{row.screeningDebug?.outside_head_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_head_risk || 0) * 100, 1)}%`}</strong></div>
-                          <div className="kv-row"><span>outside 2nd risk</span><strong>{row.screeningDebug?.outside_second_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_second_risk || 0) * 100, 1)}%`}</strong></div>
-                          <div className="kv-row"><span>outside 3rd risk</span><strong>{row.screeningDebug?.outside_third_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_third_risk || 0) * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>outside 2nd risk</span><strong>{row.outside2ndRisk == null ? "--" : `${formatMaybeNumber((row.outside2ndRisk || 0) * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>outside 3rd risk</span><strong>{row.outside3rdRisk == null ? "--" : `${formatMaybeNumber((row.outside3rdRisk || 0) * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>outside box break risk</span><strong>{row.outsideBoxBreakRisk == null ? "--" : `${formatMaybeNumber((row.outsideBoxBreakRisk || 0) * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>Top 4 total</span><strong>{renderHardRaceMetric(row, "top4_fixed1234_probability", row.fixed1234Top4Total, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                           <div className="kv-row"><span>Shape candidates</span><strong>{Array.isArray(row.fixedShapeCandidates) ? row.fixedShapeCandidates.map((item) => `${item.shape} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "-"}</strong></div>
                         </div>
+                        {row.open_mode?.active ? (
+                          <p className="muted strategy-line" style={{ marginTop: 10 }}>
+                            {row.open_mode?.alert_label || "荒れ注意"}: 頭候補 {Array.isArray(row.head_candidates) ? row.head_candidates.map((item) => `${item.lane}号艇 ${formatMaybeNumber((item.probability || item.score / 100) * 100, 1)}%`).join(", ") : "-"}
+                            {" / "}
+                            相手候補 {Array.isArray(row.head_opponents) ? row.head_opponents.map((item) => `${item.lane}号艇 ${formatMaybeNumber(item.score, 1)}`).join(", ") : "-"}
+                          </p>
+                        ) : null}
                         {Array.isArray(row.fixed1234Top4) && row.fixed1234Top4.length > 0 ? (
                           <p className="muted strategy-line" style={{ marginTop: 10 }}>
                             Top 4: {row.fixed1234Top4.map((item) => `${item.combo} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(", ")}
                           </p>
                         ) : null}
+                        <p className="muted strategy-line" style={{ marginTop: 10 }}>
+                          5,6絡み危険シナリオ:
+                          {` 頭 ${row.outsideHeadRisk == null ? "--" : `${formatMaybeNumber(row.outsideHeadRisk * 100, 1)}%`}`}
+                          {` / 2着 ${row.outside2ndRisk == null ? "--" : `${formatMaybeNumber(row.outside2ndRisk * 100, 1)}%`}`}
+                          {` / 3着 ${row.outside3rdRisk == null ? "--" : `${formatMaybeNumber(row.outside3rdRisk * 100, 1)}%`}`}
+                          {` / box break ${row.outsideBoxBreakRisk == null ? "--" : `${formatMaybeNumber(row.outsideBoxBreakRisk * 100, 1)}%`}`}
+                        </p>
+                        <p className="muted strategy-line">
+                          Fallback used: {row.fallback_used?.used ? `yes (${Array.isArray(row.fallback_used?.fields) ? row.fallback_used.fields.join(", ") : "-"})` : "no"}
+                        </p>
+                        <p className="muted strategy-line">
+                          Source summary: {row.source_summary ? JSON.stringify(row.source_summary) : "-"}
+                        </p>
                         {Array.isArray(row.positiveReasons) && row.positiveReasons.length > 0 ? (
                           <p className="muted strategy-line" style={{ marginTop: 10 }}>
                             Positive: {row.positiveReasons.join(", ")}
@@ -7173,8 +7246,8 @@ export default function App() {
                             <div className="kv-row"><span>parse</span><strong>{row.screeningDebug.parse_success ? "ok" : "failed"}</strong></div>
                             <div className="kv-row"><span>core fields</span><strong>{row.screeningDebug.core_fields_ready ? "ready" : "missing"}</strong></div>
                             <div className="kv-row"><span>fetch success</span><strong>{row.screeningDebug.fetch_success ?? row.screeningDebug.race_fetch_success ? "yes" : "no"}</strong></div>
-                            <div className="kv-row"><span>score ready</span><strong>{row.screeningDebug.hard_race_score_ready ? "yes" : "no"}</strong></div>
-                            <div className="kv-row"><span>score success</span><strong>{row.screeningDebug.score_success ?? row.screeningDebug.hard_race_score_ready ? "yes" : "no"}</strong></div>
+                            <div className="kv-row"><span>score ready</span><strong>{row.screeningDebug.score_success ? "yes" : "no"}</strong></div>
+                            <div className="kv-row"><span>score success</span><strong>{row.screeningDebug.score_success ? "yes" : "no"}</strong></div>
                             <div className="kv-row"><span>rank</span><strong>{row.screeningDebug.hard_race_rank || "-"}</strong></div>
                             <div className="kv-row"><span>buy style</span><strong>{row.screeningDebug.buy_style_recommendation || "-"}</strong></div>
                             <div className="kv-row"><span>decision reason</span><strong>{row.screeningDebug.decision_reason || "-"}</strong></div>
