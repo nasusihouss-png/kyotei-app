@@ -1,0 +1,842 @@
+{
+  "scores": {
+    "hard_race_score": 65.8,
+    "boat1_escape_trust": 72.5,
+    "opponent_234_fit": 58.7,
+    "pair23_fit": 62.9,
+    "pair24_fit": 54.5,
+    "pair34_fit": 60.3,
+    "outside_break_risk": 0.3939,
+    "kill_escape_risk": 7.3,
+    "shape_shuffle_risk": 2.9,
+    "makuri_risk": 5.7,
+    "box_hit_score": 0.5288,
+    "shape_focus_score": 0.7211,
+    "fixed1234_total_probability": 0.7253,
+    "top4_fixed1234_probability": 0.523,
+    "fixed1234_shape_concentration": 0.7211,
+    "head_prob_1": 0.1837,
+    "head_prob_2": 0.1899,
+    "head_prob_3": 0.2101,
+    "head_prob_4": 0.1639,
+    "head_prob_5": 0.1347,
+    "head_prob_6": 0.1177,
+    "outside_head_risk": 0.393,
+    "outside_2nd_risk": 0.416,
+    "outside_3rd_risk": 0.2375,
+    "outside_box_break_risk": 0.3919,
+    "p_123": 0.1152,
+    "p_124": 0.0958,
+    "p_132": 0.1503,
+    "p_134": 0.1393,
+    "p_142": 0.1065,
+    "p_143": 0.1182
+  },
+  "features": {
+    "lane2_fit": 56.43,
+    "lane3_fit": 63.12,
+    "lane4_fit": 47.68,
+    "pair_support_fit": 59.3,
+    "race_rank_score": 53.7,
+    "lane2_second_remain": 50.4,
+    "lane3_attack_remain": 69.2,
+    "lane4_develop_remain": 53.7,
+    "p1_escape": 0.7253,
+    "p1_escape_score": 72.5,
+    "lane1_base_strength": 65.5,
+    "st_edge": 68.2,
+    "start_stability": 93.1,
+    "motor_boat_edge": 54.5,
+    "local_course_bias": 46.2,
+    "fl_safety": 100,
+    "outside_head_risk": 0.393,
+    "outside_2nd_risk": 0.416,
+    "outside_3rd_risk": 0.2375,
+    "outside_box_break_risk": 0.3919,
+    "top2_fixed1234_probability": 0.2896,
+    "supplement_missing_count": 42,
+    "top4_share_within_fixed1234": 0.7211,
+    "second_candidate_scores": {
+      "lane2_sashi_nokori": 50.4,
+      "lane3_seme_nokori": 69.2,
+      "lane4_tenkai_nokori": 53.7
+    },
+    "conditional_probabilities": {
+      "p_1st_1": 0.7253,
+      "p_2nd_given_1st1": {
+        "2": 0.2908251586843624,
+        "3": 0.3993075591459896,
+        "4": 0.309867282169648
+      },
+      "p_3rd_given_1st1_2nd": {
+        "2": {
+          "3": 0.5460383143816862,
+          "4": 0.45396168561831385
+        },
+        "3": {
+          "2": 0.5190895442216198,
+          "4": 0.48091045577838026
+        },
+        "4": {
+          "2": 0.4740189150404166,
+          "3": 0.5259810849595833
+        }
+      }
+    },
+    "head_probabilities": {
+      "1": 0.1837,
+      "2": 0.1899,
+      "3": 0.2101,
+      "4": 0.1639,
+      "5": 0.1347,
+      "6": 0.1177
+    },
+    "evaluation_targets": {
+      "y_box6": 0,
+      "y_top4": 0,
+      "y_buy6": 0,
+      "y_buy4": 0
+    },
+    "false_negative_review": {
+      "actual_combo": "3-3-1",
+      "false_negative_case": false,
+      "matched_pattern": false
+    },
+    "boat1_escape_breakdown": {
+      "formula": "0.30*lane1_base_strength + 0.18*st_edge + 0.14*start_stability + 0.10*motor_boat_edge + 0.10*local_course_bias + 0.08*fl_safety - 0.18*kill_escape_risk - 0.07*outside_head_risk - 0.05*shape_shuffle_risk",
+      "source_summary": {
+        "pair23_fit": "kyoteibiyori/boatrace mix",
+        "pair24_fit": "kyoteibiyori/boatrace mix",
+        "pair34_fit": "kyoteibiyori/boatrace mix",
+        "kill_escape_risk": "kyoteibiyori/boatrace mix",
+        "shape_shuffle_risk": "kyoteibiyori/boatrace mix"
+      }
+    },
+    "operational_policy": {
+      "candidate_decisions": [
+        "BUY-4",
+        "BUY-6",
+        "BORDERLINE",
+        "SKIP"
+      ],
+      "mode": "OPEN",
+      "operational_pick": "穴モード"
+    },
+    "decision_gates": {
+      "pair_support_fit": 59.3,
+      "pair_gate_strong": true,
+      "pair_gate_borderline": true,
+      "opponent_234_fit_support": 58.7
+    },
+    "reviewed_coefficients": {
+      "weights": {
+        "opponent_pairs": {
+          "pair23": 0.31,
+          "pair24": 0.34,
+          "pair34": 0.35
+        },
+        "opponent_roles": {
+          "lane2_second": 0.34,
+          "lane3_attack": 0.33,
+          "lane4_develop": 0.33
+        },
+        "combo_multiplier": {
+          "1-2-3": 1.03,
+          "1-2-4": 1.16,
+          "1-3-2": 0.98,
+          "1-3-4": 1.01,
+          "1-4-2": 1.05,
+          "1-4-3": 0.97
+        }
+      },
+      "thresholds": {
+        "buy4": {
+          "p1_escape_min": 0.53,
+          "fixed1234_total_probability_min": 0.31,
+          "outside_break_risk_max": 0.22,
+          "top4_fixed1234_probability_min": 0.25,
+          "top4_share_within_fixed1234_min": 0.7
+        },
+        "buy6": {
+          "p1_escape_min": 0.53,
+          "fixed1234_total_probability_min": 0.31,
+          "outside_break_risk_max": 0.22
+        },
+        "borderline": {
+          "p1_escape_min": 0.45,
+          "fixed1234_total_probability_min": 0.26
+        }
+      }
+    },
+    "source_summary": {
+      "primary": {
+        "source": "boatrace",
+        "racelist": "success",
+        "beforeinfo": "success",
+        "result_fetch_ok": true,
+        "result_available": true
+      },
+      "supplement": {
+        "source": "kyoteibiyori",
+        "fetch_ok": false,
+        "fallback_used": false,
+        "covered_lanes": 0,
+        "failed_fields": [
+          "sashi_rate",
+          "makuri_rate"
+        ],
+        "populated_fields": []
+      },
+      "source_priority": [
+        "boatrace > kyoteibiyori",
+        "official overlap wins",
+        "kyoteibiyori only supplements missing traits",
+        "fallback not needed"
+      ],
+      "hard_race_fallback": {
+        "used": false,
+        "fields": [],
+        "details": {}
+      },
+      "fetch_timings": {}
+    }
+  },
+  "fixed1234_matrix": {
+    "1-2-3": 0.1152,
+    "1-2-4": 0.0958,
+    "1-3-2": 0.1503,
+    "1-3-4": 0.1393,
+    "1-4-2": 0.1065,
+    "1-4-3": 0.1182
+  },
+  "fixed1234_top4": [
+    {
+      "combo": "1-3-2",
+      "probability": 0.1503
+    },
+    {
+      "combo": "1-3-4",
+      "probability": 0.1393
+    },
+    {
+      "combo": "1-4-3",
+      "probability": 0.1182
+    },
+    {
+      "combo": "1-2-3",
+      "probability": 0.1152
+    }
+  ],
+  "suggested_shape": "1-34-234",
+  "data_status": "PARTIAL",
+  "confidence_status": "PARTIAL",
+  "decision": "SKIP",
+  "hard_race_rank": "B",
+  "decision_reason": "Open Race / Chaos Mode triggered",
+  "operational_pick": "穴モード",
+  "missing_fields": [
+    "lane1.sashi_rate",
+    "lane1.makuri_rate",
+    "lane1.makurisashi_rate",
+    "lane1.stability_rate",
+    "lane1.breakout_rate",
+    "lane1.course_3rentai_rate",
+    "lane1.lane_3rentai_rate",
+    "lane2.sashi_rate",
+    "lane2.makuri_rate",
+    "lane2.makurisashi_rate",
+    "lane2.stability_rate",
+    "lane2.breakout_rate",
+    "lane2.course_3rentai_rate",
+    "lane2.lane_3rentai_rate",
+    "lane3.sashi_rate",
+    "lane3.makuri_rate",
+    "lane3.makurisashi_rate",
+    "lane3.stability_rate",
+    "lane3.breakout_rate",
+    "lane3.course_3rentai_rate",
+    "lane3.lane_3rentai_rate",
+    "lane4.sashi_rate",
+    "lane4.makuri_rate",
+    "lane4.makurisashi_rate",
+    "lane4.stability_rate",
+    "lane4.breakout_rate",
+    "lane4.course_3rentai_rate",
+    "lane4.lane_3rentai_rate",
+    "lane5.sashi_rate",
+    "lane5.makuri_rate",
+    "lane5.makurisashi_rate",
+    "lane5.stability_rate",
+    "lane5.breakout_rate",
+    "lane5.course_3rentai_rate",
+    "lane5.lane_3rentai_rate",
+    "lane6.sashi_rate",
+    "lane6.makuri_rate",
+    "lane6.makurisashi_rate",
+    "lane6.stability_rate",
+    "lane6.breakout_rate",
+    "lane6.course_3rentai_rate",
+    "lane6.lane_3rentai_rate"
+  ],
+  "fallback_used": {
+    "used": false,
+    "fields": [],
+    "details": {}
+  },
+  "head_candidates": [
+    {
+      "lane": 3,
+      "probability": 0.2101,
+      "score": 21
+    },
+    {
+      "lane": 2,
+      "probability": 0.1899,
+      "score": 19
+    }
+  ],
+  "head_opponents": [
+    {
+      "lane": 1,
+      "probability": null,
+      "score": 65.9
+    },
+    {
+      "lane": 4,
+      "probability": null,
+      "score": 51
+    },
+    {
+      "lane": 5,
+      "probability": null,
+      "score": 40.5
+    }
+  ],
+  "hard_mode": {
+    "active": false,
+    "p1_escape": 0.7253,
+    "head_prob_1": 0.1837,
+    "fixed1234_total_probability": 0.7253,
+    "top2_fixed1234_probability": 0.2896,
+    "top4_fixed1234_probability": 0.523,
+    "top4_share_within_fixed1234": 0.7211,
+    "decision": "SKIP"
+  },
+  "open_mode": {
+    "active": true,
+    "trigger": "head_prob_1 low",
+    "alert_label": "荒れ注意",
+    "head_candidates": [
+      {
+        "lane": 3,
+        "probability": 0.2101,
+        "score": 21
+      },
+      {
+        "lane": 2,
+        "probability": 0.1899,
+        "score": 19
+      }
+    ],
+    "head_opponents": [
+      {
+        "lane": 1,
+        "probability": null,
+        "score": 65.9
+      },
+      {
+        "lane": 4,
+        "probability": null,
+        "score": 51
+      },
+      {
+        "lane": 5,
+        "probability": null,
+        "score": 40.5
+      }
+    ]
+  },
+  "missing_field_details": {
+    "lane1.sashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "sashi_rate"
+    },
+    "lane1.makuri_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "makuri_rate"
+    },
+    "lane1.makurisashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "makurisashi_rate"
+    },
+    "lane1.late_start_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "late_start_rate"
+    },
+    "lane1.stability_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "stability_rate"
+    },
+    "lane1.breakout_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "breakout_rate"
+    },
+    "lane1.course_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "course_3rentai_rate"
+    },
+    "lane1.lane_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "lane_3rentai_rate"
+    },
+    "lane1.zentsuke_tendency": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 1,
+      "field": "zentsuke_tendency"
+    },
+    "lane2.sashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "sashi_rate"
+    },
+    "lane2.makuri_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "makuri_rate"
+    },
+    "lane2.makurisashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "makurisashi_rate"
+    },
+    "lane2.late_start_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "late_start_rate"
+    },
+    "lane2.stability_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "stability_rate"
+    },
+    "lane2.breakout_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "breakout_rate"
+    },
+    "lane2.course_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "course_3rentai_rate"
+    },
+    "lane2.lane_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "lane_3rentai_rate"
+    },
+    "lane2.zentsuke_tendency": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 2,
+      "field": "zentsuke_tendency"
+    },
+    "lane3.sashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "sashi_rate"
+    },
+    "lane3.makuri_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "makuri_rate"
+    },
+    "lane3.makurisashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "makurisashi_rate"
+    },
+    "lane3.late_start_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "late_start_rate"
+    },
+    "lane3.stability_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "stability_rate"
+    },
+    "lane3.breakout_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "breakout_rate"
+    },
+    "lane3.course_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "course_3rentai_rate"
+    },
+    "lane3.lane_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "lane_3rentai_rate"
+    },
+    "lane3.zentsuke_tendency": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 3,
+      "field": "zentsuke_tendency"
+    },
+    "lane4.sashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "sashi_rate"
+    },
+    "lane4.makuri_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "makuri_rate"
+    },
+    "lane4.makurisashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "makurisashi_rate"
+    },
+    "lane4.late_start_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "late_start_rate"
+    },
+    "lane4.stability_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "stability_rate"
+    },
+    "lane4.breakout_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "breakout_rate"
+    },
+    "lane4.course_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "course_3rentai_rate"
+    },
+    "lane4.lane_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "lane_3rentai_rate"
+    },
+    "lane4.zentsuke_tendency": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 4,
+      "field": "zentsuke_tendency"
+    },
+    "lane5.sashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "sashi_rate"
+    },
+    "lane5.makuri_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "makuri_rate"
+    },
+    "lane5.makurisashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "makurisashi_rate"
+    },
+    "lane5.late_start_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "late_start_rate"
+    },
+    "lane5.stability_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "stability_rate"
+    },
+    "lane5.breakout_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "breakout_rate"
+    },
+    "lane5.course_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "course_3rentai_rate"
+    },
+    "lane5.lane_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "lane_3rentai_rate"
+    },
+    "lane5.zentsuke_tendency": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 5,
+      "field": "zentsuke_tendency"
+    },
+    "lane6.sashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "sashi_rate"
+    },
+    "lane6.makuri_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "makuri_rate"
+    },
+    "lane6.makurisashi_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "makurisashi_rate"
+    },
+    "lane6.late_start_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "late_start_rate"
+    },
+    "lane6.stability_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "stability_rate"
+    },
+    "lane6.breakout_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "breakout_rate"
+    },
+    "lane6.course_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "course_3rentai_rate"
+    },
+    "lane6.lane_3rentai_rate": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "lane_3rentai_rate"
+    },
+    "lane6.zentsuke_tendency": {
+      "reason": "missing source data",
+      "source": null,
+      "lane": 6,
+      "field": "zentsuke_tendency"
+    }
+  },
+  "metric_status": {
+    "hard_race_score": {
+      "value": 65.8,
+      "status": "calculated",
+      "reason": null
+    },
+    "boat1_escape_trust": {
+      "value": 72.5,
+      "status": "calculated",
+      "reason": null
+    },
+    "opponent_234_fit": {
+      "value": 58.7,
+      "status": "calculated",
+      "reason": null
+    },
+    "pair23_fit": {
+      "value": 62.9,
+      "status": "calculated",
+      "reason": null
+    },
+    "pair24_fit": {
+      "value": 54.5,
+      "status": "calculated",
+      "reason": null
+    },
+    "pair34_fit": {
+      "value": 60.3,
+      "status": "calculated",
+      "reason": null
+    },
+    "kill_escape_risk": {
+      "value": 7.3,
+      "status": "calculated",
+      "reason": null
+    },
+    "shape_shuffle_risk": {
+      "value": 2.9,
+      "status": "calculated",
+      "reason": null
+    },
+    "makuri_risk": {
+      "value": 5.7,
+      "status": "calculated",
+      "reason": null
+    },
+    "outside_break_risk": {
+      "value": 0.3939,
+      "status": "calculated",
+      "reason": null
+    },
+    "box_hit_score": {
+      "value": 0.5288,
+      "status": "calculated",
+      "reason": null
+    },
+    "shape_focus_score": {
+      "value": 0.7211,
+      "status": "calculated",
+      "reason": null
+    },
+    "fixed1234_total_probability": {
+      "value": 0.7253,
+      "status": "calculated",
+      "reason": null
+    },
+    "top4_fixed1234_probability": {
+      "value": 0.523,
+      "status": "calculated",
+      "reason": null
+    },
+    "fixed1234_shape_concentration": {
+      "value": 0.7211,
+      "status": "calculated",
+      "reason": null
+    },
+    "head_prob_1": {
+      "value": 0.1837,
+      "status": "calculated",
+      "reason": null
+    },
+    "head_prob_2": {
+      "value": 0.1899,
+      "status": "calculated",
+      "reason": null
+    },
+    "head_prob_3": {
+      "value": 0.2101,
+      "status": "calculated",
+      "reason": null
+    },
+    "head_prob_4": {
+      "value": 0.1639,
+      "status": "calculated",
+      "reason": null
+    },
+    "head_prob_5": {
+      "value": 0.1347,
+      "status": "calculated",
+      "reason": null
+    },
+    "head_prob_6": {
+      "value": 0.1177,
+      "status": "calculated",
+      "reason": null
+    },
+    "outside_head_risk": {
+      "value": 0.393,
+      "status": "calculated",
+      "reason": null
+    },
+    "outside_2nd_risk": {
+      "value": 0.416,
+      "status": "calculated",
+      "reason": null
+    },
+    "outside_3rd_risk": {
+      "value": 0.2375,
+      "status": "calculated",
+      "reason": null
+    },
+    "outside_box_break_risk": {
+      "value": 0.3919,
+      "status": "calculated",
+      "reason": null
+    },
+    "p_123": {
+      "value": 0.1152,
+      "status": "calculated",
+      "reason": null
+    },
+    "p_124": {
+      "value": 0.0958,
+      "status": "calculated",
+      "reason": null
+    },
+    "p_132": {
+      "value": 0.1503,
+      "status": "calculated",
+      "reason": null
+    },
+    "p_134": {
+      "value": 0.1393,
+      "status": "calculated",
+      "reason": null
+    },
+    "p_142": {
+      "value": 0.1065,
+      "status": "calculated",
+      "reason": null
+    },
+    "p_143": {
+      "value": 0.1182,
+      "status": "calculated",
+      "reason": null
+    }
+  }
+}
