@@ -315,11 +315,562 @@
   gap: 10px;
 }
 
+.hardrace-card {
+  gap: 14px;
+  background:
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 28%),
+    rgba(9, 17, 28, 0.74);
+}
+
 .recommend-card-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+
+.hardrace-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.hardrace-kpi-section {
+  display: grid;
+  gap: 12px;
+}
+
+.hardrace-kpi-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.hardrace-kpi-section-head h3 {
+  margin: 4px 0 0;
+  font-size: 1.12rem;
+  color: var(--text-strong);
+}
+
+.hardrace-kpi-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.hardrace-kpi-card {
+  border: 1px solid rgba(122, 162, 207, 0.22);
+  border-radius: 12px;
+  background: rgba(10, 19, 33, 0.72);
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.hardrace-kpi-card span,
+.hardrace-meta-card span,
+.hardrace-danger-card span,
+.hardrace-head-card span,
+.hardrace-summary-main span {
+  color: #9eb4cb;
+  font-size: 0.76rem;
+}
+
+.hardrace-kpi-card strong {
+  font-size: 1.15rem;
+  color: var(--text-strong);
+}
+
+.hardrace-kpi-card.signal-up {
+  border-color: rgba(34, 197, 94, 0.32);
+  background: linear-gradient(180deg, rgba(18, 50, 34, 0.72), rgba(10, 19, 33, 0.8));
+}
+
+.hardrace-kpi-card.signal-down {
+  border-color: rgba(239, 68, 68, 0.32);
+  background: linear-gradient(180deg, rgba(59, 18, 18, 0.72), rgba(10, 19, 33, 0.8));
+}
+
+.hardrace-kpi-topline,
+.hardrace-kpi-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.hardrace-kpi-foot {
+  color: var(--text-sub);
+  font-size: 0.72rem;
+}
+
+.hardrace-kpi-signal {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  border: 1px solid rgba(122, 162, 207, 0.22);
+  background: rgba(14, 27, 44, 0.9);
+  font-size: 0.69rem;
+  font-weight: 700;
+}
+
+.hardrace-kpi-signal.tone-up {
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.hardrace-kpi-signal.tone-flat {
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.hardrace-kpi-signal.tone-down {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.hardrace-kpi-card small,
+.hardrace-meta-card small,
+.hardrace-danger-card small,
+.hardrace-head-card small,
+.hardrace-summary-main small,
+.hardrace-hero-copy {
+  color: var(--text-sub);
+  font-size: 0.76rem;
+}
+
+.hardrace-summary-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.hardrace-summary-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid rgba(122, 162, 207, 0.24);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(13, 24, 42, 0.92), rgba(10, 18, 30, 0.82));
+}
+
+.hardrace-summary-hero.decision-buy-6,
+.hardrace-summary-hero.decision-buy-4 {
+  border-color: rgba(34, 197, 94, 0.34);
+  background: linear-gradient(135deg, rgba(15, 45, 29, 0.88), rgba(10, 18, 30, 0.82));
+}
+
+.hardrace-summary-hero.decision-skip {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: linear-gradient(135deg, rgba(56, 18, 18, 0.88), rgba(10, 18, 30, 0.82));
+}
+
+.hardrace-summary-main {
+  display: grid;
+  gap: 6px;
+}
+
+.hardrace-summary-hero-main {
+  flex: 1;
+}
+
+.hardrace-panel-title {
+  color: #9dc4ff;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
+.hardrace-hero-number {
+  font-size: 2.5rem;
+  line-height: 1;
+  color: var(--text-strong);
+}
+
+.hardrace-hero-layout {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.hardrace-hero-kicker {
+  display: inline-block;
+  margin-bottom: 6px;
+  color: #cfe4ff;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.hardrace-rank-totem {
+  min-width: 94px;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(122, 162, 207, 0.22);
+  background: rgba(10, 19, 33, 0.78);
+  text-align: center;
+}
+
+.hardrace-rank-totem strong {
+  font-size: 1.9rem;
+  color: var(--text-strong);
+}
+
+.hardrace-rank-totem.tone-a {
+  border-color: rgba(34, 197, 94, 0.34);
+}
+
+.hardrace-rank-totem.tone-b {
+  border-color: rgba(245, 158, 11, 0.34);
+}
+
+.hardrace-rank-totem.tone-skip {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.hardrace-partial-alert {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(92, 59, 14, 0.28);
+}
+
+.hardrace-partial-alert strong {
+  color: #fde68a;
+}
+
+.hardrace-badge-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.hardrace-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.hardrace-meta-card {
+  border: 1px solid rgba(122, 162, 207, 0.18);
+  border-radius: 12px;
+  background: rgba(10, 19, 33, 0.7);
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.hardrace-meta-card strong,
+.hardrace-danger-card strong,
+.hardrace-head-card strong {
+  font-size: 1.12rem;
+  color: var(--text-strong);
+}
+
+.hardrace-meta-card.primary {
+  border-color: rgba(245, 158, 11, 0.34);
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.12), rgba(10, 19, 33, 0.72));
+}
+
+.hardrace-summary-metrics {
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+}
+
+.hardrace-head-strip {
+  display: grid;
+  gap: 8px;
+}
+
+.hardrace-head-top3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.hardrace-head-card {
+  border: 1px solid rgba(122, 162, 207, 0.18);
+  border-radius: 12px;
+  background: rgba(10, 19, 33, 0.72);
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.hardrace-head-card.leader {
+  border-color: rgba(34, 197, 94, 0.34);
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.12), rgba(10, 19, 33, 0.72));
+}
+
+.hardrace-fallback-banner {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.36);
+  border-radius: 12px;
+  background: rgba(97, 63, 10, 0.22);
+}
+
+.hardrace-fallback-banner strong {
+  color: #ffd58a;
+}
+
+.hardrace-fallback-banner span {
+  color: #f6e6c5;
+  font-size: 0.82rem;
+}
+
+.hardrace-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.hardrace-block {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(122, 162, 207, 0.18);
+  border-radius: 14px;
+  background: rgba(7, 14, 25, 0.62);
+}
+
+.hardrace-block-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.hardrace-block-head strong {
+  color: var(--text-strong);
+}
+
+.hardrace-block-head p {
+  margin: 4px 0 0;
+}
+
+.hardrace-prob-list {
+  display: grid;
+  gap: 8px;
+}
+
+.hardrace-prob-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid rgba(122, 162, 207, 0.14);
+  border-radius: 12px;
+  background: rgba(10, 19, 33, 0.72);
+}
+
+.hardrace-prob-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hardrace-prob-meta span {
+  color: var(--text-strong);
+  font-weight: 700;
+}
+
+.hardrace-prob-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(51, 65, 85, 0.56);
+  overflow: hidden;
+}
+
+.hardrace-prob-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #38bdf8, #60a5fa);
+}
+
+.hardrace-prob-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hardrace-tag {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: 1px solid rgba(122, 162, 207, 0.22);
+  background: rgba(18, 30, 49, 0.9);
+}
+
+.hardrace-tag.top2 {
+  color: #cffafe;
+  border-color: rgba(34, 211, 238, 0.38);
+}
+
+.hardrace-tag.top4 {
+  color: #dbeafe;
+  border-color: rgba(96, 165, 250, 0.34);
+}
+
+.hardrace-tag.picked {
+  color: #dcfce7;
+  border-color: rgba(34, 197, 94, 0.34);
+}
+
+.hardrace-tag.risk {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.34);
+}
+
+.hardrace-head-ranking-list {
+  display: grid;
+  gap: 8px;
+}
+
+.hardrace-head-rank-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(122, 162, 207, 0.16);
+  background: rgba(10, 19, 33, 0.7);
+}
+
+.hardrace-head-rank-row.top3 {
+  border-color: rgba(96, 165, 250, 0.28);
+}
+
+.hardrace-head-rank-row.leader {
+  border-color: rgba(34, 197, 94, 0.34);
+  background: linear-gradient(180deg, rgba(18, 46, 29, 0.72), rgba(10, 19, 33, 0.8));
+}
+
+.hardrace-head-rank-main,
+.hardrace-head-rank-side,
+.hardrace-danger-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hardrace-head-rank-side {
+  min-width: 160px;
+  justify-content: flex-end;
+}
+
+.hardrace-prob-bar.compact {
+  width: 100px;
+  height: 8px;
+}
+
+.hardrace-danger-grid,
+.hardrace-open-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.hardrace-danger-card {
+  border: 1px solid rgba(122, 162, 207, 0.18);
+  border-radius: 12px;
+  background: rgba(10, 19, 33, 0.7);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.hardrace-danger-card.tone-high,
+.hardrace-meta-card.tone-high {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.16), rgba(54, 17, 17, 0.42));
+}
+
+.hardrace-danger-card.tone-medium,
+.hardrace-meta-card.tone-medium {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.14), rgba(71, 43, 7, 0.38));
+}
+
+.hardrace-danger-card.tone-low,
+.hardrace-meta-card.tone-low {
+  border-color: rgba(34, 197, 94, 0.34);
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.12), rgba(13, 43, 24, 0.36));
+}
+
+.hardrace-danger-card.tone-neutral,
+.hardrace-meta-card.tone-neutral {
+  border-color: rgba(122, 162, 207, 0.22);
+}
+
+.hardrace-danger-level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  border: 1px solid rgba(122, 162, 207, 0.22);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.hardrace-danger-level.tone-high {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.hardrace-danger-level.tone-medium {
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.hardrace-danger-level.tone-low {
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.34);
+}
+
+.hardrace-danger-level.tone-neutral {
+  color: #cbd5e1;
+}
+
+.hardrace-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hardrace-open-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 14px;
+  background: rgba(53, 39, 12, 0.24);
+}
+
+.hardrace-details {
+  border-top: 1px dashed rgba(122, 162, 207, 0.22);
+  padding-top: 10px;
+}
+
+.hardrace-details summary {
+  cursor: pointer;
+  color: #cfe4ff;
+  font-weight: 700;
 }
 
 .ticket-mini-list {
@@ -1716,6 +2267,13 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .hardrace-kpi-grid,
+  .hardrace-meta-grid,
+  .hardrace-section-grid,
+  .hardrace-head-top3 {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
   .premium-hero {
     position: static;
   }
@@ -1762,6 +2320,12 @@ th {
   .premium-layout,
   .controls-grid,
   .metric-grid,
+  .hardrace-kpi-grid,
+  .hardrace-meta-grid,
+  .hardrace-section-grid,
+  .hardrace-head-top3,
+  .hardrace-danger-grid,
+  .hardrace-open-grid,
   .recommend-grid,
   .analysis-grid,
   .stats-grid,
@@ -1780,6 +2344,29 @@ th {
   .summary-inline-meta {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .hardrace-summary-hero,
+  .recommend-card-head,
+  .hardrace-kpi-section-head,
+  .hardrace-hero-layout,
+  .hardrace-head-rank-row,
+  .hardrace-head-rank-side {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .hardrace-badge-stack {
+    justify-content: flex-start;
+  }
+
+  .hardrace-head-rank-side {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .hardrace-prob-bar.compact {
+    width: 100%;
   }
 
   .premium-hero-top,

@@ -1536,6 +1536,274 @@ function renderHardRaceMetric(row, fieldName, value, formatter) {
   return <span title={reason}>-- ({reason})</span>;
 }
 
+function formatPercentDisplay(value, digits = 1) {
+  if (value === null || value === undefined || value === "") return "--";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "--";
+  return `${formatMaybeNumber(num * 100, digits)}%`;
+}
+
+function getHardRaceDecisionClass(decision) {
+  const value = String(decision || "").toUpperCase();
+  if (value === "BUY-6" || value === "BUY-4" || value === "BUY") return "status-hit";
+  if (value === "BORDERLINE") return "status-unsettled";
+  if (value === "DATA_ERROR") return "status-unsettled";
+  return "risk-small";
+}
+
+function getHardRaceRankClass(rank) {
+  const value = String(rank || "").toUpperCase();
+  if (value === "A") return "status-hit";
+  if (value === "B") return "status-unsettled";
+  if (value === "DATA_ERROR") return "status-unsettled";
+  return "risk-small";
+}
+
+function getHardRaceConfidenceClass(status) {
+  const value = String(status || "").toUpperCase();
+  if (value === "OK") return "status-hit";
+  if (value === "PARTIAL") return "risk-small";
+  return "status-miss";
+}
+
+function getHardRaceRiskTone(value, reverse = false) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "tone-neutral";
+  const score = reverse ? 1 - num : num;
+  if (score >= 0.58) return "tone-high";
+  if (score >= 0.32) return "tone-medium";
+  return "tone-low";
+}
+
+function buildHeadRankingRows(row = {}) {
+  const explicitRanking = Array.isArray(row?.head_candidate_ranking) ? row.head_candidate_ranking : [];
+  if (explicitRanking.length > 0) {
+    return explicitRanking
+      .map((item) => ({
+        lane: parseLane(item?.lane),
+        probability: Number(item?.probability)
+      }))
+      .filter((item) => Number.isInteger(item.lane) && Number.isFinite(item.probability))
+      .sort((a, b) => b.probability - a.probability);
+  }
+  return [1, 2, 3, 4, 5, 6]
+    .map((lane) => ({
+      lane,
+      probability: Number(row?.[`head_prob_${lane}`])
+    }))
+    .filter((item) => Number.isFinite(item.probability))
+    .sort((a, b) => b.probability - a.probability);
+}
+
+function buildFixed1234ProbabilityRows(row = {}) {
+  const matrixEntries = safeEntries(row?.fixed1234Matrix)
+    .map(([combo, probability]) => ({
+      combo,
+      probability: Number(probability)
+    }))
+    .filter((item) => item.combo && Number.isFinite(item.probability))
+    .sort((a, b) => b.probability - a.probability);
+  const maxProbability = matrixEntries.length > 0 ? matrixEntries[0].probability : 0;
+  return matrixEntries.map((item, index) => ({
+    ...item,
+    rank: index + 1,
+    width: maxProbability > 0 ? Math.max(10, (item.probability / maxProbability) * 100) : 0,
+    isTop2: index < 2,
+    isTop4: index < 4
+  }));
+}
+
+function getOutsideRiskLead(row = {}) {
+  const scenarios = [
+    { key: "outsideHeadRisk", label: "5,6の頭侵入に注意", value: Number(row?.outsideHeadRisk) },
+    { key: "outside2ndRisk", label: "5,6の2着侵入に注意", value: Number(row?.outside2ndRisk) },
+    { key: "outside3rdRisk", label: "5,6の3着残りに注意", value: Number(row?.outside3rdRisk) },
+    { key: "outsideBoxBreakRisk", label: "1-234-234の箱が崩れやすい", value: Number(row?.outsideBoxBreakRisk) }
+  ].filter((item) => Number.isFinite(item.value));
+  if (scenarios.length === 0) return "外枠危険は未計測";
+  scenarios.sort((a, b) => b.value - a.value);
+  if (scenarios[0].value < 0.18) return "外枠侵入リスクは低め";
+  return scenarios[0].label;
+}
+
+function getHardRaceDecisionCopy(row = {}) {
+  const decision = String(row?.buyStyleRecommendation || row?.decision || "").toUpperCase();
+  if (decision === "BUY-6") return "6点でそのまま買える本線寄り";
+  if (decision === "BUY-4") return "上位4点に絞って買いやすい";
+  if (decision === "BORDERLINE") return "見送り候補だが監視価値あり";
+  if (decision === "SKIP") return "無理に触らない方が良い";
+  if (decision === "DATA_ERROR") return "ソース不足のため判断保留";
+  return "追加確認が必要";
+}
+
+function getHardRaceOperationalLabel(row = {}) {
+  if (row?.open_mode?.active) return row?.open_mode?.alert_label || "穴候補";
+  return row?.operational_pick || "Hard Race運用";
+}
+
+function getHardRaceConfidenceCopy(status) {
+  const value = String(status || "").toUpperCase();
+  if (value === "OK") return "必要ソースが揃っていて通常運用";
+  if (value === "PARTIAL") return "一部推定値を含むので見落とし注意";
+  if (value === "DATA_ERROR") return "判定に必要な材料が不足";
+  return "データ確認中";
+}
+
+function getHardRaceRiskMeta(value, label, copy) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return {
+      label,
+      valueLabel: "--",
+      level: "未計測",
+      tone: "tone-neutral",
+      copy: copy || "まだ評価できていません。"
+    };
+  }
+  if (num >= 0.58) {
+    return {
+      label,
+      valueLabel: formatPercentDisplay(num),
+      level: "高",
+      tone: "tone-high",
+      copy: copy || "崩れやすいので強く警戒。"
+    };
+  }
+  if (num >= 0.32) {
+    return {
+      label,
+      valueLabel: formatPercentDisplay(num),
+      level: "中",
+      tone: "tone-medium",
+      copy: copy || "相手や点数の調整を検討。"
+    };
+  }
+  return {
+    label,
+    valueLabel: formatPercentDisplay(num),
+    level: "低",
+    tone: "tone-low",
+    copy: copy || "現時点では大崩れしにくい水準。"
+  };
+}
+
+function buildHardRaceDangerRows(row = {}) {
+  return [
+    getHardRaceRiskMeta(row?.outsideHeadRisk, "outside_head_risk", "5,6が頭まで突き抜けると1頭前提が崩れます。"),
+    getHardRaceRiskMeta(row?.outside2ndRisk, "outside_2nd_risk", "5,6の2着侵入があると1-23-234系の主力が削られます。"),
+    getHardRaceRiskMeta(row?.outside3rdRisk, "outside_3rd_risk", "5,6が3着に残ると薄い目まで広がります。"),
+    getHardRaceRiskMeta(row?.outsideBoxBreakRisk, "outside_box_break_risk", "1-234-234の箱全体が壊れる危険度です。")
+  ];
+}
+
+function getKpiSignalMeta(value, { target = null, lowerIsBetter = false } = {}) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return { tone: "neutral", label: "No Data", deltaText: "検証待ち" };
+  }
+  if (!Number.isFinite(Number(target))) {
+    return { tone: "neutral", label: "Observed", deltaText: "観測値" };
+  }
+  const diff = lowerIsBetter ? Number(target) - num : num - Number(target);
+  if (diff >= 5) {
+    return { tone: "up", label: "Improving", deltaText: `target ${formatMaybeNumber(Math.abs(diff), 1)}ptクリア` };
+  }
+  if (diff >= 0) {
+    return { tone: "flat", label: "Near Target", deltaText: `target内 +${formatMaybeNumber(Math.abs(diff), 1)}pt` };
+  }
+  return { tone: "down", label: "Needs Work", deltaText: `target差 ${formatMaybeNumber(Math.abs(diff), 1)}pt` };
+}
+
+function buildHardRaceKpiCards(calibration, context = {}) {
+  if (!calibration) return [];
+  return [
+    {
+      key: "buy6InsideHitRate",
+      label: "BUY-6 の6点内的中率",
+      value: calibration.buy6InsideHitRate,
+      numerator: calibration.buy6InsideHits,
+      denominator: calibration.buy6Count,
+      target: 68,
+      lowerIsBetter: false,
+      description: "BUY-6判定のレースが6点セット内に収まった率。"
+    },
+    {
+      key: "buy4Top4HitRate",
+      label: "BUY-4 の4点内的中率",
+      value: calibration.buy4Top4HitRate,
+      numerator: calibration.buy4Top4Hits,
+      denominator: calibration.buy4Count,
+      target: 52,
+      lowerIsBetter: false,
+      description: "BUY-4判定のレースが上位4点に入った率。"
+    },
+    {
+      key: "borderlinePlusInsideHitRate",
+      label: "BORDERLINE以上の6点内",
+      value: calibration.borderlinePlusInsideHitRate,
+      numerator: calibration.borderlinePlusInsideHits,
+      denominator: calibration.borderlinePlusCount,
+      target: 60,
+      lowerIsBetter: false,
+      description: "候補として残したレース全体の安定度。"
+    },
+    {
+      key: "skipInsideRate",
+      label: "SKIPの中で6点内だった率",
+      value: calibration.skipInsideRate,
+      numerator: calibration.skipInsideHits,
+      denominator: calibration.skipCount,
+      target: 18,
+      lowerIsBetter: true,
+      description: "見送りの取りこぼし率。低いほど良いです。"
+    },
+    {
+      key: "headHitRate",
+      label: "1頭一致率",
+      value: calibration.headHitRate,
+      numerator: calibration.headHitCount,
+      denominator: calibration.reviewedCount,
+      target: 55,
+      lowerIsBetter: false,
+      description: "頭候補1位と実着順1着が一致した率。"
+    },
+    {
+      key: "outsideDetectionRate",
+      label: "5,6侵入検知率",
+      value: calibration.outsideDetectionRate,
+      numerator: calibration.outsideDetectedHits,
+      denominator: calibration.outsideActualCount,
+      target: 65,
+      lowerIsBetter: false,
+      description: "5,6絡み実発生レースを危険として拾えた率。"
+    },
+    {
+      key: "insideSixHitRate",
+      label: "全体 6点内率",
+      value: calibration.insideSixHitRate,
+      numerator: calibration.insideSixHitCount,
+      denominator: calibration.reviewedCount,
+      target: 55,
+      lowerIsBetter: false,
+      description: "対象レース全体で6点セットに収まった率。"
+    },
+    {
+      key: "falseSkipRate",
+      label: "SKIP取りこぼし率",
+      value: calibration.falseSkipRate,
+      numerator: calibration.falseSkipCount,
+      denominator: calibration.reviewedCount,
+      target: 12,
+      lowerIsBetter: true,
+      description: "全レビュー中、SKIP判定なのに6点内だった割合。"
+    }
+  ].map((item) => ({
+    ...item,
+    signal: getKpiSignalMeta(item.value, { target: item.target, lowerIsBetter: item.lowerIsBetter }),
+    scopeLabel: context?.scopeLabel || "Selected Slate"
+  }));
+}
+
 function buildHardRaceHistoryMap(rows = [], selectedDate = "", selectedVenueId = null) {
   const map = new Map();
   safeArray(rows).forEach((row) => {
@@ -4722,9 +4990,22 @@ export default function App() {
         Number(row?.outsideBoxBreakRisk || 0) >= 0.3
       ).length;
       setHardRaceCalibration({
+        scopeKey: `selected:${date}:${venueId}`,
+        scopeLabel: `${date} / ${venueName}`,
         reviewedCount: reviewedRows.length,
         insideSixHitCount: hitInsideSix,
         falseSkipCount: falseSkips,
+        buy6Count: buy6Rows.length,
+        buy4Count: buy4Rows.length,
+        borderlinePlusCount: borderlinePlusRows.length,
+        skipCount: skipRows.length,
+        buy6InsideHits,
+        buy4Top4Hits,
+        borderlinePlusInsideHits,
+        skipInsideHits,
+        headHitCount: headHitRows,
+        outsideActualCount: outsideActualRows.length,
+        outsideDetectedHits,
         insideSixHitRate: reviewedRows.length ? Number(((hitInsideSix / reviewedRows.length) * 100).toFixed(1)) : null,
         falseSkipRate: reviewedRows.length ? Number(((falseSkips / reviewedRows.length) * 100).toFixed(1)) : null,
         buy6InsideHitRate: buy6Rows.length ? Number(((buy6InsideHits / buy6Rows.length) * 100).toFixed(1)) : null,
@@ -4745,6 +5026,13 @@ export default function App() {
     if (hardRaceTierFilter === "ALL") return rankingsData;
     return rankingsData.filter((row) => String(row?.hardRaceRank || "UNAVAILABLE") === hardRaceTierFilter);
   }, [rankingsData, hardRaceTierFilter]);
+
+  const hardRaceKpiCards = useMemo(
+    () => buildHardRaceKpiCards(hardRaceCalibration, {
+      scopeLabel: hardRaceCalibration?.scopeLabel || `${date} / ${VENUES.find((v) => v.id === Number(venueId))?.name || "-"}`
+    }),
+    [date, hardRaceCalibration, venueId]
+  );
 
   const onOpenRecommendation = async (row) => {
     const nextVenueId = Number(row?.venueId);
@@ -7071,18 +7359,37 @@ export default function App() {
                 <label><span>Rank filter</span><select value={hardRaceTierFilter} onChange={(e) => setHardRaceTierFilter(e.target.value)}><option value="ALL">All</option><option value="A">A rank</option><option value="B">B rank</option><option value="SKIP">C rank / SKIP</option></select></label>
               </div>
               {hardRaceCalibration?.reviewedCount > 0 ? (
-                <div className="kv-list" style={{ marginBottom: 14 }}>
-                  <div className="kv-row"><span>reviewed races</span><strong>{hardRaceCalibration.reviewedCount}</strong></div>
-                  <div className="kv-row"><span>inside-six hit rate</span><strong>{formatMaybeNumber(hardRaceCalibration.insideSixHitRate, 1)}%</strong></div>
-                  <div className="kv-row"><span>false skip rate</span><strong>{formatMaybeNumber(hardRaceCalibration.falseSkipRate, 1)}%</strong></div>
-                  <div className="kv-row"><span>BUY-6 6点内</span><strong>{formatMaybeNumber(hardRaceCalibration.buy6InsideHitRate, 1)}%</strong></div>
-                  <div className="kv-row"><span>BUY-4 4点内</span><strong>{formatMaybeNumber(hardRaceCalibration.buy4Top4HitRate, 1)}%</strong></div>
-                  <div className="kv-row"><span>BORDERLINE以上 6点内</span><strong>{formatMaybeNumber(hardRaceCalibration.borderlinePlusInsideHitRate, 1)}%</strong></div>
-                  <div className="kv-row"><span>SKIP中 6点内</span><strong>{formatMaybeNumber(hardRaceCalibration.skipInsideRate, 1)}%</strong></div>
-                  <div className="kv-row"><span>1頭一致率</span><strong>{formatMaybeNumber(hardRaceCalibration.headHitRate, 1)}%</strong></div>
-                  <div className="kv-row"><span>5,6侵入検知率</span><strong>{formatMaybeNumber(hardRaceCalibration.outsideDetectionRate, 1)}%</strong></div>
-                  <div className="kv-row"><span>visible races</span><strong>{filteredHardRaceRows.length}</strong></div>
-                </div>
+                <section className="hardrace-kpi-section" style={{ marginBottom: 14 }}>
+                  <div className="hardrace-kpi-section-head">
+                    <div>
+                      <span className="hardrace-panel-title">KPI Board</span>
+                      <h3>継続改善モニタ</h3>
+                      <p className="muted strategy-line">
+                        {hardRaceCalibration.scopeLabel} のレビュー結果を集約。期間切替を後から足しやすいよう、KPI はカード単位で独立させています。
+                      </p>
+                    </div>
+                    <div className="hardrace-kpi-meta">
+                      <span className="status-pill status-hit">{hardRaceCalibration.reviewedCount} reviews</span>
+                      <span className="status-pill status-unsettled">{filteredHardRaceRows.length} visible races</span>
+                    </div>
+                  </div>
+                  <div className="hardrace-kpi-grid">
+                    {hardRaceKpiCards.map((item) => (
+                      <article className={`hardrace-kpi-card signal-${item.signal.tone}`} key={`hardrace-kpi-${item.key}`}>
+                        <div className="hardrace-kpi-topline">
+                          <span>{item.label}</span>
+                          <span className={`hardrace-kpi-signal tone-${item.signal.tone}`}>{item.signal.label}</span>
+                        </div>
+                        <strong>{Number.isFinite(Number(item.value)) ? `${formatMaybeNumber(item.value, 1)}%` : "--"}</strong>
+                        <small>{item.description}</small>
+                        <div className="hardrace-kpi-foot">
+                          <span>{Number.isFinite(Number(item.numerator)) && Number.isFinite(Number(item.denominator)) ? `${item.numerator}/${item.denominator}` : "n/a"}</span>
+                          <span>{item.signal.deltaText}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
               ) : null}
               {rankingsLoading ? (
                 <p className="muted">保守的な hard race 候補をスキャン中...</p>
@@ -7090,72 +7397,241 @@ export default function App() {
                 <p className="muted">対象レースがありません。</p>
               ) : (
                 <div className="recommendation-list">
-                  {filteredHardRaceRows.map((row) => (
-                    <article className="recommend-card" key={`hard-race-${row.raceNo}`}>
+                  {filteredHardRaceRows.map((row) => {
+                    const headRanking = buildHeadRankingRows(row);
+                    const fixed1234Rows = buildFixed1234ProbabilityRows(row);
+                    const top2Shapes = fixed1234Rows.slice(0, 2);
+                    const outsideLead = getOutsideRiskLead(row);
+                    const dangerRows = buildHardRaceDangerRows(row);
+                    const fallbackFields = Array.isArray(row?.fallback_used?.fields) ? row.fallback_used.fields : [];
+                    return (
+                    <article className="recommend-card hardrace-card" key={`hard-race-${row.raceNo}`}>
                       <div className="recommend-card-head">
                         <strong>{row.raceNo}R {row.venueName || "-"}</strong>
                         <div className="row-actions">
                           {row.adoptedForOperation ? <span className="status-pill status-hit">TOP採用</span> : null}
-                          <span className={`status-pill ${row.hardRaceRank === "A" ? "status-hit" : row.hardRaceRank === "B" ? "status-unsettled" : row.hardRaceRank === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{row.hardRaceRank || "-"}</span>
-                          <span className={`status-pill ${row.finalStatus === "BUY" ? "status-hit" : row.finalStatus === "BORDERLINE" ? "status-unsettled" : row.finalStatus === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{row.finalStatus}</span>
-                          <span className={`status-pill ${row.buyStyleRecommendation === "BUY-6" || row.buyStyleRecommendation === "BUY-4" ? "status-hit" : row.buyStyleRecommendation === "BORDERLINE" ? "status-unsettled" : row.buyStyleRecommendation === "DATA_ERROR" ? "status-unsettled" : "risk-small"}`}>{`${row.buyStyleRecommendation || "-"}${row.confidence_status ? ` (${row.confidence_status})` : ""}`}</span>
+                          <span className={`status-pill ${getHardRaceRankClass(row.hardRaceRank)}`}>{`Rank ${row.hardRaceRank || "-"}`}</span>
+                          <span className={`status-pill ${getHardRaceDecisionClass(row.buyStyleRecommendation)}`}>{`Decision ${row.buyStyleRecommendation || "-"}`}</span>
+                          <span className={`status-pill ${getHardRaceConfidenceClass(row.confidence_status || row.data_status)}`}>{`Confidence ${row.confidence_status || row.data_status || "-"}`}</span>
                         </div>
                       </div>
-                      <div className="kv-list" style={{ marginBottom: 10 }}>
-                        <div className="kv-row"><span>Rank</span><strong>{row.hardRaceRank || "--"}</strong></div>
-                        <div className="kv-row"><span>Decision</span><strong>{row.buyStyleRecommendation || "--"}</strong></div>
-                        <div className="kv-row"><span>Confidence status</span><strong>{row.confidence_status || row.data_status || "--"}</strong></div>
-                        <div className="kv-row"><span>P1 Head</span><strong>{row.head_prob_1 == null ? "--" : `${formatMaybeNumber(row.head_prob_1 * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>Box Hit 1234</span><strong>{row.fixed1234TotalProbability == null ? "--" : `${formatMaybeNumber(row.fixed1234TotalProbability * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>Outside Break Risk</span><strong>{row.outsideBoxBreakRisk == null ? "--" : `${formatMaybeNumber(row.outsideBoxBreakRisk * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>Suggested shape</span><strong>{row.suggestedShape || "--"}</strong></div>
-                        <div className="kv-row"><span>Top 2 shapes</span><strong>{Array.isArray(row.fixed1234Top4) && row.fixed1234Top4.length > 0 ? row.fixed1234Top4.slice(0, 2).map((item) => `${item.combo} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "--"}</strong></div>
-                        <div className="kv-row"><span>Operational pick</span><strong>{row.operational_pick || (row.open_mode?.active ? "穴モード" : "見送り")}</strong></div>
-                      </div>
-                      <div className="kv-list">
-                        <div className="kv-row"><span>boat1_escape_trust</span><strong>{renderHardRaceMetric(row, "boat1_escape_trust", row.boat1EscapeTrust, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>opponent_234_fit</span><strong>{renderHardRaceMetric(row, "opponent_234_fit", row.opponent234Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>pair23_fit</span><strong>{renderHardRaceMetric(row, "pair23_fit", row.pair23Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>pair24_fit</span><strong>{renderHardRaceMetric(row, "pair24_fit", row.pair24Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>pair34_fit</span><strong>{renderHardRaceMetric(row, "pair34_fit", row.pair34Fit, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>kill_escape_risk</span><strong>{renderHardRaceMetric(row, "kill_escape_risk", row.killEscapeRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>shape_shuffle_risk</span><strong>{renderHardRaceMetric(row, "shape_shuffle_risk", row.shapeShuffleRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>makuri_risk</span><strong>{renderHardRaceMetric(row, "makuri_risk", row.makuriRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>outside_break_risk</span><strong>{renderHardRaceMetric(row, "outside_break_risk", row.outsideBreakRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                        <div className="kv-row"><span>outside_head_risk</span><strong>{row.outsideHeadRisk == null ? "--" : `${formatMaybeNumber(row.outsideHeadRisk * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>outside_2nd_risk</span><strong>{row.outside2ndRisk == null ? "--" : `${formatMaybeNumber(row.outside2ndRisk * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>outside_3rd_risk</span><strong>{row.outside3rdRisk == null ? "--" : `${formatMaybeNumber(row.outside3rdRisk * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>outside_box_break_risk</span><strong>{row.outsideBoxBreakRisk == null ? "--" : `${formatMaybeNumber(row.outsideBoxBreakRisk * 100, 1)}%`}</strong></div>
-                        <div className="kv-row"><span>box_hit_score</span><strong>{renderHardRaceMetric(row, "box_hit_score", row.boxHitScore, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
-                        <div className="kv-row"><span>shape_focus_score</span><strong>{renderHardRaceMetric(row, "shape_focus_score", row.shapeFocusScore, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
-                        <div className="kv-row"><span>fixed1234_total_probability</span><strong>{renderHardRaceMetric(row, "fixed1234_total_probability", row.fixed1234TotalProbability, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
-                        <div className="kv-row"><span>top4_fixed1234_probability</span><strong>{renderHardRaceMetric(row, "top4_fixed1234_probability", row.fixed1234Top4Total, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
-                        <div className="kv-row"><span>top4_share_within_fixed1234</span><strong>{renderHardRaceMetric(row, "fixed1234_shape_concentration", row.fixed1234ShapeConcentration, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
-                        <div className="kv-row"><span>data_status</span><strong>{row.data_status || "--"}</strong></div>
-                        <div className="kv-row"><span>confidence_status</span><strong>{row.confidence_status || row.data_status || "--"}</strong></div>
-                        <div className="kv-row"><span>suggested shape</span><strong>{row.suggestedShape || (row.finalStatus === "UNAVAILABLE" ? "--" : "SKIP")}</strong></div>
-                        <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
-                      </div>
-                      {row.fixed1234Matrix && Object.keys(row.fixed1234Matrix).length > 0 ? (
-                        <div className="kv-list" style={{ marginTop: 10 }}>
-                          {Object.entries(row.fixed1234Matrix)
-                            .sort((a, b) => (b?.[1] || 0) - (a?.[1] || 0))
-                            .map(([combo, probability]) => (
-                            <div className="kv-row" key={`matrix-${row.raceNo}-${combo}`}>
-                              <span>{combo}</span>
-                              <strong>{formatMaybeNumber((Number(probability) || 0) * 100, 1)}%</strong>
+                      <section className="hardrace-summary-grid">
+                        <div className={`hardrace-summary-hero decision-${String(row.buyStyleRecommendation || "").toLowerCase()}`}>
+                          <div className="hardrace-summary-main hardrace-summary-hero-main">
+                            <span className="hardrace-panel-title">Summary</span>
+                            <div className="hardrace-hero-layout">
+                              <div>
+                                <span className="hardrace-hero-kicker">Decision</span>
+                                <strong className="hardrace-hero-number">{row.buyStyleRecommendation || "--"}</strong>
+                                <span className="hardrace-hero-copy">{getHardRaceDecisionCopy(row)}</span>
+                              </div>
+                              <div className={`hardrace-rank-totem tone-${String(row.hardRaceRank || "-").toLowerCase()}`}>
+                                <span>Rank</span>
+                                <strong>{row.hardRaceRank || "--"}</strong>
+                              </div>
                             </div>
+                            {String(row.confidence_status || row.data_status || "").toUpperCase() === "PARTIAL" ? (
+                              <div className="hardrace-partial-alert">
+                                <strong>PARTIAL</strong>
+                                <span>一部推定値あり。fallback / source_summary の確認を推奨します。</span>
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="hardrace-badge-stack">
+                            <span className={`status-pill ${getHardRaceDecisionClass(row.buyStyleRecommendation)}`}>{row.buyStyleRecommendation || "--"}</span>
+                            <span className={`status-pill ${getHardRaceConfidenceClass(row.confidence_status || row.data_status)}`}>{row.confidence_status || row.data_status || "--"}</span>
+                            <span className={`status-pill ${getHardRaceRankClass(row.hardRaceRank)}`}>{`Rank ${row.hardRaceRank || "-"}`}</span>
+                            {row.open_mode?.active ? <span className="status-pill risk-small">穴候補</span> : null}
+                          </div>
+                        </div>
+                        <div className="hardrace-meta-grid hardrace-summary-metrics">
+                          <article className="hardrace-meta-card primary">
+                            <span>Confidence</span>
+                            <strong>{row.confidence_status || row.data_status || "--"}</strong>
+                            <small>{getHardRaceConfidenceCopy(row.confidence_status || row.data_status)}</small>
+                          </article>
+                          <article className="hardrace-meta-card">
+                            <span>Operational Pick</span>
+                            <strong>{getHardRaceOperationalLabel(row)}</strong>
+                            <small>{row.open_mode?.active ? "Open Race側も確認" : "Hard Race本線で確認"}</small>
+                          </article>
+                          <article className="hardrace-meta-card">
+                            <span>P1 Head</span>
+                            <strong>{formatPercentDisplay(row.head_prob_1)}</strong>
+                            <small>1号艇の頭候補率</small>
+                          </article>
+                          <article className="hardrace-meta-card">
+                            <span>Box Hit 1234</span>
+                            <strong>{formatPercentDisplay(row.fixed1234TotalProbability)}</strong>
+                            <small>6点合計</small>
+                          </article>
+                          <article className={`hardrace-meta-card ${getHardRaceRiskTone(row.outsideBoxBreakRisk)}`}>
+                            <span>Outside Break</span>
+                            <strong>{formatPercentDisplay(row.outsideBoxBreakRisk)}</strong>
+                            <small>{outsideLead}</small>
+                          </article>
+                          <article className="hardrace-meta-card">
+                            <span>Suggested Shape</span>
+                            <strong>{row.suggestedShape || "--"}</strong>
+                            <small>最優先の形</small>
+                          </article>
+                          <article className="hardrace-meta-card">
+                            <span>Top 2 Shapes</span>
+                            <strong>{top2Shapes.length > 0 ? top2Shapes.map((item) => item.combo).join(" / ") : "--"}</strong>
+                            <small>{top2Shapes.length > 0 ? top2Shapes.map((item) => formatPercentDisplay(item.probability)).join(" / ") : "候補なし"}</small>
+                          </article>
+                        </div>
+                        {row.fallback_used?.used || (Array.isArray(row.missing_fields) && row.missing_fields.length > 0) ? (
+                          <div className="hardrace-fallback-banner">
+                            <strong>{row.fallback_used?.used ? "推定値あり" : "missing source data"}</strong>
+                            <span>
+                              {row.fallback_used?.used && fallbackFields.length > 0
+                                ? `fallback: ${fallbackFields.join(", ")}`
+                                : Array.isArray(row.missing_fields) && row.missing_fields.length > 0
+                                  ? `missing: ${row.missing_fields.slice(0, 6).join(", ")}`
+                                  : "source data を確認してください"}
+                            </span>
+                          </div>
+                        ) : null}
+                      </section>
+                      <section className="hardrace-section-grid">
+                        <div className="hardrace-block">
+                          <div className="hardrace-block-head">
+                            <div>
+                              <strong>6点個別確率</strong>
+                              <p className="muted">高い順。Top 2 と Top 4 をバーで確認できます。</p>
+                            </div>
+                          </div>
+                          <div className="hardrace-prob-list">
+                            {fixed1234Rows.length > 0 ? fixed1234Rows.map((item) => (
+                              <div className="hardrace-prob-item" key={`matrix-${row.raceNo}-${item.combo}`}>
+                                <div className="hardrace-prob-meta">
+                                  <strong>{item.combo}</strong>
+                                  <span>{formatPercentDisplay(item.probability)}</span>
+                                </div>
+                                <div className="hardrace-prob-bar">
+                                  <div className="hardrace-prob-fill" style={{ width: `${item.width}%` }} />
+                                </div>
+                                <div className="hardrace-prob-tags">
+                                  {item.isTop2 ? <span className="hardrace-tag top2">Top 2</span> : null}
+                                  {item.isTop4 ? <span className="hardrace-tag top4">Top 4</span> : null}
+                                  {row.suggestedShape === item.combo ? <span className="hardrace-tag picked">Suggested</span> : null}
+                                </div>
+                              </div>
+                            )) : (
+                              <p className="muted">6点個別確率は未計算です。</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="hardrace-block">
+                          <div className="hardrace-block-head">
+                            <div>
+                              <strong>頭候補ランキング</strong>
+                              <p className="muted">上位3艇を強調。1号艇が弱い時の代替頭もすぐ追えます。</p>
+                            </div>
+                          </div>
+                          <div className="hardrace-head-ranking-list">
+                            {headRanking.length > 0 ? headRanking.map((item, index) => (
+                              <article
+                                className={`hardrace-head-rank-row ${index < 3 ? "top3" : ""} ${index === 0 ? "leader" : ""}`}
+                                key={`head-ranking-${row.raceNo}-${item.lane}`}
+                              >
+                                <div className="hardrace-head-rank-main">
+                                  <span className="rank-pill">#{index + 1}</span>
+                                  <strong>{item.lane}号艇</strong>
+                                  {item.lane === 1 && index > 0 ? <span className="hardrace-tag risk">1号艇注意</span> : null}
+                                  {index === 0 && item.lane !== 1 ? <span className="hardrace-tag picked">代替頭本線</span> : null}
+                                </div>
+                                <div className="hardrace-head-rank-side">
+                                  <div className="hardrace-prob-bar compact">
+                                    <div className="hardrace-prob-fill" style={{ width: `${Math.max(10, item.probability * 100)}%` }} />
+                                  </div>
+                                  <span>{formatPercentDisplay(item.probability)}</span>
+                                </div>
+                              </article>
+                            )) : (
+                              <p className="muted">頭候補は未計算です。</p>
+                            )}
+                          </div>
+                        </div>
+                      </section>
+                      <section className="hardrace-block hardrace-danger-block">
+                        <div className="hardrace-block-head">
+                          <div>
+                            <strong>5,6危険シナリオ</strong>
+                            <p className="muted">5,6の2着侵入が危ない時はこのブロックだけで気づけます。</p>
+                          </div>
+                          <span className={`status-pill ${getHardRaceRiskTone(row.outside2ndRisk)}`}>
+                            2着侵入 {formatPercentDisplay(row.outside2ndRisk)}
+                          </span>
+                        </div>
+                        <div className="hardrace-danger-grid">
+                          {dangerRows.map((item) => (
+                            <article className={`hardrace-danger-card ${item.tone}`} key={`danger-${row.raceNo}-${item.label}`}>
+                              <div className="hardrace-danger-headline">
+                                <span>{item.label}</span>
+                                <span className={`hardrace-danger-level ${item.tone}`}>{item.level}</span>
+                              </div>
+                              <strong>{item.valueLabel}</strong>
+                              <small>{item.copy}</small>
+                            </article>
                           ))}
                         </div>
+                        {Array.isArray(row.outside_danger_scenarios) && row.outside_danger_scenarios.length > 0 ? (
+                          <div className="hardrace-chip-row" style={{ marginTop: 8 }}>
+                            {row.outside_danger_scenarios.map((item, index) => (
+                              <span className="chip chip-scenario" key={`outside-scenario-${row.raceNo}-${index}`}>
+                                {item.label} {formatPercentDisplay(item.risk)}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </section>
+                      <section className="hardrace-block">
+                        <div className="hardrace-block-head">
+                          <div>
+                            <strong>source_summary / fallback_used</strong>
+                            <p className="muted">backend の返却値名と表示名を揃えて確認できます。</p>
+                          </div>
+                        </div>
+                        <div className="kv-list">
+                          <div className="kv-row"><span>fallback_used</span><strong>{row.fallback_used?.used ? `yes (${fallbackFields.join(", ") || "-"})` : "no"}</strong></div>
+                          <div className="kv-row"><span>source_summary</span><strong>{row.source_summary ? JSON.stringify(row.source_summary) : "-"}</strong></div>
+                          <div className="kv-row"><span>decision_reason</span><strong>{row.decision_reason || "-"}</strong></div>
+                          <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
+                        </div>
+                      </section>
+                      {row.open_mode?.active ? (
+                        <section className="hardrace-open-panel" style={{ marginTop: 10 }}>
+                          <div className="hardrace-block-head">
+                            <div>
+                              <strong>Open Race / 穴モード</strong>
+                              <p className="muted">Hard Race 本線と切り分けて、荒れ前提の候補だけを見せます。</p>
+                            </div>
+                            <span className="status-pill risk-small">{row.open_mode?.alert_label || "荒れ注意"}</span>
+                          </div>
+                          <div className="hardrace-open-grid">
+                            <article className="hardrace-meta-card">
+                              <span>頭候補 上位2艇</span>
+                              <strong>{Array.isArray(row.head_candidates) && row.head_candidates.length > 0 ? row.head_candidates.slice(0, 2).map((item) => `${item.lane}号艇`).join(" / ") : "--"}</strong>
+                              <small>{Array.isArray(row.head_candidates) && row.head_candidates.length > 0 ? row.head_candidates.slice(0, 2).map((item) => formatPercentDisplay(item.probability || (Number(item.score) / 100))).join(" / ") : "候補なし"}</small>
+                            </article>
+                            <article className="hardrace-meta-card">
+                              <span>相手候補 上位3艇</span>
+                              <strong>{Array.isArray(row.head_opponents) && row.head_opponents.length > 0 ? row.head_opponents.slice(0, 3).map((item) => `${item.lane}号艇`).join(" / ") : "--"}</strong>
+                              <small>{Array.isArray(row.head_opponents) && row.head_opponents.length > 0 ? row.head_opponents.slice(0, 3).map((item) => formatMaybeNumber(item.score, 1)).join(" / ") : "候補なし"}</small>
+                            </article>
+                          </div>
+                        </section>
                       ) : null}
                       <p className="muted strategy-line">{row.expandableReason}</p>
-                      <div className="chip-row" style={{ marginTop: 8 }}>
+                      <div className="hardrace-chip-row" style={{ marginTop: 8 }}>
                         {(Array.isArray(row.topReasons) ? row.topReasons : []).map((reason, index) => (
                           <span className="chip chip-scenario" key={`hard-reason-${row.raceNo}-${index}`}>{reason}</span>
                         ))}
                       </div>
-                      <details style={{ marginTop: 10 }}>
-                        <summary>Why this race</summary>
+                      <details className="hardrace-details" style={{ marginTop: 10 }}>
+                        <summary>生指標を開く</summary>
                         <div className="kv-list" style={{ marginTop: 10 }}>
                           <div className="kv-row"><span>Rank</span><strong>{row.hardRaceRank || "-"}</strong></div>
                           <div className="kv-row"><span>Top shape</span><strong>{row.suggestedShape || "SKIP"}</strong></div>
@@ -7186,13 +7662,6 @@ export default function App() {
                           <div className="kv-row"><span>Top 4 total</span><strong>{renderHardRaceMetric(row, "top4_fixed1234_probability", row.fixed1234Top4Total, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                           <div className="kv-row"><span>Shape candidates</span><strong>{Array.isArray(row.fixedShapeCandidates) ? row.fixedShapeCandidates.map((item) => `${item.shape} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(" / ") : "-"}</strong></div>
                         </div>
-                        {row.open_mode?.active ? (
-                          <p className="muted strategy-line" style={{ marginTop: 10 }}>
-                            {row.open_mode?.alert_label || "荒れ注意"}: 頭候補 {Array.isArray(row.head_candidates) ? row.head_candidates.map((item) => `${item.lane}号艇 ${formatMaybeNumber((item.probability || item.score / 100) * 100, 1)}%`).join(", ") : "-"}
-                            {" / "}
-                            相手候補 {Array.isArray(row.head_opponents) ? row.head_opponents.map((item) => `${item.lane}号艇 ${formatMaybeNumber(item.score, 1)}`).join(", ") : "-"}
-                          </p>
-                        ) : null}
                         {Array.isArray(row.fixed1234Top4) && row.fixed1234Top4.length > 0 ? (
                           <p className="muted strategy-line" style={{ marginTop: 10 }}>
                             Top 4: {row.fixed1234Top4.map((item) => `${item.combo} ${formatMaybeNumber(item.probability * 100, 1)}%`).join(", ")}
@@ -7210,12 +7679,6 @@ export default function App() {
                             Danger ranking: {row.outside_danger_scenarios.map((item) => `${item.label} ${formatMaybeNumber((item.risk || 0) * 100, 1)}%`).join(" / ")}
                           </p>
                         ) : null}
-                        <p className="muted strategy-line">
-                          Fallback used: {row.fallback_used?.used ? `yes (${Array.isArray(row.fallback_used?.fields) ? row.fallback_used.fields.join(", ") : "-"})` : "no"}
-                        </p>
-                        <p className="muted strategy-line">
-                          Source summary: {row.source_summary ? JSON.stringify(row.source_summary) : "-"}
-                        </p>
                         {Array.isArray(row.positiveReasons) && row.positiveReasons.length > 0 ? (
                           <p className="muted strategy-line" style={{ marginTop: 10 }}>
                             Positive: {row.positiveReasons.join(", ")}
@@ -7300,7 +7763,7 @@ export default function App() {
                         ) : null}
                       </details>
                     </article>
-                  ))}
+                  )})}
                 </div>
               )}
             </section>
