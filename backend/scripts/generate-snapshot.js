@@ -35,6 +35,13 @@ Usage:
   npm run snapshot:generate -- --date YYYY-MM-DD --all-venues
   node scripts/generate-snapshot.js --help
 
+PowerShell:
+  Set-Location backend
+  cmd /c npm run snapshot:generate -- --date YYYY-MM-DD --venueId 19 --raceNo 1
+  cmd /c npm run snapshot:generate -- --date YYYY-MM-DD --venueId 19 --all-races
+  cmd /c npm run snapshot:generate -- --date YYYY-MM-DD --all-venues
+  cmd /c npm run snapshot:help
+
 Options:
   --date YYYY-MM-DD
   --venueId NUMBER
@@ -52,6 +59,7 @@ Behavior:
   - venue batch: --date + --venueId + --all-races
   - date batch: --date + --all-venues
   - output includes saved snapshot counts and snapshot index status
+  - PowerShell users can use "cmd /c npm ..." to avoid npm.ps1 execution policy issues
 `);
 }
 
@@ -69,10 +77,15 @@ async function main() {
   const includeKyoteiBiyori = !args["no-kyotei"];
   const forceRefresh = !args["no-force-refresh"];
   const asJson = !!args.json;
+  const modeFlags = [!!args["all-venues"], !!args["all-races"]].filter(Boolean).length;
 
   if (!date) {
     printUsage();
     throw new Error("--date is required");
+  }
+  if (modeFlags > 1) {
+    printUsage();
+    throw new Error("--all-races and --all-venues cannot be used together");
   }
 
   let results;
