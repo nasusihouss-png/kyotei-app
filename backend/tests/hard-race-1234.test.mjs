@@ -62,9 +62,10 @@ assert.ok(Number.isFinite(Number(result.p_134)));
 assert.ok(Number.isFinite(Number(result.p_142)));
 assert.ok(Number.isFinite(Number(result.p_143)));
 assert.equal(Object.keys(result.fixed1234_matrix).length, 6);
+assert.equal(result.fixed1234_shape_concentration, result.top4_fixed1234_probability);
 assert.equal(
-  result.fixed1234_shape_concentration,
-  Number((result.top4_fixed1234_probability / result.fixed1234_total_probability).toFixed(4))
+  Number(Object.values(result.fixed1234_matrix).reduce((sum, value) => sum + Number(value || 0), 0).toFixed(4)),
+  1
 );
 assert.ok(["BUY-4", "BUY-6", "BORDERLINE", "SKIP"].includes(result.decision));
 assert.ok(typeof result.fallback_used?.used === "boolean");

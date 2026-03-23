@@ -1315,6 +1315,19 @@ const HARD_RACE_RANK_THRESHOLDS = {
 };
 
 function finalizeHardRaceContractRow(row = {}) {
+  const normalizeProbabilityMap = (probabilityMap) => {
+    const entries = Object.entries(probabilityMap || {}).map(([key, value]) => [key, Number(value)]);
+    const validEntries = entries.filter(([, value]) => Number.isFinite(value) && value > 0);
+    const total = validEntries.reduce((sum, [, value]) => sum + value, 0);
+    if (!(total > 0)) return Object.fromEntries(entries.map(([key], index) => [key, index === 0 ? 1 : 0]));
+    let running = 0;
+    return Object.fromEntries(validEntries.map(([key, value], index) => {
+      if (index === validEntries.length - 1) return [key, Number(Math.max(0, 1 - running).toFixed(4))];
+      const normalized = Number((value / total).toFixed(4));
+      running += normalized;
+      return [key, normalized];
+    }));
+  };
   const requiredScoreMap = {
     boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
     opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),
@@ -1425,6 +1438,30 @@ function finalizeHardRaceContractRow(row = {}) {
       fetchFailed: !!row?.fetchFailed,
       screeningDebug: row?.screeningDebug && typeof row.screeningDebug === "object" ? row.screeningDebug : {}
     };
+
+  const normalizedHeadProbMap = normalizeProbabilityMap({
+    1: normalized.head_prob_1,
+    2: normalized.head_prob_2,
+    3: normalized.head_prob_3,
+    4: normalized.head_prob_4,
+    5: normalized.head_prob_5,
+    6: normalized.head_prob_6
+  });
+  normalized.head_prob_1 = normalizedHeadProbMap[1] ?? 0;
+  normalized.head_prob_2 = normalizedHeadProbMap[2] ?? 0;
+  normalized.head_prob_3 = normalizedHeadProbMap[3] ?? 0;
+  normalized.head_prob_4 = normalizedHeadProbMap[4] ?? 0;
+  normalized.head_prob_5 = normalizedHeadProbMap[5] ?? 0;
+  normalized.head_prob_6 = normalizedHeadProbMap[6] ?? 0;
+
+  const normalizedFixed1234Matrix = normalizeProbabilityMap(
+    safeEntries(normalized.fixed1234_matrix).reduce((acc, [combo, probability]) => {
+      acc[combo] = probability;
+      return acc;
+    }, {})
+  );
+  normalized.fixed1234Matrix = normalizedFixed1234Matrix;
+  normalized.fixed1234_matrix = normalizedFixed1234Matrix;
 
   const requiredFields = [
     "race_no",
@@ -1620,6 +1657,29 @@ function buildFixed1234ProbabilityRows(row = {}) {
   }));
 }
 
+function getHardRaceStatusAccent(row = {}) {
+  const status = String(row?.confidence_status || row?.data_status || "").toUpperCase();
+  if (status === "READY") return "事前特徴量は完成";
+  if (status === "FALLBACK") return "補完推定あり";
+  if (status === "BROKEN_PIPELINE") return "事前特徴量未生成";
+  if (status === "NOT_ELIGIBLE") return "対象外";
+  return "確認中";
+}
+
+function buildSourceSummaryRows(sourceSummary = {}) {
+  const snapshot = sourceSummary?.snapshot && typeof sourceSummary.snapshot === "object" ? sourceSummary.snapshot : {};
+  const fallback = sourceSummary?.fallback && typeof sourceSummary.fallback === "object" ? sourceSummary.fallback : {};
+  const coverage = snapshot?.coverage && typeof snapshot.coverage === "object" ? snapshot.coverage : {};
+  return [
+    { label: "mode", value: sourceSummary?.mode || "-" },
+    { label: "inference_source", value: sourceSummary?.inference_source || "-" },
+    { label: "snapshot", value: `race:${snapshot?.race || "-"} / entries:${snapshot?.entries || "-"} / feature:${snapshot?.feature_snapshot || "-"}` },
+    { label: "coverage", value: Number.isFinite(Number(coverage?.ready_fields)) && Number.isFinite(Number(coverage?.total_fields)) ? `${coverage.ready_fields}/${coverage.total_fields}` : "-" },
+    { label: "fallback", value: fallback?.used ? `yes (${Array.isArray(fallback?.fields) ? fallback.fields.join(", ") || "-" : "-"})` : "no" },
+    { label: "estimated", value: Array.isArray(sourceSummary?.estimated_fields) && sourceSummary.estimated_fields.length > 0 ? sourceSummary.estimated_fields.join(", ") : "none" }
+  ];
+}
+
 function getOutsideRiskLead(row = {}) {
   const scenarios = [
     { key: "outsideHeadRisk", label: "5,6の頭侵入に注意", value: Number(row?.outsideHeadRisk) },
@@ -1644,8 +1704,8 @@ function getHardRaceDecisionCopy(row = {}) {
 }
 
 function getHardRaceOperationalLabel(row = {}) {
-  if (row?.open_mode?.active) return row?.open_mode?.alert_label || "穴候補";
-  return row?.operational_pick || "Hard Race運用";
+  if (row?.open_mode?.active) return row?.operational_pick || row?.open_mode?.alert_label || "穴候補";
+  return row?.operational_pick || "見送り";
 }
 
 function getHardRaceConfidenceCopy(status) {
@@ -7454,14 +7514,14 @@ export default function App() {
                         </div>
                         <div className="hardrace-meta-grid hardrace-summary-metrics">
                           <article className="hardrace-meta-card primary">
-                            <span>Confidence</span>
+                            <span>Inference</span>
                             <strong>{row.confidence_status || row.data_status || "--"}</strong>
-                            <small>{getHardRaceConfidenceCopy(row.confidence_status || row.data_status)}</small>
+                            <small>{getHardRaceStatusAccent(row)} / {getHardRaceConfidenceCopy(row.confidence_status || row.data_status)}</small>
                           </article>
                           <article className="hardrace-meta-card">
-                            <span>Operational Pick</span>
+                            <span>運用判断</span>
                             <strong>{getHardRaceOperationalLabel(row)}</strong>
-                            <small>{row.open_mode?.active ? "Open Race側も確認" : "Hard Race本線で確認"}</small>
+                            <small>{row.open_mode?.active ? "Open Race寄りの監視レース" : row.buyStyleRecommendation === "SKIP" ? "見送り優先" : "Hard Race本線候補"}</small>
                           </article>
                           <article className="hardrace-meta-card">
                             <span>P1 Head</span>
@@ -7486,7 +7546,7 @@ export default function App() {
                           <article className="hardrace-meta-card">
                             <span>Top 2 Shapes</span>
                             <strong>{top2Shapes.length > 0 ? top2Shapes.map((item) => item.combo).join(" / ") : "--"}</strong>
-                            <small>{top2Shapes.length > 0 ? top2Shapes.map((item) => formatPercentDisplay(item.probability)).join(" / ") : "候補なし"}</small>
+                            <small>{top2Shapes.length > 0 ? top2Shapes.map((item) => formatPercentDisplay(item.probability)).join(" / ") : "候補なし"} / 6点内シェア</small>
                           </article>
                         </div>
                         {row.fallback_used?.used || (Array.isArray(row.missing_fields) && row.missing_fields.length > 0) ? (
@@ -7603,8 +7663,9 @@ export default function App() {
                           </div>
                         </div>
                         <div className="kv-list">
-                          <div className="kv-row"><span>fallback_used</span><strong>{row.fallback_used?.used ? `yes (${fallbackFields.join(", ") || "-"})` : "no"}</strong></div>
-                          <div className="kv-row"><span>source_summary</span><strong>{row.source_summary ? JSON.stringify(row.source_summary) : "-"}</strong></div>
+                          {buildSourceSummaryRows(row.source_summary).map((item) => (
+                            <div className="kv-row" key={`source-summary-${row.raceNo}-${item.label}`}><span>{item.label}</span><strong>{item.value}</strong></div>
+                          ))}
                           <div className="kv-row"><span>decision_reason</span><strong>{row.decision_reason || "-"}</strong></div>
                           <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
                         </div>
@@ -7620,14 +7681,14 @@ export default function App() {
                           </div>
                           <div className="hardrace-open-grid">
                             <article className="hardrace-meta-card">
-                              <span>頭候補 上位2艇</span>
+                              <span>穴頭候補 上位2艇</span>
                               <strong>{Array.isArray(row.head_candidates) && row.head_candidates.length > 0 ? row.head_candidates.slice(0, 2).map((item) => `${item.lane}号艇`).join(" / ") : "--"}</strong>
                               <small>{Array.isArray(row.head_candidates) && row.head_candidates.length > 0 ? row.head_candidates.slice(0, 2).map((item) => formatPercentDisplay(item.probability || (Number(item.score) / 100))).join(" / ") : "候補なし"}</small>
                             </article>
                             <article className="hardrace-meta-card">
                               <span>相手候補 上位3艇</span>
                               <strong>{Array.isArray(row.head_opponents) && row.head_opponents.length > 0 ? row.head_opponents.slice(0, 3).map((item) => `${item.lane}号艇`).join(" / ") : "--"}</strong>
-                              <small>{Array.isArray(row.head_opponents) && row.head_opponents.length > 0 ? row.head_opponents.slice(0, 3).map((item) => formatMaybeNumber(item.score, 1)).join(" / ") : "候補なし"}</small>
+                              <small>{Array.isArray(row.head_opponents) && row.head_opponents.length > 0 ? row.head_opponents.slice(0, 3).map((item) => formatMaybeNumber(item.score, 1)).join(" / ") : "候補なし"} / 追走力</small>
                             </article>
                           </div>
                         </section>

@@ -1,5 +1,4 @@
 ﻿import { Router } from "express";
-import { getRaceData } from "../services/boatrace.js";
 import { saveRace } from "../../save-race.js";
 import { buildRaceFeatures } from "../../feature-engine.js";
 import { rankRace } from "../../score-engine.js";
@@ -2645,35 +2644,12 @@ async function resolveRaceDataForList({
       warning: null
     };
   }
-  if (!allowRefresh) {
-    return {
-      data: null,
-      usedCachedData: false,
-      partialData: true,
-      warning: "snapshot_not_found"
-    };
-  }
-  try {
-    const fresh = await getRaceData({
-      date,
-      venueId,
-      raceNo,
-      timeoutMs: refreshTimeoutMs
-    });
-    return {
-      data: fresh,
-      usedCachedData: false,
-      partialData: false,
-      warning: null
-    };
-  } catch (err) {
-    return {
-      data: null,
-      usedCachedData: false,
-      partialData: true,
-      warning: err?.message || "refresh_failed"
-    };
-  }
+  return {
+    data: null,
+    usedCachedData: false,
+    partialData: true,
+    warning: allowRefresh ? "snapshot_not_found_pure_inference_only" : "snapshot_not_found"
+  };
 }
 
 function loadStartSignatureTrendContext() {
@@ -9552,98 +9528,107 @@ raceRouter.get("/race", async (req, res, next) => {
         raceDataTimeoutMs,
         dataFetchTimeoutMs
       }));
-      if (isHardRaceScreening) {
+      {
         const stored = loadStoredRaceInferenceData({ date, venueId, raceNo });
         if (!stored?.ok) {
-          routeTimings.total_response_ms = Date.now() - routeStartedAt;
-          return res.json({
+          const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });
+          if (!fallback && isHardRaceScreening) {
+            routeTimings.total_response_ms = Date.now() - routeStartedAt;
+            return res.json({
+              source: {
+                mode: "pure_inference",
+                local_inference: true,
+                local_snapshots: {
+                  race_snapshot: false,
+                  entry_snapshot: 0,
+                  feature_snapshot: 0,
+                  prediction_feature_event_snapshot: false,
+                  prediction_log_snapshot: false
+                }
+              },
+              race: {
+                date,
+                venueId: toInt(venueId, null),
+                venueName: null,
+                raceNo: toInt(raceNo, null)
+              },
+              racers: [],
+              hardRace1234: {
+                race_no: toInt(raceNo, null),
+                status: "BROKEN_PIPELINE",
+                data_status: "BROKEN_PIPELINE",
+                confidence_status: "BROKEN_PIPELINE",
+                decision: "SKIP",
+                decision_reason: stored?.message || "precomputed race snapshot was not found",
+                missing_fields: ["snapshot.race"],
+                missing_field_details: {
+                  "snapshot.race": {
+                    reason: stored?.code || "snapshot_not_found",
+                    source: "local_snapshot",
+                    lane: null,
+                    field: "race"
+                  }
+                },
+                source_summary: {
+                  mode: "pure_inference",
+                  inference_source: "local_precomputed_only",
+                  snapshot: {
+                    race: "missing",
+                    entries: "missing",
+                    feature_snapshot: "missing"
+                  },
+                  fallback: {
+                    used: false,
+                    fields: []
+                  },
+                  estimated_fields: []
+                },
+                fetched_urls: {
+                  boatrace: {},
+                  kyoteibiyori: {}
+                },
+                screeningDebug: {
+                  fetch_success: true,
+                  parse_success: false,
+                  score_success: false,
+                  decision_reason: stored?.message || "precomputed race snapshot was not found",
+                  missing_required_scores: ["snapshot.race"]
+                }
+              },
+              routeTiming: routeTimings
+            });
+          }
+          if (!fallback) {
+            const err = new Error(stored?.message || "precomputed race snapshot was not found");
+            err.code = stored?.code || "snapshot_not_found";
+            throw err;
+          }
+          data = {
+            ...fallback,
             source: {
+              ...(fallback.source || {}),
               mode: "pure_inference",
               local_inference: true,
+              official_fetch_status: {
+                mode: "disabled_for_inference",
+                reason: "pure_inference_uses_local_db_snapshot_only"
+              },
+              kyotei_biyori: {
+                mode: "disabled_for_inference",
+                reason: "pure_inference_uses_local_db_snapshot_only"
+              },
               local_snapshots: {
-                race_snapshot: false,
-                entry_snapshot: 0,
+                race_snapshot: true,
+                entry_snapshot: Array.isArray(fallback?.racers) ? fallback.racers.length : 0,
                 feature_snapshot: 0,
                 prediction_feature_event_snapshot: false,
                 prediction_log_snapshot: false
               }
-            },
-            race: {
-              date,
-              venueId: toInt(venueId, null),
-              venueName: null,
-              raceNo: toInt(raceNo, null)
-            },
-            racers: [],
-            hardRace1234: {
-              race_no: toInt(raceNo, null),
-              status: "BROKEN_PIPELINE",
-              data_status: "BROKEN_PIPELINE",
-              confidence_status: "BROKEN_PIPELINE",
-              decision: "SKIP",
-              decision_reason: stored?.message || "precomputed race snapshot was not found",
-              missing_fields: ["snapshot.race"],
-              missing_field_details: {
-                "snapshot.race": {
-                  reason: stored?.code || "snapshot_not_found",
-                  source: "local_snapshot",
-                  lane: null,
-                  field: "race"
-                }
-              },
-              source_summary: {
-                mode: "pure_inference",
-                inference_source: "local_precomputed_only",
-                snapshot: {
-                  race: "missing",
-                  entries: "missing",
-                  feature_snapshot: "missing"
-                },
-                fallback: {
-                  used: false,
-                  fields: []
-                },
-                estimated_fields: []
-              },
-              fetched_urls: {
-                boatrace: {},
-                kyoteibiyori: {}
-              },
-              screeningDebug: {
-                fetch_success: true,
-                parse_success: false,
-                score_success: false,
-                decision_reason: stored?.message || "precomputed race snapshot was not found",
-                missing_required_scores: ["snapshot.race"]
-              }
-            },
-            routeTiming: routeTimings
-          });
+            }
+          };
+        } else {
+          data = stored;
         }
-        data = stored;
-      } else {
-        data = await withTimeout(
-          () => getRaceData({
-            date,
-            venueId,
-            raceNo,
-            forceRefresh,
-            timeoutMs: dataFetchTimeoutMs,
-            screeningProfile: isHardRaceScreening,
-            includeKyoteiBiyori: true,
-            artifactCollector
-          }),
-          {
-            timeoutMs: raceDataTimeoutMs,
-            code: "get_race_data_timeout",
-            where: failureWhere,
-            route: "/api/race",
-            message: "base race data fetch timed out"
-          }
-        );
-        routeTimings.official_base_fetch_ms = toNullableNum(data?.source?.timings?.official_base_fetch_ms);
-        routeTimings.kyoteibiyori_fetch_ms = toNullableNum(data?.source?.timings?.kyoteibiyori_fetch_ms);
-        routeTimings.parsing_ms = toNullableNum(data?.source?.timings?.parsing_ms);
       }
       console.info("[RACE_ROUTE][fetch_success]", JSON.stringify({
         route: "/api/race",
@@ -9774,9 +9759,7 @@ raceRouter.get("/race", async (req, res, next) => {
         message: String(fetchErr?.message || fetchErr)
       }));
       failureWhere = "race.route:loadRaceSnapshotFallback";
-      const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });
-      if (!fallback) throw fetchErr;
-      data = fallback;
+      throw fetchErr;
     }
     const predictionStartedAt = Date.now();
     failureWhere = "race.route:feature_pipeline";

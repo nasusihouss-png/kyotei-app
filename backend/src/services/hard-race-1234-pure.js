@@ -118,6 +118,23 @@ function normalizeProbabilities(probMap) {
   return rounded;
 }
 
+function normalizeComboMatrix(matrix) {
+  const entries = Object.entries(matrix || {}).map(([combo, probability]) => [combo, Math.max(0.000001, Number(probability) || 0.000001)]);
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  if (!(total > 0)) return Object.fromEntries(entries.map(([combo]) => [combo, 0]));
+  const normalized = {};
+  let running = 0;
+  entries.forEach(([combo, value], index) => {
+    if (index === entries.length - 1) {
+      normalized[combo] = round(Math.max(0, 1 - running), 4);
+    } else {
+      normalized[combo] = round(value / total, 4);
+      running += normalized[combo];
+    }
+  });
+  return normalized;
+}
+
 function asField(value, source, missingReason) {
   if (!Number.isFinite(Number(value))) {
     return { value: null, source, missing_reason: missingReason };
@@ -448,19 +465,19 @@ function computeScores(normalized) {
     "4": normalizeWeights({ 2: Math.max(0.0001, pair24.value || 0), 3: Math.max(0.0001, pair34.value || 0) })
   };
 
-  const fixed1234Matrix = {};
+  const fixed1234RawMatrix = {};
   for (const combo of FIXED_COMBOS) {
     const [, second, third] = combo.split("-").map(Number);
-    fixed1234Matrix[combo] = round((headProbMap[1] || 0) * (secondWeights[second] || 0) * (thirdConditionalWeights[String(second)]?.[third] || 0), 4);
+    fixed1234RawMatrix[combo] = round((headProbMap[1] || 0) * (secondWeights[second] || 0) * (thirdConditionalWeights[String(second)]?.[third] || 0), 6);
   }
-
-  const fixed1234TotalProbability = round(Object.values(fixed1234Matrix).reduce((sum, value) => sum + (value || 0), 0), 4);
+  const fixed1234TotalProbability = round(Object.values(fixed1234RawMatrix).reduce((sum, value) => sum + (value || 0), 0), 4);
+  const fixed1234Matrix = normalizeComboMatrix(fixed1234RawMatrix);
   const fixed1234Top4 = Object.entries(fixed1234Matrix)
     .map(([combo, probability]) => ({ combo, probability }))
     .sort((a, b) => b.probability - a.probability)
     .slice(0, 4);
   const top4Fixed1234Probability = round(fixed1234Top4.reduce((sum, row) => sum + row.probability, 0), 4);
-  const fixed1234ShapeConcentration = round(fixed1234TotalProbability > 0 ? top4Fixed1234Probability / fixed1234TotalProbability : null, 4);
+  const fixed1234ShapeConcentration = round(top4Fixed1234Probability, 4);
   const boxHitScore = fixed1234TotalProbability;
   const shapeFocusScore = fixed1234ShapeConcentration;
 
@@ -545,7 +562,9 @@ function computeScores(normalized) {
       conditional_probabilities: {
         p_1st_1: round(headProbMap[1], 4),
         p_2nd_given_1st1: secondWeights,
-        p_3rd_given_1st1_2nd: thirdConditionalWeights
+        p_3rd_given_1st1_2nd: thirdConditionalWeights,
+        fixed1234_raw_total_probability: fixed1234TotalProbability,
+        fixed1234_normalized_matrix: fixed1234Matrix
       },
       evaluation_targets: {
         y_box6: 0,
@@ -577,7 +596,12 @@ function computeScores(normalized) {
                 ? "boat 1 head remains live but shape concentration is still modest"
                 : "outside pressure or low 1-head probability keeps this out of hard-race range",
     hard_race_rank: hardRaceRank,
-    operational_pick: decision === "BUY-4" || decision === "BUY-6" ? "Hard Race運用" : "見送り",
+    operational_pick:
+      decision === "BUY-4" || decision === "BUY-6"
+        ? "買う"
+        : decision === "BORDERLINE"
+          ? "穴候補"
+          : "見送り",
     fallback_used: fallbackTracker,
     head_candidate_ranking: Object.entries(headProbMap).map(([lane, probability]) => ({ lane: Number(lane), probability, score: round(probability * 100, 1) })).sort((a, b) => b.probability - a.probability),
     head_candidates: Object.entries(headProbMap).map(([lane, probability]) => ({ lane: Number(lane), probability, score: round(probability * 100, 1) })).sort((a, b) => b.probability - a.probability).slice(0, 2),
