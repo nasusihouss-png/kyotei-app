@@ -1329,17 +1329,23 @@ function finalizeHardRaceContractRow(row = {}) {
   const apiConfidenceStatus = row?.confidence_status || row?.data_status || null;
   const derivedDataStatus =
     apiConfidenceStatus ||
-    (inputStatus === "DATA_ERROR" || row?.fetchFailed || allMajorScoresMissing
-      ? "DATA_ERROR"
-      : missingRequiredScores.length > 0
-        ? "PARTIAL"
-      : "OK");
+    (inputStatus === "BROKEN_PIPELINE" || allMajorScoresMissing
+      ? "BROKEN_PIPELINE"
+      : inputStatus === "NOT_ELIGIBLE"
+        ? "NOT_ELIGIBLE"
+        : inputStatus === "FALLBACK"
+          ? "FALLBACK"
+          : row?.fetchFailed
+            ? "BROKEN_PIPELINE"
+            : missingRequiredScores.length > 0
+              ? "FALLBACK"
+              : "READY");
   const normalized = {
     raceNo: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
     race_no: Number.isFinite(Number(row?.raceNo ?? row?.race_no)) ? Number(row?.raceNo ?? row?.race_no) : null,
     venueName: row?.venueName || "-",
-    status: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : inputStatus,
-    finalStatus: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.finalStatus || row?.status || "UNAVAILABLE"),
+    status: derivedDataStatus,
+    finalStatus: derivedDataStatus,
     data_status: derivedDataStatus,
     confidence_status: row?.confidence_status || derivedDataStatus,
     hardRaceScore: null,
@@ -1408,9 +1414,9 @@ function finalizeHardRaceContractRow(row = {}) {
     outside_danger_scenarios: Array.isArray(row?.outside_danger_scenarios) ? row.outside_danger_scenarios : [],
     fallback_used: row?.fallback_used ?? {},
     source_summary: row?.source_summary ?? {},
-    recommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),
-    buyStyleRecommendation: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.buyStyleRecommendation || row?.recommendation || "UNAVAILABLE"),
-    decision: derivedDataStatus === "DATA_ERROR" ? "DATA_ERROR" : (row?.decision || row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE"),
+    recommendation: row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE",
+    buyStyleRecommendation: row?.buyStyleRecommendation || row?.recommendation || "UNAVAILABLE",
+    decision: row?.decision || row?.recommendation || row?.buyStyleRecommendation || "UNAVAILABLE",
       decision_reason: row?.decision_reason || row?.screeningDebug?.decision_reason || null,
       errors: Array.isArray(row?.errors) ? row.errors : [],
       missing_fields: Array.isArray(row?.missing_fields) ? row.missing_fields : [],
@@ -1488,16 +1494,16 @@ function finalizeHardRaceContractRow(row = {}) {
     decision_reason: normalized.decision_reason,
     missing_fields: normalized.missing_fields
   };
-  if (normalized.data_status === "DATA_ERROR" && !normalized.decision_reason) {
+  if (normalized.data_status === "BROKEN_PIPELINE" && !normalized.decision_reason) {
     normalized.decision_reason = normalized.errors.length > 0
-      ? `Data error: ${normalized.errors.join(", ")}`
+      ? `Broken pipeline: ${normalized.errors.join(", ")}`
       : normalized.missing_fields.length > 0
-        ? `Data error: missing ${normalized.missing_fields.join(", ")}`
-        : "Data error: required screening fields are unavailable";
-  } else if (normalized.data_status === "PARTIAL" && !normalized.decision_reason) {
+        ? `Broken pipeline: missing ${normalized.missing_fields.join(", ")}`
+        : "Broken pipeline: required precomputed features are unavailable";
+  } else if (normalized.data_status === "FALLBACK" && !normalized.decision_reason) {
     normalized.decision_reason = normalized.missing_fields.length > 0
-      ? `Partial screening: missing ${normalized.missing_fields.join(", ")}`
-      : "Partial screening: some required scores are unavailable";
+      ? `Fallback inference: estimated ${normalized.missing_fields.join(", ")}`
+      : "Fallback inference: some metrics use stored-feature estimates";
   }
   return normalized;
 }
@@ -1511,7 +1517,7 @@ function getHardRaceFieldState(row, fieldName) {
   const missingRequiredScores = new Set(Array.isArray(screeningDebug?.missing_required_scores) ? screeningDebug.missing_required_scores : []);
   const optionalMissing = Array.isArray(screeningDebug?.optional_fields_missing) ? screeningDebug.optional_fields_missing : [];
   if (missingFields.has(fieldName) || missingRequiredScores.has(fieldName)) {
-    if (optionalMissing.length > 0) return "missing source data";
+    if (optionalMissing.length > 0) return "precomputed feature fallback";
     return "not calculated";
   }
   const relatedReason = Object.entries(missingFieldDetails)
@@ -1527,7 +1533,7 @@ function getHardRaceFieldState(row, fieldName) {
               : false
     ));
   if (relatedReason?.[1]?.reason) return String(relatedReason[1].reason);
-  return "API field missing";
+  return "precomputed feature missing";
 }
 
 function renderHardRaceMetric(row, fieldName, value, formatter) {
@@ -1547,7 +1553,7 @@ function getHardRaceDecisionClass(decision) {
   const value = String(decision || "").toUpperCase();
   if (value === "BUY-6" || value === "BUY-4" || value === "BUY") return "status-hit";
   if (value === "BORDERLINE") return "status-unsettled";
-  if (value === "DATA_ERROR") return "status-unsettled";
+  if (value === "BROKEN_PIPELINE") return "status-unsettled";
   return "risk-small";
 }
 
@@ -1555,14 +1561,15 @@ function getHardRaceRankClass(rank) {
   const value = String(rank || "").toUpperCase();
   if (value === "A") return "status-hit";
   if (value === "B") return "status-unsettled";
-  if (value === "DATA_ERROR") return "status-unsettled";
+  if (value === "BROKEN_PIPELINE") return "status-unsettled";
   return "risk-small";
 }
 
 function getHardRaceConfidenceClass(status) {
   const value = String(status || "").toUpperCase();
-  if (value === "OK") return "status-hit";
-  if (value === "PARTIAL") return "risk-small";
+  if (value === "READY") return "status-hit";
+  if (value === "FALLBACK") return "risk-small";
+  if (value === "NOT_ELIGIBLE") return "status-unsettled";
   return "status-miss";
 }
 
@@ -1632,7 +1639,7 @@ function getHardRaceDecisionCopy(row = {}) {
   if (decision === "BUY-4") return "上位4点に絞って買いやすい";
   if (decision === "BORDERLINE") return "見送り候補だが監視価値あり";
   if (decision === "SKIP") return "無理に触らない方が良い";
-  if (decision === "DATA_ERROR") return "ソース不足のため判断保留";
+  if (decision === "BROKEN_PIPELINE") return "事前特徴量の不足で判定保留";
   return "追加確認が必要";
 }
 
@@ -1643,9 +1650,10 @@ function getHardRaceOperationalLabel(row = {}) {
 
 function getHardRaceConfidenceCopy(status) {
   const value = String(status || "").toUpperCase();
-  if (value === "OK") return "必要ソースが揃っていて通常運用";
-  if (value === "PARTIAL") return "一部推定値を含むので見落とし注意";
-  if (value === "DATA_ERROR") return "判定に必要な材料が不足";
+  if (value === "READY") return "必要な事前特徴量が揃っていて pure inference 可能";
+  if (value === "FALLBACK") return "一部は保存済み特徴量から補完推定";
+  if (value === "BROKEN_PIPELINE") return "事前特徴量が未生成かマッピング不整合";
+  if (value === "NOT_ELIGIBLE") return "予想対象外条件です";
   return "データ確認中";
 }
 
@@ -1836,8 +1844,8 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
     return finalizeHardRaceContractRow({
       raceNo: entry?.data?.hardRace1234?.race_no ?? entry?.raceNo ?? null,
       venueName: entry?.data?.race?.venueName || venueNameFallback,
-      status: entry?.data?.hardRace1234?.status || "FETCHED",
-      data_status: entry?.data?.hardRace1234?.data_status || "OK",
+      status: entry?.data?.hardRace1234?.status || "READY",
+      data_status: entry?.data?.hardRace1234?.data_status || "READY",
       boat1EscapeTrust: entry?.data?.hardRace1234?.boat1_escape_trust ?? null,
       opponent234Fit: entry?.data?.hardRace1234?.opponent_234_fit ?? null,
       outsideBreakRisk: entry?.data?.hardRace1234?.outside_break_risk ?? null,
@@ -1902,10 +1910,10 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       sourceData: null,
       fetchFailed: true,
       status: "UNAVAILABLE",
-      data_status: "DATA_ERROR",
+      data_status: "BROKEN_PIPELINE",
       recommendation: "UNAVAILABLE",
-      decision: "DATA_ERROR",
-      decision_reason: entry?.error || "Race data unavailable",
+      decision: "SKIP",
+      decision_reason: entry?.error || "Precomputed race snapshot unavailable",
       errors: [entry?.error || "Race data unavailable"],
       missing_fields: [
         "hard_race_score",
@@ -7430,10 +7438,10 @@ export default function App() {
                                 <strong>{row.hardRaceRank || "--"}</strong>
                               </div>
                             </div>
-                            {String(row.confidence_status || row.data_status || "").toUpperCase() === "PARTIAL" ? (
+                            {String(row.confidence_status || row.data_status || "").toUpperCase() === "FALLBACK" ? (
                               <div className="hardrace-partial-alert">
-                                <strong>PARTIAL</strong>
-                                <span>一部推定値あり。fallback / source_summary の確認を推奨します。</span>
+                                <strong>FALLBACK</strong>
+                                <span>一部は保存済み特徴量から補完しています。source_summary を確認してください。</span>
                               </div>
                             ) : null}
                           </div>
@@ -7483,13 +7491,13 @@ export default function App() {
                         </div>
                         {row.fallback_used?.used || (Array.isArray(row.missing_fields) && row.missing_fields.length > 0) ? (
                           <div className="hardrace-fallback-banner">
-                            <strong>{row.fallback_used?.used ? "推定値あり" : "missing source data"}</strong>
+                            <strong>{row.fallback_used?.used ? "補完推定あり" : "事前特徴量未生成"}</strong>
                             <span>
                               {row.fallback_used?.used && fallbackFields.length > 0
                                 ? `fallback: ${fallbackFields.join(", ")}`
                                 : Array.isArray(row.missing_fields) && row.missing_fields.length > 0
                                   ? `missing: ${row.missing_fields.slice(0, 6).join(", ")}`
-                                  : "source data を確認してください"}
+                                  : "snapshot / feature / mapping を確認してください"}
                             </span>
                           </div>
                         ) : null}
@@ -7591,7 +7599,7 @@ export default function App() {
                         <div className="hardrace-block-head">
                           <div>
                             <strong>source_summary / fallback_used</strong>
-                            <p className="muted">backend の返却値名と表示名を揃えて確認できます。</p>
+                            <p className="muted">pure inference で使った事前snapshotと補完有無を確認できます。</p>
                           </div>
                         </div>
                         <div className="kv-list">

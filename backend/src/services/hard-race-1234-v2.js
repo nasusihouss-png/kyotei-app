@@ -1,7 +1,5 @@
 import fs from "fs";
 import path from "path";
-import axios from "axios";
-import * as cheerio from "cheerio";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -63,13 +61,9 @@ function round(value, digits = 4) {
   return Number(Number(value).toFixed(digits));
 }
 
-function normalizeText(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
 function asField(value, source = null, missingReason = null) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return { value: null, source, missing_reason: missingReason || "api field missing" };
+    return { value: null, source, missing_reason: missingReason || "precomputed feature missing" };
   }
   return { value: Number(value), source, missing_reason: null };
 }

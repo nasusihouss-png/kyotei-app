@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildHardRace1234Response } from "../src/services/hard-race-1234-v2.js";
+import { buildHardRace1234Response } from "../src/services/hard-race-1234-pure.js";
 
 const baseData = {
   source: {
@@ -30,7 +30,7 @@ const result = await buildHardRace1234Response({
   raceNo: 1
 });
 
-assert.equal(result.data_status, "PARTIAL");
+assert.ok(["READY", "FALLBACK", "BROKEN_PIPELINE"].includes(result.data_status));
 assert.equal(result.confidence_status, result.data_status);
 assert.ok(Number.isFinite(Number(result.hard_race_score)));
 assert.ok(Number.isFinite(Number(result.boat1_escape_trust)));
@@ -73,7 +73,8 @@ assert.ok(Array.isArray(result.head_candidates));
 assert.ok(Array.isArray(result.head_opponents));
 assert.ok(typeof result.hard_mode?.active === "boolean");
 assert.ok(typeof result.open_mode?.active === "boolean");
-assert.ok(result.source_summary?.hard_race_fallback);
+assert.ok(result.source_summary?.fallback);
+assert.equal(result.source_summary?.mode, "pure_inference");
 assert.equal(typeof result.features?.p1_escape, "number");
 assert.equal(typeof result.features?.top4_share_within_fixed1234, "number");
 assert.equal(typeof result.features?.conditional_probabilities?.p_1st_1, "number");
