@@ -41,6 +41,7 @@ import { analyzeRaceStructure } from "../../race-structure-engine.js";
 import { optimizeTickets } from "../../ticket-optimization-engine.js";
 import { decideRaceSelection } from "../../race-selection-engine.js";
 import { buildStakeAllocationPlan } from "../../stake-allocation-engine.js";
+import { buildTop6Prediction } from "../../top6-prediction-engine.js";
 import { analyzeExhibitionAI } from "../../exhibition-ai-engine.js";
 import { detectValue } from "../../value-detection-engine.js";
 import { detectMarketTraps } from "../../market-trap-detector.js";
@@ -10656,6 +10657,10 @@ raceRouter.get("/race", async (req, res, next) => {
       race: data?.race || null,
       predictionDataUsage
     });
+    const pureTop6Prediction = buildTop6Prediction({
+      ranking,
+      race: data?.race || null
+    });
     const segmentCorrectionUsage = buildSegmentCorrectionUsageSummary({
       learningWeights,
       race: data?.race || null,
@@ -11415,6 +11420,7 @@ raceRouter.get("/race", async (req, res, next) => {
       participation_decision: participationDecision.decision,
       confidence_reason_tags: confidenceScores.confidence_reason_tags,
       prediction_data_usage: predictionDataUsage,
+      pure_top6_prediction: pureTop6Prediction,
       confidence_version: confidenceScores.confidence_version,
       snapshot_created_at: snapshotCreatedAt,
       race_key: raceId,
@@ -11544,6 +11550,7 @@ raceRouter.get("/race", async (req, res, next) => {
       final_recommended_bets_snapshot_source: finalRecommendedSnapshot.snapshot_source,
       top_recommended_tickets_snapshot: topRecommendedTicketsSnapshot,
       upset_alert_snapshot: upsetAlertSnapshot,
+      pure_top6_prediction: pureTop6Prediction,
       snapshot_context: snapshotContext,
       learning_context: learningContext,
       ai_bets_full_snapshot: {
@@ -11829,6 +11836,7 @@ raceRouter.get("/race", async (req, res, next) => {
         backup_urasuji_tickets: roleBasedBackupUrasujiTickets
       },
       recommendedShape: safeRecommendedShape,
+      pureTop6Prediction,
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,
