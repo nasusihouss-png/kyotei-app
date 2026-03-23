@@ -947,6 +947,40 @@
   border-color: rgba(245, 158, 11, 0.24);
 }
 
+.prediction-tier-block.tier-main {
+  border-color: rgba(34, 197, 94, 0.34);
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.14), rgba(10, 19, 33, 0.7));
+}
+
+.prediction-tier-block.tier-challenge {
+  border-color: rgba(96, 165, 250, 0.34);
+  background: linear-gradient(180deg, rgba(96, 165, 250, 0.12), rgba(10, 19, 33, 0.68));
+}
+
+.prediction-tier-block.tier-cover {
+  border-color: rgba(245, 158, 11, 0.32);
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.12), rgba(10, 19, 33, 0.66));
+}
+
+.prediction-prob-item.tier-main {
+  border-color: rgba(34, 197, 94, 0.26);
+}
+
+.prediction-prob-item.tier-challenge {
+  border-color: rgba(96, 165, 250, 0.24);
+}
+
+.prediction-prob-item.tier-cover {
+  border-color: rgba(245, 158, 11, 0.24);
+}
+
+.prediction-role-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .hardrace-chip-row {
   display: flex;
   flex-wrap: wrap;

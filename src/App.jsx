@@ -1687,6 +1687,7 @@ function buildTop6PredictionRows(prediction = {}) {
     combo: row?.combo || "--",
     probability: Number(row?.probability) || 0,
     tier: row?.tier || (index < 2 ? "本命" : index < 4 ? "対抗" : "抑え"),
+    tierKey: row?.tier === "本命" ? "main" : row?.tier === "対抗" ? "challenge" : "cover",
     width: maxProbability > 0 ? Math.max(10, ((Number(row?.probability) || 0) / maxProbability) * 100) : 0
   }));
 }
@@ -1712,6 +1713,22 @@ function getPredictionChaosLabel(prediction = {}) {
   if (label === "中") return "NORMAL";
   if (label === "低") return "HARD";
   return prediction?.chaos_label || "--";
+}
+
+function getPredictionConfidenceState(sourceMeta = {}) {
+  const snapshots = sourceMeta?.local_snapshots && typeof sourceMeta.local_snapshots === "object" ? sourceMeta.local_snapshots : {};
+  if (Number(snapshots?.feature_snapshot || 0) > 0) return "OK";
+  if (Number(snapshots?.entry_snapshot || 0) > 0) return "PARTIAL";
+  if (sourceMeta?.cache?.fallback === "db_snapshot") return "FALLBACK";
+  return "PARTIAL";
+}
+
+function getPredictionConfidenceClass(value) {
+  const status = String(value || "").toUpperCase();
+  if (status === "OK") return "status-hit";
+  if (status === "PARTIAL") return "status-unsettled";
+  if (status === "FALLBACK") return "risk-small";
+  return "status-miss";
 }
 
 function getOutsideRiskLead(row = {}) {
@@ -4088,6 +4105,8 @@ export default function App() {
   const pureTop6Rows = buildTop6PredictionRows(pureTop6Prediction);
   const pureTop6Groups = groupTop6PredictionRows(pureTop6Rows);
   const pureHeadRanking = Array.isArray(pureTop6Prediction?.head_candidate_ranking) ? pureTop6Prediction.head_candidate_ranking : [];
+  const pureHeadTrust = pureHeadRanking[0]?.probability ?? null;
+  const predictionConfidenceState = getPredictionConfidenceState(sourceMeta);
   const isRecommendedRace =
     typeof data?.is_recommended === "boolean"
       ? data.is_recommended
@@ -6231,6 +6250,11 @@ export default function App() {
                       <strong>{pureHeadRanking[0] ? `${pureHeadRanking[0].lane}号艇` : "--"}</strong>
                       <small>{pureHeadRanking[0] ? formatPercentDisplay(pureHeadRanking[0].probability) : "未計算"}</small>
                     </article>
+                    <article className="hardrace-meta-card primary">
+                      <span>1頭信頼度</span>
+                      <strong>{formatPercentDisplay(pureHeadTrust)}</strong>
+                      <small>頭候補1位の1着率</small>
+                    </article>
                     <article className={`hardrace-meta-card ${getPredictionChaosTone(getPredictionChaosLabel(pureTop6Prediction))}`}>
                       <span>chaos_level</span>
                       <strong>{getPredictionChaosLabel(pureTop6Prediction)}</strong>
@@ -6239,8 +6263,14 @@ export default function App() {
                     <article className="hardrace-meta-card">
                       <span>confidence</span>
                       <strong>{formatPercentDisplay(pureTop6Prediction?.confidence)}</strong>
-                      <small>6点予想のまとまり</small>
+                      <small>6点予想のまとまり / {predictionConfidenceState}</small>
                     </article>
+                  </div>
+                  <div className="prediction-role-strip">
+                    <span className="hardrace-tag picked">予想タブ: 毎回6点を返す純予想</span>
+                    <span className="hardrace-tag top4">Hard Race Prediction: 1-234-234固定買い用</span>
+                    <span className={`status-pill ${getPredictionConfidenceClass(predictionConfidenceState)}`}>{`Confidence ${predictionConfidenceState}`}</span>
+                    <span className={`status-pill ${getPredictionChaosTone(getPredictionChaosLabel(pureTop6Prediction))}`}>{`Chaos ${getPredictionChaosLabel(pureTop6Prediction)}`}</span>
                   </div>
                   </section>
                   <div className="hardrace-section-grid" style={{ marginTop: 16 }}>
@@ -6258,16 +6288,16 @@ export default function App() {
                       {pureTop6Rows.length > 0 ? (
                         <div className="prediction-tier-grid">
                           {["本命", "対抗", "抑え"].map((tier) => (
-                            <section className={`prediction-tier-block tier-${tier}`} key={`tier-${tier}`}>
+                            <section className={`prediction-tier-block tier-${tier === "本命" ? "main" : tier === "対抗" ? "challenge" : "cover"}`} key={`tier-${tier}`}>
                               <div className="prediction-tier-head">
                                 <strong>{tier}</strong>
                                 <span>{tier === "本命" ? "main" : tier === "対抗" ? "challenge" : "cover"}</span>
                               </div>
                               <div className="hardrace-prob-list">
                                 {(pureTop6Groups[tier] || []).map((item, index) => (
-                                  <div className={`hardrace-prob-item prediction-prob-item tier-${tier}`} key={`pure-top6-${tier}-${item.combo}-${index}`}>
+                                  <div className={`hardrace-prob-item prediction-prob-item tier-${item.tierKey}`} key={`pure-top6-${tier}-${item.combo}-${index}`}>
                                     <div className="hardrace-prob-meta">
-                                      <strong>{item.combo}</strong>
+                                      <strong>{index + 1 + (tier === "本命" ? 0 : tier === "対抗" ? 2 : 4)}位 {item.combo}</strong>
                                       <span>{formatPercentDisplay(item.probability)}</span>
                                     </div>
                                     <div className="hardrace-prob-bar">
@@ -6275,6 +6305,7 @@ export default function App() {
                                     </div>
                                     <div className="hardrace-prob-tags">
                                       <span className={`hardrace-tag ${item.tier === "本命" ? "picked" : item.tier === "対抗" ? "top4" : "top2"}`}>{item.tier}</span>
+                                      <span className="hardrace-tag">{`coverage share ${formatPercentDisplay(item.probability)}`}</span>
                                     </div>
                                   </div>
                                 ))}
@@ -6314,6 +6345,36 @@ export default function App() {
                         )) : (
                           <p className="muted">頭候補ランキングは未計算です。</p>
                         )}
+                      </div>
+                    </div>
+                    <div className="hardrace-block">
+                      <div className="hardrace-block-head">
+                        <div>
+                          <strong>chaos / confidence</strong>
+                          <p className="muted">波乱度と予想のまとまりを先に確認できます。</p>
+                        </div>
+                      </div>
+                      <div className="hardrace-meta-grid">
+                        <article className={`hardrace-meta-card ${getPredictionChaosTone(getPredictionChaosLabel(pureTop6Prediction))}`}>
+                          <span>Chaos Badge</span>
+                          <strong>{getPredictionChaosLabel(pureTop6Prediction)}</strong>
+                          <small>{formatPercentDisplay(pureTop6Prediction?.chaos_level)}</small>
+                        </article>
+                        <article className="hardrace-meta-card">
+                          <span>Confidence Score</span>
+                          <strong>{formatPercentDisplay(pureTop6Prediction?.confidence)}</strong>
+                          <small>上位6点の収束度</small>
+                        </article>
+                        <article className={`hardrace-meta-card ${getPredictionConfidenceClass(predictionConfidenceState)}`}>
+                          <span>Inference Confidence</span>
+                          <strong>{predictionConfidenceState}</strong>
+                          <small>snapshot 完成度</small>
+                        </article>
+                        <article className="hardrace-meta-card">
+                          <span>Top6 vs Head</span>
+                          <strong>{formatPercentDisplay(pureTop6Prediction?.top6_coverage)}</strong>
+                          <small>{pureHeadRanking[0] ? `head #1 ${pureHeadRanking[0].lane}号艇 ${formatPercentDisplay(pureHeadRanking[0].probability)}` : "未計算"}</small>
+                        </article>
                       </div>
                     </div>
                   </div>
