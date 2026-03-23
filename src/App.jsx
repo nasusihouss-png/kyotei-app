@@ -7785,9 +7785,16 @@ export default function App() {
                                 : Array.isArray(row.missing_fields) && row.missing_fields.length > 0
                                   ? `missing: ${row.missing_fields.slice(0, 6).join(", ")}`
                                   : "snapshot / feature / mapping を確認してください"}
-                            </span>
+                              </span>
                           </div>
                         ) : null}
+                        <div className="hardrace-role-strip">
+                          <span className="hardrace-tag picked">Hard Race Prediction: 1-234-234固定買い用</span>
+                          <span className={`status-pill ${getHardRaceDecisionClass(row.buyStyleRecommendation)}`}>{row.buyStyleRecommendation || "--"}</span>
+                          <span className={`status-pill ${getHardRaceConfidenceClass(row.confidence_status || row.data_status)}`}>{`Confidence ${row.confidence_status || row.data_status || "-"}`}</span>
+                          <span className={`status-pill ${getHardRaceRiskTone(row.outsideBoxBreakRisk)}`}>{`Outside ${formatPercentDisplay(row.outsideBoxBreakRisk)}`}</span>
+                          <span className="hardrace-tag top4">{`Shape ${row.suggestedShape || "--"}`}</span>
+                        </div>
                       </section>
                       <section className="hardrace-section-grid">
                         <div className="hardrace-block">
@@ -7882,21 +7889,21 @@ export default function App() {
                           </div>
                         ) : null}
                       </section>
-                      <section className="hardrace-block">
-                        <div className="hardrace-block-head">
-                          <div>
+                      <details className="hardrace-block hardrace-collapsible">
+                        <summary>
+                          <span>
                             <strong>source_summary / fallback_used</strong>
-                            <p className="muted">pure inference で使った事前snapshotと補完有無を確認できます。</p>
-                          </div>
-                        </div>
-                        <div className="kv-list">
+                            <small>pure inference で使った事前snapshotと補完有無</small>
+                          </span>
+                        </summary>
+                        <div className="kv-list" style={{ marginTop: 10 }}>
                           {buildSourceSummaryRows(row.source_summary).map((item) => (
                             <div className="kv-row" key={`source-summary-${row.raceNo}-${item.label}`}><span>{item.label}</span><strong>{item.value}</strong></div>
                           ))}
                           <div className="kv-row"><span>decision_reason</span><strong>{row.decision_reason || "-"}</strong></div>
                           <div className="kv-row"><span>actual result</span><strong>{row.actualResult || "--"}</strong></div>
                         </div>
-                      </section>
+                      </details>
                       {row.open_mode?.active ? (
                         <section className="hardrace-open-panel" style={{ marginTop: 10 }}>
                           <div className="hardrace-block-head">
@@ -8043,14 +8050,9 @@ export default function App() {
                         ) : null}
                         {row.screeningDebug ? (
                           <div className="kv-list" style={{ marginTop: 10 }}>
-                            <div className="kv-row"><span>race fetch</span><strong>{row.screeningDebug.race_fetch_success ? "ok" : "failed"}</strong></div>
-                            <div className="kv-row"><span>kyoteibiyori</span><strong>{row.screeningDebug.kyoteibiyori_fetch_success ? "ok" : "failed"}</strong></div>
-                            <div className="kv-row"><span>href extraction</span><strong>{row.screeningDebug.href_extraction_success ? "ok" : "failed"}</strong></div>
-                            <div className="kv-row"><span>parse</span><strong>{row.screeningDebug.parse_success ? "ok" : "failed"}</strong></div>
+                            <div className="kv-row"><span>snapshot mode</span><strong>{row.source_summary?.mode || "pure_inference"}</strong></div>
                             <div className="kv-row"><span>core fields</span><strong>{row.screeningDebug.core_fields_ready ? "ready" : "missing"}</strong></div>
-                            <div className="kv-row"><span>fetch success</span><strong>{row.screeningDebug.fetch_success ?? row.screeningDebug.race_fetch_success ? "yes" : "no"}</strong></div>
                             <div className="kv-row"><span>score ready</span><strong>{row.screeningDebug.score_success ? "yes" : "no"}</strong></div>
-                            <div className="kv-row"><span>score success</span><strong>{row.screeningDebug.score_success ? "yes" : "no"}</strong></div>
                             <div className="kv-row"><span>rank</span><strong>{row.screeningDebug.hard_race_rank || "-"}</strong></div>
                             <div className="kv-row"><span>buy style</span><strong>{row.screeningDebug.buy_style_recommendation || "-"}</strong></div>
                             <div className="kv-row"><span>decision reason</span><strong>{row.screeningDebug.decision_reason || "-"}</strong></div>

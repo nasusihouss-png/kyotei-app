@@ -981,6 +981,36 @@
   align-items: center;
 }
 
+.hardrace-role-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.hardrace-collapsible summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.hardrace-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.hardrace-collapsible summary span {
+  display: grid;
+  gap: 4px;
+}
+
+.hardrace-collapsible summary small {
+  color: var(--text-sub);
+  font-size: 0.76rem;
+}
+
 .hardrace-chip-row {
   display: flex;
   flex-wrap: wrap;
