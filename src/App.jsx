@@ -1691,6 +1691,29 @@ function buildTop6PredictionRows(prediction = {}) {
   }));
 }
 
+function groupTop6PredictionRows(rows = []) {
+  return {
+    本命: rows.filter((row) => row?.tier === "本命"),
+    対抗: rows.filter((row) => row?.tier === "対抗"),
+    抑え: rows.filter((row) => row?.tier === "抑え")
+  };
+}
+
+function getPredictionChaosTone(label) {
+  const value = String(label || "").toUpperCase();
+  if (value === "CHAOS" || value === "高") return "tone-high";
+  if (value === "NORMAL" || value === "中") return "tone-medium";
+  return "tone-low";
+}
+
+function getPredictionChaosLabel(prediction = {}) {
+  const label = String(prediction?.chaos_label || "").toUpperCase();
+  if (label === "高") return "CHAOS";
+  if (label === "中") return "NORMAL";
+  if (label === "低") return "HARD";
+  return prediction?.chaos_label || "--";
+}
+
 function getOutsideRiskLead(row = {}) {
   const scenarios = [
     { key: "outsideHeadRisk", label: "5,6の頭侵入に注意", value: Number(row?.outsideHeadRisk) },
@@ -4063,6 +4086,7 @@ export default function App() {
     data?.raceDecision?.mode || raceRisk?.recommendation || data?.recommendation_label || ""
   ).toUpperCase();
   const pureTop6Rows = buildTop6PredictionRows(pureTop6Prediction);
+  const pureTop6Groups = groupTop6PredictionRows(pureTop6Rows);
   const pureHeadRanking = Array.isArray(pureTop6Prediction?.head_candidate_ranking) ? pureTop6Prediction.head_candidate_ranking : [];
   const isRecommendedRace =
     typeof data?.is_recommended === "boolean"
@@ -6179,75 +6203,106 @@ export default function App() {
                     <div>
                       <p className="eyebrow">Prediction Tab</p>
                       <h2>Pure Top 6 Prediction</h2>
+                      <p className="muted strategy-line prediction-tab-note">
+                        予想タブ = 毎回6点出す純予想 / Hard Race Prediction = 1-234-234固定買い用
+                      </p>
                     </div>
                   </div>
-                  <div className="summary-inline-meta">
+                  <div className="summary-inline-meta prediction-summary-meta">
                     <span>main {pureTop6Prediction?.main_ticket?.combo || "--"}</span>
                     <span>top6 coverage {formatPercentDisplay(pureTop6Prediction?.top6_coverage)}</span>
-                    <span>chaos {pureTop6Prediction?.chaos_label || "--"}</span>
+                    <span>head #1 {pureHeadRanking[0] ? `${pureHeadRanking[0].lane}号艇` : "--"}</span>
+                    <span>chaos {getPredictionChaosLabel(pureTop6Prediction)}</span>
                   </div>
-                  <div className="hardrace-meta-grid" style={{ marginTop: 12 }}>
+                  <section className="prediction-summary-panel">
+                  <div className="hardrace-meta-grid prediction-summary-grid" style={{ marginTop: 12 }}>
                     <article className="hardrace-meta-card primary">
                       <span>本命買い目</span>
                       <strong>{pureTop6Prediction?.main_ticket?.combo || "--"}</strong>
                       <small>{pureTop6Prediction?.main_ticket ? `${formatPercentDisplay(pureTop6Prediction.main_ticket.probability)} / 最上位` : "未計算"}</small>
                     </article>
-                    <article className="hardrace-meta-card">
+                    <article className="hardrace-meta-card primary">
                       <span>上位6点合計</span>
                       <strong>{formatPercentDisplay(pureTop6Prediction?.top6_coverage)}</strong>
                       <small>この6点で拾える推定カバー率</small>
                     </article>
                     <article className="hardrace-meta-card">
-                      <span>confidence</span>
-                      <strong>{formatPercentDisplay(pureTop6Prediction?.confidence)}</strong>
-                      <small>上位6点のまとまり</small>
+                      <span>頭候補1位</span>
+                      <strong>{pureHeadRanking[0] ? `${pureHeadRanking[0].lane}号艇` : "--"}</strong>
+                      <small>{pureHeadRanking[0] ? formatPercentDisplay(pureHeadRanking[0].probability) : "未計算"}</small>
                     </article>
-                    <article className="hardrace-meta-card">
-                      <span>波乱度</span>
-                      <strong>{pureTop6Prediction?.chaos_label || "--"}</strong>
+                    <article className={`hardrace-meta-card ${getPredictionChaosTone(getPredictionChaosLabel(pureTop6Prediction))}`}>
+                      <span>chaos_level</span>
+                      <strong>{getPredictionChaosLabel(pureTop6Prediction)}</strong>
                       <small>{formatPercentDisplay(pureTop6Prediction?.chaos_level)}</small>
                     </article>
+                    <article className="hardrace-meta-card">
+                      <span>confidence</span>
+                      <strong>{formatPercentDisplay(pureTop6Prediction?.confidence)}</strong>
+                      <small>6点予想のまとまり</small>
+                    </article>
                   </div>
+                  </section>
                   <div className="hardrace-section-grid" style={{ marginTop: 16 }}>
                     <div className="hardrace-block">
                       <div className="hardrace-block-head">
                         <div>
                           <strong>上位6点</strong>
-                          <p className="muted">高い順。予想タブは常に6点を返します。</p>
+                          <p className="muted">本命2点 / 対抗2点 / 抑え2点。確率順で3秒判断できる形にまとめています。</p>
                         </div>
                       </div>
-                      <div className="hardrace-prob-list">
-                        {pureTop6Rows.length > 0 ? pureTop6Rows.map((item, index) => (
-                          <div className="hardrace-prob-item" key={`pure-top6-${item.combo}-${index}`}>
-                            <div className="hardrace-prob-meta">
-                              <strong>{item.combo}</strong>
-                              <span>{formatPercentDisplay(item.probability)}</span>
-                            </div>
-                            <div className="hardrace-prob-bar">
-                              <div className="hardrace-prob-fill" style={{ width: `${item.width}%` }} />
-                            </div>
-                            <div className="hardrace-prob-tags">
-                              <span className={`hardrace-tag ${item.tier === "本命" ? "picked" : item.tier === "対抗" ? "top4" : "top2"}`}>{item.tier}</span>
-                            </div>
-                          </div>
-                        )) : (
-                          <p className="muted">上位6点は未計算です。</p>
-                        )}
+                      <div className="prediction-coverage-callout">
+                        <span className="prediction-coverage-label">Top6 Coverage</span>
+                        <strong>{formatPercentDisplay(pureTop6Prediction?.top6_coverage)}</strong>
                       </div>
+                      {pureTop6Rows.length > 0 ? (
+                        <div className="prediction-tier-grid">
+                          {["本命", "対抗", "抑え"].map((tier) => (
+                            <section className={`prediction-tier-block tier-${tier}`} key={`tier-${tier}`}>
+                              <div className="prediction-tier-head">
+                                <strong>{tier}</strong>
+                                <span>{tier === "本命" ? "main" : tier === "対抗" ? "challenge" : "cover"}</span>
+                              </div>
+                              <div className="hardrace-prob-list">
+                                {(pureTop6Groups[tier] || []).map((item, index) => (
+                                  <div className={`hardrace-prob-item prediction-prob-item tier-${tier}`} key={`pure-top6-${tier}-${item.combo}-${index}`}>
+                                    <div className="hardrace-prob-meta">
+                                      <strong>{item.combo}</strong>
+                                      <span>{formatPercentDisplay(item.probability)}</span>
+                                    </div>
+                                    <div className="hardrace-prob-bar">
+                                      <div className="hardrace-prob-fill" style={{ width: `${item.width}%` }} />
+                                    </div>
+                                    <div className="hardrace-prob-tags">
+                                      <span className={`hardrace-tag ${item.tier === "本命" ? "picked" : item.tier === "対抗" ? "top4" : "top2"}`}>{item.tier}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </section>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="hardrace-prob-list">
+                          <p className="muted">上位6点は未計算です。</p>
+                        </div>
+                      )}
                     </div>
                     <div className="hardrace-block">
                       <div className="hardrace-block-head">
                         <div>
                           <strong>頭候補ランキング</strong>
-                          <p className="muted">全艇の1着確率を pure prediction 用に再計算しています。</p>
+                          <p className="muted">上位3艇を強調。1号艇が弱い時は代替頭候補がすぐ見えます。</p>
                         </div>
                       </div>
                       <div className="hardrace-head-ranking-list">
                         {pureHeadRanking.length > 0 ? pureHeadRanking.map((item, index) => (
-                          <article className={`hardrace-head-rank-row ${index === 0 ? "leader" : ""}`} key={`pure-head-${item.lane}`}>
+                          <article className={`hardrace-head-rank-row ${index < 3 ? "top3" : ""} ${index === 0 ? "leader" : ""}`} key={`pure-head-${item.lane}`}>
                             <div className="hardrace-head-rank-main">
                               <span className="rank-pill">#{index + 1}</span>
                               <strong>{item.lane}号艇</strong>
+                              {item.lane === 1 && index > 0 ? <span className="hardrace-tag risk">1号艇弱め</span> : null}
+                              {index === 0 && item.lane !== 1 ? <span className="hardrace-tag picked">代替頭候補</span> : null}
                             </div>
                             <div className="hardrace-head-rank-side">
                               <div className="hardrace-prob-bar compact">
