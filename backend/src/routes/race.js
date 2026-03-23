@@ -2692,6 +2692,54 @@ function buildStoredRankingRows(data = {}) {
     .filter((row) => Number.isInteger(toInt(row?.racer?.lane, null)));
 }
 
+function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, derivedRanking = []) {
+  const racers = Array.isArray(data?.racers) ? data.racers : [];
+  const missingFeatureFields = racers
+    .filter((racer) => !racer?.featureSnapshot || Object.keys(racer.featureSnapshot || {}).length === 0)
+    .map((racer) => `lane${toInt(racer?.lane, 0)}.feature_snapshot`);
+  const missingFieldDetails = Object.fromEntries(
+    missingFeatureFields.map((field) => [
+      field,
+      {
+        reason: "precomputed feature snapshot missing",
+        source: "feature_snapshot",
+        lane: toInt(String(field).match(/\d+/)?.[0], null),
+        field: "feature_snapshot"
+      }
+    ])
+  );
+  const hasCompleteFeatureSnapshots = racers.length === 6 && missingFeatureFields.length === 0;
+  const usedStoredPrediction = !!storedPrediction;
+  const estimatedFields = usedStoredPrediction ? [] : ["ranking", "top3", "pure_top6_prediction"];
+  const sourceSummary = {
+    mode: "pure_inference",
+    inference_source: "local_precomputed_only",
+    snapshot: {
+      race: "snapshot",
+      entries: racers.length === 6 ? "snapshot" : "missing",
+      feature_snapshot: hasCompleteFeatureSnapshots ? "snapshot" : "missing",
+      prediction_log_snapshot: data?.source?.local_snapshots?.prediction_log_snapshot ? "snapshot" : "missing",
+      prediction_feature_event_snapshot: data?.source?.local_snapshots?.prediction_feature_event_snapshot ? "snapshot" : "missing"
+    },
+    fallback: {
+      used: false,
+      fields: []
+    },
+    estimated_fields: estimatedFields,
+    missing_fields: missingFeatureFields
+  };
+  const dataStatus = hasCompleteFeatureSnapshots ? "READY" : "BROKEN_PIPELINE";
+
+  return {
+    dataStatus,
+    confidenceStatus: dataStatus,
+    missingFields: missingFeatureFields,
+    missingFieldDetails,
+    sourceSummary,
+    derivedRankingCount: Array.isArray(derivedRanking) ? derivedRanking.length : 0
+  };
+}
+
 function buildPureInferencePredictionPayload(data = {}) {
   const storedPrediction =
     data?.stored_snapshots?.prediction_log_snapshot && typeof data.stored_snapshots.prediction_log_snapshot === "object"
@@ -2730,26 +2778,25 @@ function buildPureInferencePredictionPayload(data = {}) {
   const fallbackTop3 = pureTop6Prediction?.main_ticket?.combo
     ? String(pureTop6Prediction.main_ticket.combo).split("-").map((value) => toInt(value, null)).filter(Number.isInteger).slice(0, 3)
     : derivedRanking.slice(0, 3).map((row) => toInt(row?.racer?.lane, null)).filter(Number.isInteger);
+  const snapshotSummary = buildPureInferenceSnapshotSummary(data, storedPrediction, derivedRanking);
   const prediction = {
     ...(storedPrediction && typeof storedPrediction === "object" ? storedPrediction : {}),
     ranking: derivedRanking,
     top3: Array.isArray(storedPrediction?.top3) && storedPrediction.top3.length === 3 ? storedPrediction.top3 : fallbackTop3,
     pure_top6_prediction: pureTop6Prediction || storedPrediction?.pure_top6_prediction || null,
     prediction_mode: "pure_inference_snapshot_only",
-    source_summary: {
-      mode: "pure_inference",
-      snapshot: {
-        prediction_log_snapshot: data?.source?.local_snapshots?.prediction_log_snapshot ? "snapshot" : "missing",
-        prediction_feature_event_snapshot: data?.source?.local_snapshots?.prediction_feature_event_snapshot ? "snapshot" : "missing",
-        feature_snapshot: data?.source?.local_snapshots?.feature_snapshot ? "snapshot" : "missing"
-      }
-    }
+    data_status: snapshotSummary.dataStatus,
+    confidence_status: snapshotSummary.confidenceStatus,
+    source_summary: snapshotSummary.sourceSummary,
+    missing_fields: snapshotSummary.missingFields,
+    missing_field_details: snapshotSummary.missingFieldDetails
   };
 
   return {
     storedPrediction,
     pureTop6Prediction,
-    prediction
+    prediction,
+    diagnostics: snapshotSummary
   };
 }
 
@@ -9659,7 +9706,8 @@ raceRouter.get("/race", async (req, res, next) => {
                 feature_snapshot: 0,
                 prediction_feature_event_snapshot: false,
                 prediction_log_snapshot: false
-              }
+              },
+              snapshot_lookup: stored?.snapshot || null
             },
             race: {
               date,
@@ -9669,6 +9717,15 @@ raceRouter.get("/race", async (req, res, next) => {
             },
             data_status: "SNAPSHOT_MISSING",
             confidence_status: "BROKEN_PIPELINE",
+            missing_fields: ["snapshot.race"],
+            missing_field_details: {
+              "snapshot.race": {
+                reason: "precomputed race snapshot was not found",
+                source: "race_snapshot_index",
+                lane: null,
+                field: "race"
+              }
+            },
             routeTiming: routeTimings
           });
         }
@@ -9694,6 +9751,14 @@ raceRouter.get("/race", async (req, res, next) => {
             data_status: "BROKEN_PIPELINE",
             confidence_status: "BROKEN_PIPELINE",
             missing_fields: ["snapshot.entries"],
+            missing_field_details: {
+              "snapshot.entries": {
+                reason: "precomputed snapshot exists but racer rows are incomplete",
+                source: "entries",
+                lane: null,
+                field: "entries"
+              }
+            },
             routeTiming: routeTimings
           });
         } else {

@@ -1,5 +1,6 @@
 import db from "../../db.js";
 import { buildRaceIdFromParts } from "../../result-utils.js";
+import { getRaceSnapshotIndexByParts } from "./race-snapshot-store.js";
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_races_race_id ON races(race_id);
@@ -114,6 +115,7 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
     trace("snapshot_lookup_start", { raceId, date, venueId: toInt(venueId, null), raceNo: toInt(raceNo, null) });
   }
   const snapshotLookupStartedAt = Date.now();
+  const snapshotIndex = getRaceSnapshotIndexByParts({ date, venueId, raceNo });
   const raceRow = db
     .prepare(
       `
@@ -123,20 +125,38 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
       LIMIT 1
     `
     )
-    .get(raceId);
+    .get(snapshotIndex?.raceId || raceId);
   const snapshotLookupMs = Date.now() - snapshotLookupStartedAt;
   if (typeof trace === "function") {
-    trace("snapshot_lookup_end", { raceId, found: !!raceRow, snapshot_lookup_ms: snapshotLookupMs });
+    trace("snapshot_lookup_end", {
+      raceId,
+      found: !!raceRow,
+      snapshot_lookup_ms: snapshotLookupMs,
+      snapshot_index_status: snapshotIndex?.snapshotStatus || "SNAPSHOT_MISSING"
+    });
   }
 
   if (!raceRow) {
+    const diagnosticMessage = snapshotIndex?.lastErrorMessage
+      ? `precomputed race snapshot was not found (${snapshotIndex.lastErrorMessage})`
+      : "precomputed race snapshot was not found";
     return {
       ok: false,
       code: "SNAPSHOT_MISSING",
-      message: "precomputed race snapshot was not found",
+      message: diagnosticMessage,
       raceId,
+      snapshot: {
+        raceId,
+        key: {
+          date: String(date || ""),
+          venueId: toInt(venueId, null),
+          raceNo: toInt(raceNo, null)
+        },
+        index: snapshotIndex
+      },
       diagnostics: {
         raceId,
+        snapshot_index_status: snapshotIndex?.snapshotStatus || "SNAPSHOT_MISSING",
         snapshot_lookup_ms: snapshotLookupMs,
         snapshot_load_ms: 0,
         total_ms: Date.now() - startedAt
@@ -257,10 +277,12 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
         entry_snapshot: entryRows.length,
         feature_snapshot: featureRows.length,
         prediction_feature_event_snapshot: !!featureEventSnapshot,
-        prediction_log_snapshot: !!predictionLogSnapshot
+        prediction_log_snapshot: !!predictionLogSnapshot,
+        index_snapshot_status: snapshotIndex?.snapshotStatus || null
       },
       load_diagnostics: {
         race_id: raceId,
+        snapshot_index: snapshotIndex,
         snapshot_lookup_ms: snapshotLookupMs,
         snapshot_load_ms: snapshotLoadMs,
         total_ms: Date.now() - startedAt
@@ -268,6 +290,7 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
     },
     diagnostics: {
       raceId,
+      snapshot_index: snapshotIndex,
       snapshot_lookup_ms: snapshotLookupMs,
       snapshot_load_ms: snapshotLoadMs,
       total_ms: Date.now() - startedAt

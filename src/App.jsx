@@ -62,7 +62,9 @@ function getApiErrorDetails(err) {
     where: payload?.where || details?.step || null,
     route: payload?.route || null,
     message: err?.message || payload?.message || "Search failed",
-    url: details?.url || null
+    url: details?.url || null,
+    source: payload?.source && typeof payload.source === "object" ? payload.source : {},
+    missingFields: Array.isArray(payload?.missing_fields) ? payload.missing_fields : []
   };
 }
 
@@ -81,15 +83,15 @@ function buildRaceApiErrorMessage(details = {}, fallbackMessage = "Failed to fet
   const code = String(details?.code || "").toUpperCase();
   if (code === "SNAPSHOT_MISSING" || code === "SNAPSHOT_NOT_FOUND") return "事前データ未生成";
   if (code === "BROKEN_PIPELINE") return "事前特徴量未生成";
-  if (Number(details?.status) === 504 || /timeout/i.test(String(details?.message || ""))) return "API timeout";
+  if (Number(details?.status) === 504 || /timeout/i.test(String(details?.message || ""))) return "APIタイムアウト";
   return fallbackMessage;
 }
 
 function buildSnapshotGenerationHints(date, venueId, raceNo) {
-  const base = "cd backend";
+  const base = "Set-Location backend";
   return [
-    `${base} && npm run snapshot:generate -- --date ${date} --venueId ${venueId} --raceNo ${raceNo}`,
-    `${base} && npm run snapshot:generate -- --date ${date} --venueId ${venueId} --all-races`
+    `${base}; npm run snapshot:generate -- --date ${date} --venueId ${venueId} --raceNo ${raceNo}`,
+    `${base}; npm run snapshot:generate -- --date ${date} --venueId ${venueId} --all-races`
   ];
 }
 
@@ -1697,13 +1699,15 @@ function buildSourceSummaryRows(sourceSummary = {}) {
   const snapshot = sourceSummary?.snapshot && typeof sourceSummary.snapshot === "object" ? sourceSummary.snapshot : {};
   const fallback = sourceSummary?.fallback && typeof sourceSummary.fallback === "object" ? sourceSummary.fallback : {};
   const coverage = snapshot?.coverage && typeof snapshot.coverage === "object" ? snapshot.coverage : {};
+  const missingFields = Array.isArray(sourceSummary?.missing_fields) ? sourceSummary.missing_fields : [];
   return [
     { label: "mode", value: sourceSummary?.mode || "-" },
     { label: "inference_source", value: sourceSummary?.inference_source || "-" },
-    { label: "snapshot", value: `race:${snapshot?.race || "-"} / entries:${snapshot?.entries || "-"} / feature:${snapshot?.feature_snapshot || "-"}` },
+    { label: "snapshot", value: `race:${snapshot?.race || "-"} / entries:${snapshot?.entries || "-"} / feature:${snapshot?.feature_snapshot || "-"} / log:${snapshot?.prediction_log_snapshot || "-"} / event:${snapshot?.prediction_feature_event_snapshot || "-"}` },
     { label: "coverage", value: Number.isFinite(Number(coverage?.ready_fields)) && Number.isFinite(Number(coverage?.total_fields)) ? `${coverage.ready_fields}/${coverage.total_fields}` : "-" },
     { label: "fallback", value: fallback?.used ? `yes (${Array.isArray(fallback?.fields) ? fallback.fields.join(", ") || "-" : "-"})` : "no" },
-    { label: "estimated", value: Array.isArray(sourceSummary?.estimated_fields) && sourceSummary.estimated_fields.length > 0 ? sourceSummary.estimated_fields.join(", ") : "none" }
+    { label: "estimated", value: Array.isArray(sourceSummary?.estimated_fields) && sourceSummary.estimated_fields.length > 0 ? sourceSummary.estimated_fields.join(", ") : "none" },
+    { label: "missing", value: missingFields.length > 0 ? missingFields.join(", ") : "none" }
   ];
 }
 
@@ -6108,6 +6112,8 @@ export default function App() {
                 {String(errorDetails?.code || "").toUpperCase() === "SNAPSHOT_MISSING" ? (
                   <div className="kv-list" style={{ marginTop: 10 }}>
                     <div className="kv-row"><span>案内</span><strong>事前データ未生成</strong></div>
+                    <div className="kv-row"><span>missing</span><strong>{Array.isArray(errorDetails?.missingFields) && errorDetails.missingFields.length > 0 ? errorDetails.missingFields.join(", ") : "snapshot.race"}</strong></div>
+                    <div className="kv-row"><span>snapshot key</span><strong>{errorDetails?.source?.snapshot_lookup?.raceId || "-"}</strong></div>
                     <div className="kv-row"><span>このレース</span><strong>{snapshotGenerationHints[0]}</strong></div>
                     <div className="kv-row"><span>この場の全レース</span><strong>{snapshotGenerationHints[1]}</strong></div>
                   </div>

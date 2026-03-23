@@ -30,9 +30,10 @@ function toInt(value, fallback = null) {
 function printUsage() {
   console.log(`
 Usage:
-  node scripts/generate-snapshot.js --date YYYY-MM-DD --venueId 19 --raceNo 1
-  node scripts/generate-snapshot.js --date YYYY-MM-DD --venueId 19 --all-races
-  node scripts/generate-snapshot.js --date YYYY-MM-DD --all-venues
+  npm run snapshot:generate -- --date YYYY-MM-DD --venueId 19 --raceNo 1
+  npm run snapshot:generate -- --date YYYY-MM-DD --venueId 19 --all-races
+  npm run snapshot:generate -- --date YYYY-MM-DD --all-venues
+  node scripts/generate-snapshot.js --help
 
 Options:
   --date YYYY-MM-DD
@@ -44,6 +45,13 @@ Options:
   --no-kyotei
   --no-force-refresh
   --json
+  --help
+
+Behavior:
+  - single race: --date + --venueId + --raceNo
+  - venue batch: --date + --venueId + --all-races
+  - date batch: --date + --all-venues
+  - output includes saved snapshot counts and snapshot index status
 `);
 }
 
@@ -105,7 +113,7 @@ async function main() {
   console.log(`snapshot generation summary: total=${summary.total} ok=${summary.ok} failed=${summary.failed}`);
   for (const row of results) {
     if (row?.ok) {
-      console.log(`[OK] ${row.date} venue=${row.venueId} race=${row.raceNo} race_id=${row.raceId} feature_snapshot=${row.saved?.feature_snapshot || 0} total_ms=${row.timing?.total_ms || 0}`);
+      console.log(`[OK] ${row.date} venue=${row.venueId} race=${row.raceNo} race_id=${row.raceId} status=${row.snapshotIndex?.snapshotStatus || "READY"} feature_snapshot=${row.saved?.feature_snapshot || 0} total_ms=${row.timing?.total_ms || 0}`);
     } else {
       console.log(`[FAIL] ${row?.date || "-"} venue=${row?.venueId || "-"} race=${row?.raceNo || "-"} code=${row?.code || "SNAPSHOT_GENERATION_FAILED"} message=${row?.message || "unknown_error"}`);
     }

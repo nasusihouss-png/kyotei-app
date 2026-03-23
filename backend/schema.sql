@@ -98,6 +98,29 @@ CREATE TABLE IF NOT EXISTS feature_snapshots (
   FOREIGN KEY (race_id) REFERENCES races(race_id)
 );
 
+CREATE TABLE IF NOT EXISTS race_snapshot_index (
+  race_id TEXT PRIMARY KEY,
+  race_date TEXT NOT NULL,
+  venue_id INTEGER NOT NULL,
+  race_no INTEGER NOT NULL,
+  venue_name TEXT,
+  snapshot_status TEXT NOT NULL DEFAULT 'SNAPSHOT_MISSING',
+  entry_count INTEGER NOT NULL DEFAULT 0,
+  feature_count INTEGER NOT NULL DEFAULT 0,
+  generated_by TEXT,
+  last_error_code TEXT,
+  last_error_message TEXT,
+  metadata_json TEXT,
+  generated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_race_snapshot_index_date_venue_race
+  ON race_snapshot_index(race_date, venue_id, race_no);
+
+CREATE INDEX IF NOT EXISTS idx_race_snapshot_index_status
+  ON race_snapshot_index(snapshot_status, race_date);
+
 CREATE TABLE IF NOT EXISTS placed_bets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   race_id TEXT NOT NULL,

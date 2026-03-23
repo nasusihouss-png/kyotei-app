@@ -10,6 +10,7 @@ import { applyMotorTrendFeatures } from "../../motor-trend-engine.js";
 import { applyEntryDynamicsFeatures } from "../../entry-dynamics-engine.js";
 import { rankRace } from "../../score-engine.js";
 import { saveFeatureSnapshots } from "../../save-feature-snapshots.js";
+import { upsertRaceSnapshotIndex } from "./race-snapshot-store.js";
 
 const VENUE_IDS = Array.from({ length: 24 }, (_, index) => index + 1);
 const DEFAULT_RACE_NUMBERS = Array.from({ length: 12 }, (_, index) => index + 1);
@@ -63,6 +64,27 @@ export async function generateRaceSnapshot({
   const ranking = buildFeatureRanking(data);
   const raceId = saveRace(data);
   const featureSnapshotCount = saveFeatureSnapshots(raceId, ranking);
+  const entrySnapshotCount = Array.isArray(data?.racers) ? data.racers.length : 0;
+  const snapshotStatus = entrySnapshotCount === 6 && featureSnapshotCount === 6 ? "READY" : "BROKEN_PIPELINE";
+  const snapshotIndex = upsertRaceSnapshotIndex({
+    raceId,
+    date: data?.race?.date || date,
+    venueId: data?.race?.venueId || venueId,
+    venueName: data?.race?.venueName || null,
+    raceNo: data?.race?.raceNo || raceNo,
+    snapshotStatus,
+    entryCount: entrySnapshotCount,
+    featureCount: featureSnapshotCount,
+    generatedBy: "snapshot:generate",
+    metadata: {
+      timing: {
+        total_ms: Date.now() - startedAt,
+        upstream: data?.source?.timings || {}
+      },
+      includeKyoteiBiyori: !!includeKyoteiBiyori,
+      forceRefresh: !!forceRefresh
+    }
+  });
 
   return {
     ok: true,
@@ -72,9 +94,10 @@ export async function generateRaceSnapshot({
     raceNo: toInt(data?.race?.raceNo, toInt(raceNo, null)),
     saved: {
       race_snapshot: true,
-      entry_snapshot: Array.isArray(data?.racers) ? data.racers.length : 0,
+      entry_snapshot: entrySnapshotCount,
       feature_snapshot: featureSnapshotCount
     },
+    snapshotIndex,
     timing: {
       total_ms: Date.now() - startedAt,
       upstream: data?.source?.timings || {}
@@ -102,6 +125,20 @@ export async function generateVenueSnapshots({
         forceRefresh
       }));
     } catch (error) {
+      upsertRaceSnapshotIndex({
+        date,
+        venueId,
+        raceNo,
+        snapshotStatus: "SNAPSHOT_MISSING",
+        entryCount: 0,
+        featureCount: 0,
+        generatedBy: "snapshot:generate",
+        lastErrorCode: "SNAPSHOT_GENERATION_FAILED",
+        lastErrorMessage: String(error?.message || error),
+        metadata: {
+          failedAt: new Date().toISOString()
+        }
+      });
       results.push({
         ok: false,
         date,
