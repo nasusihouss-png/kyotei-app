@@ -1,6 +1,14 @@
 import db from "../../db.js";
 import { buildRaceIdFromParts } from "../../result-utils.js";
 
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_races_race_id ON races(race_id);
+  CREATE INDEX IF NOT EXISTS idx_entries_race_id_lane ON entries(race_id, lane);
+  CREATE INDEX IF NOT EXISTS idx_feature_snapshots_race_id_lane ON feature_snapshots(race_id, lane);
+  CREATE INDEX IF NOT EXISTS idx_prediction_feature_log_events_race_id_id ON prediction_feature_log_events(race_id, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_prediction_logs_race_id_id ON prediction_logs(race_id, id DESC);
+`);
+
 function safeJsonParse(value, fallback) {
   try {
     return JSON.parse(value);
@@ -84,16 +92,27 @@ function buildPlayerSnapshotMap(snapshot = null) {
   );
 }
 
-export function loadStoredRaceInferenceData({ date, venueId, raceNo }) {
+export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = null }) {
+  const startedAt = Date.now();
   const raceId = buildRaceIdFromParts({ date, venueId, raceNo });
   if (!raceId) {
     return {
       ok: false,
       code: "invalid_race_key",
-      message: "date / venueId / raceNo could not be converted into a race key"
+      message: "date / venueId / raceNo could not be converted into a race key",
+      diagnostics: {
+        raceId: null,
+        snapshot_lookup_ms: 0,
+        snapshot_load_ms: 0,
+        total_ms: Date.now() - startedAt
+      }
     };
   }
 
+  if (typeof trace === "function") {
+    trace("snapshot_lookup_start", { raceId, date, venueId: toInt(venueId, null), raceNo: toInt(raceNo, null) });
+  }
+  const snapshotLookupStartedAt = Date.now();
   const raceRow = db
     .prepare(
       `
@@ -104,16 +123,30 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo }) {
     `
     )
     .get(raceId);
+  const snapshotLookupMs = Date.now() - snapshotLookupStartedAt;
+  if (typeof trace === "function") {
+    trace("snapshot_lookup_end", { raceId, found: !!raceRow, snapshot_lookup_ms: snapshotLookupMs });
+  }
 
   if (!raceRow) {
     return {
       ok: false,
-      code: "snapshot_not_found",
+      code: "SNAPSHOT_MISSING",
       message: "precomputed race snapshot was not found",
-      raceId
+      raceId,
+      diagnostics: {
+        raceId,
+        snapshot_lookup_ms: snapshotLookupMs,
+        snapshot_load_ms: 0,
+        total_ms: Date.now() - startedAt
+      }
     };
   }
 
+  if (typeof trace === "function") {
+    trace("snapshot_load_start", { raceId });
+  }
+  const snapshotLoadStartedAt = Date.now();
   const entryRows = db
     .prepare(
       `
@@ -175,6 +208,17 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo }) {
       playerSnapshot
     };
   });
+  const snapshotLoadMs = Date.now() - snapshotLoadStartedAt;
+  if (typeof trace === "function") {
+    trace("snapshot_load_end", {
+      raceId,
+      entry_count: entryRows.length,
+      feature_count: featureRows.length,
+      has_prediction_feature_event_snapshot: !!featureEventSnapshot,
+      has_prediction_log_snapshot: !!predictionLogSnapshot,
+      snapshot_load_ms: snapshotLoadMs
+    });
+  }
 
   return {
     ok: true,
@@ -191,6 +235,10 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo }) {
       waveHeight: toNum(raceRow.wave_height, null)
     },
     racers,
+    stored_snapshots: {
+      prediction_feature_event_snapshot: featureEventSnapshot,
+      prediction_log_snapshot: predictionLogSnapshot
+    },
     source: {
       mode: "pure_inference",
       local_inference: true,
@@ -209,7 +257,19 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo }) {
         feature_snapshot: featureRows.length,
         prediction_feature_event_snapshot: !!featureEventSnapshot,
         prediction_log_snapshot: !!predictionLogSnapshot
+      },
+      load_diagnostics: {
+        race_id: raceId,
+        snapshot_lookup_ms: snapshotLookupMs,
+        snapshot_load_ms: snapshotLoadMs,
+        total_ms: Date.now() - startedAt
       }
+    },
+    diagnostics: {
+      raceId,
+      snapshot_lookup_ms: snapshotLookupMs,
+      snapshot_load_ms: snapshotLoadMs,
+      total_ms: Date.now() - startedAt
     }
   };
 }

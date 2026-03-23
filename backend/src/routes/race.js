@@ -2653,6 +2653,106 @@ async function resolveRaceDataForList({
   };
 }
 
+const PURE_INFERENCE_ROUTE_TIMEOUT_MS = 10000;
+
+function logRaceRouteStage(traceBase, stage, extra = {}) {
+  console.info("[RACE_ROUTE_TRACE]", JSON.stringify({
+    ts: new Date().toISOString(),
+    stage,
+    ...traceBase,
+    ...extra
+  }));
+}
+
+function ensureRaceRouteWithinDeadline(startedAt, timeoutMs, where) {
+  const elapsed = Date.now() - startedAt;
+  if (elapsed > timeoutMs) {
+    throw createTimeoutError({
+      code: "race_route_timeout_guard",
+      where,
+      route: "/api/race",
+      message: `pure inference route exceeded ${timeoutMs}ms guard`,
+      statusCode: 504
+    });
+  }
+}
+
+function buildStoredRankingRows(data = {}) {
+  return (Array.isArray(data?.racers) ? data.racers : [])
+    .map((racer, index) => ({
+      rank: index + 1,
+      racer: {
+        ...racer,
+        lane: toInt(racer?.lane, null)
+      },
+      features: racer?.featureSnapshot && typeof racer.featureSnapshot === "object"
+        ? racer.featureSnapshot
+        : {}
+    }))
+    .filter((row) => Number.isInteger(toInt(row?.racer?.lane, null)));
+}
+
+function buildPureInferencePredictionPayload(data = {}) {
+  const storedPrediction =
+    data?.stored_snapshots?.prediction_log_snapshot && typeof data.stored_snapshots.prediction_log_snapshot === "object"
+      ? data.stored_snapshots.prediction_log_snapshot
+      : data?.stored_snapshots?.prediction_feature_event_snapshot && typeof data.stored_snapshots.prediction_feature_event_snapshot === "object"
+        ? data.stored_snapshots.prediction_feature_event_snapshot
+        : null;
+  const baseRanking = Array.isArray(storedPrediction?.ranking) && storedPrediction.ranking.length === 6
+    ? storedPrediction.ranking
+    : buildStoredRankingRows(data);
+  const pureTop6Prediction = buildTop6Prediction({
+    ranking: baseRanking,
+    race: data?.race || null
+  });
+  const derivedRanking =
+    Array.isArray(storedPrediction?.ranking) && storedPrediction.ranking.length === 6
+      ? storedPrediction.ranking
+      : Array.isArray(pureTop6Prediction?.head_candidate_ranking)
+        ? pureTop6Prediction.head_candidate_ranking
+            .map((item, index) => {
+              const lane = toInt(item?.lane, null);
+              const racer = (Array.isArray(data?.racers) ? data.racers : []).find((row) => toInt(row?.lane, null) === lane) || null;
+              return lane && racer
+                ? {
+                    rank: index + 1,
+                    racer: {
+                      ...racer,
+                      lane
+                    },
+                    features: racer?.featureSnapshot && typeof racer.featureSnapshot === "object" ? racer.featureSnapshot : {}
+                  }
+                : null;
+            })
+            .filter(Boolean)
+        : baseRanking;
+  const fallbackTop3 = pureTop6Prediction?.main_ticket?.combo
+    ? String(pureTop6Prediction.main_ticket.combo).split("-").map((value) => toInt(value, null)).filter(Number.isInteger).slice(0, 3)
+    : derivedRanking.slice(0, 3).map((row) => toInt(row?.racer?.lane, null)).filter(Number.isInteger);
+  const prediction = {
+    ...(storedPrediction && typeof storedPrediction === "object" ? storedPrediction : {}),
+    ranking: derivedRanking,
+    top3: Array.isArray(storedPrediction?.top3) && storedPrediction.top3.length === 3 ? storedPrediction.top3 : fallbackTop3,
+    pure_top6_prediction: pureTop6Prediction || storedPrediction?.pure_top6_prediction || null,
+    prediction_mode: "pure_inference_snapshot_only",
+    source_summary: {
+      mode: "pure_inference",
+      snapshot: {
+        prediction_log_snapshot: data?.source?.local_snapshots?.prediction_log_snapshot ? "snapshot" : "missing",
+        prediction_feature_event_snapshot: data?.source?.local_snapshots?.prediction_feature_event_snapshot ? "snapshot" : "missing",
+        feature_snapshot: data?.source?.local_snapshots?.feature_snapshot ? "snapshot" : "missing"
+      }
+    }
+  };
+
+  return {
+    storedPrediction,
+    pureTop6Prediction,
+    prediction
+  };
+}
+
 function loadStartSignatureTrendContext() {
   try {
     const summary = db
@@ -9477,7 +9577,15 @@ raceRouter.get("/race", async (req, res, next) => {
   try {
     const routeStartedAt = Date.now();
     let artifactCollector = null;
+    const maxRouteTimeoutMs = Math.max(
+      8000,
+      Math.min(toInt(req.query?.routeTimeoutMs, Number(process.env.RACE_API_ROUTE_TIMEOUT_MS || PURE_INFERENCE_ROUTE_TIMEOUT_MS)), 12000)
+    );
     const routeTimings = {
+      snapshot_lookup_ms: null,
+      snapshot_load_ms: null,
+      feature_generation_ms: null,
+      inference_ms: null,
       official_base_fetch_ms: null,
       kyoteibiyori_fetch_ms: null,
       parsing_ms: null,
@@ -9491,6 +9599,16 @@ raceRouter.get("/race", async (req, res, next) => {
     const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, false);
     const screeningMode = String(req.query?.screening || "").toLowerCase();
     const isHardRaceScreening = screeningMode === "hard_race";
+    const traceBase = {
+      route: "/api/race",
+      date,
+      venueId: toInt(venueId, null),
+      raceNo: toInt(raceNo, null),
+      screening: screeningMode || null,
+      pure_inference: true
+    };
+
+    logRaceRouteStage(traceBase, "route_start", { route_timeout_ms: maxRouteTimeoutMs });
 
     if (!date || !venueId || !raceNo) {
       return res.status(400).json({
@@ -9504,142 +9622,99 @@ raceRouter.get("/race", async (req, res, next) => {
 
     let data;
     try {
-      failureWhere = "race.route:getRaceData";
-      const raceDataTimeoutMs = Math.max(
-        3000,
-        Math.min(
-          toInt(req.query?.getRaceDataTimeoutMs, Number(process.env.RACE_API_GETRACEDATA_TIMEOUT_MS || 9000)),
-          isHardRaceScreening ? 14000 : 9000
-        )
-      );
-      const dataFetchTimeoutMs = Math.max(
-        2500,
-        Math.min(
-          toInt(req.query?.dataFetchTimeoutMs, isHardRaceScreening ? 7500 : 5000),
-          isHardRaceScreening ? 8500 : 5000
-        )
-      );
+      failureWhere = "race.route:snapshot_lookup";
       artifactCollector = isHardRaceScreening ? {} : null;
-      console.info("[RACE_ROUTE][fetch_start]", JSON.stringify({
-        route: "/api/race",
-        date,
-        venueId: toInt(venueId, null),
-        raceNo: toInt(raceNo, null),
-        screening: screeningMode || null,
-        raceDataTimeoutMs,
-        dataFetchTimeoutMs
-      }));
+      let stored = null;
       {
-        const stored = loadStoredRaceInferenceData({ date, venueId, raceNo });
+        stored = loadStoredRaceInferenceData({
+          date,
+          venueId,
+          raceNo,
+          trace: (stage, extra) => {
+            logRaceRouteStage(traceBase, stage, extra);
+          }
+        });
+        routeTimings.snapshot_lookup_ms = stored?.diagnostics?.snapshot_lookup_ms ?? null;
+        routeTimings.snapshot_load_ms = stored?.diagnostics?.snapshot_load_ms ?? null;
+        ensureRaceRouteWithinDeadline(routeStartedAt, maxRouteTimeoutMs, failureWhere);
         if (!stored?.ok) {
-          const fallback = loadRaceSnapshotFromDb({ date, venueId, raceNo });
-          if (!fallback && isHardRaceScreening) {
-            routeTimings.total_response_ms = Date.now() - routeStartedAt;
-            return res.json({
-              source: {
-                mode: "pure_inference",
-                local_inference: true,
-                local_snapshots: {
-                  race_snapshot: false,
-                  entry_snapshot: 0,
-                  feature_snapshot: 0,
-                  prediction_feature_event_snapshot: false,
-                  prediction_log_snapshot: false
-                }
-              },
-              race: {
-                date,
-                venueId: toInt(venueId, null),
-                venueName: null,
-                raceNo: toInt(raceNo, null)
-              },
-              racers: [],
-              hardRace1234: {
-                race_no: toInt(raceNo, null),
-                status: "BROKEN_PIPELINE",
-                data_status: "BROKEN_PIPELINE",
-                confidence_status: "BROKEN_PIPELINE",
-                decision: "SKIP",
-                decision_reason: stored?.message || "precomputed race snapshot was not found",
-                missing_fields: ["snapshot.race"],
-                missing_field_details: {
-                  "snapshot.race": {
-                    reason: stored?.code || "snapshot_not_found",
-                    source: "local_snapshot",
-                    lane: null,
-                    field: "race"
-                  }
-                },
-                source_summary: {
-                  mode: "pure_inference",
-                  inference_source: "local_precomputed_only",
-                  snapshot: {
-                    race: "missing",
-                    entries: "missing",
-                    feature_snapshot: "missing"
-                  },
-                  fallback: {
-                    used: false,
-                    fields: []
-                  },
-                  estimated_fields: []
-                },
-                fetched_urls: {
-                  boatrace: {},
-                  kyoteibiyori: {}
-                },
-                screeningDebug: {
-                  fetch_success: true,
-                  parse_success: false,
-                  score_success: false,
-                  decision_reason: stored?.message || "precomputed race snapshot was not found",
-                  missing_required_scores: ["snapshot.race"]
-                }
-              },
-              routeTiming: routeTimings
-            });
-          }
-          if (!fallback) {
-            const err = new Error(stored?.message || "precomputed race snapshot was not found");
-            err.code = stored?.code || "snapshot_not_found";
-            throw err;
-          }
-          data = {
-            ...fallback,
+          routeTimings.total_response_ms = Date.now() - routeStartedAt;
+          logRaceRouteStage(traceBase, "response_return", {
+            status: 404,
+            code: stored?.code || "SNAPSHOT_MISSING",
+            total_response_ms: routeTimings.total_response_ms
+          });
+          return res.status(404).json({
+            error: "snapshot_missing",
+            code: stored?.code || "SNAPSHOT_MISSING",
+            where: failureWhere,
+            route: "/api/race",
+            message: stored?.message || "precomputed race snapshot was not found",
             source: {
-              ...(fallback.source || {}),
               mode: "pure_inference",
               local_inference: true,
-              official_fetch_status: {
-                mode: "disabled_for_inference",
-                reason: "pure_inference_uses_local_db_snapshot_only"
-              },
-              kyotei_biyori: {
-                mode: "disabled_for_inference",
-                reason: "pure_inference_uses_local_db_snapshot_only"
-              },
               local_snapshots: {
-                race_snapshot: true,
-                entry_snapshot: Array.isArray(fallback?.racers) ? fallback.racers.length : 0,
+                race_snapshot: false,
+                entry_snapshot: 0,
                 feature_snapshot: 0,
                 prediction_feature_event_snapshot: false,
                 prediction_log_snapshot: false
               }
-            }
-          };
+            },
+            race: {
+              date,
+              venueId: toInt(venueId, null),
+              venueName: null,
+              raceNo: toInt(raceNo, null)
+            },
+            data_status: "SNAPSHOT_MISSING",
+            confidence_status: "BROKEN_PIPELINE",
+            routeTiming: routeTimings
+          });
+        }
+        if (!Array.isArray(stored?.racers) || stored.racers.length !== 6) {
+          routeTimings.total_response_ms = Date.now() - routeStartedAt;
+          logRaceRouteStage(traceBase, "response_return", {
+            status: 500,
+            code: "BROKEN_PIPELINE",
+            total_response_ms: routeTimings.total_response_ms
+          });
+          return res.status(500).json({
+            error: "broken_pipeline",
+            code: "BROKEN_PIPELINE",
+            where: "race.route:snapshot_integrity",
+            route: "/api/race",
+            message: "precomputed snapshot exists but racer rows are incomplete",
+            source: stored?.source || {},
+            race: stored?.race || {
+              date,
+              venueId: toInt(venueId, null),
+              raceNo: toInt(raceNo, null)
+            },
+            data_status: "BROKEN_PIPELINE",
+            confidence_status: "BROKEN_PIPELINE",
+            missing_fields: ["snapshot.entries"],
+            routeTiming: routeTimings
+          });
         } else {
           data = stored;
         }
       }
-      console.info("[RACE_ROUTE][fetch_success]", JSON.stringify({
-        route: "/api/race",
-        date,
-        venueId: toInt(venueId, null),
-        raceNo: toInt(raceNo, null),
-        pure_inference: !!data?.source?.local_inference,
-        official_fetch_status: data?.source?.official_fetch_status || {},
-        kyotei_ok: !!data?.source?.kyotei_biyori?.ok
-      }));
+      logRaceRouteStage(traceBase, "snapshot_ready", {
+        snapshot_lookup_ms: routeTimings.snapshot_lookup_ms,
+        snapshot_load_ms: routeTimings.snapshot_load_ms
+      });
+      ensureRaceRouteWithinDeadline(routeStartedAt, maxRouteTimeoutMs, "race.route:feature_generation");
+      const featureGenerationStartedAt = Date.now();
+      logRaceRouteStage(traceBase, "feature_generation_start");
+      const purePredictionBundle = buildPureInferencePredictionPayload(data);
+      routeTimings.feature_generation_ms = Date.now() - featureGenerationStartedAt;
+      logRaceRouteStage(traceBase, "feature_generation_end", {
+        feature_generation_ms: routeTimings.feature_generation_ms,
+        has_stored_prediction: !!purePredictionBundle?.storedPrediction
+      });
+      ensureRaceRouteWithinDeadline(routeStartedAt, maxRouteTimeoutMs, "race.route:inference");
+      logRaceRouteStage(traceBase, "inference_start", { screening: screeningMode || "default" });
       if (isHardRaceScreening) {
         const predictionStartedAt = Date.now();
         let hardRace1234;
@@ -9730,17 +9805,18 @@ raceRouter.get("/race", async (req, res, next) => {
             message: hardRace1234.decision_reason
           }));
         }
-        routeTimings.prediction_build_ms = Date.now() - predictionStartedAt;
+        routeTimings.inference_ms = Date.now() - predictionStartedAt;
+        routeTimings.prediction_build_ms = routeTimings.inference_ms;
         routeTimings.total_response_ms = Date.now() - routeStartedAt;
-        console.info("[RACE_ROUTE][response_end]", JSON.stringify({
-          route: "/api/race",
-          date,
-          venueId: toInt(venueId, null),
-          raceNo: toInt(raceNo, null),
+        logRaceRouteStage(traceBase, "inference_end", {
+          inference_ms: routeTimings.inference_ms,
           data_status: hardRace1234?.data_status || null,
-          decision: hardRace1234?.decision || null,
+          decision: hardRace1234?.decision || null
+        });
+        logRaceRouteStage(traceBase, "response_return", {
+          status: 200,
           total_response_ms: routeTimings.total_response_ms
-        }));
+        });
         return res.json({
           source: data.source || {},
           race: data.race,
@@ -9750,6 +9826,48 @@ raceRouter.get("/race", async (req, res, next) => {
           routeTiming: routeTimings
         });
       }
+      const inferenceStartedAt = Date.now();
+      const prediction = purePredictionBundle.prediction;
+      const pureTop6Prediction = purePredictionBundle.pureTop6Prediction;
+      routeTimings.inference_ms = Date.now() - inferenceStartedAt;
+      routeTimings.prediction_build_ms = routeTimings.inference_ms;
+      routeTimings.total_response_ms = Date.now() - routeStartedAt;
+      logRaceRouteStage(traceBase, "inference_end", {
+        inference_ms: routeTimings.inference_ms,
+        top6_coverage: pureTop6Prediction?.top6_coverage ?? null
+      });
+      logRaceRouteStage(traceBase, "response_return", {
+        status: 200,
+        total_response_ms: routeTimings.total_response_ms
+      });
+      return res.json({
+        source: data.source || {},
+        race: data.race,
+        racers: data.racers,
+        raceId: data.raceId || data.source?.race_id || null,
+        pureTop6Prediction,
+        prediction,
+        predicted_entry_order: Array.isArray(prediction?.predicted_entry_order) ? prediction.predicted_entry_order : data.racers.map((row) => toInt(row?.lane, null)).filter(Number.isInteger),
+        actual_entry_order: Array.isArray(prediction?.actual_entry_order) ? prediction.actual_entry_order : data.racers.map((row) => toInt(row?.entryCourse ?? row?.lane, null)).filter(Number.isInteger),
+        entry_changed: !!prediction?.entry_changed,
+        entry_change_type: prediction?.entry_change_type || "none",
+        confidenceScores: prediction?.confidence_scores || null,
+        participationDecision: prediction?.participation_decision
+          ? {
+              decision: prediction.participation_decision,
+              is_recommended: prediction.participation_decision === "recommended"
+            }
+          : null,
+        recommendation_label:
+          prediction?.participation_decision === "recommended"
+            ? "Recommended"
+            : prediction?.participation_decision === "watch"
+              ? "Watch"
+              : prediction?.participation_decision === "skip"
+                ? "Not Recommended"
+                : null,
+        routeTiming: routeTimings
+      });
     } catch (fetchErr) {
       console.error("[RACE_ROUTE][fetch_failure]", JSON.stringify({
         route: "/api/race",

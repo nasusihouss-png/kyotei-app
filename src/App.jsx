@@ -66,6 +66,17 @@ function getApiErrorDetails(err) {
   };
 }
 
+function getRaceApiErrorLabel(details = {}) {
+  const status = Number.isFinite(Number(details?.status)) ? Number(details.status) : null;
+  const code = String(details?.code || "").toUpperCase();
+  const message = String(details?.message || "").toLowerCase();
+  if (status === 504 || code.includes("TIMEOUT") || message.includes("timeout")) return "API timeout";
+  if (code === "SNAPSHOT_MISSING" || code === "SNAPSHOT_NOT_FOUND") return "snapshot missing";
+  if (code === "BROKEN_PIPELINE") return "broken pipeline";
+  if (status && status >= 500) return "backend 500";
+  return "api error";
+}
+
 const VENUES = [
   { id: 1, name: "Kiryu" },
   { id: 2, name: "Toda" },
@@ -6067,6 +6078,7 @@ export default function App() {
                 <div>{error}</div>
                 {errorDetails ? (
                   <div className="kv-list" style={{ marginTop: 8 }}>
+                    <div className="kv-row"><span>error type</span><strong>{getRaceApiErrorLabel(errorDetails)}</strong></div>
                     <div className="kv-row"><span>status</span><strong>{errorDetails.status ?? "-"}</strong></div>
                     <div className="kv-row"><span>code</span><strong>{errorDetails.code || "-"}</strong></div>
                     <div className="kv-row"><span>where</span><strong>{errorDetails.where || "-"}</strong></div>
