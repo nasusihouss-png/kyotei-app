@@ -77,6 +77,22 @@ function getRaceApiErrorLabel(details = {}) {
   return "api error";
 }
 
+function buildRaceApiErrorMessage(details = {}, fallbackMessage = "Failed to fetch race data") {
+  const code = String(details?.code || "").toUpperCase();
+  if (code === "SNAPSHOT_MISSING" || code === "SNAPSHOT_NOT_FOUND") return "事前データ未生成";
+  if (code === "BROKEN_PIPELINE") return "事前特徴量未生成";
+  if (Number(details?.status) === 504 || /timeout/i.test(String(details?.message || ""))) return "API timeout";
+  return fallbackMessage;
+}
+
+function buildSnapshotGenerationHints(date, venueId, raceNo) {
+  const base = "cd backend";
+  return [
+    `${base} && npm run snapshot:generate -- --date ${date} --venueId ${venueId} --raceNo ${raceNo}`,
+    `${base} && npm run snapshot:generate -- --date ${date} --venueId ${venueId} --all-races`
+  ];
+}
+
 const VENUES = [
   { id: 1, name: "Kiryu" },
   { id: 2, name: "Toda" },
@@ -4039,6 +4055,7 @@ export default function App() {
 
   const race = data?.race || {};
   const sourceMeta = data?.source || {};
+  const snapshotGenerationHints = buildSnapshotGenerationHints(date, venueId, raceNo);
   const startDisplay = data?.startDisplay || null;
   const entryPipelineDebug = useMemo(() => getCanonicalEntryDebug(data, startDisplay), [data, startDisplay]);
   const prediction = data?.prediction || {};
@@ -4908,8 +4925,9 @@ export default function App() {
         return next.slice(0, 8);
       });
     } catch (e) {
-      setError(e.message || "Failed to fetch race data");
-      setErrorDetails(getApiErrorDetails(e));
+      const details = getApiErrorDetails(e);
+      setError(buildRaceApiErrorMessage(details, e.message || "Failed to fetch race data"));
+      setErrorDetails(details);
     } finally {
       setLoading(false);
     }
@@ -5195,8 +5213,9 @@ export default function App() {
       setManualLapNotice("");
       setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
     } catch (e) {
-      setError(e.message || "Failed to fetch race data");
-      setErrorDetails(getApiErrorDetails(e));
+      const details = getApiErrorDetails(e);
+      setError(buildRaceApiErrorMessage(details, e.message || "Failed to fetch race data"));
+      setErrorDetails(details);
     } finally {
       setLoading(false);
     }
@@ -6084,6 +6103,13 @@ export default function App() {
                     <div className="kv-row"><span>where</span><strong>{errorDetails.where || "-"}</strong></div>
                     <div className="kv-row"><span>route</span><strong>{errorDetails.route || "-"}</strong></div>
                     <div className="kv-row"><span>url</span><strong>{errorDetails.url || "-"}</strong></div>
+                  </div>
+                ) : null}
+                {String(errorDetails?.code || "").toUpperCase() === "SNAPSHOT_MISSING" ? (
+                  <div className="kv-list" style={{ marginTop: 10 }}>
+                    <div className="kv-row"><span>案内</span><strong>事前データ未生成</strong></div>
+                    <div className="kv-row"><span>このレース</span><strong>{snapshotGenerationHints[0]}</strong></div>
+                    <div className="kv-row"><span>この場の全レース</span><strong>{snapshotGenerationHints[1]}</strong></div>
                   </div>
                 ) : null}
               </div>

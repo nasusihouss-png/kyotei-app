@@ -3,6 +3,7 @@ import { buildRaceIdFromParts } from "../../result-utils.js";
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_races_race_id ON races(race_id);
+  CREATE INDEX IF NOT EXISTS idx_races_date_venue_race ON races(race_date, venue_id, race_no);
   CREATE INDEX IF NOT EXISTS idx_entries_race_id_lane ON entries(race_id, lane);
   CREATE INDEX IF NOT EXISTS idx_feature_snapshots_race_id_lane ON feature_snapshots(race_id, lane);
   CREATE INDEX IF NOT EXISTS idx_prediction_feature_log_events_race_id_id ON prediction_feature_log_events(race_id, id DESC);
