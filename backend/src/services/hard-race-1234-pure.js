@@ -377,6 +377,20 @@ function laneStyleScenarioScore(laneRow, normalized) {
   ]);
 }
 
+function describeHardScenario({ laneScores = {}, headProb1 = 0, outsideBreakRisk = 0 }) {
+  const ranked = Object.entries(laneScores)
+    .map(([lane, score]) => ({ lane: Number(String(lane).replace("lane", "")), score: Number(score) || 0 }))
+    .sort((a, b) => b.score - a.score);
+  const top = ranked[0] || { lane: 1, score: 0 };
+  if (top.lane === 1) {
+    return headProb1 >= 0.55 && outsideBreakRisk <= 0.24 ? "escape_repro" : "escape_with_pressure";
+  }
+  if (top.lane === 2) return "boat2_sashi_repro";
+  if (top.lane === 3) return "boat3_attack_repro";
+  if (top.lane === 4) return "boat4_cado_repro";
+  return "outside_mix_repro";
+}
+
 function buildMissingFieldDetails(normalized) {
   const details = {};
   for (const laneRow of normalized?.lanes || []) {
@@ -484,6 +498,14 @@ function computeScores(normalized) {
     { value: lane5ScenarioRepro, weight: 0.11 },
     { value: lane6ScenarioRepro, weight: 0.11 }
   ]);
+  const laneScenarioScores = {
+    lane1: round(lane1ScenarioRepro, 1),
+    lane2: round(lane2ScenarioRepro, 1),
+    lane3: round(lane3ScenarioRepro, 1),
+    lane4: round(lane4ScenarioRepro, 1),
+    lane5: round(lane5ScenarioRepro, 1),
+    lane6: round(lane6ScenarioRepro, 1)
+  };
 
   const pairFit = (left, right) => scoreBlend([
     { value: left, weight: 0.42 },
@@ -601,6 +623,11 @@ function computeScores(normalized) {
     { value: 100 - (lane4?.features?.breakout_rate?.value || 0), weight: 0.04 }
   ]);
   const p1Escape = clamp(0, 1, (p1Score || 0) / 100);
+  const hardScenario = describeHardScenario({
+    laneScores: laneScenarioScores,
+    headProb1: p1Escape,
+    outsideBreakRisk
+  });
   const boat1EscapeTrust = round(p1Escape * 100, 1);
 
   const headProbMap = normalizeProbabilities({
@@ -718,14 +745,7 @@ function computeScores(normalized) {
       p1_escape: round(p1Escape, 4),
       p1_formula: "sigmoid-like normalized blend of lane1 course-head rate, nationwide/local win rate, avg ST, F/L safety, motor/boat strength, venue bias, 3/4-course pressure, and outside head pressure",
       scenario_repro_score: round(scenarioReproScore, 1),
-      lane_scenario_repro_scores: {
-        lane1: round(lane1ScenarioRepro, 1),
-        lane2: round(lane2ScenarioRepro, 1),
-        lane3: round(lane3ScenarioRepro, 1),
-        lane4: round(lane4ScenarioRepro, 1),
-        lane5: round(lane5ScenarioRepro, 1),
-        lane6: round(lane6ScenarioRepro, 1)
-      },
+      lane_scenario_repro_scores: laneScenarioScores,
       top4_share_within_fixed1234: round(fixed1234ShapeConcentration, 4),
       conditional_probabilities: {
         p_1st_1: round(headProbMap[1], 4),
@@ -751,6 +771,9 @@ function computeScores(normalized) {
     data_status: dataStatus,
     confidence_status: dataStatus,
     decision,
+    hardScenario,
+    hardScenarioScore: round(scenarioReproScore, 1),
+    scenario_repro_score: round(scenarioReproScore, 1),
     decision_reason:
       dataStatus === "BROKEN_PIPELINE"
         ? "precomputed features are incomplete"
@@ -818,6 +841,9 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo })
     status: computed.data_status,
     data_status: computed.data_status,
     confidence_status: computed.confidence_status,
+    hardScenario: computed.hardScenario || null,
+    hardScenarioScore: computed.hardScenarioScore ?? computed.features?.scenario_repro_score ?? null,
+    scenario_repro_score: computed.scenario_repro_score ?? computed.features?.scenario_repro_score ?? null,
     ...computed.scores,
     fixed1234_matrix: computed.fixed1234_matrix,
     fixed1234_top4: computed.fixed1234_top4,

@@ -2819,7 +2819,7 @@ function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, d
   };
 }
 
-function buildPureInferencePredictionPayload(data = {}) {
+export function buildPureInferencePredictionPayload(data = {}) {
   const storedPrediction =
     data?.stored_snapshots?.prediction_log_snapshot && typeof data.stored_snapshots.prediction_log_snapshot === "object"
       ? data.stored_snapshots.prediction_log_snapshot
@@ -2863,6 +2863,10 @@ function buildPureInferencePredictionPayload(data = {}) {
     ranking: derivedRanking,
     top3: Array.isArray(storedPrediction?.top3) && storedPrediction.top3.length === 3 ? storedPrediction.top3 : fallbackTop3,
     pure_top6_prediction: pureTop6Prediction || storedPrediction?.pure_top6_prediction || null,
+    top6Scenario: pureTop6Prediction?.top6Scenario || null,
+    top6ScenarioScore: pureTop6Prediction?.top6ScenarioScore ?? pureTop6Prediction?.scenario_repro_score ?? null,
+    scenario_repro_score: pureTop6Prediction?.scenario_repro_score ?? null,
+    scenario_repro_scores: pureTop6Prediction?.scenario_repro_scores || null,
     prediction_mode: "pure_inference_snapshot_only",
     data_status: snapshotSummary.dataStatus,
     confidence_status: snapshotSummary.confidenceStatus,
@@ -9967,6 +9971,9 @@ raceRouter.get("/race", async (req, res, next) => {
           race: data.race,
           racers: data.racers,
           hardRace1234,
+          hardScenario: hardRace1234?.hardScenario || null,
+          hardScenarioScore: hardRace1234?.hardScenarioScore ?? hardRace1234?.scenario_repro_score ?? null,
+          scenario_repro_score: hardRace1234?.scenario_repro_score ?? null,
           ...hardRace1234,
           routeTiming: routeTimings
         });
@@ -9992,6 +9999,10 @@ raceRouter.get("/race", async (req, res, next) => {
         raceId: data.raceId || data.source?.race_id || null,
         pureTop6Prediction,
         prediction,
+        top6Scenario: pureTop6Prediction?.top6Scenario || prediction?.top6Scenario || null,
+        top6ScenarioScore: pureTop6Prediction?.top6ScenarioScore ?? prediction?.top6ScenarioScore ?? prediction?.scenario_repro_score ?? null,
+        scenario_repro_score: pureTop6Prediction?.scenario_repro_score ?? prediction?.scenario_repro_score ?? null,
+        scenario_repro_scores: pureTop6Prediction?.scenario_repro_scores || prediction?.scenario_repro_scores || null,
         field_coverage_report: prediction?.field_coverage_report || data?.source?.coverage_report?.fields || null,
         predicted_entry_order: Array.isArray(prediction?.predicted_entry_order) ? prediction.predicted_entry_order : data.racers.map((row) => toInt(row?.lane, null)).filter(Number.isInteger),
         actual_entry_order: Array.isArray(prediction?.actual_entry_order) ? prediction.actual_entry_order : data.racers.map((row) => toInt(row?.entryCourse ?? row?.lane, null)).filter(Number.isInteger),

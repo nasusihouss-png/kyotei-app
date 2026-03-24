@@ -42,6 +42,8 @@ assert.equal(result.top6.length, 6);
 assert.ok(Number.isFinite(Number(result.top6_coverage)));
 assert.ok(Number.isFinite(Number(result.confidence)));
 assert.ok(Number.isFinite(Number(result.chaos_level)));
+assert.equal(typeof result.top6Scenario, "string");
+assert.ok(Number.isFinite(Number(result.top6ScenarioScore)));
 assert.equal(result.scenario_repro_scores.length, 6);
 assert.ok(Number.isFinite(Number(result.scenario_repro_scores[0]?.score)));
 assert.equal(

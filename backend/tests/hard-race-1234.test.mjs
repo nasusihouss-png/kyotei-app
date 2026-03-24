@@ -32,6 +32,8 @@ const result = await buildHardRace1234Response({
 
 assert.ok(["READY", "FALLBACK", "BROKEN_PIPELINE"].includes(result.data_status));
 assert.equal(result.confidence_status, result.data_status);
+assert.equal(typeof result.hardScenario, "string");
+assert.equal(typeof result.hardScenarioScore, "number");
 assert.ok(Number.isFinite(Number(result.hard_race_score)));
 assert.ok(Number.isFinite(Number(result.boat1_escape_trust)));
 assert.ok(Number.isFinite(Number(result.opponent_234_fit)));

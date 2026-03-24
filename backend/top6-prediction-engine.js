@@ -208,6 +208,18 @@ function buildScenarioReproScore(profile, venueInsideBias = 0.62) {
   ]);
 }
 
+function describeTop6Scenario(profiles = [], top6 = [], chaosValue = 0) {
+  const ranked = [...profiles]
+    .map((profile) => ({ lane: profile.lane, score: Number(profile.scenarioReproScore) || 0 }))
+    .sort((a, b) => b.score - a.score);
+  const headLane = Number(String(top6?.[0]?.combo || "").split("-")[0]) || ranked[0]?.lane || 1;
+  if (headLane === 1) return chaosValue <= 0.34 ? "stable_escape" : "escape_with_attack_pressure";
+  if (headLane === 2) return "boat2_sashi_flow";
+  if (headLane === 3) return "boat3_attack_flow";
+  if (headLane === 4) return "boat4_cado_flow";
+  return "outside_mix_flow";
+}
+
 function firstPlaceScore(profile, venueInsideBias = 0.62, raceContext = {}) {
   const laneBias = profile.lane === 1 ? venueInsideBias * 100 : clamp(18, 84, 78 - (profile.lane - 1) * 10);
   const delayedPenalty = normalize(profile.lateRate, 0, 0.3) === null ? null : (1 - normalize(profile.lateRate, 0, 0.3)) * 100;
@@ -374,6 +386,10 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
   const top6Coverage = round(top6.reduce((sum, row) => sum + row.probability, 0), 4);
   const chaosValue = clamp(0, 1, 1 - top6Coverage + Math.min(0.25, entropy(headProbMap) / 2));
   const strongestHead = Math.max(...Object.values(headProbMap));
+  const top6ScenarioScore = round(
+    weightedAverage(profiles.map((profile) => ({ value: profile.scenarioReproScore, weight: profile.lane === 1 ? 1.3 : 1 }))),
+    1
+  );
   const confidence = round(
     clamp(
       0,
@@ -383,10 +399,11 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
       (1 - (toNum(raceContext.outsideHeadPressure, 50) / 100)) * 0.06 +
       (1 - (toNum(raceContext.lane3Makuri, 50) / 100)) * 0.03 +
       (1 - (toNum(raceContext.lane4Breakout, 50) / 100)) * 0.03 +
-      Math.min(0.05, ((weightedAverage(profiles.map((profile) => ({ value: profile.scenarioReproScore, weight: profile.lane === 1 ? 1.3 : 1 }))) || 50) - 50) / 100)
+      Math.min(0.05, (((top6ScenarioScore || 50) - 50) / 100))
     ),
     4
   );
+  const top6Scenario = describeTop6Scenario(profiles, top6, chaosValue);
 
   return {
     head_prob_1: headProbMap[1] || 0,
@@ -402,6 +419,9 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     top6_coverage: top6Coverage,
     confidence,
     chaos_level: round(chaosValue, 4),
+    top6Scenario,
+    top6ScenarioScore,
+    scenario_repro_score: top6ScenarioScore,
     chaos_label: chaosValue >= 0.52 ? "高" : chaosValue >= 0.34 ? "中" : "低",
     main_ticket: top6[0] || null,
     conditional_probabilities: {
