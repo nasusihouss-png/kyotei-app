@@ -103,6 +103,16 @@ export async function generateRaceSnapshot({
   const raceId = saveRace(data);
   const featureSnapshotCount = saveFeatureSnapshots(raceId, rankingWithCoverage);
   const entrySnapshotCount = Array.isArray(data?.racers) ? data.racers.length : 0;
+  const sourceStatus = {
+    primary_source_ok: true,
+    secondary_source_ok: !!data?.source?.kyotei_biyori?.ok,
+    official_fetch_status: data?.source?.official_fetch_status || {},
+    kyotei_biyori: {
+      ok: !!data?.source?.kyotei_biyori?.ok,
+      fallback_used: !!data?.source?.kyotei_biyori?.fallback_used,
+      fallback_reason: data?.source?.kyotei_biyori?.fallback_reason || data?.source?.kyotei_biyori?.error || null
+    }
+  };
   const brokenCount = Number(coverageReport?.summary?.required_broken_pipeline || 0) + Number(coverageReport?.summary?.required_missing || 0);
   const fallbackCount = Number(coverageReport?.summary?.fallback || 0) + Number(coverageReport?.summary?.optional_issues || 0);
   const snapshotStatus =
@@ -129,6 +139,7 @@ export async function generateRaceSnapshot({
       coverage_report_summary: coverageReport?.summary || {},
       coverage_diagnostics: coverageDiagnostics,
       coverage_report: coverageReport || {},
+      source_status: sourceStatus,
       includeKyoteiBiyori: !!includeKyoteiBiyori,
       forceRefresh: !!forceRefresh
     }
@@ -147,6 +158,7 @@ export async function generateRaceSnapshot({
       coverage_report_summary: coverageReport?.summary || {},
       coverage_diagnostics: coverageDiagnostics
     },
+    sourceStatus,
     snapshotIndex,
     timing: {
       total_ms: Date.now() - startedAt,

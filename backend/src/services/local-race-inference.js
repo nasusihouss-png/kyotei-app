@@ -368,7 +368,8 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
         feature_snapshot: featureRows.length,
         prediction_feature_event_snapshot: !!featureEventSnapshot,
         prediction_log_snapshot: !!predictionLogSnapshot,
-        index_snapshot_status: snapshotIndex?.snapshotStatus || null
+        index_snapshot_status: snapshotIndex?.snapshotStatus || null,
+        last_snapshot_updated_at: snapshotIndex?.updatedAt || snapshotIndex?.generatedAt || null
       },
       coverage_report: normalizedCoverageReport,
       coverage_report_summary: normalizedCoverageReport?.summary || snapshotIndex?.metadata?.coverage_report_summary || null,

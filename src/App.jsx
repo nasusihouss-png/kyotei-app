@@ -72,6 +72,7 @@ function getRaceApiErrorLabel(details = {}) {
   const status = Number.isFinite(Number(details?.status)) ? Number(details.status) : null;
   const code = String(details?.code || "").toUpperCase();
   const message = String(details?.message || "").toLowerCase();
+  if (code === "LATEST_SOURCE_UNAVAILABLE" || code === "LATEST_REFRESH_FAILED" || code === "LATEST_REFRESH_TIMEOUT") return "source error";
   if (status === 504 || code.includes("TIMEOUT") || message.includes("timeout")) return "API timeout";
   if (code === "SNAPSHOT_MISSING" || code === "SNAPSHOT_NOT_FOUND") return "snapshot missing";
   if (code === "BROKEN_PIPELINE") return "broken pipeline";
@@ -81,6 +82,7 @@ function getRaceApiErrorLabel(details = {}) {
 
 function buildRaceApiErrorMessage(details = {}, fallbackMessage = "Failed to fetch race data") {
   const code = String(details?.code || "").toUpperCase();
+  if (code === "LATEST_SOURCE_UNAVAILABLE" || code === "LATEST_REFRESH_FAILED" || code === "LATEST_REFRESH_TIMEOUT") return "source error";
   if (code === "SNAPSHOT_MISSING" || code === "SNAPSHOT_NOT_FOUND") return "事前データ未生成";
   if (code === "BROKEN_PIPELINE") return "事前特徴量未生成";
   if (Number(details?.status) === 504 || /timeout/i.test(String(details?.message || ""))) return "APIタイムアウト";
@@ -1736,14 +1738,32 @@ function buildSourceSummaryRows(sourceSummary = {}) {
   const missingFields = Array.isArray(sourceSummary?.missing_fields) ? sourceSummary.missing_fields : [];
   const requiredMissingFields = Array.isArray(sourceSummary?.required_missing_fields) ? sourceSummary.required_missing_fields : [];
   const optionalMissingFields = Array.isArray(sourceSummary?.optional_missing_fields) ? sourceSummary.optional_missing_fields : [];
+  const freshnessStatus = sourceSummary?.freshness_status || "-";
+  const refreshedNow =
+    sourceSummary?.refreshed_now === true ? "yes" : sourceSummary?.refreshed_now === false ? "no" : "-";
+  const primarySourceOk =
+    sourceSummary?.primary_source_ok === true ? "ok" : sourceSummary?.primary_source_ok === false ? "fail" : "-";
+  const secondarySourceOk =
+    sourceSummary?.secondary_source_ok === true ? "ok" : sourceSummary?.secondary_source_ok === false ? "fail" : "-";
+  const lastSnapshotUpdatedAt = sourceSummary?.last_snapshot_updated_at
+    ? new Date(sourceSummary.last_snapshot_updated_at).toLocaleString()
+    : "-";
+  const fallbackUsed =
+    sourceSummary?.fallback_used === true || fallback?.used === true ? "yes" : "no";
   return [
     { label: "mode", value: sourceSummary?.mode || "-" },
     { label: "inference_source", value: sourceSummary?.inference_source || "-" },
+    { label: "freshness_status", value: freshnessStatus },
+    { label: "refreshed_now", value: refreshedNow },
+    { label: "primary_source", value: primarySourceOk },
+    { label: "secondary_source", value: secondarySourceOk },
+    { label: "last_snapshot_updated_at", value: lastSnapshotUpdatedAt },
     { label: "snapshot", value: `race:${snapshot?.race || "-"} / entries:${snapshot?.entries || "-"} / feature:${snapshot?.feature_snapshot || "-"} / log:${snapshot?.prediction_log_snapshot || "-"} / event:${snapshot?.prediction_feature_event_snapshot || "-"} / coverage:${snapshot?.coverage_report || "-"}` },
     { label: "coverage", value: Number.isFinite(Number(coverage?.ready_fields)) && Number.isFinite(Number(coverage?.total_fields)) ? `${coverage.ready_fields}/${coverage.total_fields}` : "-" },
     { label: "coverage_report", value: Number.isFinite(Number(coverageReportSummary?.total)) ? `ok:${coverageReportSummary?.ok || 0} / fallback:${coverageReportSummary?.fallback || 0} / broken:${coverageReportSummary?.broken_pipeline || 0}` : "-" },
     { label: "lapTime", value: Number.isFinite(Number(lapTime?.ready_count)) ? `ready:${lapTime.ready_count || 0} / fallback:${lapTime.fallback_count || 0} / broken:${lapTime.broken_count || 0} / source:${lapTime.source || "-"}` : "-" },
     { label: "fallback", value: fallback?.used ? `yes (${Array.isArray(fallback?.fields) ? fallback.fields.join(", ") || "-" : "-"})` : "no" },
+    { label: "fallback_used", value: fallbackUsed },
     { label: "tierA", value: Array.isArray(featureTiers?.tier_a_required) ? featureTiers.tier_a_required.join(", ") : "-" },
     { label: "tierB", value: Array.isArray(featureTiers?.tier_b_optional) ? featureTiers.tier_b_optional.join(", ") : "-" },
     { label: "required_missing", value: requiredMissingFields.length > 0 ? requiredMissingFields.join(", ") : "none" },
@@ -1823,6 +1843,18 @@ function getPredictionConfidenceClass(value) {
   if (status === "PARTIAL") return "status-unsettled";
   if (status === "FALLBACK") return "risk-small";
   return "status-miss";
+}
+
+function getFreshnessState(sourceSummary = {}, errorDetails = null) {
+  const status = String(sourceSummary?.freshness_status || "").toLowerCase();
+  if (status === "fresh") return { label: "latest / refreshed", className: "status-hit" };
+  if (status === "stale") return { label: "stale", className: "status-unsettled" };
+  if (status === "fallback") return { label: "fallback", className: "risk-small" };
+  const errorCode = String(errorDetails?.code || "").toUpperCase();
+  if (errorCode === "LATEST_SOURCE_UNAVAILABLE" || errorCode === "LATEST_REFRESH_FAILED" || errorCode === "LATEST_REFRESH_TIMEOUT") {
+    return { label: "source error", className: "status-miss" };
+  }
+  return { label: "source unknown", className: "status-unsettled" };
 }
 
 function getOutsideRiskLead(row = {}) {
@@ -6341,6 +6373,9 @@ export default function App() {
                     <span>top6 coverage {formatPercentDisplay(pureTop6Prediction?.top6_coverage)}</span>
                     <span>head #1 {pureHeadRanking[0] ? `${pureHeadRanking[0].lane}号艇` : "--"}</span>
                     <span>chaos {getPredictionChaosLabel(pureTop6Prediction)}</span>
+                    <span className={`status-pill ${getFreshnessState(prediction?.source_summary || sourceMeta?.refresh_meta || {}, errorDetails).className}`}>
+                      {getFreshnessState(prediction?.source_summary || sourceMeta?.refresh_meta || {}, errorDetails).label}
+                    </span>
                   </div>
                   <section className="prediction-summary-panel">
                   <div className="hardrace-meta-grid prediction-summary-grid" style={{ marginTop: 12 }}>
@@ -6390,6 +6425,9 @@ export default function App() {
                     <span className="hardrace-tag top4">Hard Race Prediction: 1-234-234固定買い用</span>
                     <span className={`status-pill ${getPredictionConfidenceClass(predictionConfidenceState)}`}>{`Confidence ${predictionConfidenceState}`}</span>
                     <span className={`status-pill ${getPredictionChaosTone(getPredictionChaosLabel(pureTop6Prediction))}`}>{`Chaos ${getPredictionChaosLabel(pureTop6Prediction)}`}</span>
+                    <span className={`status-pill ${getFreshnessState(prediction?.source_summary || sourceMeta?.refresh_meta || {}, errorDetails).className}`}>
+                      {getFreshnessState(prediction?.source_summary || sourceMeta?.refresh_meta || {}, errorDetails).label}
+                    </span>
                   </div>
                   </section>
                   <div className="hardrace-section-grid" style={{ marginTop: 16 }}>
@@ -7869,6 +7907,7 @@ export default function App() {
                     const outsideLead = getOutsideRiskLead(row);
                     const dangerRows = buildHardRaceDangerRows(row);
                     const fallbackFields = Array.isArray(row?.fallback_used?.fields) ? row.fallback_used.fields : [];
+                    const freshnessState = getFreshnessState(row?.source_summary || {});
                     return (
                     <article className="recommend-card hardrace-card" key={`hard-race-${row.raceNo}`}>
                       <div className="recommend-card-head">
@@ -7878,6 +7917,7 @@ export default function App() {
                           <span className={`status-pill ${getHardRaceRankClass(row.hardRaceRank)}`}>{`Rank ${row.hardRaceRank || "-"}`}</span>
                           <span className={`status-pill ${getHardRaceDecisionClass(row.buyStyleRecommendation)}`}>{`Decision ${row.buyStyleRecommendation || "-"}`}</span>
                           <span className={`status-pill ${getHardRaceConfidenceClass(row.confidence_status || row.data_status)}`}>{`Confidence ${row.confidence_status || row.data_status || "-"}`}</span>
+                          <span className={`status-pill ${freshnessState.className}`}>{freshnessState.label}</span>
                         </div>
                       </div>
                       <section className="hardrace-summary-grid">
@@ -7906,6 +7946,7 @@ export default function App() {
                             <span className={`status-pill ${getHardRaceDecisionClass(row.buyStyleRecommendation)}`}>{row.buyStyleRecommendation || "--"}</span>
                             <span className={`status-pill ${getHardRaceConfidenceClass(row.confidence_status || row.data_status)}`}>{row.confidence_status || row.data_status || "--"}</span>
                             <span className={`status-pill ${getHardRaceRankClass(row.hardRaceRank)}`}>{`Rank ${row.hardRaceRank || "-"}`}</span>
+                            <span className={`status-pill ${freshnessState.className}`}>{freshnessState.label}</span>
                             {row.open_mode?.active ? <span className="status-pill risk-small">穴候補</span> : null}
                           </div>
                         </div>

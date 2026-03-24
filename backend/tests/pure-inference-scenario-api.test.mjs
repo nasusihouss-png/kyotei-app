@@ -94,5 +94,8 @@ assert.ok(Array.isArray(payload.pureTop6Prediction.scenario_repro_scores));
 assert.equal(typeof payload.prediction.top6Scenario, "string");
 assert.equal(typeof payload.prediction.top6ScenarioScore, "number");
 assert.equal(typeof payload.prediction.scenario_repro_score, "number");
+assert.equal(payload.prediction.source_summary?.freshness_status, "stale");
+assert.equal(payload.prediction.source_summary?.refreshed_now, false);
+assert.equal(typeof payload.prediction.source_summary?.field_coverage_report, "object");
 
 console.log("pure-inference-scenario-api ok");

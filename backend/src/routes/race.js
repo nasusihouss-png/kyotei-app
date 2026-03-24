@@ -94,6 +94,7 @@ import {
 } from "../services/hit-rate-enhancement.js";
 import { buildHardRace1234Response } from "../services/hard-race-1234-pure.js";
 import { loadStoredRaceInferenceData } from "../services/local-race-inference.js";
+import { refreshLatestRaceData } from "../services/refresh-latest-race-data.js";
 import {
   OPTIONAL_COVERAGE_FIELDS,
   REQUIRED_COVERAGE_FIELDS,
@@ -2795,6 +2796,23 @@ function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, d
       source: lapTimeSources.join(", ") || null
     }
   };
+  const refreshMeta =
+    data?.source?.refresh_meta && typeof data.source.refresh_meta === "object"
+      ? data.source.refresh_meta
+      : {};
+  sourceSummary.refreshed_now = refreshMeta?.refreshed_now === true;
+  sourceSummary.freshness_status = refreshMeta?.freshness_status || "stale";
+  sourceSummary.primary_source_ok = refreshMeta?.primary_source_ok === true;
+  sourceSummary.secondary_source_ok = refreshMeta?.secondary_source_ok === true;
+  sourceSummary.last_snapshot_updated_at =
+    refreshMeta?.last_snapshot_updated_at ||
+    data?.source?.local_snapshots?.last_snapshot_updated_at ||
+    null;
+  sourceSummary.fallback_used = refreshMeta?.fallback_used === true || sourceSummary?.fallback?.used === true;
+  sourceSummary.field_coverage_report = coverageFields;
+  if (refreshMeta?.refresh_error) {
+    sourceSummary.refresh_error = refreshMeta.refresh_error;
+  }
   const dataStatus =
     !hasCompleteFeatureSnapshots || requiredMissingFields.length > 0
       ? "BROKEN_PIPELINE"
@@ -9730,6 +9748,16 @@ raceRouter.get("/race", async (req, res, next) => {
     const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, false);
     const screeningMode = String(req.query?.screening || "").toLowerCase();
     const isHardRaceScreening = screeningMode === "hard_race";
+    const latestRefreshTimeoutMs = Math.max(
+      1500,
+      Math.min(
+        toInt(
+          req.query?.dataFetchTimeoutMs,
+          toInt(req.query?.getRaceDataTimeoutMs, Number(process.env.RACE_API_REFRESH_TIMEOUT_MS || 6500))
+        ),
+        Math.max(1500, maxRouteTimeoutMs - 1200)
+      )
+    );
     const traceBase = {
       route: "/api/race",
       date,
@@ -9757,14 +9785,17 @@ raceRouter.get("/race", async (req, res, next) => {
       artifactCollector = isHardRaceScreening ? {} : null;
       let stored = null;
       {
-        stored = loadStoredRaceInferenceData({
+        const refreshed = await refreshLatestRaceData({
           date,
           venueId,
           raceNo,
+          timeoutMs: latestRefreshTimeoutMs,
+          forceRefresh,
           trace: (stage, extra) => {
             logRaceRouteStage(traceBase, stage, extra);
           }
         });
+        stored = refreshed?.data || null;
         routeTimings.snapshot_lookup_ms = stored?.diagnostics?.snapshot_lookup_ms ?? null;
         routeTimings.snapshot_load_ms = stored?.diagnostics?.snapshot_load_ms ?? null;
         ensureRaceRouteWithinDeadline(routeStartedAt, maxRouteTimeoutMs, failureWhere);
@@ -9954,6 +9985,30 @@ raceRouter.get("/race", async (req, res, next) => {
             message: hardRace1234.decision_reason
           }));
         }
+        const hardRaceSourceSummary =
+          hardRace1234?.source_summary && typeof hardRace1234.source_summary === "object"
+            ? hardRace1234.source_summary
+            : {};
+        hardRace1234 = {
+          ...hardRace1234,
+          source_summary: {
+            ...hardRaceSourceSummary,
+            refreshed_now: data?.source?.refresh_meta?.refreshed_now === true,
+            freshness_status: data?.source?.refresh_meta?.freshness_status || hardRaceSourceSummary?.freshness_status || "stale",
+            primary_source_ok: data?.source?.refresh_meta?.primary_source_ok === true,
+            secondary_source_ok: data?.source?.refresh_meta?.secondary_source_ok === true,
+            last_snapshot_updated_at:
+              data?.source?.refresh_meta?.last_snapshot_updated_at ||
+              data?.source?.local_snapshots?.last_snapshot_updated_at ||
+              null,
+            fallback_used:
+              data?.source?.refresh_meta?.fallback_used === true ||
+              hardRaceSourceSummary?.fallback_used === true ||
+              hardRaceSourceSummary?.fallback?.used === true,
+            field_coverage_report: data?.source?.coverage_report?.fields || null,
+            refresh_error: data?.source?.refresh_meta?.refresh_error || null
+          }
+        };
         routeTimings.inference_ms = Date.now() - predictionStartedAt;
         routeTimings.prediction_build_ms = routeTimings.inference_ms;
         routeTimings.total_response_ms = Date.now() - routeStartedAt;
@@ -9979,7 +10034,32 @@ raceRouter.get("/race", async (req, res, next) => {
         });
       }
       const inferenceStartedAt = Date.now();
-      const prediction = purePredictionBundle.prediction;
+      const prediction = {
+        ...purePredictionBundle.prediction,
+        source_summary: {
+          ...(purePredictionBundle.prediction?.source_summary || {}),
+          refreshed_now: data?.source?.refresh_meta?.refreshed_now === true,
+          freshness_status:
+            data?.source?.refresh_meta?.freshness_status ||
+            purePredictionBundle.prediction?.source_summary?.freshness_status ||
+            "stale",
+          primary_source_ok: data?.source?.refresh_meta?.primary_source_ok === true,
+          secondary_source_ok: data?.source?.refresh_meta?.secondary_source_ok === true,
+          last_snapshot_updated_at:
+            data?.source?.refresh_meta?.last_snapshot_updated_at ||
+            data?.source?.local_snapshots?.last_snapshot_updated_at ||
+            null,
+          fallback_used:
+            data?.source?.refresh_meta?.fallback_used === true ||
+            purePredictionBundle.prediction?.source_summary?.fallback_used === true ||
+            purePredictionBundle.prediction?.source_summary?.fallback?.used === true,
+          field_coverage_report:
+            purePredictionBundle.prediction?.field_coverage_report ||
+            data?.source?.coverage_report?.fields ||
+            null,
+          refresh_error: data?.source?.refresh_meta?.refresh_error || null
+        }
+      };
       const pureTop6Prediction = purePredictionBundle.pureTop6Prediction;
       routeTimings.inference_ms = Date.now() - inferenceStartedAt;
       routeTimings.prediction_build_ms = routeTimings.inference_ms;
@@ -10026,6 +10106,36 @@ raceRouter.get("/race", async (req, res, next) => {
         routeTiming: routeTimings
       });
     } catch (fetchErr) {
+      if (String(fetchErr?.code || "").startsWith("LATEST_")) {
+        routeTimings.total_response_ms = Date.now() - routeStartedAt;
+        logRaceRouteStage(traceBase, "response_return", {
+          status: Number(fetchErr?.statusCode) || 503,
+          code: fetchErr?.code || "LATEST_SOURCE_UNAVAILABLE",
+          total_response_ms: routeTimings.total_response_ms
+        });
+        return res.status(Number(fetchErr?.statusCode) || 503).json({
+          error: "source_error",
+          code: fetchErr?.code || "LATEST_SOURCE_UNAVAILABLE",
+          where: fetchErr?.where || failureWhere,
+          route: fetchErr?.route || "/api/race",
+          message: fetchErr?.message || "latest public data could not be refreshed and no snapshot is available",
+          source: {
+            mode: "pure_inference",
+            local_inference: true,
+            refresh_meta: fetchErr?.refreshMeta || null,
+            snapshot_lookup: fetchErr?.snapshotLookup || null
+          },
+          race: {
+            date,
+            venueId: toInt(venueId, null),
+            venueName: null,
+            raceNo: toInt(raceNo, null)
+          },
+          data_status: "SOURCE_ERROR",
+          confidence_status: "SOURCE_ERROR",
+          routeTiming: routeTimings
+        });
+      }
       console.error("[RACE_ROUTE][fetch_failure]", JSON.stringify({
         route: "/api/race",
         date,
