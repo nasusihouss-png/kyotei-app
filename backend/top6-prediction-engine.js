@@ -19,6 +19,15 @@ function weightedAverage(values) {
   return total > 0 ? present.reduce((sum, row) => sum + row.value * row.weight, 0) / total : null;
 }
 
+function coverageValue(coverage = {}, fieldName, fallback = null) {
+  const meta = coverage?.[fieldName];
+  if (meta?.status === "ok" || meta?.status === "fallback") {
+    if (Number.isFinite(Number(meta?.normalized))) return Number(meta.normalized);
+    if (Number.isFinite(Number(meta?.value))) return Number(meta.value);
+  }
+  return Number.isFinite(Number(fallback)) ? Number(fallback) : null;
+}
+
 function normalize(value, min, max) {
   if (!Number.isFinite(Number(value))) return null;
   return clamp(0, 1, (Number(value) - min) / Math.max(1e-9, max - min));
@@ -75,9 +84,16 @@ function buildLaneProfile(row = {}) {
   const avgSt = toNum(features?.avg_st ?? racer?.avgSt, null);
   const motor2 = toNum(features?.motor2_rate ?? racer?.motor2Rate, null);
   const boat2 = toNum(features?.boat2_rate ?? racer?.boat2Rate, null);
+  const motor3 = coverageValue(coverage, "motor_3ren", toNum(features?.motor3_rate ?? racer?.motor3Rate, null));
   const motorTotal = toNum(features?.motor_total_score, null);
   const courseFit = toNum(features?.course_fit_score, null);
   const entryAdvantage = toNum(features?.entry_advantage_score, null);
+  const exhibitionSt = coverageValue(coverage, "exhibition_st", toNum(racer?.exhibitionSt, null));
+  const exhibitionTime = coverageValue(coverage, "exhibition_time", toNum(racer?.exhibitionTime, null));
+  const lapTime = coverageValue(coverage, "lapTime", toNum(racer?.lapTime ?? racer?.kyoteiBiyoriLapTime, null));
+  const lane1stRate = coverageValue(coverage, "lane_1st_rate", null);
+  const lane2RenRate = coverageValue(coverage, "lane_2ren_rate", null);
+  const lane3RenRate = coverageValue(coverage, "lane_3ren_rate", null);
   const stability = weightedAverage([
     { value: invertNormalize(avgSt, 0.11, 0.24) === null ? null : invertNormalize(avgSt, 0.11, 0.24) * 100, weight: 0.4 },
     { value: normalize(courseFit, -2, 8) === null ? null : normalize(courseFit, -2, 8) * 100, weight: 0.25 },
@@ -95,13 +111,20 @@ function buildLaneProfile(row = {}) {
     lCount: toNum(features?.l_hold_count ?? racer?.lHoldCount, 0),
     motor2,
     boat2,
+    motor3,
     motorTotal,
     courseHeadRate: lane === 1 ? course1HeadRate : lane2Rate,
     course2Rate: lane2Rate,
     course3Rate: lane3Rate,
+    lane1stRate,
+    lane2RenRate,
+    lane3RenRate,
     courseFit,
     entryAdvantage,
     stability,
+    exhibitionSt,
+    exhibitionTime,
+    lapTime,
     attackRate: weightedAverage([
       { value: normalize(entryAdvantage, 0, 14) === null ? null : normalize(entryAdvantage, 0, 14) * 100, weight: 0.4 },
       { value: normalize(motorTotal, 0, 18) === null ? null : normalize(motorTotal, 0, 18) * 100, weight: 0.25 },
@@ -126,6 +149,65 @@ function buildLaneProfile(row = {}) {
   };
 }
 
+function buildScenarioReproScore(profile, venueInsideBias = 0.62) {
+  const venueBiasScore =
+    profile.lane === 1
+      ? venueInsideBias * 100
+      : profile.lane >= 5
+        ? clamp(24, 86, 44 + (profile.entryAdvantage || 50) * 0.38)
+        : clamp(20, 84, 32 + (profile.courseFit || 0) * 4 + (profile.course2Rate || 50) * 0.45);
+  const styleScore =
+    profile.lane === 1
+      ? weightedAverage([
+          { value: profile.courseHeadRate, weight: 0.35 },
+          { value: profile.lane1stRate, weight: 0.2 },
+          { value: profile.stabilityRate, weight: 0.2 },
+          { value: profile.stability, weight: 0.25 }
+        ])
+      : profile.lane === 2
+        ? weightedAverage([
+            { value: profile.sashiRate, weight: 0.32 },
+            { value: profile.course2Rate, weight: 0.28 },
+            { value: profile.lane2RenRate, weight: 0.22 },
+            { value: profile.supportRate, weight: 0.18 }
+          ])
+        : profile.lane === 3
+          ? weightedAverage([
+              { value: profile.makuriRate, weight: 0.26 },
+              { value: profile.makuriSashiRate, weight: 0.24 },
+              { value: profile.attackRate, weight: 0.22 },
+              { value: profile.lane1stRate, weight: 0.12 },
+              { value: profile.lane3RenRate, weight: 0.16 }
+            ])
+          : profile.lane === 4
+            ? weightedAverage([
+                { value: profile.breakoutRate, weight: 0.24 },
+                { value: profile.zentsukeTendency, weight: 0.2 },
+                { value: profile.attackRate, weight: 0.22 },
+                { value: profile.lane2RenRate, weight: 0.14 },
+                { value: profile.lane3RenRate, weight: 0.2 }
+              ])
+            : weightedAverage([
+                { value: profile.attackRate, weight: 0.24 },
+                { value: profile.makuriRate, weight: 0.18 },
+                { value: profile.lane2RenRate, weight: 0.16 },
+                { value: profile.lane3RenRate, weight: 0.18 },
+                { value: profile.supportRate, weight: 0.24 }
+              ]);
+  const optionalSpeedScore = weightedAverage([
+    { value: invertNormalize(profile.exhibitionSt, 0.08, 0.22) === null ? null : invertNormalize(profile.exhibitionSt, 0.08, 0.22) * 100, weight: 0.28 },
+    { value: invertNormalize(profile.exhibitionTime, 6.55, 7.15) === null ? null : invertNormalize(profile.exhibitionTime, 6.55, 7.15) * 100, weight: 0.34 },
+    { value: invertNormalize(profile.lapTime, 6.55, 7.15) === null ? null : invertNormalize(profile.lapTime, 6.55, 7.15) * 100, weight: 0.38 }
+  ]);
+  return weightedAverage([
+    { value: styleScore, weight: 0.48 },
+    { value: venueBiasScore, weight: 0.14 },
+    { value: normalize(profile.motor3, 25, 75) === null ? null : normalize(profile.motor3, 25, 75) * 100, weight: 0.08 },
+    { value: normalize(profile.motorTotal, 0, 18) === null ? null : normalize(profile.motorTotal, 0, 18) * 100, weight: 0.1 },
+    { value: optionalSpeedScore, weight: 0.2 }
+  ]);
+}
+
 function firstPlaceScore(profile, venueInsideBias = 0.62, raceContext = {}) {
   const laneBias = profile.lane === 1 ? venueInsideBias * 100 : clamp(18, 84, 78 - (profile.lane - 1) * 10);
   const delayedPenalty = normalize(profile.lateRate, 0, 0.3) === null ? null : (1 - normalize(profile.lateRate, 0, 0.3)) * 100;
@@ -146,7 +228,9 @@ function firstPlaceScore(profile, venueInsideBias = 0.62, raceContext = {}) {
     { value: normalize(weightedAverage([{ value: profile.motor2, weight: 0.6 }, { value: profile.boat2, weight: 0.4 }]), 20, 60) === null ? null : normalize(weightedAverage([{ value: profile.motor2, weight: 0.6 }, { value: profile.boat2, weight: 0.4 }]), 20, 60) * 100, weight: 0.14 },
     { value: normalize(profile.courseHeadRate, 18, 80) === null ? null : normalize(profile.courseHeadRate, 18, 80) * 100, weight: 0.15 },
     { value: laneBias, weight: 0.05 },
-    { value: escapeThreatPenalty, weight: 0.03 }
+    { value: escapeThreatPenalty, weight: 0.03 },
+    { value: profile.scenarioReproScore, weight: 0.08 },
+    { value: invertNormalize(profile.lapTime, 6.55, 7.15) === null ? null : invertNormalize(profile.lapTime, 6.55, 7.15) * 100, weight: 0.04 }
   ]);
 }
 
@@ -161,7 +245,8 @@ function secondPlaceScore(profile, headProfile, raceContext = {}) {
     { value: normalize(profile.motor2, 20, 60) === null ? null : normalize(profile.motor2, 20, 60) * 100, weight: 0.13 },
     { value: laneRelation, weight: 0.08 },
     { value: clamp(0, 100, 100 - Math.abs((profile.attackRate || 50) - headPressure)), weight: 0.09 },
-    { value: outsideBoost, weight: 0.03 }
+    { value: outsideBoost, weight: 0.03 },
+    { value: profile.scenarioReproScore, weight: 0.07 }
   ]);
 }
 
@@ -177,7 +262,8 @@ function thirdPlaceScore(profile, headProfile, secondProfile, raceContext = {}) 
     { value: invertNormalize(profile.avgSt, 0.11, 0.24) === null ? null : invertNormalize(profile.avgSt, 0.11, 0.24) * 100, weight: 0.14 },
     { value: normalize(profile.motor2, 20, 60) === null ? null : normalize(profile.motor2, 20, 60) * 100, weight: 0.14 },
     { value: developmentGap, weight: 0.18 },
-    { value: outsideThirdBoost, weight: 0.04 }
+    { value: outsideThirdBoost, weight: 0.04 },
+    { value: profile.scenarioReproScore, weight: 0.08 }
   ]);
 }
 
@@ -195,6 +281,9 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
   const lane4 = profiles.find((row) => row.lane === 4) || {};
   const lane5 = profiles.find((row) => row.lane === 5) || {};
   const lane6 = profiles.find((row) => row.lane === 6) || {};
+  profiles.forEach((profile) => {
+    profile.scenarioReproScore = buildScenarioReproScore(profile, venueInsideBias);
+  });
   const raceContext = {
     lane3Makuri: weightedAverage([
       { value: lane3.attackRate, weight: 0.45 },
@@ -207,10 +296,12 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
       { value: lane4.zentsukeTendency, weight: 0.25 }
     ]),
     outsideHeadPressure: weightedAverage([
-      { value: lane5.attackRate, weight: 0.3 },
-      { value: lane6.attackRate, weight: 0.3 },
-      { value: lane5.makuriRate, weight: 0.2 },
-      { value: lane6.makuriRate, weight: 0.2 }
+      { value: lane5.attackRate, weight: 0.24 },
+      { value: lane6.attackRate, weight: 0.24 },
+      { value: lane5.makuriRate, weight: 0.16 },
+      { value: lane6.makuriRate, weight: 0.16 },
+      { value: lane5.scenarioReproScore, weight: 0.1 },
+      { value: lane6.scenarioReproScore, weight: 0.1 }
     ]),
     outside2ndPressure: weightedAverage([
       { value: lane5.supportRate, weight: 0.34 },
@@ -291,7 +382,8 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
       strongestHead * 0.22 +
       (1 - (toNum(raceContext.outsideHeadPressure, 50) / 100)) * 0.06 +
       (1 - (toNum(raceContext.lane3Makuri, 50) / 100)) * 0.03 +
-      (1 - (toNum(raceContext.lane4Breakout, 50) / 100)) * 0.03
+      (1 - (toNum(raceContext.lane4Breakout, 50) / 100)) * 0.03 +
+      Math.min(0.05, ((weightedAverage(profiles.map((profile) => ({ value: profile.scenarioReproScore, weight: profile.lane === 1 ? 1.3 : 1 }))) || 50) - 50) / 100)
     ),
     4
   );
@@ -316,7 +408,11 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
       first: headProbMap,
       second: secondMap,
       third: thirdMap
-    }
+    },
+    scenario_repro_scores: profiles.map((profile) => ({
+      lane: profile.lane,
+      score: round(profile.scenarioReproScore, 1)
+    }))
   };
 }
 

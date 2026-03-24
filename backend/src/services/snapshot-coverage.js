@@ -4,38 +4,60 @@ function toNum(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+export const SOURCE_PRIORITY_RULES = Object.freeze({
+  primary: Object.freeze([
+    "boatrace.jp race index",
+    "boatrace.jp racelist",
+    "boatrace.jp racer profile/search",
+    "boatrace.jp venue data",
+    "boatrace.jp results history"
+  ]),
+  secondary: Object.freeze([
+    "kyoteibiyori.com pre-race metrics",
+    "kyoteibiyori ajax pre-race payload",
+    "kyoteibiyori lane/course helper metrics"
+  ])
+});
+
 export const REQUIRED_COVERAGE_FIELDS = Object.freeze([
   "national_win_rate",
   "local_win_rate",
   "avg_st",
+  "f_count",
+  "l_count",
   "motor_2ren",
-  "f_count"
+  "boat_2ren",
+  "lane_1st_rate",
+  "lane_2ren_rate",
+  "lane_3ren_rate",
+  "course_1_head_rate",
+  "course_1_2ren_rate",
+  "venue_inside_bias"
 ]);
 
 export const OPTIONAL_COVERAGE_FIELDS = Object.freeze([
   "lapTime",
   "exhibition_st",
   "exhibition_time",
-  "l_count",
-  "racer_class",
   "motor_3ren",
-  "boat_2ren",
   "boat_3ren",
-  "lane_1st_rate",
-  "lane_2ren_rate",
-  "lane_3ren_rate",
-  "course_1_head_rate",
-  "course_1_2ren_rate",
+  "racer_class",
   "course_2_2ren_rate",
   "course_3_3ren_rate",
   "course_4_3ren_rate",
-  "venue_inside_bias",
   "stability_rate",
   "breakout_rate",
   "sashi_rate",
   "makuri_rate",
   "makurisashi_rate",
   "zentsuke_tendency"
+]);
+
+export const SCENARIO_COVERAGE_FIELDS = Object.freeze([
+  "kimarite_history",
+  "venue_course_kimarite_repro",
+  "outside_entry_pattern",
+  "escape_failure_pattern"
 ]);
 
 function isRequiredCoverageField(fieldName) {

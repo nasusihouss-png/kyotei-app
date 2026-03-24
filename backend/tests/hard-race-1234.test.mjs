@@ -77,6 +77,8 @@ assert.ok(typeof result.open_mode?.active === "boolean");
 assert.ok(result.source_summary?.fallback);
 assert.equal(result.source_summary?.mode, "pure_inference");
 assert.equal(typeof result.features?.p1_escape, "number");
+assert.equal(typeof result.features?.scenario_repro_score, "number");
+assert.equal(typeof result.features?.lane_scenario_repro_scores?.lane1, "number");
 assert.equal(typeof result.features?.top4_share_within_fixed1234, "number");
 assert.equal(typeof result.features?.conditional_probabilities?.p_1st_1, "number");
 assert.equal(typeof result.operational_pick, "string");

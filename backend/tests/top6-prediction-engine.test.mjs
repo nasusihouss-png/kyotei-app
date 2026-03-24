@@ -42,6 +42,8 @@ assert.equal(result.top6.length, 6);
 assert.ok(Number.isFinite(Number(result.top6_coverage)));
 assert.ok(Number.isFinite(Number(result.confidence)));
 assert.ok(Number.isFinite(Number(result.chaos_level)));
+assert.equal(result.scenario_repro_scores.length, 6);
+assert.ok(Number.isFinite(Number(result.scenario_repro_scores[0]?.score)));
 assert.equal(
   Number((result.head_prob_1 + result.head_prob_2 + result.head_prob_3 + result.head_prob_4 + result.head_prob_5 + result.head_prob_6).toFixed(4)),
   1

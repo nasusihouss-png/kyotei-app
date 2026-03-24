@@ -94,6 +94,12 @@ import {
 } from "../services/hit-rate-enhancement.js";
 import { buildHardRace1234Response } from "../services/hard-race-1234-pure.js";
 import { loadStoredRaceInferenceData } from "../services/local-race-inference.js";
+import {
+  OPTIONAL_COVERAGE_FIELDS,
+  REQUIRED_COVERAGE_FIELDS,
+  SCENARIO_COVERAGE_FIELDS,
+  SOURCE_PRIORITY_RULES
+} from "../services/snapshot-coverage.js";
 
 export const raceRouter = Router();
 
@@ -2775,6 +2781,12 @@ function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, d
     missing_fields: allIssueFields,
     required_missing_fields: requiredMissingFields,
     optional_missing_fields: optionalMissingFields,
+    source_priority: SOURCE_PRIORITY_RULES,
+    feature_tiers: {
+      tier_a_required: REQUIRED_COVERAGE_FIELDS,
+      tier_b_optional: OPTIONAL_COVERAGE_FIELDS,
+      tier_c_scenario: SCENARIO_COVERAGE_FIELDS
+    },
     coverage_report_summary: data?.source?.coverage_report_summary || null,
     lap_time: {
       ready_count: lapTimeReadyCount,
