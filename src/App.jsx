@@ -1,5 +1,10 @@
 ﻿import { Component, useEffect, useMemo, useState } from "react";
 import "./App.css";
+import {
+  buildRaceApiRequest,
+  normalizeVenueIdInput,
+  sanitizeRecentRaceSelections
+} from "./lib/race-request.js";
 
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 const API_BASE = API_BASE_URL ? `${API_BASE_URL}/api` : "/api";
@@ -72,6 +77,7 @@ function getRaceApiErrorLabel(details = {}) {
   const status = Number.isFinite(Number(details?.status)) ? Number(details.status) : null;
   const code = String(details?.code || "").toUpperCase();
   const message = String(details?.message || "").toLowerCase();
+  if (code === "INVALID_VENUE_ID_FRONTEND" || code === "INVALID_RACE_REQUEST_FRONTEND") return "invalid venue";
   if (code === "LATEST_SOURCE_UNAVAILABLE" || code === "LATEST_REFRESH_FAILED" || code === "LATEST_REFRESH_TIMEOUT") return "source error";
   if (status === 504 || code.includes("TIMEOUT") || message.includes("timeout")) return "API timeout";
   if (code === "SNAPSHOT_MISSING" || code === "SNAPSHOT_NOT_FOUND") return "snapshot missing";
@@ -82,6 +88,7 @@ function getRaceApiErrorLabel(details = {}) {
 
 function buildRaceApiErrorMessage(details = {}, fallbackMessage = "Failed to fetch race data") {
   const code = String(details?.code || "").toUpperCase();
+  if (code === "INVALID_VENUE_ID_FRONTEND" || code === "INVALID_RACE_REQUEST_FRONTEND") return "会場IDが不正です。1〜24 の整数を選択してください。";
   if (code === "LATEST_SOURCE_UNAVAILABLE" || code === "LATEST_REFRESH_FAILED" || code === "LATEST_REFRESH_TIMEOUT") return "source error";
   if (code === "SNAPSHOT_MISSING" || code === "SNAPSHOT_NOT_FOUND") return "事前データ未生成";
   if (code === "BROKEN_PIPELINE") return "事前特徴量未生成";
@@ -156,20 +163,42 @@ function createManualLapDraft() {
 }
 
 async function fetchRaceData(date, venueId, raceNo, options = {}) {
-  const url = new URL(`${API_BASE}/race`);
-  url.searchParams.set("date", date);
-  url.searchParams.set("venueId", String(venueId));
-  url.searchParams.set("raceNo", String(raceNo));
-  if (options?.forceRefresh) url.searchParams.set("forceRefresh", "1");
-  if (options?.screeningMode) url.searchParams.set("screening", String(options.screeningMode));
-  if (Number.isFinite(Number(options?.getRaceDataTimeoutMs))) {
-    url.searchParams.set("getRaceDataTimeoutMs", String(Number(options.getRaceDataTimeoutMs)));
-  }
-  if (Number.isFinite(Number(options?.dataFetchTimeoutMs))) {
-    url.searchParams.set("dataFetchTimeoutMs", String(Number(options.dataFetchTimeoutMs)));
+  let requestUrl = null;
+  let normalizedRequest = null;
+  try {
+    const built = buildRaceApiRequest({
+      apiBase: API_BASE,
+      baseOrigin: typeof window !== "undefined" ? window.location.origin : "https://example.invalid",
+      date,
+      venueId,
+      raceNo,
+      options
+    });
+    requestUrl = built.url.toString();
+    normalizedRequest = built.normalized;
+  } catch (validationError) {
+    throw buildApiError({
+      message: validationError?.message || "Race request validation failed",
+      url: requestUrl,
+      step: "frontend.validate:/api/race",
+      payload: {
+        code: validationError?.code || "INVALID_RACE_REQUEST_FRONTEND",
+        venueIdRaw: validationError?.venueIdRaw ?? venueId,
+        raceNoRaw: validationError?.raceNoRaw ?? raceNo,
+        dateRaw: validationError?.dateRaw ?? date
+      }
+    });
   }
 
-  const requestUrl = url.toString();
+  console.info("[frontend:/api/race][request]", {
+    url: requestUrl,
+    date: normalizedRequest?.date || date,
+    venueId_raw: venueId,
+    venueId_normalized: normalizedRequest?.venueId ?? null,
+    raceNo_raw: raceNo,
+    raceNo_normalized: normalizedRequest?.raceNo ?? null
+  });
+
   const controller = new AbortController();
   const timeoutMs = Number(options?.frontendTimeoutMs || (options?.screeningMode === "hard_race" ? 22000 : 18000));
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -4134,7 +4163,7 @@ export default function App() {
     if (typeof window === "undefined") return [];
     try {
       const saved = JSON.parse(window.localStorage.getItem("kyoteiapp_recent_races") || "[]");
-      return Array.isArray(saved) ? saved : [];
+      return sanitizeRecentRaceSelections(saved);
     } catch {
       return [];
     }
@@ -4153,6 +4182,21 @@ export default function App() {
   );
 
   const venueName = useMemo(() => VENUES.find((v) => v.id === Number(venueId))?.name || "-", [venueId]);
+  const applyVenueIdSelection = (nextVenueId, invalidMessage = "会場IDが不正です。1〜24 の整数を選択してください。") => {
+    const normalizedVenueId = normalizeVenueIdInput(nextVenueId);
+    if (normalizedVenueId === null) {
+      setError(invalidMessage);
+      setErrorDetails({
+        code: "INVALID_VENUE_ID_FRONTEND",
+        message: invalidMessage
+      });
+      return false;
+    }
+    setError((prev) => (prev === invalidMessage ? "" : prev));
+    setErrorDetails((prev) => (prev?.code === "INVALID_VENUE_ID_FRONTEND" ? null : prev));
+    setVenueId(normalizedVenueId);
+    return true;
+  };
 
   const race = data?.race || {};
   const sourceMeta = data?.source || {};
@@ -5017,13 +5061,13 @@ export default function App() {
         const next = [
           {
             date,
-            venueId,
+            venueId: Number(venueId),
             venueName: VENUES.find((v) => v.id === Number(venueId))?.name || String(venueId),
-            raceNo
+            raceNo: Number(raceNo)
           },
           ...prev.filter((row) => !(String(row?.date) === String(date) && Number(row?.venueId) === Number(venueId) && Number(row?.raceNo) === Number(raceNo)))
         ];
-        return next.slice(0, 8);
+        return sanitizeRecentRaceSelections(next).slice(0, 8);
       });
     } catch (e) {
       const details = getApiErrorDetails(e);
@@ -5299,7 +5343,7 @@ export default function App() {
     const nextRaceNo = Number(row?.raceNo);
     if (!Number.isInteger(nextVenueId) || !Number.isInteger(nextRaceNo)) return;
 
-    setVenueId(nextVenueId);
+    if (!applyVenueIdSelection(nextVenueId, "選択したレースの会場IDが不正です。Recent データを確認してください。")) return;
     setRaceNo(nextRaceNo);
     setScreen("predict");
     setLoading(true);
@@ -6156,7 +6200,7 @@ export default function App() {
             <section className="card">
               <div className="controls-grid">
                 <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
-                <label><span>場</span><select value={venueId} onChange={(e) => setVenueId(Number(e.target.value))}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
+                <label><span>場</span><select value={venueId} onChange={(e) => applyVenueIdSelection(e.target.value)}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
                 <label><span>レース</span><select value={raceNo} onChange={(e) => setRaceNo(Number(e.target.value))}>{Array.from({ length: 12 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}R</option>)}</select></label>
                 <button className="fetch-btn" onClick={onFetch} disabled={loading}>{loading ? "取得中..." : "予想を取得"}</button>
               </div>
@@ -6167,7 +6211,7 @@ export default function App() {
                     <button
                       key={`quick-venue-${venue.id}`}
                       className={`quick-chip ${Number(venueId) === Number(venue.id) ? "active" : ""}`}
-                      onClick={() => setVenueId(Number(venue.id))}
+                      onClick={() => applyVenueIdSelection(venue.id)}
                     >
                       {venue.name}
                     </button>
@@ -6181,7 +6225,7 @@ export default function App() {
                       className="quick-chip"
                       onClick={() => {
                         setDate(row.date || localDateKey());
-                        setVenueId(Number(row.venueId || 1));
+                        if (!applyVenueIdSelection(row.venueId, "Recent の会場IDが不正です。保存済み履歴を更新してください。")) return;
                         setRaceNo(Number(row.raceNo || 1));
                       }}
                     >
@@ -7858,7 +7902,7 @@ export default function App() {
               </div>
               <div className="controls-grid" style={{ marginBottom: 14 }}>
                 <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
-                <label><span>場</span><select value={venueId} onChange={(e) => setVenueId(Number(e.target.value))}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
+                <label><span>場</span><select value={venueId} onChange={(e) => applyVenueIdSelection(e.target.value)}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
                 <label><span>Rank filter</span><select value={hardRaceTierFilter} onChange={(e) => setHardRaceTierFilter(e.target.value)}><option value="ALL">All</option><option value="A">A rank</option><option value="B">B rank</option><option value="SKIP">C rank / SKIP</option></select></label>
               </div>
               {hardRaceCalibration?.reviewedCount > 0 ? (

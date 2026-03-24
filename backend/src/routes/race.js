@@ -9745,6 +9745,12 @@ raceRouter.get("/race", async (req, res, next) => {
       total_response_ms: null
     };
     const { date, venueId, raceNo, participationMode } = req.query;
+    console.info("[RACE_ROUTE][query_raw]", JSON.stringify({
+      route: "/api/race",
+      date_raw: req.query?.date ?? null,
+      venueId_raw: req.query?.venueId ?? null,
+      raceNo_raw: req.query?.raceNo ?? null
+    }));
     const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, false);
     const screeningMode = String(req.query?.screening || "").toLowerCase();
     const isHardRaceScreening = screeningMode === "hard_race";
