@@ -752,14 +752,35 @@ function firstMeaningfulFiniteValue(...values) {
 function getLapTimeDisplayValue(source = {}) {
   return firstFiniteValue(
     source?.lapTime,
-    source?.lapTimeRaw,
-    source?.kyoteiBiyoriLapTimeRaw,
     source?.kyoteiBiyoriLapTime,
-    source?.kyoteibiyori_lap_time_raw,
     source?.kyoteibiyori_lap_time,
     source?.feature_snapshot?.lap_time,
     source?.lap_time
   );
+}
+
+function getCoverageFieldMeta(coverageReport = {}, lane, fieldName) {
+  const normalizedLane = Number(lane);
+  if (!Number.isInteger(normalizedLane)) return null;
+  const fields = coverageReport && typeof coverageReport === "object" ? coverageReport.fields : null;
+  if (!fields || typeof fields !== "object") return null;
+  const key = `lane${normalizedLane}.${fieldName}`;
+  const value = fields[key];
+  return value && typeof value === "object" ? value : null;
+}
+
+function formatLapTimeCoverageValue(row = {}, coverageReport = {}) {
+  const numericValue = getLapTimeDisplayValue(row);
+  if (numericValue !== null) return formatComparisonValue(numericValue, 2);
+  const lane = row?.boatNumber ?? row?.lane ?? row?.actualLane ?? null;
+  const coverage = getCoverageFieldMeta(coverageReport, lane, "lapTime");
+  if (!coverage) return "-";
+  if (coverage.required === true && coverage.status === "not_published") return "required missing";
+  if (coverage.required === true && coverage.status === "broken_pipeline") return "BROKEN_PIPELINE";
+  if (coverage.required !== true && coverage.status === "not_published") return "optional missing";
+  if (coverage.required !== true && coverage.status === "broken_pipeline") return "optional broken";
+  if (coverage.status === "fallback") return coverage.required === true ? "required fallback" : "optional missing";
+  return "-";
 }
 
 function normalizeLaneStats(source = {}) {
@@ -1445,6 +1466,10 @@ function finalizeHardRaceContractRow(row = {}) {
     fixed1234_top4: Array.isArray(row?.fixed1234Top4) ? row.fixed1234Top4 : (Array.isArray(row?.fixed1234_top4) ? row.fixed1234_top4 : []),
     suggestedShape: row?.suggestedShape ?? row?.suggested_shape ?? null,
     suggested_shape: row?.suggestedShape ?? row?.suggested_shape ?? null,
+    hardScenario: row?.hardScenario ?? row?.hard_scenario ?? null,
+    hard_scenario: row?.hardScenario ?? row?.hard_scenario ?? null,
+    hardScenarioScore: toFiniteOrNull(row?.hardScenarioScore ?? row?.hard_scenario_score ?? row?.scenario_repro_score),
+    hard_scenario_score: toFiniteOrNull(row?.hardScenarioScore ?? row?.hard_scenario_score ?? row?.scenario_repro_score),
     hardRaceRank: row?.hardRaceRank ?? row?.hard_race_rank ?? row?.screeningDebug?.hard_race_rank ?? null,
     hard_race_rank: row?.hardRaceRank ?? row?.hard_race_rank ?? row?.screeningDebug?.hard_race_rank ?? null,
     operational_pick: row?.operational_pick ?? row?.operationalPick ?? row?.features?.operational_policy?.operational_pick ?? null,
@@ -1699,16 +1724,54 @@ function buildSourceSummaryRows(sourceSummary = {}) {
   const snapshot = sourceSummary?.snapshot && typeof sourceSummary.snapshot === "object" ? sourceSummary.snapshot : {};
   const fallback = sourceSummary?.fallback && typeof sourceSummary.fallback === "object" ? sourceSummary.fallback : {};
   const coverage = snapshot?.coverage && typeof snapshot.coverage === "object" ? snapshot.coverage : {};
+  const lapTime = sourceSummary?.lap_time && typeof sourceSummary.lap_time === "object" ? sourceSummary.lap_time : {};
+  const coverageReportSummary =
+    sourceSummary?.coverage_report_summary && typeof sourceSummary.coverage_report_summary === "object"
+      ? sourceSummary.coverage_report_summary
+      : {};
+  const featureTiers =
+    sourceSummary?.feature_tiers && typeof sourceSummary.feature_tiers === "object"
+      ? sourceSummary.feature_tiers
+      : {};
   const missingFields = Array.isArray(sourceSummary?.missing_fields) ? sourceSummary.missing_fields : [];
+  const requiredMissingFields = Array.isArray(sourceSummary?.required_missing_fields) ? sourceSummary.required_missing_fields : [];
+  const optionalMissingFields = Array.isArray(sourceSummary?.optional_missing_fields) ? sourceSummary.optional_missing_fields : [];
   return [
     { label: "mode", value: sourceSummary?.mode || "-" },
     { label: "inference_source", value: sourceSummary?.inference_source || "-" },
-    { label: "snapshot", value: `race:${snapshot?.race || "-"} / entries:${snapshot?.entries || "-"} / feature:${snapshot?.feature_snapshot || "-"} / log:${snapshot?.prediction_log_snapshot || "-"} / event:${snapshot?.prediction_feature_event_snapshot || "-"}` },
+    { label: "snapshot", value: `race:${snapshot?.race || "-"} / entries:${snapshot?.entries || "-"} / feature:${snapshot?.feature_snapshot || "-"} / log:${snapshot?.prediction_log_snapshot || "-"} / event:${snapshot?.prediction_feature_event_snapshot || "-"} / coverage:${snapshot?.coverage_report || "-"}` },
     { label: "coverage", value: Number.isFinite(Number(coverage?.ready_fields)) && Number.isFinite(Number(coverage?.total_fields)) ? `${coverage.ready_fields}/${coverage.total_fields}` : "-" },
+    { label: "coverage_report", value: Number.isFinite(Number(coverageReportSummary?.total)) ? `ok:${coverageReportSummary?.ok || 0} / fallback:${coverageReportSummary?.fallback || 0} / broken:${coverageReportSummary?.broken_pipeline || 0}` : "-" },
+    { label: "lapTime", value: Number.isFinite(Number(lapTime?.ready_count)) ? `ready:${lapTime.ready_count || 0} / fallback:${lapTime.fallback_count || 0} / broken:${lapTime.broken_count || 0} / source:${lapTime.source || "-"}` : "-" },
     { label: "fallback", value: fallback?.used ? `yes (${Array.isArray(fallback?.fields) ? fallback.fields.join(", ") || "-" : "-"})` : "no" },
+    { label: "tierA", value: Array.isArray(featureTiers?.tier_a_required) ? featureTiers.tier_a_required.join(", ") : "-" },
+    { label: "tierB", value: Array.isArray(featureTiers?.tier_b_optional) ? featureTiers.tier_b_optional.join(", ") : "-" },
+    { label: "required_missing", value: requiredMissingFields.length > 0 ? requiredMissingFields.join(", ") : "none" },
+    { label: "optional_missing", value: optionalMissingFields.length > 0 ? optionalMissingFields.join(", ") : "none" },
     { label: "estimated", value: Array.isArray(sourceSummary?.estimated_fields) && sourceSummary.estimated_fields.length > 0 ? sourceSummary.estimated_fields.join(", ") : "none" },
     { label: "missing", value: missingFields.length > 0 ? missingFields.join(", ") : "none" }
   ];
+}
+
+function buildCoverageInspectionRows(coverageReport = {}, fieldNames = []) {
+  const fields = coverageReport && typeof coverageReport === "object" ? coverageReport.fields : null;
+  if (!fields || typeof fields !== "object") return [];
+  const wanted = new Set(Array.isArray(fieldNames) ? fieldNames : []);
+  return Object.entries(fields)
+    .filter(([key]) => {
+      const fieldName = String(key).split(".").slice(1).join(".");
+      return wanted.size === 0 || wanted.has(fieldName);
+    })
+    .sort(([left], [right]) => left.localeCompare(right, "en"))
+    .map(([key, meta]) => ({
+      key,
+      status: meta?.status || "-",
+      source: meta?.source || "-",
+      raw: meta?.raw ?? null,
+      normalized: meta?.normalized ?? null,
+      required: meta?.required === true,
+      reason: meta?.reason || "-"
+    }));
 }
 
 function buildTop6PredictionRows(prediction = {}) {
@@ -1998,6 +2061,8 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       fixed1234Matrix: entry?.data?.hardRace1234?.fixed1234_matrix ?? {},
       fixed1234Top4: entry?.data?.hardRace1234?.fixed1234_top4 ?? [],
       suggestedShape: entry?.data?.hardRace1234?.suggested_shape ?? null,
+      hardScenario: entry?.data?.hardRace1234?.hardScenario ?? null,
+      hardScenarioScore: entry?.data?.hardRace1234?.hardScenarioScore ?? entry?.data?.hardRace1234?.scenario_repro_score ?? null,
       hardRaceRank: entry?.data?.hardRace1234?.hard_race_rank ?? entry?.data?.hardRace1234?.screeningDebug?.hard_race_rank ?? null,
       finalStatus:
         entry?.data?.hardRace1234?.decision === "BUY-4" || entry?.data?.hardRace1234?.decision === "BUY-6"
@@ -6188,7 +6253,7 @@ export default function App() {
                               <td>
                                 <span className={`f-count-badge ${Number(row?.fCount) > 0 ? "has-f" : ""}`}>F{row?.fCount ?? "--"}</span>
                               </td>
-                              <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.lapTime, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatLapTimeCoverageValue(row, data?.source?.coverage_report)}</td>
                               <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionSt, 2)}</td>
                               <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionTime, 2)}</td>
                               <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren, 2)}</td>
@@ -6308,6 +6373,16 @@ export default function App() {
                       <span>confidence</span>
                       <strong>{formatPercentDisplay(pureTop6Prediction?.confidence)}</strong>
                       <small>6点予想のまとまり / {predictionConfidenceState}</small>
+                    </article>
+                    <article className="hardrace-meta-card">
+                      <span>top6Scenario</span>
+                      <strong>{pureTop6Prediction?.top6Scenario || "--"}</strong>
+                      <small>{pureTop6Prediction?.top6ScenarioScore !== null && pureTop6Prediction?.top6ScenarioScore !== undefined ? `score ${formatMaybeNumber(pureTop6Prediction?.top6ScenarioScore, 1)}` : "未計算"}</small>
+                    </article>
+                    <article className="hardrace-meta-card">
+                      <span>scenario_repro_score</span>
+                      <strong>{pureTop6Prediction?.scenario_repro_score !== null && pureTop6Prediction?.scenario_repro_score !== undefined ? formatMaybeNumber(pureTop6Prediction?.scenario_repro_score, 1) : "--"}</strong>
+                      <small>scenario 再現補正の総合値</small>
                     </article>
                   </div>
                   <div className="prediction-role-strip">
@@ -6994,6 +7069,57 @@ export default function App() {
                       <div className="kv-row"><span>failed fields</span><strong>{(data?.source?.kyotei_biyori?.field_diagnostics?.failed_fields || []).join(", ") || "--"}</strong></div>
                       <div className="kv-row"><span>fallback reason</span><strong>{data?.source?.kyotei_biyori?.fallback_reason || "--"}</strong></div>
                     </div>
+                    <div className="kv-list" style={{ marginTop: 10 }}>
+                      {buildSourceSummaryRows(data?.prediction?.source_summary || {}).map((item) => (
+                        <div className="kv-row" key={`pure-source-summary-${item.label}`}><span>{item.label}</span><strong>{item.value}</strong></div>
+                      ))}
+                    </div>
+                    <details style={{ marginTop: 10 }}>
+                      <summary>field coverage</summary>
+                      <div className="table-wrap" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>field</th>
+                              <th>status</th>
+                              <th>source</th>
+                              <th>required</th>
+                              <th>normalized</th>
+                              <th>raw</th>
+                              <th>reason</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {buildCoverageInspectionRows(data?.source?.coverage_report, [
+                              "lapTime",
+                              "avg_st",
+                              "exhibition_time",
+                              "motor_2ren",
+                              "motor_3ren",
+                              "national_win_rate",
+                              "local_win_rate",
+                              "f_count",
+                              "l_count",
+                              "lane_1st_rate",
+                              "lane_2ren_rate",
+                              "lane_3ren_rate",
+                              "stability_rate",
+                              "breakout_rate"
+                            ]).map((row) => (
+                              <tr key={`coverage-row-${row.key}`}>
+                                <td><code>{row.key}</code></td>
+                                <td>{row.status}</td>
+                                <td>{row.source}</td>
+                                <td>{row.required ? "yes" : "no"}</td>
+                                <td>{formatDebugRawValue(row.normalized)}</td>
+                                <td><code>{formatDebugRawValue(row.raw)}</code></td>
+                                <td>{row.reason}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
                     <div className="table-wrap" style={{ marginTop: 10 }}>
                       <table>
                         <thead>
@@ -7813,6 +7939,11 @@ export default function App() {
                             <span>Suggested Shape</span>
                             <strong>{row.suggestedShape || "--"}</strong>
                             <small>最優先の形</small>
+                          </article>
+                          <article className="hardrace-meta-card">
+                            <span>hardScenario</span>
+                            <strong>{row.hardScenario || "--"}</strong>
+                            <small>{row.hardScenarioScore !== null ? `score ${formatMaybeNumber(row.hardScenarioScore, 1)}` : "未計算"}</small>
                           </article>
                           <article className="hardrace-meta-card">
                             <span>Top 2 Shapes</span>
