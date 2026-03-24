@@ -136,8 +136,11 @@ async function main() {
       const coverageDiagnostics = row?.saved?.coverage_diagnostics || row?.snapshotIndex?.metadata?.coverage_diagnostics || {};
       console.log(`[OK] ${row.date} venue=${row.venueId} race=${row.raceNo} race_id=${row.raceId} status=${row.snapshotIndex?.snapshotStatus || "READY"} feature_snapshot=${row.saved?.feature_snapshot || 0} lapTime=${coverageDiagnostics?.lap_time_ready_count || 0}/${coverageDiagnostics?.lap_time_total_count || 0} total_ms=${row.timing?.total_ms || 0}`);
       console.log(`     fallback_fields=${formatFieldList(coverageDiagnostics?.fallback_fields)}`);
+      console.log(`     required_broken_fields=${formatFieldList(coverageDiagnostics?.required_broken_fields || coverageDiagnostics?.broken_fields)}`);
+      console.log(`     required_missing_fields=${formatFieldList(coverageDiagnostics?.required_missing_fields)}`);
+      console.log(`     optional_broken_fields=${formatFieldList(coverageDiagnostics?.optional_broken_fields)}`);
+      console.log(`     optional_missing_fields=${formatFieldList(coverageDiagnostics?.optional_missing_fields)}`);
       console.log(`     optional_issue_fields=${formatFieldList(coverageDiagnostics?.optional_issue_fields)}`);
-      console.log(`     broken_fields=${formatFieldList(coverageDiagnostics?.broken_fields)}`);
     } else {
       console.log(`[FAIL] ${row?.date || "-"} venue=${row?.venueId || "-"} race=${row?.raceNo || "-"} code=${row?.code || "SNAPSHOT_GENERATION_FAILED"} message=${row?.message || "unknown_error"}`);
     }

@@ -27,13 +27,22 @@ function toInt(value, fallback = null) {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-function summarizeCoverageDiagnostics(coverageReport = {}) {
+export function summarizeCoverageDiagnostics(coverageReport = {}) {
   const fields = coverageReport?.fields && typeof coverageReport.fields === "object" ? coverageReport.fields : {};
   const fallbackFields = Object.entries(fields)
     .filter(([, meta]) => meta?.status === "fallback")
     .map(([field]) => field);
-  const brokenFields = Object.entries(fields)
+  const requiredBrokenFields = Object.entries(fields)
     .filter(([, meta]) => meta?.required === true && meta?.status === "broken_pipeline")
+    .map(([field]) => field);
+  const requiredMissingFields = Object.entries(fields)
+    .filter(([, meta]) => meta?.required === true && (meta?.status === "missing" || meta?.status === "not_published"))
+    .map(([field]) => field);
+  const optionalBrokenFields = Object.entries(fields)
+    .filter(([, meta]) => meta?.required !== true && meta?.status === "broken_pipeline")
+    .map(([field]) => field);
+  const optionalMissingFields = Object.entries(fields)
+    .filter(([, meta]) => meta?.required !== true && (meta?.status === "missing" || meta?.status === "not_published"))
     .map(([field]) => field);
   const optionalIssueFields = Object.entries(fields)
     .filter(([, meta]) => meta?.required !== true && meta?.status && meta.status !== "ok")
@@ -41,7 +50,11 @@ function summarizeCoverageDiagnostics(coverageReport = {}) {
   const lapTimeFields = Object.entries(fields).filter(([field]) => field.endsWith(".lapTime"));
   return {
     fallback_fields: fallbackFields,
-    broken_fields: brokenFields,
+    broken_fields: requiredBrokenFields,
+    required_broken_fields: requiredBrokenFields,
+    required_missing_fields: requiredMissingFields,
+    optional_broken_fields: optionalBrokenFields,
+    optional_missing_fields: optionalMissingFields,
     optional_issue_fields: optionalIssueFields,
     lap_time_ready_count: lapTimeFields.filter(([, meta]) => meta?.status === "ok").length,
     lap_time_total_count: lapTimeFields.length

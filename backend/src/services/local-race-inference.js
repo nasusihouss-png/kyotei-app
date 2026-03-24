@@ -1,6 +1,7 @@
 import db from "../../db.js";
 import { buildRaceIdFromParts } from "../../result-utils.js";
 import { getRaceSnapshotIndexByParts } from "./race-snapshot-store.js";
+import { REQUIRED_COVERAGE_FIELDS } from "./snapshot-coverage.js";
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_races_race_id ON races(race_id);
@@ -46,6 +47,55 @@ function getUsableFeaturePredictionValue(featureSnapshot = {}, field, { min = Nu
   const meta = getFeaturePredictionMeta(featureSnapshot, field);
   if (!meta?.is_usable) return null;
   return toPositiveRangeNum(meta?.normalized_numeric_value ?? meta?.value, { min, max }, null);
+}
+
+function normalizeCoverageFieldName(key = "") {
+  const parts = String(key || "").split(".");
+  return parts.length > 1 ? parts.slice(1).join(".") : String(key || "");
+}
+
+function isRequiredCoverageFieldName(fieldName = "") {
+  return REQUIRED_COVERAGE_FIELDS.includes(String(fieldName || ""));
+}
+
+function normalizeStoredCoverageReport(report = null) {
+  const fields = report?.fields && typeof report.fields === "object" ? report.fields : {};
+  const normalizedFields = Object.fromEntries(
+    Object.entries(fields).map(([key, meta]) => {
+      const fieldName = normalizeCoverageFieldName(key);
+      return [
+        key,
+        {
+          ...(meta && typeof meta === "object" ? meta : {}),
+          required: isRequiredCoverageFieldName(fieldName)
+        }
+      ];
+    })
+  );
+  const summary = {
+    total: 0,
+    ok: 0,
+    fallback: 0,
+    broken_pipeline: 0,
+    missing: 0,
+    not_published: 0,
+    required_broken_pipeline: 0,
+    required_missing: 0,
+    optional_issues: 0
+  };
+  for (const meta of Object.values(normalizedFields)) {
+    summary.total += 1;
+    const status = String(meta?.status || "missing");
+    summary[status] = (summary[status] || 0) + 1;
+    if (meta?.required === true && status === "broken_pipeline") summary.required_broken_pipeline += 1;
+    if (meta?.required === true && (status === "missing" || status === "not_published")) summary.required_missing += 1;
+    if (meta?.required !== true && status !== "ok") summary.optional_issues += 1;
+  }
+  return {
+    ...(report && typeof report === "object" ? report : {}),
+    fields: normalizedFields,
+    summary
+  };
 }
 
 function getPredictionFeatureEventSnapshot(raceId) {
@@ -269,6 +319,7 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
     };
   });
   const snapshotLoadMs = Date.now() - snapshotLoadStartedAt;
+  const normalizedCoverageReport = normalizeStoredCoverageReport(snapshotIndex?.metadata?.coverage_report || null);
   if (typeof trace === "function") {
     trace("snapshot_load_end", {
       raceId,
@@ -319,8 +370,8 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
         prediction_log_snapshot: !!predictionLogSnapshot,
         index_snapshot_status: snapshotIndex?.snapshotStatus || null
       },
-      coverage_report: snapshotIndex?.metadata?.coverage_report || null,
-      coverage_report_summary: snapshotIndex?.metadata?.coverage_report_summary || null,
+      coverage_report: normalizedCoverageReport,
+      coverage_report_summary: normalizedCoverageReport?.summary || snapshotIndex?.metadata?.coverage_report_summary || null,
       load_diagnostics: {
         race_id: raceId,
         snapshot_index: snapshotIndex,
