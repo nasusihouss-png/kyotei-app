@@ -135,11 +135,25 @@ function normalizeComboMatrix(matrix) {
   return normalized;
 }
 
-function asField(value, source, missingReason) {
+function asField(value, source, missingReason, options = {}) {
   if (!Number.isFinite(Number(value))) {
-    return { value: null, source, missing_reason: missingReason };
+    return {
+      value: null,
+      source,
+      missing_reason: missingReason,
+      source_priority: options?.source_priority || null,
+      coverage: options?.coverage ?? 0,
+      fallback_used: !!options?.fallback_used
+    };
   }
-  return { value: Number(value), source, missing_reason: null };
+  return {
+    value: Number(value),
+    source,
+    missing_reason: null,
+    source_priority: options?.source_priority || null,
+    coverage: options?.coverage ?? 1,
+    fallback_used: !!options?.fallback_used
+  };
 }
 
 function buildFallbackTracker() {
@@ -180,7 +194,8 @@ function buildSourceSummary({ data, normalizedLanes, fallbackSummary, missingFie
       feature_snapshot: data?.source?.local_snapshots?.feature_snapshot ? "snapshot" : "missing",
       prediction_feature_event_snapshot: data?.source?.local_snapshots?.prediction_feature_event_snapshot ? "snapshot" : "missing",
       prediction_log_snapshot: data?.source?.local_snapshots?.prediction_log_snapshot ? "snapshot" : "missing",
-      coverage
+      coverage,
+      coverage_report: data?.source?.coverage_report_summary ? "snapshot" : "missing"
     },
     fallback: {
       used: !!fallbackSummary?.used,
@@ -188,8 +203,16 @@ function buildSourceSummary({ data, normalizedLanes, fallbackSummary, missingFie
       details: fallbackSummary?.byField || {}
     },
     estimated_fields: Object.keys(fallbackSummary?.byField || {}),
-    missing_fields: Array.isArray(missingFields) ? missingFields : []
+    missing_fields: Array.isArray(missingFields) ? missingFields : [],
+    coverage_report_summary: data?.source?.coverage_report_summary || null
   };
+}
+
+function getCoverageMeta(snapshot, fieldName) {
+  const coverage = snapshot?.coverage_report && typeof snapshot.coverage_report === "object"
+    ? snapshot.coverage_report[fieldName]
+    : null;
+  return coverage && typeof coverage === "object" ? coverage : null;
 }
 
 function normalizeRaceData({ data }) {
@@ -202,6 +225,7 @@ function normalizeRaceData({ data }) {
         : racer?.playerSnapshot?.feature_snapshot && typeof racer.playerSnapshot.feature_snapshot === "object"
           ? racer.playerSnapshot.feature_snapshot
           : {};
+    const meta = (fieldName) => getCoverageMeta(snapshot, fieldName);
     const courseRate = courseRateByLane(snapshot, lane);
     const attackQuality = weightedAverage([
       { value: safeNorm(snapshot.entry_advantage_score, 0, 14) === null ? null : safeNorm(snapshot.entry_advantage_score, 0, 14) * 100, weight: 0.35 },
@@ -226,16 +250,22 @@ function normalizeRaceData({ data }) {
         l_count: asField(racer?.lHoldCount, "player_snapshot", "snapshot.racer.l_count"),
         motor_2ren: asField(racer?.motor2Rate, "entry_snapshot", "snapshot.racer.motor_2ren"),
         boat_2ren: asField(racer?.boat2Rate, "entry_snapshot", "snapshot.racer.boat_2ren"),
-        motor_3ren: asField(snapshot?.motor3_rate ?? snapshot?.motor3Rate, "feature_snapshot", "snapshot.feature.motor_3ren"),
-        boat_3ren: asField(snapshot?.boat3_rate ?? snapshot?.boat3Rate, "feature_snapshot", "snapshot.feature.boat_3ren"),
-        course_1_head_rate: asField(snapshot?.course1_win_rate, "feature_snapshot", "snapshot.feature.course1_win_rate"),
-        course_1_2ren_rate: asField(snapshot?.course1_2rate, "feature_snapshot", "snapshot.feature.course1_2rate"),
+        motor_3ren: asField(snapshot?.motor3_rate ?? snapshot?.motor3Rate ?? meta("motor_3ren")?.value, meta("motor_3ren")?.source || "feature_snapshot", "snapshot.feature.motor_3ren", meta("motor_3ren") || {}),
+        boat_3ren: asField(snapshot?.boat3_rate ?? snapshot?.boat3Rate ?? meta("boat_3ren")?.value, meta("boat_3ren")?.source || "feature_snapshot", "snapshot.feature.boat_3ren", meta("boat_3ren") || {}),
+        course_1_head_rate: asField(snapshot?.course1_win_rate ?? meta("course_1_head_rate")?.value, meta("course_1_head_rate")?.source || "feature_snapshot", "snapshot.feature.course1_win_rate", meta("course_1_head_rate") || {}),
+        course_1_2ren_rate: asField(snapshot?.course1_2rate ?? meta("course_1_2ren_rate")?.value, meta("course_1_2ren_rate")?.source || "feature_snapshot", "snapshot.feature.course1_2rate", meta("course_1_2ren_rate") || {}),
         lane_course_rate: asField(courseRate, "feature_snapshot", `snapshot.feature.course_rate_lane${lane}`),
         course_fit_score: asField(snapshot?.course_fit_score, "feature_snapshot", "snapshot.feature.course_fit_score"),
         motor_total_score: asField(snapshot?.motor_total_score, "feature_snapshot", "snapshot.feature.motor_total_score"),
         entry_advantage_score: asField(snapshot?.entry_advantage_score, "feature_snapshot", "snapshot.feature.entry_advantage_score"),
         start_rank: asField(snapshot?.st_rank, "feature_snapshot", "snapshot.feature.st_rank"),
         exhibition_rank: asField(snapshot?.exhibition_rank, "feature_snapshot", "snapshot.feature.exhibition_rank"),
+        stability_rate: asField(meta("stability_rate")?.value, meta("stability_rate")?.source || "estimated_from_snapshot", "snapshot.coverage.stability_rate", meta("stability_rate") || {}),
+        breakout_rate: asField(meta("breakout_rate")?.value, meta("breakout_rate")?.source || "estimated_from_snapshot", "snapshot.coverage.breakout_rate", meta("breakout_rate") || {}),
+        sashi_rate: asField(meta("sashi_rate")?.value, meta("sashi_rate")?.source || "estimated_from_snapshot", "snapshot.coverage.sashi_rate", meta("sashi_rate") || {}),
+        makuri_rate: asField(meta("makuri_rate")?.value, meta("makuri_rate")?.source || "estimated_from_snapshot", "snapshot.coverage.makuri_rate", meta("makuri_rate") || {}),
+        makurisashi_rate: asField(meta("makurisashi_rate")?.value, meta("makurisashi_rate")?.source || "estimated_from_snapshot", "snapshot.coverage.makurisashi_rate", meta("makurisashi_rate") || {}),
+        zentsuke_tendency: asField(meta("zentsuke_tendency")?.value, meta("zentsuke_tendency")?.source || "estimated_from_snapshot", "snapshot.coverage.zentsuke_tendency", meta("zentsuke_tendency") || {}),
         attack_quality: asField(attackQuality, "estimated_from_snapshot", "snapshot.derived.attack_quality"),
         outer_entry_tendency: asField(outerEntryTendency, "estimated_from_snapshot", "snapshot.derived.outer_entry_tendency")
       }
@@ -385,9 +415,11 @@ function computeScores(normalized) {
   const killEscapeRisk = resolveMetricWithFallback({
     field: "kill_escape_risk",
     primaryValue: scoreBlend([
-      { value: lane3AttackRemain, weight: 0.58 },
-      { value: lane4DevelopRemain, weight: 0.34 },
-      { value: safeNorm(lane3?.features?.entry_advantage_score?.value, 0, 14) === null ? null : safeNorm(lane3.features.entry_advantage_score.value, 0, 14) * 100, weight: 0.08 }
+      { value: lane3AttackRemain, weight: 0.44 },
+      { value: lane4DevelopRemain, weight: 0.22 },
+      { value: lane3?.features?.makuri_rate?.value, weight: 0.18 },
+      { value: lane3?.features?.makurisashi_rate?.value, weight: 0.1 },
+      { value: lane4?.features?.breakout_rate?.value, weight: 0.06 }
     ]),
     fallbackValue: scoreBlend([{ value: lane3?.features?.lane_course_rate?.value, weight: 0.6 }, { value: lane4?.features?.lane_course_rate?.value, weight: 0.4 }]),
     fallbackFormula: "lane3/lane4 course rate fallback",
@@ -397,10 +429,12 @@ function computeScores(normalized) {
   const shapeShuffleRisk = resolveMetricWithFallback({
     field: "shape_shuffle_risk",
     primaryValue: scoreBlend([
-      { value: clamp(0, 100, Math.abs((lane2SecondRemain || 50) - (lane3AttackRemain || 50)) * 1.05), weight: 0.32 },
-      { value: clamp(0, 100, Math.abs((lane2SecondRemain || 50) - (lane4DevelopRemain || 50)) * 1.05), weight: 0.3 },
-      { value: clamp(0, 100, Math.abs((lane3AttackRemain || 50) - (lane4DevelopRemain || 50))), weight: 0.2 },
-      { value: safeNorm(lane4?.features?.entry_advantage_score?.value, 0, 14) === null ? null : safeNorm(lane4.features.entry_advantage_score.value, 0, 14) * 100, weight: 0.18 }
+      { value: clamp(0, 100, Math.abs((lane2SecondRemain || 50) - (lane3AttackRemain || 50)) * 1.05), weight: 0.24 },
+      { value: clamp(0, 100, Math.abs((lane2SecondRemain || 50) - (lane4DevelopRemain || 50)) * 1.05), weight: 0.22 },
+      { value: clamp(0, 100, Math.abs((lane3AttackRemain || 50) - (lane4DevelopRemain || 50))), weight: 0.16 },
+      { value: lane3?.features?.makurisashi_rate?.value, weight: 0.16 },
+      { value: lane4?.features?.breakout_rate?.value, weight: 0.12 },
+      { value: lane4?.features?.zentsuke_tendency?.value, weight: 0.1 }
     ]),
     fallbackValue: clamp(0, 100, Math.abs((pair23.value || 50) - (pair24.value || 50))),
     fallbackFormula: "pair fit divergence fallback",
@@ -408,8 +442,10 @@ function computeScores(normalized) {
   }).value;
 
   const outsideHeadRisk = scoreBlend([
-    { value: lane5Pressure, weight: 0.5 },
-    { value: lane6Pressure, weight: 0.5 }
+    { value: lane5Pressure, weight: 0.34 },
+    { value: lane6Pressure, weight: 0.34 },
+    { value: lane5?.features?.makuri_rate?.value, weight: 0.16 },
+    { value: lane6?.features?.makuri_rate?.value, weight: 0.16 }
   ]);
   const outside2ndRisk = clamp(0, 1, (scoreBlend([
     { value: lane5Pressure, weight: 0.34 },
@@ -429,18 +465,20 @@ function computeScores(normalized) {
     { value: outside3rdRisk, weight: 0.2 }
   ]) || 0);
   const outsideBreakRisk = clamp(0, 1, weightedAverage([
-    { value: (outsideHeadRisk || 0) / 100, weight: 0.42 },
-    { value: outside2ndRisk, weight: 0.34 },
-    { value: outside3rdRisk, weight: 0.08 },
+    { value: (outsideHeadRisk || 0) / 100, weight: 0.46 },
+    { value: outside2ndRisk, weight: 0.32 },
+    { value: outside3rdRisk, weight: 0.06 },
     { value: outsideBoxBreakRisk, weight: 0.16 }
   ]) || 0);
 
   const p1Score = weightedAverage([
-    { value: lane1Strength, weight: 0.48 },
-    { value: 100 - (killEscapeRisk || 0), weight: 0.2 },
-    { value: 100 - (shapeShuffleRisk || 0), weight: 0.08 },
+    { value: lane1Strength, weight: 0.42 },
+    { value: 100 - (killEscapeRisk || 0), weight: 0.22 },
+    { value: 100 - (shapeShuffleRisk || 0), weight: 0.1 },
     { value: 100 - (outsideHeadRisk || 0), weight: 0.08 },
-    { value: pairSupportFit, weight: 0.16 }
+    { value: pairSupportFit, weight: 0.1 },
+    { value: 100 - (lane3?.features?.makuri_rate?.value || 0), weight: 0.04 },
+    { value: 100 - (lane4?.features?.breakout_rate?.value || 0), weight: 0.04 }
   ]);
   const p1Escape = clamp(0, 1, (p1Score || 0) / 100);
   const boat1EscapeTrust = round(p1Escape * 100, 1);

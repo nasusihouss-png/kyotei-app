@@ -5,6 +5,7 @@ import {
   normalizeKyoteiBiyoriPreRaceFields,
   mergeKyoteiBiyoriDataIntoRaceContext
 } from "../src/services/kyoteibiyori.js";
+import { buildRaceCoverageReport } from "../src/services/snapshot-coverage.js";
 
 const sampleAjaxPayload = {
   chokuzen_list: [
@@ -53,6 +54,13 @@ assert.equal(parsedAjax.byLane.get(1)?.exhibitionTime, 6.75);
 assert.equal(parsedAjax.byLane.get(1)?.exhibitionSt, 0.08);
 assert.equal(parsedAjax.byLane.get(1)?.laneFirstRate, 66.6667);
 assert.equal(parsedAjax.byLane.get(2)?.exhibitionSt, null, "F start should not become a normal ST value");
+
+const zeroLapAjax = parseKyoteiBiyoriAjaxData({
+  chokuzen_list: [{ course: 1, player_no: 1, player_name: "Zero", shukai: 0, tenji: 0, start: "", shinnyuu: 1 }],
+  oriten_ave_list: {}
+});
+assert.equal(zeroLapAjax.byLane.get(1)?.lapTimeRaw, null);
+assert.equal(zeroLapAjax.byLane.get(1)?.lapTime, null);
 
 const sampleHtml = `
   <table>
@@ -400,6 +408,7 @@ const strictPreRace = normalizeKyoteiBiyoriPreRaceFields(
   parseKyoteiBiyoriPreRaceData(exactPreRaceStrictHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
 );
 assert.equal(strictPreRace.byLane.get(1)?.lapTimeRaw, 36.23);
+assert.equal([...strictPreRace.byLane.values()].filter((row) => Number.isFinite(Number(row?.lapTimeRaw))).length, 6);
 assert.equal(strictPreRace.byLane.get(2)?.exhibitionSt, 0.03);
 assert.equal(strictPreRace.byLane.get(4)?.exhibitionSt, null);
 assert.equal(strictPreRace.byLane.get(1)?.lapExStretch, 6.5);
@@ -411,6 +420,28 @@ assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.value, 6.5);
 assert.equal(strictPreRace.fieldDebugs["1"]?.lapExStretch?.metric, "\u5c55\u793a");
 assert.equal(strictPreRace.fieldDebugs["2"]?.exhibitionST?.section, "\u76f4\u524d\u60c5\u5831");
 assert.equal(strictPreRace.fieldDebugs["2"]?.exhibitionST?.value, 0.03);
+
+const lapTimeAliasHtml = `
+  <table>
+    <caption>直前情報</caption>
+    <tr>
+      <th>項目</th>
+      <th>1号艇</th>
+      <th>2号艇</th>
+      <th>3号艇</th>
+      <th>4号艇</th>
+      <th>5号艇</th>
+      <th>6号艇</th>
+    </tr>
+    <tr><td>周回タイム</td><td>36.23</td><td>36.45</td><td>36.50</td><td>36.61</td><td>36.73</td><td>36.80</td></tr>
+  </table>
+`;
+const lapTimeAliasParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(lapTimeAliasHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+);
+assert.equal(lapTimeAliasParsed.byLane.get(1)?.lapTimeRaw, 36.23);
+assert.equal(lapTimeAliasParsed.byLane.get(1)?.lapTime, 6.73);
+assert.equal(lapTimeAliasParsed.fieldDebugs["1"]?.lapTime?.raw, "36.23");
 
 const merged = mergeKyoteiBiyoriDataIntoRaceContext({
   racers: [
@@ -424,6 +455,61 @@ assert.equal(merged[0].kyoteiBiyoriFetched, 1);
 assert.equal(merged[0].kyoteiBiyoriLapTimeRaw, 36.23);
 assert.equal(merged[0].lapTime, 6.73);
 assert.equal(merged[1].fHoldCount, 1);
+
+const mergedStrict = mergeKyoteiBiyoriDataIntoRaceContext({
+  racers: [{ lane: 1, name: "Strict Lane 1" }],
+  kyoteiBiyori: strictPreRace
+});
+assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.is_usable, true);
+assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.published_in_source, true);
+assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.raw_cell_text, "36.23");
+assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.normalized_numeric_value, 6.73);
+
+const publishedButBrokenLapTimeHtml = `
+  <table>
+    <caption>直前情報</caption>
+    <tr>
+      <th>項目</th>
+      <th>1号艇</th>
+      <th>2号艇</th>
+      <th>3号艇</th>
+      <th>4号艇</th>
+      <th>5号艇</th>
+      <th>6号艇</th>
+    </tr>
+    <tr><td>周回</td><td>計測不能</td><td>36.45</td><td>36.50</td><td>36.61</td><td>36.73</td><td>36.80</td></tr>
+  </table>
+`;
+
+const brokenPreRace = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(publishedButBrokenLapTimeHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+);
+const mergedBroken = mergeKyoteiBiyoriDataIntoRaceContext({
+  racers: [{ lane: 1, name: "Broken Lane 1" }],
+  kyoteiBiyori: brokenPreRace
+});
+assert.equal(mergedBroken[0].predictionFieldMeta?.lapTime?.is_usable, false);
+assert.equal(mergedBroken[0].predictionFieldMeta?.lapTime?.reason, "published_but_parse_failed");
+assert.equal(mergedBroken[0].predictionFieldMeta?.lapTime?.published_in_source, true);
+assert.equal(mergedBroken[0].predictionFieldMeta?.lapTime?.raw_cell_text, "計測不能");
+assert.equal(mergedBroken[0].predictionFieldMeta?.lapTime?.normalized_numeric_value, null);
+
+const brokenCoverage = buildRaceCoverageReport({
+  data: {
+    racers: mergedBroken,
+    source: {
+      kyotei_biyori: {
+        ok: true
+      }
+    }
+  },
+  ranking: [{ racer: { lane: 1 }, features: {} }]
+});
+assert.equal(brokenCoverage.fields["lane1.lapTime"]?.status, "broken_pipeline");
+assert.equal(brokenCoverage.fields["lane1.lapTime"]?.raw, "計測不能");
+assert.equal(brokenCoverage.fields["lane1.lapTime"]?.normalized, null);
+assert.equal(brokenCoverage.fields["lane1.lapTime"]?.required, false);
+assert.equal(brokenCoverage.fields["lane1.lapTime"]?.reason, "published_but_parse_failed");
 
 console.log("kyoteibiyori-adapter tests passed");
 

@@ -11,6 +11,7 @@ import { applyEntryDynamicsFeatures } from "../../entry-dynamics-engine.js";
 import { rankRace } from "../../score-engine.js";
 import { saveFeatureSnapshots } from "../../save-feature-snapshots.js";
 import { upsertRaceSnapshotIndex } from "./race-snapshot-store.js";
+import { attachCoverageReportToRanking, buildRaceCoverageReport } from "./snapshot-coverage.js";
 
 const VENUE_IDS = Array.from({ length: 24 }, (_, index) => index + 1);
 const DEFAULT_RACE_NUMBERS = Array.from({ length: 12 }, (_, index) => index + 1);
@@ -24,6 +25,27 @@ db.exec(`
 function toInt(value, fallback = null) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function summarizeCoverageDiagnostics(coverageReport = {}) {
+  const fields = coverageReport?.fields && typeof coverageReport.fields === "object" ? coverageReport.fields : {};
+  const fallbackFields = Object.entries(fields)
+    .filter(([, meta]) => meta?.status === "fallback")
+    .map(([field]) => field);
+  const brokenFields = Object.entries(fields)
+    .filter(([, meta]) => meta?.required === true && meta?.status === "broken_pipeline")
+    .map(([field]) => field);
+  const optionalIssueFields = Object.entries(fields)
+    .filter(([, meta]) => meta?.required !== true && meta?.status && meta.status !== "ok")
+    .map(([field]) => field);
+  const lapTimeFields = Object.entries(fields).filter(([field]) => field.endsWith(".lapTime"));
+  return {
+    fallback_fields: fallbackFields,
+    broken_fields: brokenFields,
+    optional_issue_fields: optionalIssueFields,
+    lap_time_ready_count: lapTimeFields.filter(([, meta]) => meta?.status === "ok").length,
+    lap_time_total_count: lapTimeFields.length
+  };
 }
 
 function buildFeatureRanking(data) {
@@ -62,10 +84,20 @@ export async function generateRaceSnapshot({
     screeningProfile: false
   });
   const ranking = buildFeatureRanking(data);
+  const coverageReport = buildRaceCoverageReport({ data, ranking });
+  const coverageDiagnostics = summarizeCoverageDiagnostics(coverageReport);
+  const rankingWithCoverage = attachCoverageReportToRanking(ranking, coverageReport);
   const raceId = saveRace(data);
-  const featureSnapshotCount = saveFeatureSnapshots(raceId, ranking);
+  const featureSnapshotCount = saveFeatureSnapshots(raceId, rankingWithCoverage);
   const entrySnapshotCount = Array.isArray(data?.racers) ? data.racers.length : 0;
-  const snapshotStatus = entrySnapshotCount === 6 && featureSnapshotCount === 6 ? "READY" : "BROKEN_PIPELINE";
+  const brokenCount = Number(coverageReport?.summary?.required_broken_pipeline || 0) + Number(coverageReport?.summary?.required_missing || 0);
+  const fallbackCount = Number(coverageReport?.summary?.fallback || 0) + Number(coverageReport?.summary?.optional_issues || 0);
+  const snapshotStatus =
+    brokenCount > 0 || entrySnapshotCount !== 6 || featureSnapshotCount !== 6
+      ? "BROKEN_PIPELINE"
+      : fallbackCount > 0
+        ? "FALLBACK"
+        : "READY";
   const snapshotIndex = upsertRaceSnapshotIndex({
     raceId,
     date: data?.race?.date || date,
@@ -81,6 +113,9 @@ export async function generateRaceSnapshot({
         total_ms: Date.now() - startedAt,
         upstream: data?.source?.timings || {}
       },
+      coverage_report_summary: coverageReport?.summary || {},
+      coverage_diagnostics: coverageDiagnostics,
+      coverage_report: coverageReport || {},
       includeKyoteiBiyori: !!includeKyoteiBiyori,
       forceRefresh: !!forceRefresh
     }
@@ -95,7 +130,9 @@ export async function generateRaceSnapshot({
     saved: {
       race_snapshot: true,
       entry_snapshot: entrySnapshotCount,
-      feature_snapshot: featureSnapshotCount
+      feature_snapshot: featureSnapshotCount,
+      coverage_report_summary: coverageReport?.summary || {},
+      coverage_diagnostics: coverageDiagnostics
     },
     snapshotIndex,
     timing: {

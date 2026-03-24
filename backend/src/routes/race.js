@@ -2694,9 +2694,34 @@ function buildStoredRankingRows(data = {}) {
 
 function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, derivedRanking = []) {
   const racers = Array.isArray(data?.racers) ? data.racers : [];
+  const coverageFields =
+    data?.source?.coverage_report?.fields && typeof data.source.coverage_report.fields === "object"
+      ? data.source.coverage_report.fields
+      : {};
+  const fallbackCoverageFields = Object.entries(coverageFields)
+    .filter(([, meta]) => meta?.status === "fallback")
+    .map(([field]) => field);
+  const optionalIssueFields = Object.entries(coverageFields)
+    .filter(([, meta]) => meta?.required !== true && meta?.status && meta.status !== "ok")
+    .map(([field]) => field);
+  const requiredBrokenCoverageFields = Object.entries(coverageFields)
+    .filter(([, meta]) => meta?.required === true && meta?.status === "broken_pipeline")
+    .map(([field]) => field);
+  const requiredMissingCoverageFields = Object.entries(coverageFields)
+    .filter(([, meta]) => meta?.required === true && (meta?.status === "missing" || meta?.status === "not_published"))
+    .map(([field]) => field);
   const missingFeatureFields = racers
     .filter((racer) => !racer?.featureSnapshot || Object.keys(racer.featureSnapshot || {}).length === 0)
     .map((racer) => `lane${toInt(racer?.lane, 0)}.feature_snapshot`);
+  const brokenCoverageFields = Object.entries(coverageFields)
+    .filter(([, meta]) => meta?.status === "broken_pipeline")
+    .map(([field]) => field);
+  const lapTimeCoverageFields = Object.entries(coverageFields)
+    .filter(([field]) => field.endsWith(".lapTime"));
+  const lapTimeReadyCount = lapTimeCoverageFields.filter(([, meta]) => meta?.status === "ok").length;
+  const lapTimeFallbackCount = lapTimeCoverageFields.filter(([, meta]) => meta?.status === "fallback").length;
+  const lapTimeBrokenCount = lapTimeCoverageFields.filter(([, meta]) => meta?.status === "broken_pipeline").length;
+  const lapTimeSources = [...new Set(lapTimeCoverageFields.map(([, meta]) => meta?.source).filter(Boolean))];
   const missingFieldDetails = Object.fromEntries(
     missingFeatureFields.map((field) => [
       field,
@@ -2708,9 +2733,25 @@ function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, d
       }
     ])
   );
+  for (const field of [...brokenCoverageFields, ...requiredMissingCoverageFields, ...optionalIssueFields]) {
+    missingFieldDetails[field] = {
+      reason: coverageFields?.[field]?.reason || "coverage_issue",
+      source: coverageFields?.[field]?.source || null,
+      lane: toInt(String(field).match(/\d+/)?.[0], null),
+      field: String(field).split(".").slice(1).join(".") || field,
+      raw: coverageFields?.[field]?.raw ?? null,
+      normalized: coverageFields?.[field]?.normalized ?? null,
+      required: coverageFields?.[field]?.required === true,
+      status: coverageFields?.[field]?.status || null
+    };
+  }
   const hasCompleteFeatureSnapshots = racers.length === 6 && missingFeatureFields.length === 0;
   const usedStoredPrediction = !!storedPrediction;
   const estimatedFields = usedStoredPrediction ? [] : ["ranking", "top3", "pure_top6_prediction"];
+  const requiredMissingFields = [...missingFeatureFields, ...requiredBrokenCoverageFields, ...requiredMissingCoverageFields];
+  const optionalMissingFields = optionalIssueFields.filter((field) => !requiredMissingFields.includes(field));
+  const allIssueFields = [...requiredMissingFields, ...optionalMissingFields];
+  const fallbackFields = [...fallbackCoverageFields, ...optionalMissingFields].filter((field, index, arr) => arr.indexOf(field) === index);
   const sourceSummary = {
     mode: "pure_inference",
     inference_source: "local_precomputed_only",
@@ -2719,23 +2760,49 @@ function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, d
       entries: racers.length === 6 ? "snapshot" : "missing",
       feature_snapshot: hasCompleteFeatureSnapshots ? "snapshot" : "missing",
       prediction_log_snapshot: data?.source?.local_snapshots?.prediction_log_snapshot ? "snapshot" : "missing",
-      prediction_feature_event_snapshot: data?.source?.local_snapshots?.prediction_feature_event_snapshot ? "snapshot" : "missing"
+      prediction_feature_event_snapshot: data?.source?.local_snapshots?.prediction_feature_event_snapshot ? "snapshot" : "missing",
+      coverage_report: data?.source?.coverage_report_summary ? "snapshot" : "missing",
+      coverage: {
+        ready_fields: Object.values(coverageFields).filter((meta) => meta?.status === "ok").length,
+        total_fields: Object.keys(coverageFields).length
+      }
     },
     fallback: {
-      used: false,
-      fields: []
+      used: fallbackFields.length > 0,
+      fields: fallbackFields
     },
     estimated_fields: estimatedFields,
-    missing_fields: missingFeatureFields
+    missing_fields: allIssueFields,
+    required_missing_fields: requiredMissingFields,
+    optional_missing_fields: optionalMissingFields,
+    coverage_report_summary: data?.source?.coverage_report_summary || null,
+    lap_time: {
+      ready_count: lapTimeReadyCount,
+      fallback_count: lapTimeFallbackCount,
+      broken_count: lapTimeBrokenCount,
+      source: lapTimeSources.join(", ") || null
+    }
   };
-  const dataStatus = hasCompleteFeatureSnapshots ? "READY" : "BROKEN_PIPELINE";
+  const dataStatus =
+    !hasCompleteFeatureSnapshots || requiredMissingFields.length > 0
+      ? "BROKEN_PIPELINE"
+      : fallbackFields.length > 0
+        ? "FALLBACK"
+        : "READY";
+  const confidenceStatus =
+    dataStatus === "BROKEN_PIPELINE"
+      ? "BROKEN_PIPELINE"
+      : optionalMissingFields.length > 0 || estimatedFields.length > 0
+        ? "FALLBACK"
+        : "READY";
 
   return {
     dataStatus,
-    confidenceStatus: dataStatus,
-    missingFields: missingFeatureFields,
+    confidenceStatus,
+    missingFields: allIssueFields,
     missingFieldDetails,
     sourceSummary,
+    fieldCoverageReport: coverageFields,
     derivedRankingCount: Array.isArray(derivedRanking) ? derivedRanking.length : 0
   };
 }
@@ -2788,6 +2855,7 @@ function buildPureInferencePredictionPayload(data = {}) {
     data_status: snapshotSummary.dataStatus,
     confidence_status: snapshotSummary.confidenceStatus,
     source_summary: snapshotSummary.sourceSummary,
+    field_coverage_report: snapshotSummary.fieldCoverageReport,
     missing_fields: snapshotSummary.missingFields,
     missing_field_details: snapshotSummary.missingFieldDetails
   };
@@ -9912,6 +9980,7 @@ raceRouter.get("/race", async (req, res, next) => {
         raceId: data.raceId || data.source?.race_id || null,
         pureTop6Prediction,
         prediction,
+        field_coverage_report: prediction?.field_coverage_report || data?.source?.coverage_report?.fields || null,
         predicted_entry_order: Array.isArray(prediction?.predicted_entry_order) ? prediction.predicted_entry_order : data.racers.map((row) => toInt(row?.lane, null)).filter(Number.isInteger),
         actual_entry_order: Array.isArray(prediction?.actual_entry_order) ? prediction.actual_entry_order : data.racers.map((row) => toInt(row?.entryCourse ?? row?.lane, null)).filter(Number.isInteger),
         entry_changed: !!prediction?.entry_changed,

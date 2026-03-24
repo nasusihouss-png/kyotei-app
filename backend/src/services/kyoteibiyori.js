@@ -49,21 +49,56 @@ function baseSourceConfidence(source) {
   return 0.68;
 }
 
-function makePredictionFieldMeta({ field, value, source, debugEntry, required = false, minConfidence = 0.6 }) {
+function isPublishedRawValue(rawValue) {
+  if (rawValue === null || rawValue === undefined) return false;
+  const text = normalizeSpace(String(rawValue));
+  if (!text) return false;
+  return !/^(?:[-\u2010-\u2015\u2212ー－]+|n\/a|none|null|not\s*published|未公開|未発表)$/i.test(text);
+}
+
+function isPublishedLapTimeRawValue(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === "") return false;
+  const numeric = Number(rawValue);
+  if (Number.isFinite(numeric)) {
+    return numeric > 30 && numeric < 50;
+  }
+  return isPublishedRawValue(rawValue);
+}
+
+function resolveLapTimeSource({ laneSources = {}, debugEntry = null, hasParsedValue = false }) {
+  if (laneSources?.lapTimeRaw) return laneSources.lapTimeRaw;
+  if (laneSources?.lapTime) return laneSources.lapTime;
+  if (debugEntry?.sourceLabel) return debugEntry.sourceLabel;
+  if (hasParsedValue) return "race_shusso_html";
+  return null;
+}
+
+function makePredictionFieldMeta({
+  field,
+  value,
+  source,
+  debugEntry,
+  required = false,
+  minConfidence = 0.6,
+  publishedInSource = false
+}) {
   const hasValue = value !== null && value !== undefined && Number.isFinite(Number(value));
   if (!hasValue) {
+    const reason = publishedInSource ? "published_but_parse_failed" : "not_published";
     return {
       value: null,
       source: source || null,
       confidence: 0,
       is_usable: false,
       required,
-      reason: "missing",
+      reason,
+      published_in_source: publishedInSource,
       raw_cell_text: debugEntry?.raw ?? null,
       source_section: debugEntry?.section ?? null,
       source_row_label: debugEntry?.metric ?? debugEntry?.row ?? null,
       source_period_label: debugEntry?.period ?? null,
-      source_boat_column: debugEntry?.boatColumn ?? debugEntry?.column ?? null
+      source_boat_column: debugEntry?.boatColumn ?? debugEntry?.column ?? null,
+      normalized_numeric_value: null
     };
   }
   let confidence = baseSourceConfidence(source);
@@ -84,6 +119,7 @@ function makePredictionFieldMeta({ field, value, source, debugEntry, required = 
     confidence: normalizedConfidence,
     is_usable: !!source && normalizedConfidence >= minConfidence,
     required,
+    published_in_source: publishedInSource || isPublishedRawValue(debugEntry?.raw),
     raw_cell_text: debugEntry?.raw ?? null,
     source_section: debugEntry?.section ?? null,
     source_row_label: debugEntry?.metric ?? debugEntry?.row ?? null,
@@ -111,20 +147,27 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
     value: options.value,
     source: options.source,
     debugEntry: options.debugEntry,
+    publishedInSource: options.publishedInSource === true,
     required: PREDICTION_FIELD_META_CONFIG[field]?.required,
     minConfidence: PREDICTION_FIELD_META_CONFIG[field]?.minConfidence
   });
   const lapTimeDebug = laneDebug?.lapTime || null;
-  const exactLapTimeVerified =
-    lapTimeDebug?.exact_match_verified === true &&
-    lapTimeDebug?.section === JAPANESE_LABELS.preRaceSection &&
-    lapTimeDebug?.metric === JAPANESE_LABELS.lapTime;
+  const lapTimeValue = firstFiniteValue(extra?.lapTime, racer?.lapTime);
+  const lapTimePublished =
+    isPublishedLapTimeRawValue(lapTimeDebug?.raw) ||
+    isPublishedLapTimeRawValue(extra?.lapTimeRaw ?? racer?.lapTimeRaw);
+  const lapTimeSource = resolveLapTimeSource({
+    laneSources,
+    debugEntry: lapTimeDebug,
+    hasParsedValue: Number.isFinite(Number(lapTimeValue))
+  });
 
   return {
     lapTime: getFieldMeta("lapTime", {
-      value: exactLapTimeVerified ? (extra?.lapTime ?? null) : null,
-      source: exactLapTimeVerified ? (laneSources.lapTimeRaw || laneSources.lapTime || null) : null,
-      debugEntry: lapTimeDebug
+      value: lapTimeValue,
+      source: lapTimeSource,
+      debugEntry: lapTimeDebug,
+      publishedInSource: lapTimePublished
     }),
     exhibitionST: getFieldMeta("exhibitionST", {
       value: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
@@ -132,13 +175,16 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
       debugEntry: laneDebug?.exhibitionST || null
     }),
     exhibitionTime: getFieldMeta("exhibitionTime", {
-      value: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
-      source: laneSources.exhibitionTime || (Number.isFinite(Number(racer?.exhibitionTime)) ? "boatrace_racelist" : null),
+      value: normalizeExhibitionTimeForMeta(extra?.exhibitionTime ?? racer?.exhibitionTime ?? null),
+      source: laneSources.exhibitionTime || (normalizeExhibitionTimeForMeta(racer?.exhibitionTime) !== null ? "boatrace_racelist" : null),
       debugEntry: laneDebug?.exhibitionTime || null
     }),
     lapExStretch: getFieldMeta("lapExStretch", {
-      value: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExStretch ?? racer?.lapExhibitionScore ?? null,
-      source: laneSources.lapExStretch || laneSources.lapExhibitionScore || null,
+      value: normalizeExhibitionTimeForMeta(extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExStretch ?? racer?.lapExhibitionScore ?? null),
+      source:
+        laneSources.lapExStretch ||
+        laneSources.lapExhibitionScore ||
+        (normalizeExhibitionTimeForMeta(racer?.lapExStretch ?? racer?.lapExhibitionScore) !== null ? "boatrace_racelist" : null),
       debugEntry: laneDebug?.lapExStretch || null
     }),
     motor2ren: getFieldMeta("motor2ren", {
@@ -277,8 +323,17 @@ function parseScaledDecimal(value, divisor = 100) {
 }
 
 function normalizeLapTimeForModel(rawLapTime) {
-  if (!Number.isFinite(Number(rawLapTime))) return null;
-  return Number((Number(rawLapTime) - 29.5).toFixed(2));
+  const raw = Number(rawLapTime);
+  if (!Number.isFinite(raw)) return null;
+  if (raw <= 30 || raw >= 50) return null;
+  const normalized = Number((raw - 29.5).toFixed(2));
+  return normalized > 0 && normalized < 20 ? normalized : null;
+}
+
+function normalizeExhibitionTimeForMeta(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric > 4 && numeric < 9 ? numeric : null;
 }
 
 function makeStretchLabel({ mawariashi, chokusen }) {
@@ -995,12 +1050,14 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
         : metric === JAPANESE_LABELS.motor3
           ? JAPANESE_LABELS.motor3
           : rowSectionCandidates[0] || JAPANESE_LABELS.preRaceSection;
-    if (exactLapTimeRow) {
+    if (exactLapTimeRow || metric === JAPANESE_LABELS.lapTime) {
       return {
         field: "lapTimeRaw",
         section: resolvedSection,
         row: JAPANESE_LABELS.lapTime,
-        exactMatchVerified: resolvedSection === JAPANESE_LABELS.preRaceSection
+        exactMatchVerified:
+          resolvedSection === JAPANESE_LABELS.preRaceSection &&
+          (exactLapTimeRow ? true : matchesLabel(joinedRowLabels, JAPANESE_LABELS.lapTime, LABEL_ALIASES.lapTime))
       };
     }
     if (exactStRow) return { field: "exhibitionSt", section: resolvedSection, row: JAPANESE_LABELS.st, exactMatchVerified: true };
@@ -1215,6 +1272,7 @@ function parseHtmlSupplementExplicit(html, options = {}) {
           metric: target.row,
           period: target.period ? LANE_STAT_PERIODS[target.period]?.canonical || target.period : null,
           row: target.period ? LANE_STAT_PERIODS[target.period]?.canonical || target.period : target.row,
+          sourceLabel: options?.sourceLabel || "race_shusso_html",
           column: columnHeader,
           boatColumn: columnHeader,
           raw: rawCellText || null,

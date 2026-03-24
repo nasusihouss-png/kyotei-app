@@ -29,6 +29,25 @@ function toNum(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function toPositiveRangeNum(value, { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY } = {}, fallback = null) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+}
+
+function getFeaturePredictionMeta(featureSnapshot = {}, field) {
+  const meta =
+    featureSnapshot?.prediction_field_meta && typeof featureSnapshot.prediction_field_meta === "object"
+      ? featureSnapshot.prediction_field_meta?.[field]
+      : null;
+  return meta && typeof meta === "object" ? meta : null;
+}
+
+function getUsableFeaturePredictionValue(featureSnapshot = {}, field, { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY } = {}) {
+  const meta = getFeaturePredictionMeta(featureSnapshot, field);
+  if (!meta?.is_usable) return null;
+  return toPositiveRangeNum(meta?.normalized_numeric_value ?? meta?.value, { min, max }, null);
+}
+
 function getPredictionFeatureEventSnapshot(raceId) {
   const row = db
     .prepare(
@@ -205,6 +224,13 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
       playerSnapshot?.feature_snapshot && typeof playerSnapshot.feature_snapshot === "object"
         ? playerSnapshot.feature_snapshot
         : featureByLane.get(lane) || {};
+    const predictionFieldMeta =
+      featureSnapshot?.prediction_field_meta && typeof featureSnapshot.prediction_field_meta === "object"
+        ? featureSnapshot.prediction_field_meta
+        : {};
+    const storedLapTime = getUsableFeaturePredictionValue(featureSnapshot, "lapTime", { min: 0.01, max: 20 });
+    const storedExhibitionTime = getUsableFeaturePredictionValue(featureSnapshot, "exhibitionTime", { min: 4, max: 9 });
+    const storedExhibitionSt = getUsableFeaturePredictionValue(featureSnapshot, "exhibitionST", { min: 0, max: 1 });
 
     return {
       lane,
@@ -219,12 +245,25 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
       localWinRate: toNum(row?.local_win_rate, playerSnapshot?.local_win_rate ?? null),
       motor2Rate: toNum(row?.motor2_rate, playerSnapshot?.motor_2rate ?? null),
       boat2Rate: toNum(row?.boat2_rate, playerSnapshot?.boat_2rate ?? null),
-      exhibitionTime: toNum(row?.exhibition_time, playerSnapshot?.exhibition_time ?? null),
-      exhibitionSt: toNum(row?.exhibition_st, playerSnapshot?.exhibition_st ?? null),
+      exhibitionTime: storedExhibitionTime ?? toPositiveRangeNum(playerSnapshot?.exhibition_time, { min: 4, max: 9 }, null),
+      exhibitionSt: storedExhibitionSt ?? toPositiveRangeNum(playerSnapshot?.exhibition_st, { min: 0, max: 1 }, null),
       entryCourse: toInt(row?.entry_course, playerSnapshot?.entry_course ?? lane),
       tilt: toNum(row?.tilt, playerSnapshot?.tilt ?? null),
       fHoldCount: toInt(row?.f_hold_count, playerSnapshot?.f_hold_count ?? 0),
       lHoldCount: toInt(playerSnapshot?.l_hold_count, null),
+      lapTime: storedLapTime,
+      lapTimeRaw: toPositiveRangeNum(
+        getFeaturePredictionMeta(featureSnapshot, "lapTime")?.raw_cell_text ?? playerSnapshot?.lap_time_raw,
+        { min: 30, max: 50 },
+        null
+      ),
+      kyoteiBiyoriLapTime: storedLapTime,
+      kyoteiBiyoriLapTimeRaw: toPositiveRangeNum(
+        getFeaturePredictionMeta(featureSnapshot, "lapTime")?.raw_cell_text ?? playerSnapshot?.lap_time_raw,
+        { min: 30, max: 50 },
+        null
+      ),
+      predictionFieldMeta,
       featureSnapshot,
       playerSnapshot
     };
@@ -280,6 +319,8 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
         prediction_log_snapshot: !!predictionLogSnapshot,
         index_snapshot_status: snapshotIndex?.snapshotStatus || null
       },
+      coverage_report: snapshotIndex?.metadata?.coverage_report || null,
+      coverage_report_summary: snapshotIndex?.metadata?.coverage_report_summary || null,
       load_diagnostics: {
         race_id: raceId,
         snapshot_index: snapshotIndex,
