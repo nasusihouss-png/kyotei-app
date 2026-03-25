@@ -78,6 +78,70 @@ function buildFeatureRanking(data) {
   return rankRace(entryAdjusted.racersWithFeatures);
 }
 
+function buildTransientInferenceData({
+  data,
+  raceId,
+  ranking,
+  coverageReport,
+  snapshotStatus,
+  sourceStatus,
+  generatedAt,
+  timing
+}) {
+  const rankingRows = Array.isArray(ranking) ? ranking : [];
+  const coverageSummary = coverageReport?.summary || {};
+  return {
+    ok: true,
+    raceId,
+    race: {
+      ...(data?.race || {})
+    },
+    racers: rankingRows.map((row) => {
+      const racer = row?.racer && typeof row.racer === "object" ? row.racer : {};
+      const featureSnapshot = row?.features && typeof row.features === "object" ? row.features : {};
+      return {
+        ...racer,
+        featureSnapshot,
+        predictionFieldMeta:
+          featureSnapshot?.prediction_field_meta && typeof featureSnapshot.prediction_field_meta === "object"
+            ? featureSnapshot.prediction_field_meta
+            : {}
+      };
+    }),
+    stored_snapshots: {
+      prediction_feature_event_snapshot: null,
+      prediction_log_snapshot: null
+    },
+    source: {
+      ...(data?.source || {}),
+      mode: "pure_inference",
+      local_inference: true,
+      race_id: raceId,
+      local_snapshots: {
+        race_snapshot: true,
+        entry_snapshot: Array.isArray(data?.racers) ? data.racers.length : 0,
+        feature_snapshot: rankingRows.length,
+        prediction_feature_event_snapshot: false,
+        prediction_log_snapshot: false,
+        index_snapshot_status: snapshotStatus,
+        last_snapshot_updated_at: generatedAt,
+        generated_from_latest_fetch: true
+      },
+      coverage_report: coverageReport || null,
+      coverage_report_summary: coverageSummary,
+      latest_fetch_source_status: sourceStatus || null
+    },
+    diagnostics: {
+      raceId,
+      snapshot_index: null,
+      snapshot_lookup_ms: 0,
+      snapshot_load_ms: 0,
+      total_ms: timing?.total_ms || null,
+      generated_from_latest_fetch: true
+    }
+  };
+}
+
 export async function generateRaceSnapshot({
   date,
   venueId,
@@ -144,6 +208,21 @@ export async function generateRaceSnapshot({
       forceRefresh: !!forceRefresh
     }
   });
+  const generatedAt = snapshotIndex?.updatedAt || snapshotIndex?.generatedAt || new Date().toISOString();
+  const timing = {
+    total_ms: Date.now() - startedAt,
+    upstream: data?.source?.timings || {}
+  };
+  const transientData = buildTransientInferenceData({
+    data,
+    raceId,
+    ranking: rankingWithCoverage,
+    coverageReport,
+    snapshotStatus,
+    sourceStatus,
+    generatedAt,
+    timing
+  });
 
   return {
     ok: true,
@@ -160,10 +239,8 @@ export async function generateRaceSnapshot({
     },
     sourceStatus,
     snapshotIndex,
-    timing: {
-      total_ms: Date.now() - startedAt,
-      upstream: data?.source?.timings || {}
-    }
+    timing,
+    transientData
   };
 }
 

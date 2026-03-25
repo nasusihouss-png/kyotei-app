@@ -77,11 +77,38 @@ function buildRefreshMeta({
   };
 }
 
+function buildTransientRefreshData({ transientData, refreshMeta, snapshotIndex }) {
+  if (!transientData || typeof transientData !== "object") return null;
+  return {
+    ...transientData,
+    source: {
+      ...(transientData?.source || {}),
+      refresh_meta: refreshMeta,
+      local_snapshots: {
+        ...(transientData?.source?.local_snapshots || {}),
+        index_snapshot_status:
+          transientData?.source?.local_snapshots?.index_snapshot_status ||
+          snapshotIndex?.snapshotStatus ||
+          "READY",
+        last_snapshot_updated_at:
+          refreshMeta?.last_snapshot_updated_at ||
+          transientData?.source?.local_snapshots?.last_snapshot_updated_at ||
+          null
+      }
+    },
+    diagnostics: {
+      ...(transientData?.diagnostics || {}),
+      snapshot_index: snapshotIndex || transientData?.diagnostics?.snapshot_index || null
+    }
+  };
+}
+
 export async function refreshLatestRaceData({
   date,
   venueId,
   raceNo,
   timeoutMs = 6500,
+  forceRefresh = true,
   trace = null
 } = {}, deps = {}) {
   const generateSnapshot = deps.generateRaceSnapshot || generateRaceSnapshot;
@@ -112,7 +139,7 @@ export async function refreshLatestRaceData({
           raceNo,
           timeoutMs,
           includeKyoteiBiyori: true,
-          forceRefresh: true
+          forceRefresh
         }),
       timeoutMs,
       "LATEST_REFRESH_TIMEOUT"
@@ -136,8 +163,34 @@ export async function refreshLatestRaceData({
     stored?.diagnostics?.snapshot_index ||
     refreshResult?.snapshotIndex ||
     getSnapshotIndex({ date, venueId, raceNo });
+  const coverageSummary =
+    stored?.source?.coverage_report_summary ||
+    refreshResult?.transientData?.source?.coverage_report_summary ||
+    snapshotIndex?.metadata?.coverage_report_summary ||
+    {};
+  const refreshMeta = buildRefreshMeta({
+    refreshedNow: !refreshError && !!refreshResult?.ok,
+    refreshError,
+    snapshotIndex,
+    sourceStatus: refreshResult?.sourceStatus || {},
+    coverageSummary
+  });
 
   if (!stored?.ok) {
+    const transientData = buildTransientRefreshData({
+      transientData: refreshResult?.transientData || null,
+      refreshMeta,
+      snapshotIndex
+    });
+    if (transientData?.ok) {
+      return {
+        ok: true,
+        refreshMeta,
+        refreshError,
+        snapshotIndex,
+        data: transientData
+      };
+    }
     const sourceError = refreshError || createRefreshError(
       "LATEST_SOURCE_UNAVAILABLE",
       stored?.message || "latest public data could not be refreshed and no snapshot is available"
@@ -150,23 +203,11 @@ export async function refreshLatestRaceData({
       refreshError: sourceError,
       snapshotIndex,
       sourceStatus: refreshResult?.sourceStatus || {},
-      coverageSummary: snapshotIndex?.metadata?.coverage_report_summary || {}
+      coverageSummary
     });
     sourceError.snapshotLookup = stored?.snapshot || null;
     throw sourceError;
   }
-
-  const coverageSummary =
-    stored?.source?.coverage_report_summary ||
-    snapshotIndex?.metadata?.coverage_report_summary ||
-    {};
-  const refreshMeta = buildRefreshMeta({
-    refreshedNow: !refreshError && !!refreshResult?.ok,
-    refreshError,
-    snapshotIndex,
-    sourceStatus: refreshResult?.sourceStatus || {},
-    coverageSummary
-  });
 
   if (typeof trace === "function") {
     trace("refresh_latest_end", {

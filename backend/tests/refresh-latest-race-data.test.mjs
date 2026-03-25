@@ -120,6 +120,86 @@ function makeStoredSnapshot(overrides = {}) {
   assert.equal(result.refreshMeta.refresh_error.code, "LATEST_REFRESH_FAILED");
 }
 
+{
+  const result = await refreshLatestRaceData(
+    {
+      date: "2026-03-24",
+      venueId: 13,
+      raceNo: 8,
+      timeoutMs: 1000
+    },
+    {
+      generateRaceSnapshot: async () => ({
+        ok: true,
+        sourceStatus: {
+          primary_source_ok: true,
+          secondary_source_ok: false
+        },
+        snapshotIndex: {
+          snapshotStatus: "READY",
+          updatedAt: "2026-03-24T12:15:00.000Z",
+          metadata: {
+            coverage_report_summary: {
+              total: 12,
+              ok: 12,
+              fallback: 0,
+              broken_pipeline: 0,
+              missing: 0,
+              not_published: 0,
+              required_broken_pipeline: 0,
+              required_missing: 0,
+              optional_issues: 0
+            }
+          }
+        },
+        transientData: {
+          ok: true,
+          race: { date: "2026-03-24", venueId: 13, raceNo: 8 },
+          racers: Array.from({ length: 6 }, (_, index) => ({
+            lane: index + 1,
+            featureSnapshot: { score: 10 - index },
+            predictionFieldMeta: {}
+          })),
+          source: {
+            coverage_report_summary: {
+              total: 12,
+              ok: 12,
+              fallback: 0,
+              broken_pipeline: 0,
+              missing: 0,
+              not_published: 0,
+              required_broken_pipeline: 0,
+              required_missing: 0,
+              optional_issues: 0
+            },
+            local_snapshots: {
+              generated_from_latest_fetch: true
+            }
+          },
+          diagnostics: {
+            generated_from_latest_fetch: true
+          }
+        }
+      }),
+      loadStoredRaceInferenceData: () => ({
+        ok: false,
+        message: "precomputed race snapshot was not found"
+      }),
+      getRaceSnapshotIndexByParts: () => ({
+        snapshotStatus: "READY",
+        updatedAt: "2026-03-24T12:15:00.000Z"
+      })
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data.ok, true);
+  assert.equal(result.data.racers.length, 6);
+  assert.equal(result.data.source.refresh_meta?.refreshed_now, true);
+  assert.equal(result.data.source.local_snapshots?.generated_from_latest_fetch, true);
+  assert.equal(result.data.diagnostics?.generated_from_latest_fetch, true);
+}
+
 await assert.rejects(
   () =>
     refreshLatestRaceData(
