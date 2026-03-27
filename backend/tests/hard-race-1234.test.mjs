@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { buildHardRace1234Response } from "../src/services/hard-race-1234-pure.js";
+import {
+  buildHardRace1234Response,
+  HARD_RACE_API_RESPONSE_KEYS
+} from "../src/services/hard-race-1234-pure.js";
 
 const baseData = {
   source: {
@@ -48,6 +51,21 @@ assert.ok(["READY", "FALLBACK", "BROKEN_PIPELINE"].includes(result.data_status))
 assert.equal(result.confidence_status, result.data_status);
 assert.equal(typeof result.hardScenario, "string");
 assert.equal(typeof result.hardScenarioScore, "number");
+assert.deepEqual(HARD_RACE_API_RESPONSE_KEYS, [
+  "boat1_head_pre",
+  "boat1_escape_trust",
+  "fit_234_index",
+  "outside_break_risk_pre",
+  "hard_race_index",
+  "scenario_repro_score",
+  "box_hit_score",
+  "fixed1234_shape_concentration",
+  "decision",
+  "decision_reason"
+]);
+for (const key of HARD_RACE_API_RESPONSE_KEYS) {
+  assert.ok(Object.hasOwn(result, key), `missing hard race api key: ${key}`);
+}
 assert.ok(Number.isFinite(Number(result.hard_race_score)));
 assert.ok(Number.isFinite(Number(result.boat1_head_pre)));
 assert.ok(Number.isFinite(Number(result.hard_race_index)));

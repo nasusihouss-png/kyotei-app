@@ -6,6 +6,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEBUG_ROOT = path.resolve(__dirname, "../../debug/hard-race-1234");
 const FIXED_COMBOS = ["1-2-3", "1-2-4", "1-3-2", "1-3-4", "1-4-2", "1-4-3"];
+export const HARD_RACE_API_RESPONSE_KEYS = [
+  "boat1_head_pre",
+  "boat1_escape_trust",
+  "fit_234_index",
+  "outside_break_risk_pre",
+  "hard_race_index",
+  "scenario_repro_score",
+  "box_hit_score",
+  "fixed1234_shape_concentration",
+  "decision",
+  "decision_reason"
+];
 const VENUE_INNER_BIAS = {
   1: 0.63, 2: 0.64, 3: 0.51, 4: 0.58, 5: 0.62, 6: 0.64, 7: 0.71, 8: 0.67,
   9: 0.57, 10: 0.68, 11: 0.64, 12: 0.69, 13: 0.62, 14: 0.56, 15: 0.7, 16: 0.63,
@@ -860,9 +872,12 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo })
     scenario_repro_score: computed.scenario_repro_score ?? computed.features?.scenario_repro_score ?? null,
     ...computed.scores,
     boat1_head_pre: computed.scores?.boat1_head_pre ?? null,
-    hard_race_index: computed.scores?.hard_race_index ?? computed.scores?.hard_race_score ?? null,
+    boat1_escape_trust: computed.scores?.boat1_escape_trust ?? null,
     fit_234_index: computed.scores?.fit_234_index ?? computed.scores?.opponent_234_fit ?? null,
     outside_break_risk_pre: computed.scores?.outside_break_risk_pre ?? computed.scores?.outside_break_risk ?? null,
+    hard_race_index: computed.scores?.hard_race_index ?? computed.scores?.hard_race_score ?? null,
+    box_hit_score: computed.scores?.box_hit_score ?? null,
+    fixed1234_shape_concentration: computed.scores?.fixed1234_shape_concentration ?? null,
     fixed1234_matrix: computed.fixed1234_matrix,
     fixed1234_top4: computed.fixed1234_top4,
     suggested_shape: computed.suggested_shape,

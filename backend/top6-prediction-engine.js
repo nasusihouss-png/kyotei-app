@@ -368,20 +368,19 @@ function thirdPlaceScore(profile, headProfile, secondProfile, raceContext = {}) 
   ]);
 }
 
-function aggregateFinishProbabilities(profiles, headProbMap, secondMap, thirdMap) {
-  const first = Object.fromEntries(profiles.map((profile) => [profile.lane, headProbMap[profile.lane] || 0]));
+function aggregateFinishProbabilitiesFromAll120(profiles, all120 = []) {
+  const first = Object.fromEntries(profiles.map((profile) => [profile.lane, 0]));
   const second = Object.fromEntries(profiles.map((profile) => [profile.lane, 0]));
   const third = Object.fromEntries(profiles.map((profile) => [profile.lane, 0]));
 
-  for (const head of profiles) {
-    const headProbability = headProbMap[head.lane] || 0;
-    for (const secondProfile of profiles.filter((row) => row.lane !== head.lane)) {
-      const secondProbability = (secondMap?.[head.lane]?.[secondProfile.lane] || 0) * headProbability;
-      second[secondProfile.lane] += secondProbability;
-      for (const thirdProfile of profiles.filter((row) => row.lane !== head.lane && row.lane !== secondProfile.lane)) {
-        third[thirdProfile.lane] += secondProbability * (thirdMap?.[head.lane]?.[secondProfile.lane]?.[thirdProfile.lane] || 0);
-      }
-    }
+  for (const row of Array.isArray(all120) ? all120 : []) {
+    const probability = Number(row?.probability) || 0;
+    const [firstLane, secondLane, thirdLane] = String(row?.combo || "")
+      .split("-")
+      .map((value) => Number(value));
+    if (Number.isInteger(firstLane)) first[firstLane] = (first[firstLane] || 0) + probability;
+    if (Number.isInteger(secondLane)) second[secondLane] = (second[secondLane] || 0) + probability;
+    if (Number.isInteger(thirdLane)) third[thirdLane] = (third[thirdLane] || 0) + probability;
   }
 
   return {
@@ -583,7 +582,7 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     ),
     4
   );
-  const finishProbabilities = aggregateFinishProbabilities(profiles, headProbMap, secondMap, thirdMap);
+  const finishProbabilities = aggregateFinishProbabilitiesFromAll120(profiles, all120);
   const firstPlaceCandidateRates = buildCandidateRows(finishProbabilities.first, profiles, "first");
   const secondPlaceCandidateRates = buildCandidateRows(finishProbabilities.second, profiles, "second");
   const thirdPlaceCandidateRates = buildCandidateRows(finishProbabilities.third, profiles, "third");

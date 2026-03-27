@@ -781,12 +781,27 @@ function firstMeaningfulFiniteValue(...values) {
 }
 
 function getLapTimeDisplayValue(source = {}) {
+  const lapSource =
+    source?.lapSource ||
+    source?.lap_source ||
+    source?.kyoteiBiyoriLapSource ||
+    source?.kyoteibiyori_lap_source ||
+    null;
+  const lapRaw = firstFiniteValue(
+    source?.lapRaw,
+    source?.lap_raw,
+    source?.kyoteiBiyoriLapTimeRaw,
+    source?.kyoteibiyori_lap_time_raw
+  );
+  if (!lapSource || lapRaw === null) return null;
   return firstFiniteValue(
+    source?.lapRaw,
+    source?.lap_raw,
     source?.lapTime,
+    source?.lap_time,
     source?.kyoteiBiyoriLapTime,
     source?.kyoteibiyori_lap_time,
-    source?.feature_snapshot?.lap_time,
-    source?.lap_time
+    source?.lapTimeNormalized
   );
 }
 
@@ -806,11 +821,10 @@ function formatLapTimeCoverageValue(row = {}, coverageReport = {}) {
   const lane = row?.boatNumber ?? row?.lane ?? row?.actualLane ?? null;
   const coverage = getCoverageFieldMeta(coverageReport, lane, "lapTime");
   if (!coverage) return "-";
-  if (coverage.required === true && coverage.status === "not_published") return "required missing";
-  if (coverage.required === true && coverage.status === "broken_pipeline") return "BROKEN_PIPELINE";
-  if (coverage.required !== true && coverage.status === "not_published") return "optional missing";
-  if (coverage.required !== true && coverage.status === "broken_pipeline") return "optional broken";
-  if (coverage.status === "fallback") return coverage.required === true ? "required fallback" : "optional missing";
+  if (coverage.status === "ok" && Number.isFinite(Number(coverage.normalized))) return formatComparisonValue(coverage.normalized, 2);
+  if (coverage.status === "not_published") return "not published";
+  if (coverage.status === "broken_pipeline") return "broken_pipeline";
+  if (coverage.status === "fallback") return "not published";
   return "-";
 }
 
@@ -909,8 +923,8 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
           lane2renRate_raw: racer?.lane2renRate_raw ?? racer?.lane2RenRate ?? null,
           lane3renRate_raw: racer?.lane3renRate_raw ?? racer?.lane3RenRate ?? null,
           lapExStretch_raw: racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
-          lapTime_raw: racer?.kyoteiBiyoriLapTimeRaw ?? racer?.kyoteiBiyoriLapTime ?? racer?.lapTime ?? null,
-          exhibitionST_raw: racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt ?? null,
+          lapTime_raw: racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapRaw ?? racer?.lapTime ?? null,
+          exhibitionST_raw: racer?.kyoteiBiyoriExhibitionStRaw ?? racer?.exhibitionStRaw ?? racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt ?? null,
           motor2ren_raw: racer?.motor2ren ?? racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate ?? null,
           motor3ren_raw: racer?.motor3ren ?? racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate ?? null,
           lane1stRate_debug: null,
@@ -946,7 +960,7 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
       lane2renRate_raw: row?.lane2renScore ?? row?.lane2renAvg ?? row?.lane2RenRate ?? null,
       lane3renRate_raw: row?.lane3renScore ?? row?.lane3renAvg ?? row?.lane3RenRate ?? null,
       lapExStretch_raw: row?.lapExStretch ?? row?.lapScore ?? null,
-      lapTime_raw: row?.lapTime ?? null,
+      lapTime_raw: row?.lapRaw ?? row?.lapTime ?? null,
       lane_scores_before_reassignment: row?.laneScoreDebug?.beforeReassignment || null,
       lane_scores_after_reassignment: row?.laneScoreDebug?.afterReassignment || null,
       motor2ren_raw: row?.motor2ren ?? row?.motor2Rate ?? null,
@@ -1410,9 +1424,9 @@ function finalizeHardRaceContractRow(row = {}) {
     }));
   };
   const requiredScoreMap = {
-    boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
-    opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),
-    outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),
+    boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1HeadPre ?? row?.boat1_head_pre ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
+    opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.fit234Index ?? row?.fit_234_index ?? row?.box234FitScore ?? row?.box_234_fit_score),
+    outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk ?? row?.outsideBreakRiskPre ?? row?.outside_break_risk_pre),
     box_hit_score: toFiniteOrNull(row?.boxHitScore ?? row?.box_hit_score ?? row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability)
   };
   const missingRequiredScores = Object.entries(requiredScoreMap)
@@ -1446,12 +1460,18 @@ function finalizeHardRaceContractRow(row = {}) {
     hard_race_score: null,
     boat1AnchorScore: toFiniteOrNull(row?.boat1AnchorScore ?? row?.boat1_anchor_score),
     boat1_anchor_score: toFiniteOrNull(row?.boat1AnchorScore ?? row?.boat1_anchor_score),
-    boat1EscapeTrust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
-    boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
+    boat1HeadPre: toFiniteOrNull(row?.boat1HeadPre ?? row?.boat1_head_pre),
+    boat1_head_pre: toFiniteOrNull(row?.boat1HeadPre ?? row?.boat1_head_pre),
+    boat1EscapeTrust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1HeadPre ?? row?.boat1_head_pre ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
+    boat1_escape_trust: toFiniteOrNull(row?.boat1EscapeTrust ?? row?.boat1_escape_trust ?? row?.boat1HeadPre ?? row?.boat1_head_pre ?? row?.boat1AnchorScore ?? row?.boat1_anchor_score),
     box234FitScore: toFiniteOrNull(row?.box234FitScore ?? row?.box_234_fit_score),
     box_234_fit_score: toFiniteOrNull(row?.box234FitScore ?? row?.box_234_fit_score),
-    opponent234Fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),
-    opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.box234FitScore ?? row?.box_234_fit_score),
+    hardRaceIndex: toFiniteOrNull(row?.hardRaceIndex ?? row?.hard_race_index ?? row?.hardRaceScore ?? row?.hard_race_score),
+    hard_race_index: toFiniteOrNull(row?.hardRaceIndex ?? row?.hard_race_index ?? row?.hardRaceScore ?? row?.hard_race_score),
+    fit234Index: toFiniteOrNull(row?.fit234Index ?? row?.fit_234_index),
+    fit_234_index: toFiniteOrNull(row?.fit234Index ?? row?.fit_234_index),
+    opponent234Fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.fit234Index ?? row?.fit_234_index ?? row?.box234FitScore ?? row?.box_234_fit_score),
+    opponent_234_fit: toFiniteOrNull(row?.opponent234Fit ?? row?.opponent_234_fit ?? row?.fit234Index ?? row?.fit_234_index ?? row?.box234FitScore ?? row?.box_234_fit_score),
     pair23Fit: toFiniteOrNull(row?.pair23Fit ?? row?.pair23_fit),
     pair23_fit: toFiniteOrNull(row?.pair23Fit ?? row?.pair23_fit),
     pair24Fit: toFiniteOrNull(row?.pair24Fit ?? row?.pair24_fit),
@@ -1478,8 +1498,10 @@ function finalizeHardRaceContractRow(row = {}) {
     outside_3rd_risk: toFiniteOrNull(row?.outside3rdRisk ?? row?.outside_3rd_risk),
     outsideBoxBreakRisk: toFiniteOrNull(row?.outsideBoxBreakRisk ?? row?.outside_box_break_risk),
     outside_box_break_risk: toFiniteOrNull(row?.outsideBoxBreakRisk ?? row?.outside_box_break_risk),
-    outsideBreakRisk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),
-    outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk),
+    outsideBreakRiskPre: toFiniteOrNull(row?.outsideBreakRiskPre ?? row?.outside_break_risk_pre),
+    outside_break_risk_pre: toFiniteOrNull(row?.outsideBreakRiskPre ?? row?.outside_break_risk_pre),
+    outsideBreakRisk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk ?? row?.outsideBreakRiskPre ?? row?.outside_break_risk_pre),
+    outside_break_risk: toFiniteOrNull(row?.outsideBreakRisk ?? row?.outside_break_risk ?? row?.outsideBreakRiskPre ?? row?.outside_break_risk_pre),
     boxHitScore: toFiniteOrNull(row?.boxHitScore ?? row?.box_hit_score ?? row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),
     box_hit_score: toFiniteOrNull(row?.boxHitScore ?? row?.box_hit_score ?? row?.fixed1234TotalProbability ?? row?.fixed1234_total_probability),
     shapeFocusScore: toFiniteOrNull(row?.shapeFocusScore ?? row?.shape_focus_score ?? row?.top4Fixed1234Probability ?? row?.top4_fixed1234_probability),
@@ -1501,6 +1523,8 @@ function finalizeHardRaceContractRow(row = {}) {
     hard_scenario: row?.hardScenario ?? row?.hard_scenario ?? null,
     hardScenarioScore: toFiniteOrNull(row?.hardScenarioScore ?? row?.hard_scenario_score ?? row?.scenario_repro_score),
     hard_scenario_score: toFiniteOrNull(row?.hardScenarioScore ?? row?.hard_scenario_score ?? row?.scenario_repro_score),
+    scenarioReproScore: toFiniteOrNull(row?.scenarioReproScore ?? row?.scenario_repro_score ?? row?.hardScenarioScore ?? row?.hard_scenario_score),
+    scenario_repro_score: toFiniteOrNull(row?.scenarioReproScore ?? row?.scenario_repro_score ?? row?.hardScenarioScore ?? row?.hard_scenario_score),
     hardRaceRank: row?.hardRaceRank ?? row?.hard_race_rank ?? row?.screeningDebug?.hard_race_rank ?? null,
     hard_race_rank: row?.hardRaceRank ?? row?.hard_race_rank ?? row?.screeningDebug?.hard_race_rank ?? null,
     operational_pick: row?.operational_pick ?? row?.operationalPick ?? row?.features?.operational_policy?.operational_pick ?? null,
@@ -1552,6 +1576,11 @@ function finalizeHardRaceContractRow(row = {}) {
     "race_no",
     "status",
     "boat1_escape_trust",
+    "boat1_head_pre",
+    "fit_234_index",
+    "outside_break_risk_pre",
+    "hard_race_index",
+    "scenario_repro_score",
     "opponent_234_fit",
     "pair23_fit",
     "pair24_fit",
@@ -1597,7 +1626,12 @@ function finalizeHardRaceContractRow(row = {}) {
     race_no: normalized.race_no,
     data_status: normalized.data_status,
     confidence_status: normalized.confidence_status,
+    boat1_head_pre: normalized.boat1_head_pre,
     boat1_escape_trust: normalized.boat1_escape_trust,
+    fit_234_index: normalized.fit_234_index,
+    outside_break_risk_pre: normalized.outside_break_risk_pre,
+    hard_race_index: normalized.hard_race_index,
+    scenario_repro_score: normalized.scenario_repro_score,
     opponent_234_fit: normalized.opponent_234_fit,
     pair23_fit: normalized.pair23_fit,
     pair24_fit: normalized.pair24_fit,
@@ -1843,6 +1877,17 @@ function groupTop6PredictionRows(rows = []) {
   };
 }
 
+function buildFinishCandidateRows(probabilityMap = {}, place = "") {
+  return Object.entries(probabilityMap || {})
+    .map(([lane, probability]) => ({
+      lane: Number(lane),
+      probability: Number(probability) || 0,
+      place
+    }))
+    .filter((row) => Number.isInteger(row.lane))
+    .sort((a, b) => b.probability - a.probability);
+}
+
 function getPredictionChaosTone(label) {
   const value = String(label || "").toUpperCase();
   if (value === "CHAOS" || value === "高") return "tone-high";
@@ -1876,7 +1921,8 @@ function getPredictionConfidenceClass(value) {
 
 function getFreshnessState(sourceSummary = {}, errorDetails = null) {
   const status = String(sourceSummary?.freshness_status || "").toLowerCase();
-  if (status === "fresh") return { label: "latest / refreshed", className: "status-hit" };
+  if (status === "latest") return { label: "latest", className: "status-hit" };
+  if (status === "refreshed" || status === "fresh") return { label: "refreshed", className: "status-hit" };
   if (status === "stale") return { label: "stale", className: "status-unsettled" };
   if (status === "fallback") return { label: "fallback", className: "risk-small" };
   const errorCode = String(errorDetails?.code || "").toUpperCase();
@@ -2112,6 +2158,10 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       venueName: entry?.data?.race?.venueName || venueNameFallback,
       status: entry?.data?.hardRace1234?.status || "READY",
       data_status: entry?.data?.hardRace1234?.data_status || "READY",
+      boat1HeadPre: entry?.data?.hardRace1234?.boat1_head_pre ?? null,
+      hardRaceIndex: entry?.data?.hardRace1234?.hard_race_index ?? entry?.data?.hardRace1234?.hard_race_score ?? null,
+      fit234Index: entry?.data?.hardRace1234?.fit_234_index ?? entry?.data?.hardRace1234?.opponent_234_fit ?? null,
+      outsideBreakRiskPre: entry?.data?.hardRace1234?.outside_break_risk_pre ?? entry?.data?.hardRace1234?.outside_break_risk ?? null,
       boat1EscapeTrust: entry?.data?.hardRace1234?.boat1_escape_trust ?? null,
       opponent234Fit: entry?.data?.hardRace1234?.opponent_234_fit ?? null,
       outsideBreakRisk: entry?.data?.hardRace1234?.outside_break_risk ?? null,
@@ -2124,6 +2174,7 @@ function buildHardRaceScreeningRow(entry, venueNameFallback = "-") {
       suggestedShape: entry?.data?.hardRace1234?.suggested_shape ?? null,
       hardScenario: entry?.data?.hardRace1234?.hardScenario ?? null,
       hardScenarioScore: entry?.data?.hardRace1234?.hardScenarioScore ?? entry?.data?.hardRace1234?.scenario_repro_score ?? null,
+      scenarioReproScore: entry?.data?.hardRace1234?.scenario_repro_score ?? entry?.data?.hardRace1234?.hardScenarioScore ?? null,
       hardRaceRank: entry?.data?.hardRace1234?.hard_race_rank ?? entry?.data?.hardRace1234?.screeningDebug?.hard_race_rank ?? null,
       finalStatus:
         entry?.data?.hardRace1234?.decision === "BUY-4" || entry?.data?.hardRace1234?.decision === "BUY-6"
@@ -3624,8 +3675,26 @@ function getPlayerComparisonRows({ prediction, data }) {
             liveLapTime,
             getLapTimeDisplayValue(snapshotRow)
           ),
+          lapRaw: firstFiniteValue(
+            row?.lapRaw,
+            row?.kyoteiBiyoriLapTimeRaw,
+            row?.lapTimeRaw,
+            snapshotRow?.lap_raw,
+            snapshotRow?.kyoteibiyori_lap_time_raw
+          ),
+          lapSource: row?.lapSource || row?.kyoteiBiyoriLapSource || snapshotRow?.lap_source || snapshotRow?.kyoteibiyori_lap_source || null,
+          lapRank: firstFiniteValue(row?.lapRank, snapshotRow?.lap_rank, snapshotRow?.feature_snapshot?.lap_rank, snapshotRow?.feature_snapshot?.lap_time_rank),
+          lapGapFromBest: firstFiniteValue(row?.lapGapFromBest, snapshotRow?.lap_gap_from_best, snapshotRow?.feature_snapshot?.lap_gap_from_best, snapshotRow?.feature_snapshot?.lap_time_gap_from_best),
           exhibitionSt: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_st ?? snapshotRow?.exhibition_st),
+          exhibitionStRaw: row?.kyoteiBiyoriExhibitionStRaw ?? row?.exhibitionStRaw ?? snapshotRow?.kyoteibiyori_exhibition_st_raw ?? snapshotRow?.exhibition_st_raw_detail ?? null,
+          exhibitionStFlag: row?.kyoteiBiyoriExhibitionStFlag ?? row?.exhibitionStFlag ?? snapshotRow?.kyoteibiyori_exhibition_st_flag ?? snapshotRow?.exhibition_st_flag ?? null,
+          exhibitionStSignedValue: firstFiniteValue(row?.kyoteiBiyoriExhibitionStSignedValue, row?.exhibitionStSignedValue, snapshotRow?.kyoteibiyori_exhibition_st_signed, snapshotRow?.exhibition_st_signed),
           exhibitionTime: liveExhibitionTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_time ?? snapshotRow?.exhibition_time),
+          lapTimeDetail: row?.kyoteiBiyoriLapTimeDetail || row?.lapTimeDetail || snapshotRow?.kyoteibiyori_lap_time_detail || snapshotRow?.lap_time_detail || null,
+          exhibitionSTDetail: row?.kyoteiBiyoriExhibitionSTDetail || row?.exhibitionSTDetail || snapshotRow?.kyoteibiyori_exhibition_st_detail || snapshotRow?.exhibition_st_detail || null,
+          exhibitionTimeDetail: row?.kyoteiBiyoriExhibitionTimeDetail || row?.exhibitionTimeDetail || snapshotRow?.kyoteibiyori_exhibition_time_detail || snapshotRow?.exhibition_time_detail || null,
+          turnFootDetail: row?.kyoteiBiyoriTurnFootDetail || row?.turnFootDetail || snapshotRow?.kyoteibiyori_turn_foot_detail || snapshotRow?.turn_foot_detail || null,
+          straightTimeDetail: row?.kyoteiBiyoriStraightTimeDetail || row?.straightTimeDetail || snapshotRow?.kyoteibiyori_straight_time_detail || snapshotRow?.straight_time_detail || null,
           lapExStretch: liveLapExStretch ?? snapshotLapExStretch,
           lapScore: liveLapExStretch ?? snapshotLapExStretch,
           stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || snapshotRow?.kyoteibiyori_stretch_foot_label || snapshotRow?.stretch_foot_label || null,
@@ -3651,7 +3720,10 @@ function getPlayerComparisonRows({ prediction, data }) {
           }
         };
       })
-      .sort((a, b) => (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber));
+      .sort((a, b) => {
+        if (a?.actualLaneConfirmed && b?.actualLaneConfirmed) return (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber);
+        return (a.boatNumber - b.boatNumber);
+      });
   }
   return snapshotPlayers
     .map((row) => {
@@ -3667,8 +3739,20 @@ function getPlayerComparisonRows({ prediction, data }) {
         fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
         kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched) === 1,
         lapTime: getLapTimeDisplayValue(row),
+        lapRaw: firstFiniteValue(row?.lap_raw, row?.kyoteibiyori_lap_time_raw),
+        lapSource: row?.lap_source || row?.kyoteibiyori_lap_source || null,
+        lapRank: firstFiniteValue(row?.lap_rank, row?.feature_snapshot?.lap_rank, row?.feature_snapshot?.lap_time_rank),
+        lapGapFromBest: firstFiniteValue(row?.lap_gap_from_best, row?.feature_snapshot?.lap_gap_from_best, row?.feature_snapshot?.lap_time_gap_from_best),
         exhibitionSt: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_st ?? row?.exhibition_st),
+        exhibitionStRaw: row?.kyoteibiyori_exhibition_st_raw ?? row?.exhibition_st_raw_detail ?? null,
+        exhibitionStFlag: row?.kyoteibiyori_exhibition_st_flag ?? row?.exhibition_st_flag ?? null,
+        exhibitionStSignedValue: firstFiniteValue(row?.kyoteibiyori_exhibition_st_signed, row?.exhibition_st_signed),
         exhibitionTime: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_time ?? row?.exhibition_time),
+        lapTimeDetail: row?.kyoteibiyori_lap_time_detail || row?.lap_time_detail || null,
+        exhibitionSTDetail: row?.kyoteibiyori_exhibition_st_detail || row?.exhibition_st_detail || null,
+        exhibitionTimeDetail: row?.kyoteibiyori_exhibition_time_detail || row?.exhibition_time_detail || null,
+        turnFootDetail: row?.kyoteibiyori_turn_foot_detail || row?.turn_foot_detail || null,
+        straightTimeDetail: row?.kyoteibiyori_straight_time_detail || row?.straight_time_detail || null,
         lapExStretch: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
         lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
         stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
@@ -3702,7 +3786,10 @@ function getPlayerComparisonRows({ prediction, data }) {
         }
       };
     })
-    .sort((a, b) => (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber));
+    .sort((a, b) => {
+      if (a?.actualLaneConfirmed && b?.actualLaneConfirmed) return (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber);
+      return (a.boatNumber - b.boatNumber);
+    });
 }
 
 function buildTopMetricLaneSet(rows, key, direction = "desc") {
@@ -4279,6 +4366,29 @@ export default function App() {
   const pureTop6Groups = groupTop6PredictionRows(pureTop6Rows);
   const pureHeadRanking = Array.isArray(pureTop6Prediction?.head_candidate_ranking) ? pureTop6Prediction.head_candidate_ranking : [];
   const pureHeadTrust = pureHeadRanking[0]?.probability ?? null;
+  const pureFirstPlaceRates = Array.isArray(pureTop6Prediction?.first_place_candidate_rates) && pureTop6Prediction.first_place_candidate_rates.length > 0
+    ? pureTop6Prediction.first_place_candidate_rates
+    : buildFinishCandidateRows(
+        pureTop6Prediction?.winProbabilities || prediction?.winProbabilities || data?.winProbabilities || {},
+        "first"
+      );
+  const pureSecondPlaceRates = Array.isArray(pureTop6Prediction?.second_place_candidate_rates) && pureTop6Prediction.second_place_candidate_rates.length > 0
+    ? pureTop6Prediction.second_place_candidate_rates
+    : buildFinishCandidateRows(
+        pureTop6Prediction?.secondProbabilities || prediction?.secondProbabilities || data?.secondProbabilities || {},
+        "second"
+      );
+  const pureThirdPlaceRates = Array.isArray(pureTop6Prediction?.third_place_candidate_rates) && pureTop6Prediction.third_place_candidate_rates.length > 0
+    ? pureTop6Prediction.third_place_candidate_rates
+    : buildFinishCandidateRows(
+        pureTop6Prediction?.thirdProbabilities || prediction?.thirdProbabilities || data?.thirdProbabilities || {},
+        "third"
+      );
+  const pureWideFormation = pureTop6Prediction?.optionalFormation16 && typeof pureTop6Prediction.optionalFormation16 === "object"
+    ? pureTop6Prediction.optionalFormation16
+    : pureTop6Prediction?.wide_formation_suggestion && typeof pureTop6Prediction.wide_formation_suggestion === "object"
+      ? pureTop6Prediction.wide_formation_suggestion
+    : {};
   const predictionConfidenceState = getPredictionConfidenceState(sourceMeta);
   const isRecommendedRace =
     typeof data?.is_recommended === "boolean"
@@ -6338,6 +6448,33 @@ export default function App() {
                         </tbody>
                       </table>
                     </div>
+                    {safeArray(playerComparisonRows).some((row) => row?.actualLaneConfirmed !== true) ? (
+                      <p className="notice-banner" style={{ marginTop: 10 }}>
+                        actual entry not confirmed: 艇対応は base lane order のまま保持しています。
+                      </p>
+                    ) : null}
+                    <details className="card" style={{ marginTop: 12 }}>
+                      <summary>Lap Time detail</summary>
+                      <div className="kv-list" style={{ marginTop: 10 }}>
+                        {safeArray(playerComparisonRows).map((row, idx) => (
+                          <div className="kv-row" key={`lap-detail-${row?.boatNumber ?? row?.lane ?? idx}`}>
+                            <span>{`${row?.boatNumber ?? row?.lane ?? "-"}号艇`}</span>
+                            <strong>
+                              {[
+                                `status=${getCoverageFieldMeta(data?.source?.coverage_report || {}, row?.boatNumber ?? row?.lane, "lapTime")?.status || "unknown"}`,
+                                `source=${row?.lapSource || "-"}`,
+                                `raw=${row?.lapRaw ?? "-"}`,
+                                `normalized=${getLapTimeDisplayValue(row) ?? "-"}`,
+                                `st_raw=${row?.exhibitionStRaw || "-"}`,
+                                `st_flag=${row?.exhibitionStFlag || "-"}`,
+                                `st_value=${row?.exhibitionSt ?? "-"}`,
+                                `st_signed=${row?.exhibitionStSignedValue ?? "-"}`
+                              ].join(" / ")}
+                            </strong>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                     <p className="muted strategy-line">
                       Rows are ordered by actual entry lane when course movement occurs. Lane-score columns are temporarily hidden until raw 枠別情報 parsing is re-verified against the source table.
                     </p>
@@ -6547,6 +6684,66 @@ export default function App() {
                           <p className="muted">頭候補ランキングは未計算です。</p>
                         )}
                       </div>
+                    </div>
+                    <div className="hardrace-block">
+                      <div className="hardrace-block-head">
+                        <div>
+                          <strong>1着 / 2着 / 3着候補率</strong>
+                          <p className="muted">各艇の着順別候補率を分けて表示します。</p>
+                        </div>
+                      </div>
+                      <div className="kv-list">
+                        <div className="kv-row"><span>1着候補</span><strong>{pureFirstPlaceRates.slice(0, 3).map((row) => `${row.lane}号艇 ${formatPercentDisplay(row.probability)}`).join(" / ") || "--"}</strong></div>
+                        <div className="kv-row"><span>2着候補</span><strong>{pureSecondPlaceRates.slice(0, 4).map((row) => `${row.lane}号艇 ${formatPercentDisplay(row.probability)}`).join(" / ") || "--"}</strong></div>
+                        <div className="kv-row"><span>3着候補</span><strong>{pureThirdPlaceRates.slice(0, 4).map((row) => `${row.lane}号艇 ${formatPercentDisplay(row.probability)}`).join(" / ") || "--"}</strong></div>
+                      </div>
+                      <div className="ticket-stack compact-list" style={{ marginTop: 10 }}>
+                        {[
+                          { label: "1着", rows: pureFirstPlaceRates.slice(0, 6) },
+                          { label: "2着", rows: pureSecondPlaceRates.slice(0, 6) },
+                          { label: "3着", rows: pureThirdPlaceRates.slice(0, 6) }
+                        ].map((group) => (
+                          <div key={`finish-rate-${group.label}`} className="premium-ticket-row">
+                            <div className="ticket-mainline">
+                              <strong>{group.label}</strong>
+                            </div>
+                            <div className="ticket-meta">
+                              <span>{group.rows.map((row) => `${row.lane}:${formatMaybeNumber((Number(row?.probability) || 0) * 100, 1)}%`).join("  ") || "--"}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="hardrace-block">
+                      <div className="hardrace-block-head">
+                        <div>
+                          <strong>16点前後フォーメーション案</strong>
+                          <p className="muted">高配当ウィンドウが開いた時だけ広めの案を出します。</p>
+                        </div>
+                      </div>
+                      <div className="kv-list">
+                        <div className="kv-row"><span>active</span><strong>{pureWideFormation?.active ? "yes" : "no"}</strong></div>
+                        <div className="kv-row"><span>formation</span><strong>{pureWideFormation?.formation_string || "--"}</strong></div>
+                        <div className="kv-row"><span>size</span><strong>{pureWideFormation?.size ?? 0}</strong></div>
+                        <div className="kv-row"><span>reason</span><strong>{pureWideFormation?.reason || "--"}</strong></div>
+                      </div>
+                      {Array.isArray(pureWideFormation?.combos) && pureWideFormation.combos.length > 0 ? (
+                        <div className="ticket-stack compact-list" style={{ marginTop: 10 }}>
+                          {pureWideFormation.combos.slice(0, 16).map((row, idx) => (
+                            <div key={`wide-formation-${row?.combo || idx}`} className="premium-ticket-row">
+                              <div className="ticket-mainline">
+                                <span className="rank-pill">#{row?.rank ?? idx + 1}</span>
+                                <strong><ComboBadge combo={row?.combo || "--"} /></strong>
+                              </div>
+                              <div className="ticket-meta">
+                                <span>{Number.isFinite(Number(row?.probability)) ? `hit ${formatMaybeNumber(Number(row.probability) * 100, 1)}%` : "--"}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="muted">現状は6点集中で十分と判定しています。</p>
+                      )}
                     </div>
                     <div className="hardrace-block">
                       <div className="hardrace-block-head">
@@ -8203,6 +8400,11 @@ export default function App() {
                           <div className="kv-row"><span>Decision</span><strong>{row.decision || "-"}</strong></div>
                           <div className="kv-row"><span>Data status</span><strong>{row.data_status || "-"}</strong></div>
                           <div className="kv-row"><span>Confidence</span><strong>{row.confidence_status || row.data_status || "-"}</strong></div>
+                          <div className="kv-row"><span>boat1_head_pre</span><strong>{row.boat1HeadPre == null ? "--" : `${formatMaybeNumber(row.boat1HeadPre * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>hard_race_index</span><strong>{row.hardRaceIndex == null ? "--" : formatMaybeNumber(row.hardRaceIndex, 1)}</strong></div>
+                          <div className="kv-row"><span>fit_234_index</span><strong>{row.fit234Index == null ? "--" : formatMaybeNumber(row.fit234Index, 1)}</strong></div>
+                          <div className="kv-row"><span>outside_break_risk_pre</span><strong>{row.outsideBreakRiskPre == null ? "--" : `${formatMaybeNumber(row.outsideBreakRiskPre * 100, 1)}%`}</strong></div>
+                          <div className="kv-row"><span>scenario_repro_score</span><strong>{row.scenarioReproScore == null ? "--" : formatMaybeNumber(row.scenarioReproScore, 1)}</strong></div>
                           <div className="kv-row"><span>P1 Head</span><strong>{row.head_prob_1 == null ? "--" : `${formatMaybeNumber(row.head_prob_1 * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>Head ranking</span><strong>{Array.isArray(row.head_candidate_ranking) && row.head_candidate_ranking.length > 0 ? row.head_candidate_ranking.map((item) => `${item.lane}号艇 ${formatMaybeNumber((item.probability || 0) * 100, 1)}%`).join(" / ") : [1,2,3,4,5,6].map((lane) => `#${lane} ${formatMaybeNumber((row[`head_prob_${lane}`] || 0) * 100, 1)}%`).join(" / ")}</strong></div>
                           <div className="kv-row"><span>Old decision</span><strong>{row.screeningDebug?.old_decision || "-"}</strong></div>
@@ -8215,9 +8417,9 @@ export default function App() {
                           <div className="kv-row"><span>shape_shuffle_risk</span><strong>{renderHardRaceMetric(row, "shape_shuffle_risk", row.shapeShuffleRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
                           <div className="kv-row"><span>makuri_risk</span><strong>{renderHardRaceMetric(row, "makuri_risk", row.makuriRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
                           <div className="kv-row"><span>outside_break_risk</span><strong>{renderHardRaceMetric(row, "outside_break_risk", row.outsideBreakRisk, (value) => formatMaybeNumber(value, 1))}</strong></div>
-                          <div className="kv-row"><span>box hit</span><strong>{renderHardRaceMetric(row, "box_hit_score", row.boxHitScore, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
+                          <div className="kv-row"><span>box_hit_score</span><strong>{renderHardRaceMetric(row, "box_hit_score", row.boxHitScore, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                           <div className="kv-row"><span>shape focus</span><strong>{renderHardRaceMetric(row, "shape_focus_score", row.shapeFocusScore, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
-                          <div className="kv-row"><span>Top4 share within fixed1234</span><strong>{renderHardRaceMetric(row, "fixed1234_shape_concentration", row.fixed1234ShapeConcentration, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
+                          <div className="kv-row"><span>fixed1234_shape_concentration</span><strong>{renderHardRaceMetric(row, "fixed1234_shape_concentration", row.fixed1234ShapeConcentration, (value) => `${formatMaybeNumber(value * 100, 1)}%`)}</strong></div>
                           <div className="kv-row"><span>outside head risk</span><strong>{row.screeningDebug?.outside_head_risk == null ? "--" : `${formatMaybeNumber((row.screeningDebug.outside_head_risk || 0) * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>outside 2nd risk</span><strong>{row.outside2ndRisk == null ? "--" : `${formatMaybeNumber((row.outside2ndRisk || 0) * 100, 1)}%`}</strong></div>
                           <div className="kv-row"><span>outside 3rd risk</span><strong>{row.outside3rdRisk == null ? "--" : `${formatMaybeNumber((row.outside3rdRisk || 0) * 100, 1)}%`}</strong></div>

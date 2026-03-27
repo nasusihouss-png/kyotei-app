@@ -56,6 +56,22 @@ const result = buildTop6Prediction({
   race: { venueId: 5 }
 });
 
+const aggregatedFromAll120 = result.all_120_combinations.reduce(
+  (acc, row) => {
+    const [first, second, third] = String(row?.combo || "").split("-").map(Number);
+    const probability = Number(row?.probability) || 0;
+    acc.winProbabilities[first] += probability;
+    acc.secondProbabilities[second] += probability;
+    acc.thirdProbabilities[third] += probability;
+    return acc;
+  },
+  {
+    winProbabilities: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 },
+    secondProbabilities: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 },
+    thirdProbabilities: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 }
+  }
+);
+
 assert.ok(result);
 assert.equal(result.top6.length, 6);
 assert.equal(result.all_120_combinations.length, 120);
@@ -72,6 +88,20 @@ assert.equal(result.third_place_candidate_rates.length, 6);
 assert.equal(Object.keys(result.winProbabilities || {}).length, 6);
 assert.equal(Object.keys(result.secondProbabilities || {}).length, 6);
 assert.equal(Object.keys(result.thirdProbabilities || {}).length, 6);
+for (const lane of [1, 2, 3, 4, 5, 6]) {
+  assert.equal(
+    Number((result.winProbabilities?.[lane] || 0).toFixed(4)),
+    Number((aggregatedFromAll120.winProbabilities?.[lane] || 0).toFixed(4))
+  );
+  assert.equal(
+    Number((result.secondProbabilities?.[lane] || 0).toFixed(4)),
+    Number((aggregatedFromAll120.secondProbabilities?.[lane] || 0).toFixed(4))
+  );
+  assert.equal(
+    Number((result.thirdProbabilities?.[lane] || 0).toFixed(4)),
+    Number((aggregatedFromAll120.thirdProbabilities?.[lane] || 0).toFixed(4))
+  );
+}
 assert.equal(typeof result.optionalFormation16?.active, "boolean");
 assert.equal(result.formationReason, result.optionalFormation16?.reason ?? null);
 assert.equal(
