@@ -191,7 +191,10 @@ function buildSourceSummary({ data, normalizedLanes, fallbackSummary, missingFie
   );
   return {
     mode: "pure_inference",
-    inference_source: "local_precomputed_only",
+    inference_source:
+      data?.source?.refresh_meta?.refresh_attempted === true
+        ? "latest_public_data_auto_refresh"
+        : "local_precomputed_only",
     snapshot: {
       race: "snapshot",
       entries: "snapshot",
@@ -208,6 +211,8 @@ function buildSourceSummary({ data, normalizedLanes, fallbackSummary, missingFie
     },
     estimated_fields: Object.keys(fallbackSummary?.byField || {}),
     missing_fields: Array.isArray(missingFields) ? missingFields : [],
+    broken_fields_required: Array.isArray(missingFields) ? missingFields.filter((field) => /^snapshot\./.test(String(field))) : [],
+    broken_fields_optional: Array.isArray(missingFields) ? missingFields.filter((field) => !/^snapshot\./.test(String(field))) : [],
     coverage_report_summary: data?.source?.coverage_report_summary || null
   };
 }

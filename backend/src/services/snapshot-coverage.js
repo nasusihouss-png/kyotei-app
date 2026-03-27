@@ -27,6 +27,7 @@ export const REQUIRED_COVERAGE_FIELDS = Object.freeze([
   "l_count",
   "motor_2ren",
   "boat_2ren",
+  "racer_class",
   "course_1_head_rate",
   "course_1_2ren_rate",
   "venue_inside_bias"
@@ -38,7 +39,6 @@ export const OPTIONAL_COVERAGE_FIELDS = Object.freeze([
   "exhibition_time",
   "motor_3ren",
   "boat_3ren",
-  "racer_class",
   "lane_1st_rate",
   "lane_2ren_rate",
   "lane_3ren_rate",

@@ -75,7 +75,7 @@ function makeStoredSnapshot(overrides = {}) {
 
   assert.equal(result.ok, true);
   assert.equal(result.refreshMeta.refreshed_now, true);
-  assert.equal(result.refreshMeta.freshness_status, "fresh");
+  assert.equal(result.refreshMeta.freshness_status, "refreshed");
   assert.equal(result.refreshMeta.primary_source_ok, true);
   assert.equal(result.refreshMeta.secondary_source_ok, true);
 }
@@ -198,6 +198,55 @@ function makeStoredSnapshot(overrides = {}) {
   assert.equal(result.data.source.refresh_meta?.refreshed_now, true);
   assert.equal(result.data.source.local_snapshots?.generated_from_latest_fetch, true);
   assert.equal(result.data.diagnostics?.generated_from_latest_fetch, true);
+}
+
+{
+  const result = await refreshLatestRaceData(
+    {
+      date: "2026-03-24",
+      venueId: 13,
+      raceNo: 9,
+      timeoutMs: 1000
+    },
+    {
+      generateRaceSnapshot: async () => ({
+        ok: true,
+        sourceStatus: {
+          primary_source_ok: true,
+          secondary_source_ok: true
+        },
+        snapshotIndex: {
+          snapshotStatus: "READY",
+          updatedAt: "2026-03-24T12:20:00.000Z"
+        },
+        transientData: {
+          ok: true,
+          race: { date: "2026-03-24", venueId: 13, raceNo: 9 },
+          racers: Array.from({ length: 6 }, (_, index) => ({ lane: index + 1, latest_marker: true })),
+          source: {
+            local_snapshots: {
+              generated_from_latest_fetch: true
+            }
+          },
+          diagnostics: {
+            generated_from_latest_fetch: true
+          }
+        }
+      }),
+      loadStoredRaceInferenceData: () => makeStoredSnapshot({
+        racers: Array.from({ length: 6 }, (_, index) => ({ lane: index + 1, latest_marker: false }))
+      }),
+      getRaceSnapshotIndexByParts: () => ({
+        snapshotStatus: "READY",
+        updatedAt: "2026-03-24T12:20:00.000Z"
+      })
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.refreshMeta.refreshed_now, true);
+  assert.equal(result.data.racers[0]?.latest_marker, true);
+  assert.equal(result.data.source.local_snapshots?.generated_from_latest_fetch, true);
 }
 
 await assert.rejects(

@@ -168,7 +168,9 @@ export async function generateRaceSnapshot({
   const featureSnapshotCount = saveFeatureSnapshots(raceId, rankingWithCoverage);
   const entrySnapshotCount = Array.isArray(data?.racers) ? data.racers.length : 0;
   const sourceStatus = {
-    primary_source_ok: true,
+    primary_source_ok:
+      String(data?.source?.official_fetch_status?.racelist || "").toLowerCase() === "success" ||
+      String(data?.source?.official_fetch_status?.beforeinfo || "").toLowerCase() === "success",
     secondary_source_ok: !!data?.source?.kyotei_biyori?.ok,
     official_fetch_status: data?.source?.official_fetch_status || {},
     kyotei_biyori: {

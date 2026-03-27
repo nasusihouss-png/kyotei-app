@@ -38,10 +38,11 @@ function coverageHasFallback(summary = {}) {
   );
 }
 
-function deriveFreshnessStatus({ refreshedNow, coverageSummary, snapshotStatus }) {
+function deriveFreshnessStatus({ refreshedNow, coverageSummary, snapshotStatus, primarySourceOk }) {
   const snapshotText = String(snapshotStatus || "").toUpperCase();
   const fallbackDetected = coverageHasFallback(coverageSummary) || snapshotText === "FALLBACK" || snapshotText === "BROKEN_PIPELINE";
-  if (refreshedNow) return fallbackDetected ? "fallback" : "fresh";
+  if (refreshedNow) return fallbackDetected ? "fallback" : "refreshed";
+  if (primarySourceOk && !fallbackDetected) return "latest";
   return fallbackDetected ? "fallback" : "stale";
 }
 
@@ -57,7 +58,8 @@ function buildRefreshMeta({
   const freshnessStatus = deriveFreshnessStatus({
     refreshedNow,
     coverageSummary,
-    snapshotStatus: snapshotIndex?.snapshotStatus
+    snapshotStatus: snapshotIndex?.snapshotStatus,
+    primarySourceOk
   });
 
   return {
@@ -207,6 +209,21 @@ export async function refreshLatestRaceData({
     });
     sourceError.snapshotLookup = stored?.snapshot || null;
     throw sourceError;
+  }
+
+  const latestTransientData = buildTransientRefreshData({
+    transientData: refreshResult?.transientData || null,
+    refreshMeta,
+    snapshotIndex
+  });
+  if (latestTransientData?.ok) {
+    return {
+      ok: true,
+      refreshMeta,
+      refreshError,
+      snapshotIndex,
+      data: latestTransientData
+    };
   }
 
   if (typeof trace === "function") {

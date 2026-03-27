@@ -2776,7 +2776,10 @@ function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, d
   const fallbackFields = [...fallbackCoverageFields, ...optionalMissingFields].filter((field, index, arr) => arr.indexOf(field) === index);
   const sourceSummary = {
     mode: "pure_inference",
-    inference_source: "local_precomputed_only",
+    inference_source:
+      data?.source?.refresh_meta?.refresh_attempted === true
+        ? "latest_public_data_auto_refresh"
+        : "local_precomputed_only",
     snapshot: {
       race: "snapshot",
       entries: racers.length === 6 ? "snapshot" : "missing",
@@ -2797,6 +2800,8 @@ function buildPureInferenceSnapshotSummary(data = {}, storedPrediction = null, d
     missing_fields: allIssueFields,
     required_missing_fields: requiredMissingFields,
     optional_missing_fields: optionalMissingFields,
+    broken_fields_required: requiredMissingFields,
+    broken_fields_optional: optionalMissingFields,
     source_priority: SOURCE_PRIORITY_RULES,
     feature_tiers: {
       tier_a_required: REQUIRED_COVERAGE_FIELDS,
@@ -2913,6 +2918,15 @@ export function buildPureInferencePredictionPayload(data = {}) {
     storedPrediction,
     pureTop6Prediction,
     prediction,
+    refreshed_now: snapshotSummary.sourceSummary?.refreshed_now === true,
+    freshness_status: snapshotSummary.sourceSummary?.freshness_status || "stale",
+    primary_source_ok: snapshotSummary.sourceSummary?.primary_source_ok === true,
+    secondary_source_ok: snapshotSummary.sourceSummary?.secondary_source_ok === true,
+    fallback_used: snapshotSummary.sourceSummary?.fallback_used === true,
+    field_coverage_report: snapshotSummary.fieldCoverageReport,
+    broken_fields_required: snapshotSummary.sourceSummary?.broken_fields_required || [],
+    broken_fields_optional: snapshotSummary.sourceSummary?.broken_fields_optional || [],
+    last_snapshot_updated_at: snapshotSummary.sourceSummary?.last_snapshot_updated_at || null,
     diagnostics: snapshotSummary
   };
 }
@@ -9766,7 +9780,7 @@ raceRouter.get("/race", async (req, res, next) => {
       venueId_raw: req.query?.venueId ?? null,
       raceNo_raw: req.query?.raceNo ?? null
     }));
-    const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, false);
+    const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, true);
     const screeningMode = String(req.query?.screening || "").toLowerCase();
     const isHardRaceScreening = screeningMode === "hard_race";
     const latestRefreshTimeoutMs = Math.max(
@@ -10050,6 +10064,20 @@ raceRouter.get("/race", async (req, res, next) => {
           hardScenario: hardRace1234?.hardScenario || null,
           hardScenarioScore: hardRace1234?.hardScenarioScore ?? hardRace1234?.scenario_repro_score ?? null,
           scenario_repro_score: hardRace1234?.scenario_repro_score ?? null,
+          refreshed_now: data?.source?.refresh_meta?.refreshed_now === true,
+          freshness_status: data?.source?.refresh_meta?.freshness_status || hardRace1234?.source_summary?.freshness_status || "stale",
+          primary_source_ok: data?.source?.refresh_meta?.primary_source_ok === true,
+          secondary_source_ok: data?.source?.refresh_meta?.secondary_source_ok === true,
+          fallback_used:
+            data?.source?.refresh_meta?.fallback_used === true ||
+            hardRace1234?.source_summary?.fallback_used === true,
+          field_coverage_report: data?.source?.coverage_report?.fields || null,
+          broken_fields_required: hardRace1234?.source_summary?.broken_fields_required || [],
+          broken_fields_optional: hardRace1234?.source_summary?.broken_fields_optional || [],
+          last_snapshot_updated_at:
+            data?.source?.refresh_meta?.last_snapshot_updated_at ||
+            data?.source?.local_snapshots?.last_snapshot_updated_at ||
+            null,
           ...hardRace1234,
           routeTiming: routeTimings
         });
@@ -10100,6 +10128,23 @@ raceRouter.get("/race", async (req, res, next) => {
         raceId: data.raceId || data.source?.race_id || null,
         pureTop6Prediction,
         prediction,
+        refreshed_now: data?.source?.refresh_meta?.refreshed_now === true,
+        freshness_status:
+          data?.source?.refresh_meta?.freshness_status ||
+          prediction?.source_summary?.freshness_status ||
+          "stale",
+        primary_source_ok: data?.source?.refresh_meta?.primary_source_ok === true,
+        secondary_source_ok: data?.source?.refresh_meta?.secondary_source_ok === true,
+        fallback_used:
+          data?.source?.refresh_meta?.fallback_used === true ||
+          prediction?.source_summary?.fallback_used === true,
+        field_coverage_report: prediction?.field_coverage_report || data?.source?.coverage_report?.fields || null,
+        broken_fields_required: prediction?.source_summary?.broken_fields_required || [],
+        broken_fields_optional: prediction?.source_summary?.broken_fields_optional || [],
+        last_snapshot_updated_at:
+          data?.source?.refresh_meta?.last_snapshot_updated_at ||
+          data?.source?.local_snapshots?.last_snapshot_updated_at ||
+          null,
         top6Scenario: pureTop6Prediction?.top6Scenario || prediction?.top6Scenario || null,
         top6ScenarioScore: pureTop6Prediction?.top6ScenarioScore ?? prediction?.top6ScenarioScore ?? prediction?.scenario_repro_score ?? null,
         scenario_repro_score: pureTop6Prediction?.scenario_repro_score ?? prediction?.scenario_repro_score ?? null,
