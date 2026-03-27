@@ -30,6 +30,20 @@ const result = await buildHardRace1234Response({
   raceNo: 1
 });
 
+const exhibitionShifted = JSON.parse(JSON.stringify(baseData));
+exhibitionShifted.racers = exhibitionShifted.racers.map((racer, index) => ({
+  ...racer,
+  exhibitionSt: 0.03 + index * 0.02,
+  exhibitionTime: 6.55 + index * 0.07,
+  lapTime: 6.6 + index * 0.05
+}));
+const resultWithoutDisplayImpact = await buildHardRace1234Response({
+  data: exhibitionShifted,
+  date: "2026-03-21",
+  venueId: 5,
+  raceNo: 1
+});
+
 assert.ok(["READY", "FALLBACK", "BROKEN_PIPELINE"].includes(result.data_status));
 assert.equal(result.confidence_status, result.data_status);
 assert.equal(typeof result.hardScenario, "string");
@@ -93,5 +107,10 @@ assert.equal(typeof result.features?.evaluation_targets?.y_box6, "number");
 assert.equal(typeof result.features?.evaluation_targets?.y_top4, "number");
 assert.equal(typeof result.features?.evaluation_targets?.y_buy6, "number");
 assert.equal(typeof result.features?.evaluation_targets?.y_buy4, "number");
+assert.equal(result.boat1_head_pre, resultWithoutDisplayImpact.boat1_head_pre);
+assert.equal(result.hard_race_index, resultWithoutDisplayImpact.hard_race_index);
+assert.equal(result.fit_234_index, resultWithoutDisplayImpact.fit_234_index);
+assert.equal(result.outside_break_risk_pre, resultWithoutDisplayImpact.outside_break_risk_pre);
+assert.equal(result.scenario_repro_score, resultWithoutDisplayImpact.scenario_repro_score);
 
 console.log("hard-race-1234 ok");

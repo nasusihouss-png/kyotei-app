@@ -69,6 +69,11 @@ assert.equal(result.lane_styles.length, 6);
 assert.equal(result.first_place_candidate_rates.length, 6);
 assert.equal(result.second_place_candidate_rates.length, 6);
 assert.equal(result.third_place_candidate_rates.length, 6);
+assert.equal(Object.keys(result.winProbabilities || {}).length, 6);
+assert.equal(Object.keys(result.secondProbabilities || {}).length, 6);
+assert.equal(Object.keys(result.thirdProbabilities || {}).length, 6);
+assert.equal(typeof result.optionalFormation16?.active, "boolean");
+assert.equal(result.formationReason, result.optionalFormation16?.reason ?? null);
 assert.equal(
   Number((result.head_prob_1 + result.head_prob_2 + result.head_prob_3 + result.head_prob_4 + result.head_prob_5 + result.head_prob_6).toFixed(4)),
   1

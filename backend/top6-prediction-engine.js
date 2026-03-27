@@ -107,6 +107,18 @@ function buildStyleScores(profile) {
       { value: profile.breakoutRate, weight: 0.22 },
       { value: profile.attackRate, weight: 0.22 },
       { value: profile.course3Rate, weight: 0.2 }
+    ]),
+    start_attack: weightedAverage([
+      { value: invertNormalize(profile.avgSt, 0.11, 0.24) === null ? null : invertNormalize(profile.avgSt, 0.11, 0.24) * 100, weight: 0.42 },
+      { value: profile.attackRate, weight: 0.26 },
+      { value: profile.breakoutRate, weight: 0.16 },
+      { value: profile.recentPerformanceIndex, weight: 0.16 }
+    ]),
+    stable_hold: weightedAverage([
+      { value: profile.stability, weight: 0.38 },
+      { value: profile.supportRate, weight: 0.24 },
+      { value: profile.lane3RenRate, weight: 0.18 },
+      { value: profile.recentPerformanceIndex, weight: 0.2 }
     ])
   };
 }
@@ -122,7 +134,9 @@ function determinePrimaryStyle(styleScores = {}) {
     makuri: "まくり型",
     makurisashi: "まくり差し型",
     tenkai_machi: "展開待ち型",
-    outside_entry: "外連入型"
+    outside_entry: "外連入型",
+    start_attack: "スタート勝負型",
+    stable_hold: "安定残し型"
   };
   return {
     code: winner,
@@ -586,6 +600,9 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     head_candidate_ranking: Object.entries(headProbMap)
       .map(([lane, probability]) => ({ lane: Number(lane), probability: round(probability, 4) }))
       .sort((a, b) => b.probability - a.probability),
+    winProbabilities: finishProbabilities.first,
+    secondProbabilities: finishProbabilities.second,
+    thirdProbabilities: finishProbabilities.third,
     first_place_candidate_rates: firstPlaceCandidateRates,
     second_place_candidate_rates: secondPlaceCandidateRates,
     third_place_candidate_rates: thirdPlaceCandidateRates,
@@ -600,6 +617,8 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     top6ScenarioScore,
     scenario_repro_score: top6ScenarioScore,
     main_ticket: top6[0] || null,
+    optionalFormation16: formationSuggestion,
+    formationReason: formationSuggestion?.reason || null,
     wide_formation_suggestion: formationSuggestion,
     conditional_probabilities: {
       first: headProbMap,
