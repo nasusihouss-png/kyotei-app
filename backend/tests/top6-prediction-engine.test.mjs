@@ -10,6 +10,9 @@ function makeRow(lane, overrides = {}) {
       localWinRate: 6.8 - lane * 0.28,
       motor2Rate: 42 - lane * 2,
       boat2Rate: 39 - lane * 1.8,
+      exhibitionSt: 0.09 + lane * 0.01,
+      exhibitionTime: 6.7 + lane * 0.03,
+      lapTime: 6.74 + lane * 0.03,
       fHoldCount: lane === 6 ? 1 : 0
     },
     features: {
@@ -19,6 +22,7 @@ function makeRow(lane, overrides = {}) {
       motor2_rate: 42 - lane * 2,
       boat2_rate: 39 - lane * 1.8,
       motor_total_score: 12 - lane * 0.7,
+      motor3_rate: 56 - lane * 2,
       course_fit_score: 5 - lane * 0.4,
       entry_advantage_score: lane <= 4 ? 7 - lane * 0.7 : 3 - (lane - 5) * 0.3,
       course1_win_rate: lane === 1 ? 58 : null,
@@ -26,7 +30,22 @@ function makeRow(lane, overrides = {}) {
       course2_2rate: lane === 2 ? 54 : null,
       course3_3rate: lane === 3 ? 57 : null,
       course4_3rate: lane === 4 ? 49 : null,
-      f_hold_count: lane === 6 ? 1 : 0
+      f_hold_count: lane === 6 ? 1 : 0,
+      coverage_report: {
+        lane_1st_rate: { status: "ok", value: 64 - lane * 4 },
+        lane_2ren_rate: { status: "ok", value: 72 - lane * 4 },
+        lane_3ren_rate: { status: "ok", value: 79 - lane * 4 },
+        motor_3ren: { status: "ok", value: 56 - lane * 2 },
+        sashi_rate: { status: "ok", value: 28 + lane },
+        makuri_rate: { status: "ok", value: 30 + lane },
+        makurisashi_rate: { status: "ok", value: 26 + lane },
+        breakout_rate: { status: "ok", value: 24 + lane },
+        stability_rate: { status: "ok", value: 60 - lane },
+        zentsuke_tendency: { status: "ok", value: 18 + lane },
+        exhibition_st: { status: "ok", value: 0.09 + lane * 0.01, normalized: 0.09 + lane * 0.01 },
+        exhibition_time: { status: "ok", value: 6.7 + lane * 0.03, normalized: 6.7 + lane * 0.03 },
+        lapTime: { status: "ok", value: 6.74 + lane * 0.03, normalized: 6.74 + lane * 0.03 }
+      }
     },
     ...overrides
   };
@@ -39,18 +58,36 @@ const result = buildTop6Prediction({
 
 assert.ok(result);
 assert.equal(result.top6.length, 6);
+assert.equal(result.all_120_combinations.length, 120);
 assert.ok(Number.isFinite(Number(result.top6_coverage)));
 assert.ok(Number.isFinite(Number(result.confidence)));
 assert.ok(Number.isFinite(Number(result.chaos_level)));
 assert.equal(typeof result.top6Scenario, "string");
 assert.ok(Number.isFinite(Number(result.top6ScenarioScore)));
 assert.equal(result.scenario_repro_scores.length, 6);
-assert.ok(Number.isFinite(Number(result.scenario_repro_scores[0]?.score)));
+assert.equal(result.lane_styles.length, 6);
+assert.equal(result.first_place_candidate_rates.length, 6);
+assert.equal(result.second_place_candidate_rates.length, 6);
+assert.equal(result.third_place_candidate_rates.length, 6);
 assert.equal(
   Number((result.head_prob_1 + result.head_prob_2 + result.head_prob_3 + result.head_prob_4 + result.head_prob_5 + result.head_prob_6).toFixed(4)),
   1
 );
+assert.equal(
+  Number(Object.values(result.finish_probabilities.first).reduce((sum, value) => sum + Number(value || 0), 0).toFixed(4)),
+  1
+);
+assert.equal(
+  Number(Object.values(result.finish_probabilities.second).reduce((sum, value) => sum + Number(value || 0), 0).toFixed(4)),
+  1
+);
+assert.equal(
+  Number(Object.values(result.finish_probabilities.third).reduce((sum, value) => sum + Number(value || 0), 0).toFixed(4)),
+  1
+);
 assert.equal(Number(result.top6.reduce((sum, row) => sum + Number(row.probability || 0), 0).toFixed(4)), Number(result.top6_coverage.toFixed(4)));
 assert.ok(["本命", "対抗", "抑え"].includes(result.top6[0].tier));
+assert.ok(typeof result.lane_styles[0]?.style === "string");
+assert.ok(typeof result.wide_formation_suggestion?.active === "boolean");
 
 console.log("top6-prediction-engine ok");

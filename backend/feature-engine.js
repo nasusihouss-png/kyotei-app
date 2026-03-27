@@ -98,6 +98,8 @@ export function buildFeatures(racer) {
   const exhibition_st = getUsablePredictionValue(racer, "exhibitionST", null);
   const lap_time = getUsablePredictionValue(racer, "lapTime", null);
   const lap_exhibition_score = getUsablePredictionValue(racer, "lapExStretch", null);
+  const lap_source = racer?.lapSource ?? racer?.kyoteiBiyoriLapSource ?? prediction_field_meta.lapTime?.source ?? null;
+  const lap_raw = toNullableNumber(racer?.lapRaw ?? racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw);
   const entry_course_raw = racer?.entryCourse;
   const entry_course =
     Number.isFinite(Number(entry_course_raw)) ? Number(entry_course_raw) : null;
@@ -288,6 +290,11 @@ export function buildFeatures(racer) {
     f_hold_caution_penalty: 0,
     kyoteibiyori_fetched: toNumber(racer?.kyoteiBiyoriFetched, 0),
     lap_time_gap_from_best: 0,
+    lap_rank: null,
+    lap_gap_from_best: 0,
+    lap_source,
+    lap_raw,
+    lap_stretch_foot: lap_exhibition_score,
     motor_true: 0,
     motor_form: {
       lapTime: lap_time,
@@ -429,16 +436,8 @@ export function buildRaceFeatures(racers, raceContext = {}) {
       ? byCourse.get(frontCourse) || leftItem
       : leftItem;
     const frontFeatures = frontItem?.features || {};
-    const selfLapTime = Number.isFinite(f.lap_time)
-      ? f.lap_time
-      : Number.isFinite(f.exhibition_time)
-        ? f.exhibition_time
-        : null;
-    const frontLapTime = Number.isFinite(frontFeatures?.lap_time)
-      ? frontFeatures.lap_time
-      : Number.isFinite(frontFeatures?.exhibition_time)
-        ? frontFeatures.exhibition_time
-        : null;
+    const selfLapTime = Number.isFinite(f.lap_time) ? f.lap_time : null;
+    const frontLapTime = Number.isFinite(frontFeatures?.lap_time) ? frontFeatures.lap_time : null;
     const lapTimeDeltaVsFront =
       Number.isFinite(selfLapTime) && Number.isFinite(frontLapTime)
         ? Number((frontLapTime - selfLapTime).toFixed(3))
@@ -486,12 +485,18 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         front_boat_exists: frontItem ? 1 : 0,
         lap_time_delta_vs_front: lapTimeDeltaVsFront,
         lap_time_rank: lapTimeRanks.get(actualLane) ?? null,
+        lap_rank: lapTimeRanks.get(actualLane) ?? null,
         lap_attack_flag: lapAttackFlag,
         lap_attack_strength: lapAttackStrength,
         lap_time_gap_from_best:
           Number.isFinite(bestLapTime) && Number.isFinite(f.lap_time)
             ? Number((f.lap_time - bestLapTime).toFixed(3))
             : 0,
+        lap_gap_from_best:
+          Number.isFinite(bestLapTime) && Number.isFinite(f.lap_time)
+            ? Number((f.lap_time - bestLapTime).toFixed(3))
+            : 0,
+        lap_stretch_foot: Number.isFinite(f.lap_exhibition_score) ? f.lap_exhibition_score : null,
         f_hold_count: Number.isFinite(expectedActualStMeta.fHoldCount) ? expectedActualStMeta.fHoldCount : null,
         f_hold_bias_applied: Number.isFinite(expectedActualStMeta.fHoldCount) && expectedActualStMeta.fHoldCount > 0 ? 1 : 0,
         hidden_f_flag: Number.isFinite(expectedActualStMeta.fHoldCount) && expectedActualStMeta.fHoldCount > 0 ? 1 : 0,

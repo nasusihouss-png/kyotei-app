@@ -224,6 +224,20 @@ function toNullableNum(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function getStrictLapPayload(racer = {}) {
+  const lapSource = racer?.lapSource ?? racer?.kyoteiBiyoriLapSource ?? null;
+  const lapRaw = racer?.lapRaw ?? racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw ?? null;
+  const lapTime = toNullableNum(racer?.lapTime ?? racer?.kyoteiBiyoriLapTime);
+  const hasLapSource = !!String(lapSource || "").trim();
+  const hasLapRaw = lapRaw !== null && lapRaw !== undefined && String(lapRaw).trim() !== "";
+  const valid = lapTime !== null && hasLapSource && hasLapRaw;
+  return {
+    lapTime: valid ? lapTime : null,
+    lapRaw: valid ? toNullableNum(lapRaw) : null,
+    lapSource: valid ? lapSource : null
+  };
+}
+
 function buildFailOpenFeatureSet(racer, raceContext = {}) {
   const classScoreMap = { A1: 4, A2: 3, B1: 2, B2: 1 };
   const lane = Number.isFinite(Number(racer?.lane)) ? Number(racer.lane) : 0;
@@ -240,6 +254,7 @@ function buildFailOpenFeatureSet(racer, raceContext = {}) {
       ? Number((1 / avgSt).toFixed(6))
       : 0;
 
+  const strictLap = getStrictLapPayload(racer);
   return {
     lane,
     original_lane: lane || null,
@@ -256,7 +271,7 @@ function buildFailOpenFeatureSet(racer, raceContext = {}) {
     avg_st: avgSt,
     exhibition_st: exhibitionSt,
     exhibition_time: toNullableNum(racer?.exhibitionTime),
-    lap_time: toNullableNum(racer?.kyoteiBiyoriLapTime ?? racer?.lapTime),
+    lap_time: strictLap.lapTime,
     lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch),
     local_minus_nation: localWinRate - nationwideWinRate,
     motor_boat_avg: ((toNum(racer?.motor2ren ?? racer?.motor2Rate, 0)) + boat2Rate) / 2,
@@ -2278,7 +2293,7 @@ function buildStrictDataAudit({ data, entryMeta, hitRateEnhancement }) {
         lapTime: buildMetaAuditField({
           label: "lap time",
           meta: meta?.lapTime,
-          fallbackValue: racer?.lapTime,
+          fallbackValue: null,
           backendField: "racers[].lapTime",
           frontendField: "playerComparisonRows.lapTime",
           predictionUsableField: "predictionFieldMeta.lapTime",
@@ -11260,6 +11275,7 @@ raceRouter.get("/race", async (req, res, next) => {
       const canonicalLaneMeta = canonicalPerBoatLaneMap[String(lane)] || null;
       const canonicalActualLane = toInt(canonicalLaneMeta?.actual_lane, lane);
       const laneFeatures = rankingFeatureByLane.get(lane) || {};
+      const strictLap = getStrictLapPayload(racer);
       const predictionFieldMeta =
         racer?.predictionFieldMeta && typeof racer.predictionFieldMeta === "object"
           ? racer.predictionFieldMeta
@@ -11325,12 +11341,19 @@ raceRouter.get("/race", async (req, res, next) => {
         exhibition_st: toNullableNum(racer?.exhibitionSt),
         exhibition_st_raw: racer?.exhibitionStRaw || null,
         kyoteibiyori_fetched: toInt(racer?.kyoteiBiyoriFetched, 0),
-        kyoteibiyori_lap_time: toNullableNum(racer?.kyoteiBiyoriLapTime),
-        kyoteibiyori_lap_time_raw: toNullableNum(racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw),
+        kyoteibiyori_lap_time: strictLap.lapTime,
+        kyoteibiyori_lap_source: strictLap.lapSource,
+        kyoteibiyori_lap_time_raw: strictLap.lapRaw,
         kyoteibiyori_lap_ex_stretch: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch),
         kyoteibiyori_lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore),
         kyoteibiyori_stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel || null,
         kyoteibiyori_exhibition_st: toNullableNum(racer?.kyoteiBiyoriExhibitionSt),
+        lap_time: strictLap.lapTime,
+        lap_raw: strictLap.lapRaw,
+        lap_source: strictLap.lapSource,
+        lap_rank: toNullableNum(laneFeatures?.lap_rank ?? laneFeatures?.lap_time_rank),
+        lap_gap_from_best: toNullableNum(laneFeatures?.lap_gap_from_best ?? laneFeatures?.lap_time_gap_from_best),
+        lap_stretch_foot: toNullableNum(laneFeatures?.lap_stretch_foot ?? laneFeatures?.lap_exhibition_score),
         entry_course: canonicalActualLane,
         tilt: toNullableNum(racer?.tilt),
         lane1st_score: lane1stVerified ? rawLane1st : null,
@@ -12106,6 +12129,10 @@ raceRouter.get("/race", async (req, res, next) => {
           status: "READY",
           data_status: "READY",
           confidence_status: "READY",
+          boat1_head_pre: null,
+          hard_race_index: null,
+          fit_234_index: null,
+          outside_break_risk_pre: null,
           hard_race_score: null,
           boat1_anchor_score: null,
           boat1_escape_trust: null,

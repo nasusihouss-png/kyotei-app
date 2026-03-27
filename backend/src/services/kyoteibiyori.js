@@ -152,10 +152,10 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
     minConfidence: PREDICTION_FIELD_META_CONFIG[field]?.minConfidence
   });
   const lapTimeDebug = laneDebug?.lapTime || null;
-  const lapTimeValue = firstFiniteValue(extra?.lapTime, racer?.lapTime);
+  const lapTimeValue = firstFiniteValue(extra?.lapTime);
   const lapTimePublished =
     isPublishedLapTimeRawValue(lapTimeDebug?.raw) ||
-    isPublishedLapTimeRawValue(extra?.lapTimeRaw ?? racer?.lapTimeRaw);
+    isPublishedLapTimeRawValue(extra?.lapTimeRaw);
   const lapTimeSource = resolveLapTimeSource({
     laneSources,
     debugEntry: lapTimeDebug,
@@ -1102,11 +1102,7 @@ function parseExplicitTargetCell(field, rawText) {
   if (field === "exhibitionTime") {
     const value = parseDecimal(rawText);
     return {
-      fields: {
-        exhibitionTime: value,
-        lapExStretch: value,
-        lapExhibitionScore: value
-      },
+      fields: { exhibitionTime: value },
       value
     };
   }
@@ -1288,9 +1284,6 @@ function parseHtmlSupplementExplicit(html, options = {}) {
           fieldDebugs[lane][laneField][LANE_STAT_PERIODS[target.period]?.debugKey || target.period] = debugEntry;
         } else {
           setLaneFieldDebug(fieldDebugs, lane, FIELD_DEBUG_NAME_MAP[target.field] || target.field, debugEntry);
-          if (target.field === "exhibitionTime") {
-            setLaneFieldDebug(fieldDebugs, lane, "lapExStretch", debugEntry);
-          }
         }
         cellMatches.push({
           lane,
@@ -1470,9 +1463,7 @@ function parseSupplementCell(rowLabel, rawText) {
     const exhibitionTime = parseDecimal(rawText);
     return {
       fields: {
-        exhibitionTime,
-        lapExStretch: exhibitionTime,
-        lapExhibitionScore: exhibitionTime
+        exhibitionTime
       },
       parsedValue: exhibitionTime
     };
@@ -1614,10 +1605,6 @@ function parseHtmlSupplement(html) {
         lane3RenRate: indexes.lane3RenRate !== null ? parsePercent(values[indexes.lane3RenRate]) : null
       };
 
-      if (next.exhibitionTime !== null) {
-        next.lapExStretch = next.exhibitionTime;
-        next.lapExhibitionScore = next.exhibitionTime;
-      }
       if (next.lapTimeRaw !== null) next.lapTime = normalizeLapTimeForModel(next.lapTimeRaw);
 
       const merged = { ...current };
@@ -1742,7 +1729,7 @@ export function parseKyoteiBiyoriAjaxData(payload) {
     const mawariashi = parseScaledDecimal(row?.mawariashi, 100);
     const chokusen = parseScaledDecimal(row?.chokusen, 100);
     const startParsed = parseStartTimingRaw(row?.start);
-    const lapExhibitionScore = exhibitionTime;
+    const lapExhibitionScore = computeLapExhibitionScore({ mawariashi, chokusen });
     const entryCourse = Number(row?.shinnyuu);
 
     const currentCourseField = (baseKey) => {
@@ -1757,9 +1744,11 @@ export function parseKyoteiBiyoriAjaxData(payload) {
       lapTime: normalizeLapTimeForModel(lapTimeRaw),
       lapExStretch: lapExhibitionScore,
       lapExhibitionScore,
-      stretchFootLabel: null,
+      stretchFootLabel: makeStretchLabel({ mawariashi, chokusen }),
       exhibitionSt: startParsed.type === "normal" ? startParsed.numeric : null,
       exhibitionTime,
+      mawariashi,
+      nobiashi: chokusen,
       entryCourse: Number.isInteger(entryCourse) ? entryCourse : null,
       laneFirstRate: currentCourseField("shukai_1_1"),
       lane2RenRate: currentCourseField("shukai_1_2"),
@@ -1847,7 +1836,10 @@ export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
 export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
   const normalizedByLane = new Map();
   const fieldSources = parsed?.fieldSources || {};
+  const fieldDebugs = parsed?.fieldDebugs || {};
   for (const [lane, row] of parsed?.byLane || []) {
+    const laneFieldSources = fieldSources?.[lane] || {};
+    const laneDebug = fieldDebugs?.[lane] || {};
     const normalizedRow = normalizeLaneStatAggregateFields({
       playerName: row?.playerName || null,
       fCount: toFiniteNumberOrNull(row?.fCount),
@@ -1908,14 +1900,30 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       lane2renDebug: row?.lane2renDebug,
       lane3renDebug: row?.lane3renDebug
     });
+    const mawariashi = toFiniteNumberOrNull(row?.mawariashi ?? row?.__mawariashi);
+    const nobiashi = toFiniteNumberOrNull(row?.nobiashi ?? row?.__nobiashi);
     normalizedRow.motor2Rate = normalizedRow.motor2ren;
     normalizedRow.motor3Rate = normalizedRow.motor3ren;
-    normalizedRow.lapExhibitionScore = normalizedRow.lapExStretch;
+    normalizedRow.lapExStretch =
+      normalizedRow.lapExStretch ??
+      computeLapExhibitionScore({ mawariashi, chokusen: nobiashi });
+    normalizedRow.lapExhibitionScore =
+      toFiniteNumberOrNull(row?.lapExhibitionScore ?? row?.lapExStretch) ??
+      normalizedRow.lapExStretch;
     normalizedRow.lane1stScore = normalizedRow.lane1stScore ?? normalizedRow.laneFirstRate;
     normalizedRow.lane2renScore = normalizedRow.lane2renScore ?? normalizedRow.lane2RenRate;
     normalizedRow.lane3renScore = normalizedRow.lane3renScore ?? normalizedRow.lane3RenRate;
-    normalizedRow.mawariashi = toFiniteNumberOrNull(row?.mawariashi ?? row?.__mawariashi);
-    normalizedRow.nobiashi = toFiniteNumberOrNull(row?.nobiashi ?? row?.__nobiashi);
+    normalizedRow.mawariashi = mawariashi;
+    normalizedRow.nobiashi = nobiashi;
+    normalizedRow.stretchFootLabel =
+      normalizedRow.stretchFootLabel ||
+      makeStretchLabel({ mawariashi, chokusen: nobiashi });
+    normalizedRow.lapRaw = normalizedRow.lapTimeRaw;
+    normalizedRow.lapSource =
+      laneFieldSources?.lapTimeRaw ||
+      laneFieldSources?.lapTime ||
+      laneDebug?.lapTime?.sourceLabel ||
+      null;
     normalizedRow.laneFirstRate = normalizedRow.lane1stScore;
     normalizedRow.lane2RenRate = normalizedRow.lane2renScore;
     normalizedRow.lane3RenRate = normalizedRow.lane3renScore;
@@ -1927,7 +1935,7 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
   return {
     byLane: normalizedByLane,
     fieldSources,
-    fieldDebugs: parsed?.fieldDebugs || {},
+    fieldDebugs,
     tableDiagnostics: parsed?.tableDiagnostics || [],
     fieldDiagnostics: parsed?.fieldDiagnostics || buildFieldDiagnostics(normalizedByLane, fieldSources),
     diagnostics: parsed?.diagnostics || {}
@@ -1980,8 +1988,7 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
       );
       const trustedLapTime = getVerifiedValue(
         "lapTime",
-        extra?.lapTime,
-        racer?.lapTime
+        extra?.lapTime
       );
       return {
         ...racer,
@@ -1990,6 +1997,7 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,
         kyoteiBiyoriLapTime: trustedLapTime,
         kyoteiBiyoriLapTimeRaw: extra?.lapTimeRaw ?? null,
+        kyoteiBiyoriLapSource: extra?.lapSource ?? null,
         kyoteiBiyoriLapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriLapExStretch: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
@@ -2014,7 +2022,9 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         lane2renAvg: trustedLane2ren,
         lane3renAvg: trustedLane3ren,
         lapTime: trustedLapTime,
-        lapTimeRaw: extra?.lapTimeRaw ?? racer?.lapTimeRaw ?? null,
+        lapTimeRaw: extra?.lapTimeRaw ?? null,
+        lapRaw: extra?.lapRaw ?? extra?.lapTimeRaw ?? null,
+        lapSource: extra?.lapSource ?? null,
         lapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
         stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,
         exhibitionSt: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,

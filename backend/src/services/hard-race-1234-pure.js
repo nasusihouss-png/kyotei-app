@@ -362,18 +362,19 @@ function laneStyleScenarioScore(laneRow, normalized) {
                 { value: f.motor_total_score?.value, weight: 0.22 }
               ]);
 
-  const optionalSpeedSupport = scoreBlend([
-    { value: invNorm(f.exhibition_st?.value, 0.08, 0.22) === null ? null : invNorm(f.exhibition_st?.value, 0.08, 0.22) * 100, weight: 0.3 },
-    { value: invNorm(f.exhibition_time?.value, 6.55, 7.15) === null ? null : invNorm(f.exhibition_time?.value, 6.55, 7.15) * 100, weight: 0.34 },
-    { value: invNorm(f.lap_time?.value, 6.55, 7.15) === null ? null : invNorm(f.lap_time?.value, 6.55, 7.15) * 100, weight: 0.36 }
+  const recentPerformanceSupport = scoreBlend([
+    { value: safeNorm(f.national_win_rate?.value, 4, 8.5) === null ? null : safeNorm(f.national_win_rate?.value, 4, 8.5) * 100, weight: 0.34 },
+    { value: safeNorm(f.local_win_rate?.value, 4, 8.5) === null ? null : safeNorm(f.local_win_rate?.value, 4, 8.5) * 100, weight: 0.28 },
+    { value: safeNorm(f.motor_total_score?.value, 0, 18) === null ? null : safeNorm(f.motor_total_score?.value, 0, 18) * 100, weight: 0.2 },
+    { value: invNorm(f.avg_st?.value, 0.11, 0.24) === null ? null : invNorm(f.avg_st?.value, 0.11, 0.24) * 100, weight: 0.18 }
   ]);
 
   return scoreBlend([
-    { value: styleFit, weight: 0.54 },
+    { value: styleFit, weight: 0.58 },
     { value: f.lane_course_rate?.value, weight: 0.12 },
     { value: safeNorm(f.motor_3ren?.value, 25, 75) === null ? null : safeNorm(f.motor_3ren?.value, 25, 75) * 100, weight: 0.08 },
     { value: safeNorm(f.motor_total_score?.value, 0, 18) === null ? null : safeNorm(f.motor_total_score?.value, 0, 18) * 100, weight: 0.1 },
-    { value: optionalSpeedSupport, weight: 0.16 }
+    { value: recentPerformanceSupport, weight: 0.12 }
   ]);
 }
 
@@ -629,6 +630,7 @@ function computeScores(normalized) {
     outsideBreakRisk
   });
   const boat1EscapeTrust = round(p1Escape * 100, 1);
+  const boat1HeadPre = round(p1Escape, 4);
 
   const headProbMap = normalizeProbabilities({
     1: Math.max(0.001, p1Escape),
@@ -665,6 +667,16 @@ function computeScores(normalized) {
   const fixed1234ShapeConcentration = round(top4Fixed1234Probability, 4);
   const boxHitScore = fixed1234TotalProbability;
   const shapeFocusScore = fixed1234ShapeConcentration;
+  const fit234Index = round(opponent234Fit, 1);
+  const outsideBreakRiskPre = round(outsideBreakRisk, 4);
+  const hardRaceIndex = round(scoreBlend([
+    { value: boat1EscapeTrust, weight: 0.34 },
+    { value: pairSupportFit, weight: 0.2 },
+    { value: opponent234Fit, weight: 0.16 },
+    { value: fixed1234TotalProbability * 100, weight: 0.16 },
+    { value: (1 - outsideBreakRisk) * 100, weight: 0.08 },
+    { value: scenarioReproScore, weight: 0.06 }
+  ]), 1);
 
   const unresolved = [];
   if (!Number.isFinite(lane1CourseHead)) unresolved.push("snapshot.feature.lane1_course_head_rate");
@@ -683,34 +695,30 @@ function computeScores(normalized) {
   const decision =
     dataStatus === "BROKEN_PIPELINE"
       ? "SKIP"
-      : headProbMap[1] >= 0.53 && fixed1234TotalProbability >= 0.31 && outsideBreakRisk <= 0.22
-        ? top4Fixed1234Probability >= 0.25 && fixed1234ShapeConcentration >= 0.7
-          ? "BUY-4"
-          : "BUY-6"
-        : headProbMap[1] >= 0.45 && fixed1234TotalProbability >= 0.24
+      : boat1HeadPre >= 0.58 && hardRaceIndex >= 70 && fit234Index >= 63 && outsideBreakRiskPre <= 0.18
+        ? "BUY-4"
+        : boat1HeadPre >= 0.52 && hardRaceIndex >= 61 && fit234Index >= 56 && outsideBreakRiskPre <= 0.24
+          ? "BUY-6"
+          : boat1HeadPre >= 0.45 && hardRaceIndex >= 54 && fit234Index >= 50 && outsideBreakRiskPre <= 0.32
           ? "BORDERLINE"
           : "SKIP";
 
   const hardRaceRank =
     dataStatus === "BROKEN_PIPELINE"
       ? "BROKEN_PIPELINE"
-      : headProbMap[1] >= 0.58 && fixed1234TotalProbability >= 0.28
+      : boat1HeadPre >= 0.58 && hardRaceIndex >= 68
         ? "A"
-        : headProbMap[1] >= 0.48 && fixed1234TotalProbability >= 0.2
+        : boat1HeadPre >= 0.48 && hardRaceIndex >= 58
           ? "B"
           : "SKIP";
 
   return {
     scores: {
-      hard_race_score: round(scoreBlend([
-        { value: boat1EscapeTrust, weight: 0.38 },
-        { value: pairSupportFit, weight: 0.24 },
-        { value: opponent234Fit, weight: 0.12 },
-        { value: fixed1234TotalProbability * 100, weight: 0.18 },
-        { value: (1 - outsideBreakRisk) * 100, weight: 0.05 },
-        { value: scenarioReproScore, weight: 0.03 }
-      ]), 1),
+      hard_race_score: hardRaceIndex,
+      boat1_head_pre: boat1HeadPre,
+      hard_race_index: hardRaceIndex,
       boat1_escape_trust: boat1EscapeTrust,
+      fit_234_index: fit234Index,
       opponent_234_fit: round(opponent234Fit, 1),
       pair23_fit: round(pair23.value, 1),
       pair24_fit: round(pair24.value, 1),
@@ -722,6 +730,7 @@ function computeScores(normalized) {
       outside_2nd_risk: round(outside2ndRisk, 4),
       outside_3rd_risk: round(outside3rdRisk, 4),
       outside_box_break_risk: round(outsideBoxBreakRisk, 4),
+      outside_break_risk_pre: outsideBreakRiskPre,
       outside_break_risk: round(outsideBreakRisk, 4),
       head_prob_1: headProbMap[1],
       head_prob_2: headProbMap[2],
@@ -743,7 +752,7 @@ function computeScores(normalized) {
     },
     features: {
       p1_escape: round(p1Escape, 4),
-      p1_formula: "sigmoid-like normalized blend of lane1 course-head rate, nationwide/local win rate, avg ST, F/L safety, motor/boat strength, venue bias, 3/4-course pressure, and outside head pressure",
+      p1_formula: "pre-race blend of lane1 course-head rate, nationwide/local win rate, avg ST, F/L safety, motor/boat strength, venue bias, 3/4-course pressure, and outside head pressure",
       scenario_repro_score: round(scenarioReproScore, 1),
       lane_scenario_repro_scores: laneScenarioScores,
       top4_share_within_fixed1234: round(fixed1234ShapeConcentration, 4),
@@ -780,12 +789,12 @@ function computeScores(normalized) {
         : dataStatus === "FALLBACK"
           ? "some metrics use stored-feature fallback formulas"
           : decision === "BUY-4"
-            ? "1-234-234 shape is dense enough for four-ticket operation"
+            ? "pre-race 1-head confidence is high and the 234 fit is dense enough for four-ticket operation"
             : decision === "BUY-6"
-              ? "1-234-234 base gate passed"
+              ? "pre-race hard-race gate passed with enough 234 support"
               : decision === "BORDERLINE"
-                ? "boat 1 head remains live but shape concentration is still modest"
-                : "outside pressure or low 1-head probability keeps this out of hard-race range",
+                ? "boat 1 head remains viable before exhibition, but shape density is still modest"
+                : "pre-race outside pressure or low 1-head probability keeps this out of hard-race range",
     hard_race_rank: hardRaceRank,
     operational_pick:
       decision === "BUY-4" || decision === "BUY-6"
@@ -845,6 +854,10 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo })
     hardScenarioScore: computed.hardScenarioScore ?? computed.features?.scenario_repro_score ?? null,
     scenario_repro_score: computed.scenario_repro_score ?? computed.features?.scenario_repro_score ?? null,
     ...computed.scores,
+    boat1_head_pre: computed.scores?.boat1_head_pre ?? null,
+    hard_race_index: computed.scores?.hard_race_index ?? computed.scores?.hard_race_score ?? null,
+    fit_234_index: computed.scores?.fit_234_index ?? computed.scores?.opponent_234_fit ?? null,
+    outside_break_risk_pre: computed.scores?.outside_break_risk_pre ?? computed.scores?.outside_break_risk ?? null,
     fixed1234_matrix: computed.fixed1234_matrix,
     fixed1234_top4: computed.fixed1234_top4,
     suggested_shape: computed.suggested_shape,

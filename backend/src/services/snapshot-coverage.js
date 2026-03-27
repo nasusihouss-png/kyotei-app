@@ -179,21 +179,25 @@ function buildCoverageEntry({
 }
 
 function buildLapTimeCoverageEntry({ racer = {}, predictionMeta = {}, kyoteiFetchOk = false } = {}) {
-  const raw = predictionMeta?.raw_cell_text ?? racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw ?? null;
-  const normalized = toNum(
+  const raw = predictionMeta?.raw_cell_text ?? racer?.lapRaw ?? racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw ?? null;
+  const normalizedCandidate = toNum(
     predictionMeta?.normalized_numeric_value,
     toNum(racer?.kyoteiBiyoriLapTime, toNum(racer?.lapTime, null))
   );
-  const source = predictionMeta?.source || null;
+  const source = predictionMeta?.source || racer?.lapSource || racer?.kyoteiBiyoriLapSource || null;
+  const hasVerifiedTriplet =
+    Number.isFinite(normalizedCandidate) &&
+    hasPublishedRawValue(raw) &&
+    !!String(source || "").trim();
   const publishedInSource =
     predictionMeta?.published_in_source === true ||
     predictionMeta?.reason === "published_but_parse_failed" ||
     hasPublishedRawValue(raw);
 
-  if (Number.isFinite(normalized)) {
+  if (hasVerifiedTriplet) {
     return {
       status: "ok",
-      value: normalized,
+      value: normalizedCandidate,
       source,
       source_priority: source ? "secondary" : null,
       expected_from: ["kyoteibiyori.com pre-race metrics", "kyoteibiyori ajax pre-race payload"],
@@ -202,7 +206,7 @@ function buildLapTimeCoverageEntry({ racer = {}, predictionMeta = {}, kyoteiFetc
       required: false,
       reason: null,
       raw,
-      normalized
+      normalized: normalizedCandidate
     };
   }
 
@@ -216,7 +220,10 @@ function buildLapTimeCoverageEntry({ racer = {}, predictionMeta = {}, kyoteiFetc
       coverage: 0,
       fallback_used: false,
       required: false,
-      reason: "published_but_parse_failed",
+      reason:
+        predictionMeta?.reason === "published_but_parse_failed"
+          ? "published_but_parse_failed"
+          : "published_without_verified_source_or_raw",
       raw,
       normalized: null
     };
