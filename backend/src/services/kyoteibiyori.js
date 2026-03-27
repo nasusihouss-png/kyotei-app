@@ -308,12 +308,34 @@ function parseFCount(value) {
 
 function parseStartTimingRaw(value) {
   const raw = normalizeSpace(value) || null;
-  if (!raw) return { raw: null, type: "missing", numeric: null };
+  if (!raw) return { raw: null, type: "missing", numeric: null, flag: null, signedValue: null };
   const normalized = normalizeDigits(raw).replace(/\s+/g, "").toUpperCase();
-  if (/^F\.?\d+/.test(normalized)) return { raw, type: "flying", numeric: null };
-  if (/^L\.?\d+/.test(normalized)) return { raw, type: "late", numeric: null };
+  const flagMatch = normalized.match(/^([FL])\.?(\d+(?:\.\d+)?|\.\d+)$/);
+  if (flagMatch) {
+    const rawNumeric = String(flagMatch[2] || "");
+    const numeric = rawNumeric.startsWith(".")
+      ? parseDecimal(rawNumeric)
+      : parseDecimal(`.${rawNumeric.replace(/^\./, "")}`);
+    const flag = flagMatch[1];
+    const signedValue = Number.isFinite(numeric)
+      ? Number((flag === "F" ? -numeric : numeric).toFixed(3))
+      : null;
+    return {
+      raw,
+      type: flag === "F" ? "flying" : "late",
+      numeric,
+      flag,
+      signedValue
+    };
+  }
   const numeric = parseDecimal(normalized);
-  return { raw, type: numeric === null ? "unknown" : "normal", numeric };
+  return {
+    raw,
+    type: numeric === null ? "unknown" : "normal",
+    numeric,
+    flag: null,
+    signedValue: Number.isFinite(numeric) ? numeric : null
+  };
 }
 
 function parseScaledDecimal(value, divisor = 100) {
@@ -351,6 +373,17 @@ function computeLapExhibitionScore({ mawariashi, chokusen }) {
     .filter((value) => value !== null);
   if (scores.length === 0) return null;
   return Number((scores.reduce((sum, value) => sum + value, 0) / scores.length).toFixed(2));
+}
+
+function buildFieldSourceDetail({ source = null, rowLabel = null, raw = null, normalized = null, status = null, extra = {} } = {}) {
+  return {
+    source,
+    rowLabel,
+    raw,
+    normalized,
+    status,
+    ...extra
+  };
 }
 
 function buildFieldDiagnostics(byLane, fieldSources = {}) {
@@ -1084,7 +1117,7 @@ function parseExplicitTargetCell(field, rawText) {
     return {
       fields: {
         lapTimeRaw,
-        lapTime: lapTimeRaw !== null ? normalizeLapTimeForModel(lapTimeRaw) : null
+        lapTime: lapTimeRaw
       },
       value: lapTimeRaw
     };
@@ -1092,9 +1125,14 @@ function parseExplicitTargetCell(field, rawText) {
 
   if (field === "exhibitionSt") {
     const parsed = parseStartTimingRaw(rawText);
-    const value = parsed.type === "normal" ? parsed.numeric : null;
+    const value = parsed.numeric;
     return {
-      fields: { exhibitionSt: value },
+      fields: {
+        exhibitionSt: value,
+        exhibitionStRaw: parsed.raw,
+        exhibitionStFlag: parsed.flag,
+        exhibitionStSignedValue: parsed.signedValue
+      },
       value
     };
   }
@@ -1445,7 +1483,7 @@ function parseSupplementCell(rowLabel, rawText) {
     return {
       fields: {
         lapTimeRaw,
-        lapTime: lapTimeRaw !== null ? normalizeLapTimeForModel(lapTimeRaw) : null
+        lapTime: lapTimeRaw
       },
       parsedValue: lapTimeRaw
     };
@@ -1454,9 +1492,12 @@ function parseSupplementCell(rowLabel, rawText) {
     const parsed = parseStartTimingRaw(rawText);
     return {
       fields: {
-        exhibitionSt: parsed.type === "normal" ? parsed.numeric : null
+        exhibitionSt: parsed.numeric,
+        exhibitionStRaw: parsed.raw,
+        exhibitionStFlag: parsed.flag,
+        exhibitionStSignedValue: parsed.signedValue
       },
-      parsedValue: parsed.type === "normal" ? parsed.numeric : null
+      parsedValue: parsed.numeric
     };
   }
   if (rowLabel === "展示") {
@@ -1741,11 +1782,14 @@ export function parseKyoteiBiyoriAjaxData(payload) {
     const laneRow = {
       playerName: normalizeSpace(row?.player_name) || null,
       lapTimeRaw,
-      lapTime: normalizeLapTimeForModel(lapTimeRaw),
+      lapTime: lapTimeRaw,
       lapExStretch: lapExhibitionScore,
       lapExhibitionScore,
       stretchFootLabel: makeStretchLabel({ mawariashi, chokusen }),
-      exhibitionSt: startParsed.type === "normal" ? startParsed.numeric : null,
+      exhibitionSt: startParsed.numeric,
+      exhibitionStRaw: startParsed.raw,
+      exhibitionStFlag: startParsed.flag,
+      exhibitionStSignedValue: startParsed.signedValue,
       exhibitionTime,
       mawariashi,
       nobiashi: chokusen,
@@ -1918,12 +1962,55 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
     normalizedRow.stretchFootLabel =
       normalizedRow.stretchFootLabel ||
       makeStretchLabel({ mawariashi, chokusen: nobiashi });
+    normalizedRow.exhibitionStRaw = row?.exhibitionStRaw ?? null;
+    normalizedRow.exhibitionStFlag = row?.exhibitionStFlag ?? null;
+    normalizedRow.exhibitionStSignedValue = toFiniteNumberOrNull(row?.exhibitionStSignedValue);
     normalizedRow.lapRaw = normalizedRow.lapTimeRaw;
     normalizedRow.lapSource =
       laneFieldSources?.lapTimeRaw ||
       laneFieldSources?.lapTime ||
       laneDebug?.lapTime?.sourceLabel ||
       null;
+    normalizedRow.lapTimeDetail = buildFieldSourceDetail({
+      source: normalizedRow.lapSource || null,
+      rowLabel: laneDebug?.lapTime?.metric || laneDebug?.lapTime?.row || "周回",
+      raw: laneDebug?.lapTime?.raw ?? normalizedRow.lapRaw ?? null,
+      normalized: normalizedRow.lapRaw ?? null,
+      status: normalizedRow.lapSource && normalizedRow.lapRaw !== null ? "ok" : laneDebug?.lapTime?.raw ? "broken_pipeline" : "not_published"
+    });
+    normalizedRow.exhibitionTimeDetail = buildFieldSourceDetail({
+      source: laneFieldSources?.exhibitionTime || laneDebug?.exhibitionTime?.sourceLabel || null,
+      rowLabel: laneDebug?.exhibitionTime?.metric || laneDebug?.exhibitionTime?.row || "展示",
+      raw: laneDebug?.exhibitionTime?.raw ?? row?.exhibitionTime ?? null,
+      normalized: normalizedRow.exhibitionTime,
+      status: normalizedRow.exhibitionTime !== null ? "ok" : laneDebug?.exhibitionTime?.raw ? "broken_pipeline" : "not_published"
+    });
+    normalizedRow.turnFootDetail = buildFieldSourceDetail({
+      source: laneFieldSources?.__mawariashi || laneFieldSources?.mawariashi || null,
+      rowLabel: "周り足",
+      raw: mawariashi,
+      normalized: mawariashi,
+      status: mawariashi !== null ? "ok" : "not_published"
+    });
+    normalizedRow.straightTimeDetail = buildFieldSourceDetail({
+      source: laneFieldSources?.__nobiashi || laneFieldSources?.nobiashi || null,
+      rowLabel: "直線",
+      raw: nobiashi,
+      normalized: nobiashi,
+      status: nobiashi !== null ? "ok" : "not_published"
+    });
+    normalizedRow.exhibitionSTDetail = buildFieldSourceDetail({
+      source: laneFieldSources?.exhibitionSt || laneDebug?.exhibitionST?.sourceLabel || null,
+      rowLabel: laneDebug?.exhibitionST?.metric || laneDebug?.exhibitionST?.row || "ST",
+      raw: normalizedRow.exhibitionStRaw,
+      normalized: normalizedRow.exhibitionSt,
+      status: normalizedRow.exhibitionStRaw ? "ok" : "not_published",
+      extra: {
+        flag: normalizedRow.exhibitionStFlag,
+        value: normalizedRow.exhibitionSt,
+        signedValue: normalizedRow.exhibitionStSignedValue
+      }
+    });
     normalizedRow.laneFirstRate = normalizedRow.lane1stScore;
     normalizedRow.lane2RenRate = normalizedRow.lane2renScore;
     normalizedRow.lane3RenRate = normalizedRow.lane3renScore;
@@ -1998,13 +2085,21 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         kyoteiBiyoriLapTime: trustedLapTime,
         kyoteiBiyoriLapTimeRaw: extra?.lapTimeRaw ?? null,
         kyoteiBiyoriLapSource: extra?.lapSource ?? null,
+        kyoteiBiyoriLapTimeDetail: extra?.lapTimeDetail ?? null,
         kyoteiBiyoriLapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriLapExStretch: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
         kyoteiBiyoriMawariashi: extra?.mawariashi ?? null,
         kyoteiBiyoriNobiashi: extra?.nobiashi ?? null,
         kyoteiBiyoriExhibitionSt: extra?.exhibitionSt ?? null,
+        kyoteiBiyoriExhibitionStRaw: extra?.exhibitionStRaw ?? null,
+        kyoteiBiyoriExhibitionStFlag: extra?.exhibitionStFlag ?? null,
+        kyoteiBiyoriExhibitionStSignedValue: extra?.exhibitionStSignedValue ?? null,
+        kyoteiBiyoriExhibitionSTDetail: extra?.exhibitionSTDetail ?? null,
         kyoteiBiyoriExhibitionTime: extra?.exhibitionTime ?? null,
+        kyoteiBiyoriExhibitionTimeDetail: extra?.exhibitionTimeDetail ?? null,
+        kyoteiBiyoriTurnFootDetail: extra?.turnFootDetail ?? null,
+        kyoteiBiyoriStraightTimeDetail: extra?.straightTimeDetail ?? null,
         kyoteiBiyoriMotor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? null,
         kyoteiBiyoriMotor3Rate: extra?.motor3ren ?? extra?.motor3Rate ?? null,
         lapExStretch: extra?.lapExStretch ?? racer?.lapExStretch ?? null,
@@ -2025,10 +2120,18 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         lapTimeRaw: extra?.lapTimeRaw ?? null,
         lapRaw: extra?.lapRaw ?? extra?.lapTimeRaw ?? null,
         lapSource: extra?.lapSource ?? null,
+        lapTimeDetail: extra?.lapTimeDetail ?? null,
         lapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
         stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,
         exhibitionSt: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
+        exhibitionStRaw: extra?.exhibitionStRaw ?? racer?.exhibitionStRaw ?? null,
+        exhibitionStFlag: extra?.exhibitionStFlag ?? racer?.exhibitionStFlag ?? null,
+        exhibitionStSignedValue: extra?.exhibitionStSignedValue ?? racer?.exhibitionStSignedValue ?? null,
+        exhibitionSTDetail: extra?.exhibitionSTDetail ?? null,
         exhibitionTime: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
+        exhibitionTimeDetail: extra?.exhibitionTimeDetail ?? null,
+        turnFootDetail: extra?.turnFootDetail ?? null,
+        straightTimeDetail: extra?.straightTimeDetail ?? null,
         motor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2Rate ?? null,
         motor3Rate: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3Rate ?? null,
         laneFirstRate: trustedLane1st,

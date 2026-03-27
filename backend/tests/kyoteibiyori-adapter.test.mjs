@@ -49,13 +49,15 @@ const sampleAjaxPayload = {
 const parsedAjax = parseKyoteiBiyoriAjaxData(sampleAjaxPayload);
 assert.equal(typeof parsedAjax.byLane.get(1)?.playerName, "string");
 assert.equal(parsedAjax.byLane.get(1)?.lapTimeRaw, 36.23);
-assert.equal(parsedAjax.byLane.get(1)?.lapTime, 6.73);
+assert.equal(parsedAjax.byLane.get(1)?.lapTime, 36.23);
 assert.equal(parsedAjax.byLane.get(1)?.exhibitionTime, 6.75);
 assert.equal(parsedAjax.byLane.get(1)?.exhibitionSt, 0.08);
+assert.equal(parsedAjax.byLane.get(2)?.exhibitionSt, 0.01);
+assert.equal(parsedAjax.byLane.get(2)?.exhibitionStFlag, "F");
+assert.equal(parsedAjax.byLane.get(2)?.exhibitionStSignedValue, -0.01);
 assert.equal(parsedAjax.byLane.get(1)?.lapExStretch, 5.77);
 assert.match(String(parsedAjax.byLane.get(1)?.stretchFootLabel || ""), /5\.99/);
 assert.equal(parsedAjax.byLane.get(1)?.laneFirstRate, 66.6667);
-assert.equal(parsedAjax.byLane.get(2)?.exhibitionSt, null, "F start should not become a normal ST value");
 
 const zeroLapAjax = parseKyoteiBiyoriAjaxData({
   chokuzen_list: [{ course: 1, player_no: 1, player_name: "Zero", shukai: 0, tenji: 0, start: "", shinnyuu: 1 }],
@@ -412,7 +414,9 @@ const strictPreRace = normalizeKyoteiBiyoriPreRaceFields(
 assert.equal(strictPreRace.byLane.get(1)?.lapTimeRaw, 36.23);
 assert.equal([...strictPreRace.byLane.values()].filter((row) => Number.isFinite(Number(row?.lapTimeRaw))).length, 6);
 assert.equal(strictPreRace.byLane.get(2)?.exhibitionSt, 0.03);
-assert.equal(strictPreRace.byLane.get(4)?.exhibitionSt, null);
+assert.equal(strictPreRace.byLane.get(4)?.exhibitionSt, 0.01);
+assert.equal(strictPreRace.byLane.get(4)?.exhibitionStFlag, "F");
+assert.equal(strictPreRace.byLane.get(4)?.exhibitionStSignedValue, -0.01);
 assert.equal(strictPreRace.byLane.get(1)?.lapExStretch, 6.5);
 assert.equal(strictPreRace.byLane.get(1)?.lapExhibitionScore, 6.5);
 assert.equal(strictPreRace.byLane.get(1)?.exhibitionTime, 6.5);
@@ -443,7 +447,7 @@ const lapTimeAliasParsed = normalizeKyoteiBiyoriPreRaceFields(
   parseKyoteiBiyoriPreRaceData(lapTimeAliasHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
 );
 assert.equal(lapTimeAliasParsed.byLane.get(1)?.lapTimeRaw, 36.23);
-assert.equal(lapTimeAliasParsed.byLane.get(1)?.lapTime, 6.73);
+assert.equal(lapTimeAliasParsed.byLane.get(1)?.lapTime, 36.23);
 assert.equal(lapTimeAliasParsed.fieldDebugs["1"]?.lapTime?.raw, "36.23");
 
 const merged = mergeKyoteiBiyoriDataIntoRaceContext({
@@ -456,7 +460,7 @@ const merged = mergeKyoteiBiyoriDataIntoRaceContext({
 
 assert.equal(merged[0].kyoteiBiyoriFetched, 1);
 assert.equal(merged[0].kyoteiBiyoriLapTimeRaw, 36.23);
-assert.equal(merged[0].lapTime, 6.73);
+assert.equal(merged[0].lapTime, 36.23);
 assert.equal(merged[0].lapRaw, 36.23);
 assert.equal(merged[1].fHoldCount, 1);
 
@@ -467,9 +471,28 @@ const mergedStrict = mergeKyoteiBiyoriDataIntoRaceContext({
 assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.is_usable, true);
 assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.published_in_source, true);
 assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.raw_cell_text, "36.23");
-assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.normalized_numeric_value, 6.73);
+assert.equal(mergedStrict[0].predictionFieldMeta?.lapTime?.normalized_numeric_value, 36.23);
 assert.equal(mergedStrict[0].kyoteiBiyoriLapSource, "pre_race_tab");
 assert.equal(mergedStrict[0].lapSource, "pre_race_tab");
+
+const shuffledRowsHtml = `
+  <table>
+    <caption>直前情報</caption>
+    <tr><th>項目</th><th>1号艇</th><th>2号艇</th><th>3号艇</th><th>4号艇</th><th>5号艇</th><th>6号艇</th></tr>
+    <tr><td>直線</td><td>7.0</td><td>6.8</td><td>6.6</td><td>6.4</td><td>6.2</td><td>6.0</td></tr>
+    <tr><td>展示</td><td>6.5</td><td>6.4</td><td>6.3</td><td>6.2</td><td>6.1</td><td>6.0</td></tr>
+    <tr><td>ST</td><td>L.02</td><td>.03</td><td>.13</td><td>F.01</td><td>.11</td><td>.09</td></tr>
+    <tr><td>周回</td><td>36.23</td><td>36.45</td><td>36.50</td><td>36.61</td><td>36.73</td><td>36.80</td></tr>
+    <tr><td>周り足</td><td>6.0</td><td>5.8</td><td>5.6</td><td>5.4</td><td>5.2</td><td>5.0</td></tr>
+  </table>
+`;
+const shuffledParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(shuffledRowsHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+);
+assert.equal(shuffledParsed.byLane.get(1)?.lapTime, 36.23);
+assert.equal(shuffledParsed.byLane.get(1)?.exhibitionTime, 6.5);
+assert.equal(shuffledParsed.byLane.get(1)?.exhibitionStFlag, "L");
+assert.equal(shuffledParsed.byLane.get(1)?.exhibitionStSignedValue, 0.02);
 
 const publishedButBrokenLapTimeHtml = `
   <table>

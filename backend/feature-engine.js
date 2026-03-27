@@ -15,6 +15,16 @@ function toNullableNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function normalizeLapMetricForModel(value) {
+  const n = toNullableNumber(value);
+  if (n === null) return null;
+  if (n > 30 && n < 50) {
+    const normalized = Number((n - 29.5).toFixed(2));
+    return normalized > 0 && normalized < 20 ? normalized : null;
+  }
+  return n;
+}
+
 function clamp(min, max, value) {
   return Math.max(min, Math.min(max, value));
 }
@@ -96,7 +106,9 @@ export function buildFeatures(racer) {
   };
   const exhibition_time = getUsablePredictionValue(racer, "exhibitionTime", null);
   const exhibition_st = getUsablePredictionValue(racer, "exhibitionST", null);
-  const lap_time = getUsablePredictionValue(racer, "lapTime", null);
+  const lap_time = normalizeLapMetricForModel(
+    getUsablePredictionValue(racer, "lapTime", racer?.lapRaw ?? racer?.kyoteiBiyoriLapTimeRaw ?? null)
+  );
   const lap_exhibition_score = getUsablePredictionValue(racer, "lapExStretch", null);
   const lap_source = racer?.lapSource ?? racer?.kyoteiBiyoriLapSource ?? prediction_field_meta.lapTime?.source ?? null;
   const lap_raw = toNullableNumber(racer?.lapRaw ?? racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw);
