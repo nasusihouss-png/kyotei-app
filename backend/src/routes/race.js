@@ -248,9 +248,16 @@ function getStrictLapPayload(racer = {}) {
     racer?.predictionFieldMeta?.lapTime && typeof racer.predictionFieldMeta.lapTime === "object"
       ? racer.predictionFieldMeta.lapTime
       : {};
+  const lapTimeDetail =
+    racer?.lapTimeDetail && typeof racer.lapTimeDetail === "object"
+      ? racer.lapTimeDetail
+      : racer?.kyoteiBiyoriLapTimeDetail && typeof racer.kyoteiBiyoriLapTimeDetail === "object"
+        ? racer.kyoteiBiyoriLapTimeDetail
+        : {};
   const lapSource = toTrimmedStringOrNull(
     racer?.lapSource ??
       racer?.kyoteiBiyoriLapSource ??
+      lapTimeDetail?.source ??
       predictionLapMeta?.source ??
       predictionLapMeta?.source_label
   );
@@ -258,15 +265,28 @@ function getStrictLapPayload(racer = {}) {
     racer?.lapRaw ??
       racer?.kyoteiBiyoriLapTimeRaw ??
       racer?.lapTimeRaw ??
+      lapTimeDetail?.raw ??
       predictionLapMeta?.raw_cell_text ??
       predictionLapMeta?.raw
   );
   const lapTime = toNullableNum(racer?.lapTime ?? racer?.kyoteiBiyoriLapTime ?? lapRaw);
-  const valid = lapTime !== null && !!lapSource && !!lapRaw;
+  const fallbackLapSource =
+    lapTime !== null && !!lapRaw &&
+    (
+      racer?.kyoteiBiyoriFetched === 1 ||
+      racer?.kyoteiBiyoriFetched === true ||
+      racer?.kyoteiBiyoriLapTime !== null ||
+      racer?.kyoteiBiyoriLapTimeRaw !== null ||
+      lapTimeDetail?.status === "ok"
+    )
+      ? "kyoteibiyori.beforeinfo.lap"
+      : null;
+  const resolvedLapSource = lapSource || fallbackLapSource;
+  const valid = lapTime !== null && !!resolvedLapSource && !!lapRaw;
   return {
     lapTime: valid ? lapTime : null,
     lapRaw: valid ? lapRaw : null,
-    lapSource: valid ? lapSource : null
+    lapSource: valid ? resolvedLapSource : null
   };
 }
 
@@ -297,11 +317,15 @@ function buildApiEntryPayload({ lane, entryMeta, fallbackEntryCourse = null }) {
   const fallbackEntry = toNullableNum(fallbackEntryCourse);
   const resolvedEntry = mappedEntry ?? fallbackEntry ?? baseLane;
   const entryConfirmed = entryMeta?.validation?.validation_ok === true && entryMeta?.fallback_used !== true;
+  const predictedEntry = baseLane;
+  const actualEntry = entryConfirmed ? resolvedEntry : null;
   return {
-    entry: entryConfirmed ? resolvedEntry : "unconfirmed",
+    entry: actualEntry ?? predictedEntry,
+    predictedEntry,
+    actualEntry,
     entryStatus: entryConfirmed ? "confirmed" : "unconfirmed",
     entryConfirmed,
-    entryCourse: resolvedEntry
+    entryCourse: actualEntry ?? predictedEntry
   };
 }
 
@@ -10165,8 +10189,11 @@ raceRouter.get("/race", async (req, res, next) => {
           lapRaw: strictLap.lapRaw,
           lapSource: strictLap.lapSource,
           entry: entryPayload.entry,
+          predicted_entry: entryPayload.predictedEntry,
+          actual_entry: entryPayload.actualEntry,
           entryStatus: entryPayload.entryStatus,
           entryConfirmed: entryPayload.entryConfirmed,
+          entry_confirmed: entryPayload.entryConfirmed,
           entryCourse: entryPayload.entryCourse
         };
       });
@@ -11635,6 +11662,8 @@ raceRouter.get("/race", async (req, res, next) => {
         original_lane: lane,
         actual_lane: canonicalActualLane,
         entry: entryPayload.entry,
+        predicted_entry: entryPayload.predictedEntry,
+        actual_entry: entryPayload.actualEntry,
         entry_status: entryPayload.entryStatus,
         entry_confirmed: entryPayload.entryConfirmed ? 1 : 0,
         course_change_occurred: canonicalActualLane !== lane ? 1 : 0,
@@ -12539,8 +12568,11 @@ raceRouter.get("/race", async (req, res, next) => {
         lapRaw: strictLap.lapRaw,
         lapSource: strictLap.lapSource,
         entry: entryPayload.entry,
+        predicted_entry: entryPayload.predictedEntry,
+        actual_entry: entryPayload.actualEntry,
         entryStatus: entryPayload.entryStatus,
         entryConfirmed: entryPayload.entryConfirmed,
+        entry_confirmed: entryPayload.entryConfirmed,
         entryCourse: entryPayload.entryCourse
       };
     });

@@ -167,8 +167,12 @@ async function withServer(run) {
     assert.deepEqual(body.racers.map((row) => row.lane), [1, 2, 3, 4, 5, 6]);
     assert.equal(body.racers[0].lapSource, "kyoteibiyori.beforeinfo.lap");
     assert.equal(body.racers[0].lapRaw, "36.60");
-    assert.equal(body.racers[0].entry, "unconfirmed");
+    assert.equal(body.racers[0].entry, 1);
     assert.equal(body.racers[0].entryStatus, "unconfirmed");
+    assert.equal(body.racers[0].predicted_entry, 1);
+    assert.equal(body.racers[0].actual_entry, null);
+    assert.equal(body.racers[0].entry_confirmed, false);
+    assert.equal(typeof body.racers[0].entry_confirmed, "boolean");
   });
 }
 

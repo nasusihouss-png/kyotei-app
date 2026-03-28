@@ -3610,7 +3610,13 @@ function getPlayerComparisonRows({ prediction, data }) {
         const debugLaneStats = normalizeLaneStats(debugRow);
         const liveLaneStats = normalizeLaneStats(row);
         const snapshotLaneStats = normalizeLaneStats(snapshotRow);
-        const apiEntry = row?.entry ?? snapshotRow?.entry ?? null;
+        const predictedEntry = toFiniteComparisonNumber(
+          row?.predicted_entry ?? row?.predictedEntry ?? snapshotRow?.predicted_entry ?? lane
+        ) ?? lane;
+        const actualEntry = toFiniteComparisonNumber(
+          row?.actual_entry ?? row?.actualEntry ?? snapshotRow?.actual_entry
+        );
+        const apiEntry = row?.entry ?? snapshotRow?.entry ?? actualEntry ?? null;
         const entryText = toDisplayTextOrNull(apiEntry);
         const entryLane = toFiniteComparisonNumber(apiEntry);
         const entryConfirmed =
@@ -3620,9 +3626,7 @@ function getPlayerComparisonRows({ prediction, data }) {
           row?.entry_status === "confirmed" ||
           laneResolution.actualLaneConfirmed;
         const resolvedEntryDisplay =
-          entryConfirmed && entryLane !== null
-            ? entryLane
-            : entryText || "unconfirmed";
+          entryLane ?? predictedEntry;
         const courseChanged = entryConfirmed && entryLane !== null
           ? entryLane !== lane
           : laneResolution.courseChanged;
@@ -3693,6 +3697,8 @@ function getPlayerComparisonRows({ prediction, data }) {
           boatNumber: lane,
           actualLane: entryConfirmed && entryLane !== null ? entryLane : laneResolution.actualLane,
           entry: resolvedEntryDisplay,
+          predictedEntry,
+          actualEntry,
           entryLane,
           entryStatus: entryConfirmed ? "confirmed" : "unconfirmed",
           entryConfirmed,
@@ -3761,7 +3767,11 @@ function getPlayerComparisonRows({ prediction, data }) {
     .map((row) => {
       const lane = Number(row?.lane || 0);
       const laneResolution = resolveCanonicalActualLane({ lane, snapshotRow: row, entryDebug });
-      const apiEntry = row?.entry ?? null;
+      const predictedEntry = toFiniteComparisonNumber(
+        row?.predicted_entry ?? row?.predictedEntry ?? lane
+      ) ?? lane;
+      const actualEntry = toFiniteComparisonNumber(row?.actual_entry ?? row?.actualEntry);
+      const apiEntry = row?.entry ?? actualEntry ?? null;
       const entryText = toDisplayTextOrNull(apiEntry);
       const entryLane = toFiniteComparisonNumber(apiEntry);
       const entryConfirmed =
@@ -3769,10 +3779,8 @@ function getPlayerComparisonRows({ prediction, data }) {
         row?.entryStatus === "confirmed" ||
         row?.entry_status === "confirmed" ||
         laneResolution.actualLaneConfirmed;
-      const resolvedEntryDisplay =
-        entryConfirmed && entryLane !== null
-          ? entryLane
-          : entryText || "unconfirmed";
+        const resolvedEntryDisplay =
+        entryLane ?? predictedEntry;
       const courseChanged = entryConfirmed && entryLane !== null
         ? entryLane !== lane
         : laneResolution.courseChanged;
@@ -3781,6 +3789,8 @@ function getPlayerComparisonRows({ prediction, data }) {
         boatNumber: lane,
         actualLane: entryConfirmed && entryLane !== null ? entryLane : laneResolution.actualLane,
         entry: resolvedEntryDisplay,
+        predictedEntry,
+        actualEntry,
         entryLane,
         entryStatus: entryConfirmed ? "confirmed" : "unconfirmed",
         entryConfirmed,
@@ -6475,7 +6485,10 @@ export default function App() {
                                     {Number.isFinite(Number(row?.entryLane)) ? row?.entryLane : "?"}
                                   </span>
                                 </div>
-                                <div className="muted" style={{ marginTop: 4 }}>{row?.entry ?? "unconfirmed"}</div>
+                                <div className="muted" style={{ marginTop: 4 }}>
+                                  {row?.entry ?? row?.predictedEntry ?? "-"}
+                                  {row?.entryConfirmed ? "" : " / predicted"}
+                                </div>
                               </td>
                               <td>
                                 <div className="player-name-cell">
@@ -6484,7 +6497,7 @@ export default function App() {
                                     ? row?.courseChanged
                                       ? <div className="muted">Moved from lane {row?.boatNumber} to entry {row?.entryLane}</div>
                                       : <div className="muted">No course change</div>
-                                    : <div className="muted">Entry not confirmed. Lane order is fixed at 1-6</div>}
+                                    : <div className="muted">Entry not confirmed. Showing predicted entry while keeping lane order fixed at 1-6</div>}
                                 </div>
                               </td>
                               <td>

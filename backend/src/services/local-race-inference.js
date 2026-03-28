@@ -300,6 +300,12 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
       lapPredictionMeta?.raw_cell_text ?? lapPredictionMeta?.raw ?? playerSnapshot?.lap_time_raw
     );
     const storedLapSource = toTrimmedStringOrNull(lapPredictionMeta?.source ?? lapPredictionMeta?.source_label);
+    const fallbackLapSource = toTrimmedStringOrNull(
+      playerSnapshot?.lap_source ??
+      playerSnapshot?.kyoteibiyori_lap_source ??
+      playerSnapshot?.lap_time_detail?.source ??
+      playerSnapshot?.kyoteibiyori_lap_time_detail?.source
+    );
 
     return {
       lane,
@@ -322,11 +328,11 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
       lHoldCount: toInt(playerSnapshot?.l_hold_count, null),
       lapTime: storedLapTime,
       lapRaw: storedLapRaw,
-      lapSource: storedLapSource,
+      lapSource: storedLapSource ?? fallbackLapSource,
       lapTimeRaw: storedLapRaw,
       kyoteiBiyoriLapTime: storedLapTime,
       kyoteiBiyoriLapTimeRaw: storedLapRaw,
-      kyoteiBiyoriLapSource: storedLapSource,
+      kyoteiBiyoriLapSource: storedLapSource ?? fallbackLapSource,
       predictionFieldMeta,
       featureSnapshot,
       playerSnapshot
