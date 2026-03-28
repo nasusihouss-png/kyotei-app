@@ -758,9 +758,23 @@ function toFiniteComparisonNumber(value) {
   return Number.isFinite(num) ? num : null;
 }
 
+function toDisplayTextOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
 function firstFiniteValue(...values) {
   for (const value of values) {
     const normalized = toFiniteComparisonNumber(value);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function firstPresentTextValue(...values) {
+  for (const value of values) {
+    const normalized = toDisplayTextOrNull(value);
     if (normalized !== null) return normalized;
   }
   return null;
@@ -3596,6 +3610,22 @@ function getPlayerComparisonRows({ prediction, data }) {
         const debugLaneStats = normalizeLaneStats(debugRow);
         const liveLaneStats = normalizeLaneStats(row);
         const snapshotLaneStats = normalizeLaneStats(snapshotRow);
+        const apiEntry = row?.entry ?? snapshotRow?.entry ?? null;
+        const entryText = toDisplayTextOrNull(apiEntry);
+        const entryLane = toFiniteComparisonNumber(apiEntry);
+        const entryConfirmed =
+          row?.entryConfirmed === true ||
+          row?.entry_confirmed === true ||
+          row?.entryStatus === "confirmed" ||
+          row?.entry_status === "confirmed" ||
+          laneResolution.actualLaneConfirmed;
+        const resolvedEntryDisplay =
+          entryConfirmed && entryLane !== null
+            ? entryLane
+            : entryText || "unconfirmed";
+        const courseChanged = entryConfirmed && entryLane !== null
+          ? entryLane !== lane
+          : laneResolution.courseChanged;
         const reassignedLaneScores = {
           lane1st: firstMeaningfulFiniteValue(
             snapshotRow?.lane1st_score_after_reassignment,
@@ -3661,9 +3691,13 @@ function getPlayerComparisonRows({ prediction, data }) {
         return {
           lane,
           boatNumber: lane,
-          actualLane: laneResolution.actualLane,
-          courseChanged: laneResolution.courseChanged,
-          actualLaneConfirmed: laneResolution.actualLaneConfirmed,
+          actualLane: entryConfirmed && entryLane !== null ? entryLane : laneResolution.actualLane,
+          entry: resolvedEntryDisplay,
+          entryLane,
+          entryStatus: entryConfirmed ? "confirmed" : "unconfirmed",
+          entryConfirmed,
+          courseChanged,
+          actualLaneConfirmed: entryConfirmed,
           name: row?.name || snapshotRow?.name || `Boat ${lane || "-"}`,
           fCount: row?.fHoldCount === null || row?.fHoldCount === undefined
             ? (snapshotRow?.f_hold_count === null || snapshotRow?.f_hold_count === undefined ? null : Number(snapshotRow.f_hold_count))
@@ -3675,8 +3709,9 @@ function getPlayerComparisonRows({ prediction, data }) {
             liveLapTime,
             getLapTimeDisplayValue(snapshotRow)
           ),
-          lapRaw: firstFiniteValue(
+          lapRaw: firstPresentTextValue(
             row?.lapRaw,
+            row?.lap_raw,
             row?.kyoteiBiyoriLapTimeRaw,
             row?.lapTimeRaw,
             snapshotRow?.lap_raw,
@@ -3720,26 +3755,42 @@ function getPlayerComparisonRows({ prediction, data }) {
           }
         };
       })
-      .sort((a, b) => {
-        if (a?.actualLaneConfirmed && b?.actualLaneConfirmed) return (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber);
-        return (a.boatNumber - b.boatNumber);
-      });
+      .sort((a, b) => (a.boatNumber - b.boatNumber));
   }
   return snapshotPlayers
     .map((row) => {
       const lane = Number(row?.lane || 0);
       const laneResolution = resolveCanonicalActualLane({ lane, snapshotRow: row, entryDebug });
+      const apiEntry = row?.entry ?? null;
+      const entryText = toDisplayTextOrNull(apiEntry);
+      const entryLane = toFiniteComparisonNumber(apiEntry);
+      const entryConfirmed =
+        row?.entry_confirmed === true ||
+        row?.entryStatus === "confirmed" ||
+        row?.entry_status === "confirmed" ||
+        laneResolution.actualLaneConfirmed;
+      const resolvedEntryDisplay =
+        entryConfirmed && entryLane !== null
+          ? entryLane
+          : entryText || "unconfirmed";
+      const courseChanged = entryConfirmed && entryLane !== null
+        ? entryLane !== lane
+        : laneResolution.courseChanged;
       return {
         lane,
         boatNumber: lane,
-        actualLane: laneResolution.actualLane,
-        courseChanged: laneResolution.courseChanged,
-        actualLaneConfirmed: laneResolution.actualLaneConfirmed,
+        actualLane: entryConfirmed && entryLane !== null ? entryLane : laneResolution.actualLane,
+        entry: resolvedEntryDisplay,
+        entryLane,
+        entryStatus: entryConfirmed ? "confirmed" : "unconfirmed",
+        entryConfirmed,
+        courseChanged,
+        actualLaneConfirmed: entryConfirmed,
         name: row?.name || `Boat ${row?.lane || "-"}`,
         fCount: row?.f_hold_count === null || row?.f_hold_count === undefined ? null : Number(row.f_hold_count),
         kyoteiBiyoriFetched: Number(row?.kyoteibiyori_fetched) === 1,
         lapTime: getLapTimeDisplayValue(row),
-        lapRaw: firstFiniteValue(row?.lap_raw, row?.kyoteibiyori_lap_time_raw),
+        lapRaw: firstPresentTextValue(row?.lap_raw, row?.kyoteibiyori_lap_time_raw),
         lapSource: row?.lap_source || row?.kyoteibiyori_lap_source || null,
         lapRank: firstFiniteValue(row?.lap_rank, row?.feature_snapshot?.lap_rank, row?.feature_snapshot?.lap_time_rank),
         lapGapFromBest: firstFiniteValue(row?.lap_gap_from_best, row?.feature_snapshot?.lap_gap_from_best, row?.feature_snapshot?.lap_time_gap_from_best),
@@ -3786,10 +3837,7 @@ function getPlayerComparisonRows({ prediction, data }) {
         }
       };
     })
-    .sort((a, b) => {
-      if (a?.actualLaneConfirmed && b?.actualLaneConfirmed) return (a.actualLane - b.actualLane) || (a.boatNumber - b.boatNumber);
-      return (a.boatNumber - b.boatNumber);
-    });
+    .sort((a, b) => (a.boatNumber - b.boatNumber));
 }
 
 function buildTopMetricLaneSet(rows, key, direction = "desc") {
@@ -3804,7 +3852,7 @@ function buildTopMetricLaneSet(rows, key, direction = "desc") {
   return new Set(
     ranked
       .filter((row) => topValues.includes(Number(row?.[key])))
-      .map((row) => Number(row?.actualLane ?? row?.lane))
+      .map((row) => Number(row?.lane))
   );
 }
 
@@ -6423,34 +6471,37 @@ export default function App() {
                               </td>
                               <td>
                                 <div className="player-boat-cell">
-                                  <span className={`combo-dot ${BOAT_META[row?.actualLane]?.className || ""}`}>{row?.actualLane ?? "--"}</span>
+                                  <span className={`combo-dot ${Number.isFinite(Number(row?.entryLane)) ? (BOAT_META[row?.entryLane]?.className || "") : ""}`}>
+                                    {Number.isFinite(Number(row?.entryLane)) ? row?.entryLane : "?"}
+                                  </span>
                                 </div>
+                                <div className="muted" style={{ marginTop: 4 }}>{row?.entry ?? "unconfirmed"}</div>
                               </td>
                               <td>
                                 <div className="player-name-cell">
                                   <strong>{row?.name || "-"}</strong>
-                                  {row?.actualLaneConfirmed
+                                  {row?.entryConfirmed
                                     ? row?.courseChanged
-                                      ? <div className="muted">Moved from boat {row?.boatNumber} to entry {row?.actualLane}</div>
+                                      ? <div className="muted">Moved from lane {row?.boatNumber} to entry {row?.entryLane}</div>
                                       : <div className="muted">No course change</div>
-                                    : <div className="muted">Actual entry not confirmed. Using base/predicted order</div>}
+                                    : <div className="muted">Entry not confirmed. Lane order is fixed at 1-6</div>}
                                 </div>
                               </td>
                               <td>
                                 <span className={`f-count-badge ${Number(row?.fCount) > 0 ? "has-f" : ""}`}>F{row?.fCount ?? "--"}</span>
                               </td>
-                              <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatLapTimeCoverageValue(row, data?.source?.coverage_report)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionSt, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionTime, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.actualLane ?? row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.lane) ? "metric-hot" : ""}>{formatLapTimeCoverageValue(row, data?.source?.coverage_report)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionSt, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionTime, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren, 2)}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
-                    {safeArray(playerComparisonRows).some((row) => row?.actualLaneConfirmed !== true) ? (
+                    {safeArray(playerComparisonRows).some((row) => row?.entryConfirmed !== true) ? (
                       <p className="notice-banner" style={{ marginTop: 10 }}>
-                        actual entry not confirmed: 艇対応は base lane order のまま保持しています。
+                        actual entry not confirmed: API / UI ともに lane 1-6 の順を固定し、entry は別 key で扱っています。
                       </p>
                     ) : null}
                     <details className="card" style={{ marginTop: 12 }}>
@@ -6476,7 +6527,7 @@ export default function App() {
                       </div>
                     </details>
                     <p className="muted strategy-line">
-                      Rows are ordered by actual entry lane when course movement occurs. Lane-score columns are temporarily hidden until raw 枠別情報 parsing is re-verified against the source table.
+                      Rows are always ordered by base lane 1-6. Entry is shown separately and remains `unconfirmed` until the actual entry is validated.
                     </p>
                     {!hasRenderableKyoteiBiyoriData(playerComparisonRows, data) ? (
                       <p className="muted strategy-line">

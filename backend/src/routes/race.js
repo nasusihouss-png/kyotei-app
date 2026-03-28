@@ -103,6 +103,19 @@ import {
 } from "../services/snapshot-coverage.js";
 
 export const raceRouter = Router();
+const raceRouteRuntimeDeps = {
+  refreshLatestRaceData
+};
+
+export function setRaceRouteRuntimeDepsForTests(overrides = {}) {
+  if (Object.prototype.hasOwnProperty.call(overrides, "refreshLatestRaceData")) {
+    raceRouteRuntimeDeps.refreshLatestRaceData = overrides.refreshLatestRaceData || refreshLatestRaceData;
+  }
+}
+
+export function resetRaceRouteRuntimeDepsForTests() {
+  raceRouteRuntimeDeps.refreshLatestRaceData = refreshLatestRaceData;
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS race_verification_logs (
@@ -224,17 +237,71 @@ function toNullableNum(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function toTrimmedStringOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
 function getStrictLapPayload(racer = {}) {
-  const lapSource = racer?.lapSource ?? racer?.kyoteiBiyoriLapSource ?? null;
-  const lapRaw = racer?.lapRaw ?? racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw ?? null;
-  const lapTime = toNullableNum(racer?.lapTime ?? racer?.kyoteiBiyoriLapTime);
-  const hasLapSource = !!String(lapSource || "").trim();
-  const hasLapRaw = lapRaw !== null && lapRaw !== undefined && String(lapRaw).trim() !== "";
-  const valid = lapTime !== null && hasLapSource && hasLapRaw;
+  const predictionLapMeta =
+    racer?.predictionFieldMeta?.lapTime && typeof racer.predictionFieldMeta.lapTime === "object"
+      ? racer.predictionFieldMeta.lapTime
+      : {};
+  const lapSource = toTrimmedStringOrNull(
+    racer?.lapSource ??
+      racer?.kyoteiBiyoriLapSource ??
+      predictionLapMeta?.source ??
+      predictionLapMeta?.source_label
+  );
+  const lapRaw = toTrimmedStringOrNull(
+    racer?.lapRaw ??
+      racer?.kyoteiBiyoriLapTimeRaw ??
+      racer?.lapTimeRaw ??
+      predictionLapMeta?.raw_cell_text ??
+      predictionLapMeta?.raw
+  );
+  const lapTime = toNullableNum(racer?.lapTime ?? racer?.kyoteiBiyoriLapTime ?? lapRaw);
+  const valid = lapTime !== null && !!lapSource && !!lapRaw;
   return {
-    lapTime: valid ? (toNullableNum(lapRaw) ?? lapTime) : null,
-    lapRaw: valid ? toNullableNum(lapRaw) : null,
+    lapTime: valid ? lapTime : null,
+    lapRaw: valid ? lapRaw : null,
     lapSource: valid ? lapSource : null
+  };
+}
+
+function sortRacersByLane(racers = []) {
+  return [...(Array.isArray(racers) ? racers : [])].sort((a, b) => {
+    const laneA = toNullableNum(a?.lane);
+    const laneB = toNullableNum(b?.lane);
+    if (laneA !== null && laneB !== null) return laneA - laneB;
+    if (laneA !== null) return -1;
+    if (laneB !== null) return 1;
+    return 0;
+  });
+}
+
+function buildApiEntryPayload({ lane, entryMeta, fallbackEntryCourse = null }) {
+  const baseLane = toNullableNum(lane);
+  const perBoatLaneMap =
+    entryMeta?.per_boat_lane_map && typeof entryMeta.per_boat_lane_map === "object"
+      ? entryMeta.per_boat_lane_map
+      : {};
+  const actualLaneMap =
+    entryMeta?.actual_lane_map && typeof entryMeta.actual_lane_map === "object"
+      ? entryMeta.actual_lane_map
+      : {};
+  const mappedEntry = toNullableNum(
+    perBoatLaneMap?.[String(baseLane)]?.actual_lane ?? actualLaneMap?.[String(baseLane)]
+  );
+  const fallbackEntry = toNullableNum(fallbackEntryCourse);
+  const resolvedEntry = mappedEntry ?? fallbackEntry ?? baseLane;
+  const entryConfirmed = entryMeta?.validation?.validation_ok === true && entryMeta?.fallback_used !== true;
+  return {
+    entry: entryConfirmed ? resolvedEntry : "unconfirmed",
+    entryStatus: entryConfirmed ? "confirmed" : "unconfirmed",
+    entryConfirmed,
+    entryCourse: resolvedEntry
   };
 }
 
@@ -9761,6 +9828,127 @@ function calcHitRateRankingScore({
   return Number(score.toFixed(2));
 }
 
+function firstFiniteTiming(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function applyRefreshTimingToRoute(routeTimings = {}, refreshOutcome = {}) {
+  const data = refreshOutcome?.data || {};
+  const source = data?.source && typeof data.source === "object" ? data.source : {};
+  const refreshResult = refreshOutcome?.refreshResult && typeof refreshOutcome.refreshResult === "object"
+    ? refreshOutcome.refreshResult
+    : {};
+  const snapshotIndex = refreshOutcome?.snapshotIndex && typeof refreshOutcome.snapshotIndex === "object"
+    ? refreshOutcome.snapshotIndex
+    : {};
+  const diagnostics =
+    data?.diagnostics && typeof data.diagnostics === "object"
+      ? data.diagnostics
+      : source?.load_diagnostics && typeof source.load_diagnostics === "object"
+        ? source.load_diagnostics
+        : {};
+  const sourceTimings = source?.timings && typeof source.timings === "object"
+    ? source.timings
+    : source?.fetch_timings && typeof source.fetch_timings === "object"
+      ? source.fetch_timings
+      : refreshResult?.timing?.upstream && typeof refreshResult.timing.upstream === "object"
+        ? refreshResult.timing.upstream
+        : snapshotIndex?.metadata?.timing?.upstream && typeof snapshotIndex.metadata.timing.upstream === "object"
+          ? snapshotIndex.metadata.timing.upstream
+          : {};
+
+  routeTimings.snapshot_lookup_ms = firstFiniteTiming(routeTimings.snapshot_lookup_ms, diagnostics?.snapshot_lookup_ms);
+  routeTimings.snapshot_load_ms = firstFiniteTiming(routeTimings.snapshot_load_ms, diagnostics?.snapshot_load_ms);
+  routeTimings.official_base_fetch_ms = firstFiniteTiming(routeTimings.official_base_fetch_ms, sourceTimings?.official_base_fetch_ms);
+  routeTimings.kyoteibiyori_fetch_ms = firstFiniteTiming(routeTimings.kyoteibiyori_fetch_ms, sourceTimings?.kyoteibiyori_fetch_ms);
+  routeTimings.parsing_ms = firstFiniteTiming(routeTimings.parsing_ms, sourceTimings?.parsing_ms);
+
+  return routeTimings;
+}
+
+export async function loadRaceDataForApiRoute({
+  date,
+  venueId,
+  raceNo,
+  latestRefreshTimeoutMs,
+  forceRefresh,
+  traceBase,
+  routeTimings,
+  routeStartedAt,
+  maxRouteTimeoutMs
+} = {}, deps = {}) {
+  const refreshRaceData = deps.refreshLatestRaceData || raceRouteRuntimeDeps.refreshLatestRaceData || refreshLatestRaceData;
+  const ensureWithinDeadline = deps.ensureRaceRouteWithinDeadline || ensureRaceRouteWithinDeadline;
+  const logStage = deps.logRaceRouteStage || logRaceRouteStage;
+
+  const refreshOutcome = await refreshRaceData({
+    date,
+    venueId,
+    raceNo,
+    timeoutMs: latestRefreshTimeoutMs,
+    forceRefresh,
+    trace: (stage, extra) => {
+      logStage(traceBase || {}, stage, extra);
+    }
+  });
+
+  const rawData = refreshOutcome?.data || null;
+  const refreshMeta =
+    refreshOutcome?.refreshMeta && typeof refreshOutcome.refreshMeta === "object"
+      ? refreshOutcome.refreshMeta
+      : rawData?.source?.refresh_meta && typeof rawData.source.refresh_meta === "object"
+        ? rawData.source.refresh_meta
+        : {};
+  const upstreamTimings =
+    rawData?.source?.timings && typeof rawData.source.timings === "object"
+      ? rawData.source.timings
+      : rawData?.source?.fetch_timings && typeof rawData.source.fetch_timings === "object"
+        ? rawData.source.fetch_timings
+        : refreshOutcome?.refreshResult?.timing?.upstream && typeof refreshOutcome.refreshResult.timing.upstream === "object"
+          ? refreshOutcome.refreshResult.timing.upstream
+          : refreshOutcome?.snapshotIndex?.metadata?.timing?.upstream && typeof refreshOutcome.snapshotIndex.metadata.timing.upstream === "object"
+            ? refreshOutcome.snapshotIndex.metadata.timing.upstream
+            : {};
+  const normalizedData = rawData
+    ? {
+        ...rawData,
+        source: {
+          ...(rawData?.source || {}),
+          refresh_meta: refreshMeta,
+          timings: upstreamTimings,
+          fetch_timings:
+            rawData?.source?.fetch_timings && typeof rawData.source.fetch_timings === "object"
+              ? rawData.source.fetch_timings
+              : upstreamTimings,
+          local_snapshots: {
+            ...(rawData?.source?.local_snapshots || {}),
+            last_snapshot_updated_at:
+              refreshMeta?.last_snapshot_updated_at ||
+              rawData?.source?.local_snapshots?.last_snapshot_updated_at ||
+              null
+          }
+        }
+      }
+    : rawData;
+  const normalizedRefreshOutcome = {
+    ...refreshOutcome,
+    data: normalizedData
+  };
+
+  applyRefreshTimingToRoute(routeTimings, normalizedRefreshOutcome);
+  ensureWithinDeadline(routeStartedAt, maxRouteTimeoutMs, "race.route:snapshot_lookup");
+
+  return {
+    refreshOutcome: normalizedRefreshOutcome,
+    data: normalizedData
+  };
+}
+
 raceRouter.get("/race", async (req, res, next) => {
   let failureWhere = "race.route:validate_query";
   let temporaryFeaturePipelineDebug = null;
@@ -9832,21 +10020,24 @@ raceRouter.get("/race", async (req, res, next) => {
       artifactCollector = isHardRaceScreening ? {} : null;
       let stored = null;
       {
-        const refreshed = await refreshLatestRaceData({
+        const refreshOutcome = await loadRaceDataForApiRoute({
           date,
           venueId,
           raceNo,
-          timeoutMs: latestRefreshTimeoutMs,
+          latestRefreshTimeoutMs,
           forceRefresh,
-          trace: (stage, extra) => {
-            logRaceRouteStage(traceBase, stage, extra);
-          }
+          traceBase,
+          routeTimings,
+          routeStartedAt,
+          maxRouteTimeoutMs
         });
-        stored = refreshed?.data || null;
-        routeTimings.snapshot_lookup_ms = stored?.diagnostics?.snapshot_lookup_ms ?? null;
-        routeTimings.snapshot_load_ms = stored?.diagnostics?.snapshot_load_ms ?? null;
+        stored = refreshOutcome?.data || null;
         ensureRaceRouteWithinDeadline(routeStartedAt, maxRouteTimeoutMs, failureWhere);
         if (!stored?.ok) {
+          const refreshMeta =
+            stored?.source?.refresh_meta && typeof stored.source.refresh_meta === "object"
+              ? stored.source.refresh_meta
+              : {};
           routeTimings.total_response_ms = Date.now() - routeStartedAt;
           logRaceRouteStage(traceBase, "response_return", {
             status: 404,
@@ -9879,6 +10070,12 @@ raceRouter.get("/race", async (req, res, next) => {
             },
             data_status: "SNAPSHOT_MISSING",
             confidence_status: "BROKEN_PIPELINE",
+            refreshed_now: refreshMeta?.refreshed_now === true,
+            freshness_status: refreshMeta?.freshness_status || "stale",
+            primary_source_ok: refreshMeta?.primary_source_ok === true,
+            secondary_source_ok: refreshMeta?.secondary_source_ok === true,
+            fallback_used: refreshMeta?.fallback_used === true,
+            last_snapshot_updated_at: refreshMeta?.last_snapshot_updated_at || null,
             missing_fields: ["snapshot.race"],
             missing_field_details: {
               "snapshot.race": {
@@ -9892,6 +10089,10 @@ raceRouter.get("/race", async (req, res, next) => {
           });
         }
         if (!Array.isArray(stored?.racers) || stored.racers.length !== 6) {
+          const refreshMeta =
+            stored?.source?.refresh_meta && typeof stored.source.refresh_meta === "object"
+              ? stored.source.refresh_meta
+              : {};
           routeTimings.total_response_ms = Date.now() - routeStartedAt;
           logRaceRouteStage(traceBase, "response_return", {
             status: 500,
@@ -9912,6 +10113,12 @@ raceRouter.get("/race", async (req, res, next) => {
             },
             data_status: "BROKEN_PIPELINE",
             confidence_status: "BROKEN_PIPELINE",
+            refreshed_now: refreshMeta?.refreshed_now === true,
+            freshness_status: refreshMeta?.freshness_status || "stale",
+            primary_source_ok: refreshMeta?.primary_source_ok === true,
+            secondary_source_ok: refreshMeta?.secondary_source_ok === true,
+            fallback_used: refreshMeta?.fallback_used === true,
+            last_snapshot_updated_at: refreshMeta?.last_snapshot_updated_at || null,
             missing_fields: ["snapshot.entries"],
             missing_field_details: {
               "snapshot.entries": {
@@ -9930,6 +10137,38 @@ raceRouter.get("/race", async (req, res, next) => {
       logRaceRouteStage(traceBase, "snapshot_ready", {
         snapshot_lookup_ms: routeTimings.snapshot_lookup_ms,
         snapshot_load_ms: routeTimings.snapshot_load_ms
+      });
+      const refreshMeta =
+        data?.source?.refresh_meta && typeof data.source.refresh_meta === "object"
+          ? data.source.refresh_meta
+          : {};
+      const sourceActualEntry =
+        data?.source?.actual_entry && typeof data.source.actual_entry === "object"
+          ? data.source.actual_entry
+          : {};
+      const apiRacers = sortRacersByLane(data?.racers || []).map((racer) => {
+        const lane = toInt(racer?.lane, null);
+        const entryPayload = buildApiEntryPayload({
+          lane,
+          entryMeta: {
+            validation: sourceActualEntry,
+            fallback_used: false,
+            actual_lane_map: sourceActualEntry?.actual_lane_map || null
+          },
+          fallbackEntryCourse: racer?.entryCourse ?? racer?.entry_course ?? lane
+        });
+        const strictLap = getStrictLapPayload(racer);
+        return {
+          ...racer,
+          lane,
+          lapTime: strictLap.lapTime,
+          lapRaw: strictLap.lapRaw,
+          lapSource: strictLap.lapSource,
+          entry: entryPayload.entry,
+          entryStatus: entryPayload.entryStatus,
+          entryConfirmed: entryPayload.entryConfirmed,
+          entryCourse: entryPayload.entryCourse
+        };
       });
       ensureRaceRouteWithinDeadline(routeStartedAt, maxRouteTimeoutMs, "race.route:feature_generation");
       const featureGenerationStartedAt = Date.now();
@@ -10045,20 +10284,20 @@ raceRouter.get("/race", async (req, res, next) => {
           ...hardRace1234,
           source_summary: {
             ...hardRaceSourceSummary,
-            refreshed_now: data?.source?.refresh_meta?.refreshed_now === true,
-            freshness_status: data?.source?.refresh_meta?.freshness_status || hardRaceSourceSummary?.freshness_status || "stale",
-            primary_source_ok: data?.source?.refresh_meta?.primary_source_ok === true,
-            secondary_source_ok: data?.source?.refresh_meta?.secondary_source_ok === true,
+            refreshed_now: refreshMeta?.refreshed_now === true,
+            freshness_status: refreshMeta?.freshness_status || hardRaceSourceSummary?.freshness_status || "stale",
+            primary_source_ok: refreshMeta?.primary_source_ok === true,
+            secondary_source_ok: refreshMeta?.secondary_source_ok === true,
             last_snapshot_updated_at:
-              data?.source?.refresh_meta?.last_snapshot_updated_at ||
+              refreshMeta?.last_snapshot_updated_at ||
               data?.source?.local_snapshots?.last_snapshot_updated_at ||
               null,
             fallback_used:
-              data?.source?.refresh_meta?.fallback_used === true ||
+              refreshMeta?.fallback_used === true ||
               hardRaceSourceSummary?.fallback_used === true ||
               hardRaceSourceSummary?.fallback?.used === true,
             field_coverage_report: data?.source?.coverage_report?.fields || null,
-            refresh_error: data?.source?.refresh_meta?.refresh_error || null
+            refresh_error: refreshMeta?.refresh_error || null
           }
         };
         routeTimings.inference_ms = Date.now() - predictionStartedAt;
@@ -10076,23 +10315,23 @@ raceRouter.get("/race", async (req, res, next) => {
         return res.json({
           source: data.source || {},
           race: data.race,
-          racers: data.racers,
+          racers: apiRacers,
           hardRace1234,
           hardScenario: hardRace1234?.hardScenario || null,
           hardScenarioScore: hardRace1234?.hardScenarioScore ?? hardRace1234?.scenario_repro_score ?? null,
           scenario_repro_score: hardRace1234?.scenario_repro_score ?? null,
-          refreshed_now: data?.source?.refresh_meta?.refreshed_now === true,
-          freshness_status: data?.source?.refresh_meta?.freshness_status || hardRace1234?.source_summary?.freshness_status || "stale",
-          primary_source_ok: data?.source?.refresh_meta?.primary_source_ok === true,
-          secondary_source_ok: data?.source?.refresh_meta?.secondary_source_ok === true,
+          refreshed_now: refreshMeta?.refreshed_now === true,
+          freshness_status: refreshMeta?.freshness_status || hardRace1234?.source_summary?.freshness_status || "stale",
+          primary_source_ok: refreshMeta?.primary_source_ok === true,
+          secondary_source_ok: refreshMeta?.secondary_source_ok === true,
           fallback_used:
-            data?.source?.refresh_meta?.fallback_used === true ||
+            refreshMeta?.fallback_used === true ||
             hardRace1234?.source_summary?.fallback_used === true,
           field_coverage_report: data?.source?.coverage_report?.fields || null,
           broken_fields_required: hardRace1234?.source_summary?.broken_fields_required || [],
           broken_fields_optional: hardRace1234?.source_summary?.broken_fields_optional || [],
           last_snapshot_updated_at:
-            data?.source?.refresh_meta?.last_snapshot_updated_at ||
+            refreshMeta?.last_snapshot_updated_at ||
             data?.source?.local_snapshots?.last_snapshot_updated_at ||
             null,
           ...hardRace1234,
@@ -10104,26 +10343,26 @@ raceRouter.get("/race", async (req, res, next) => {
         ...purePredictionBundle.prediction,
         source_summary: {
           ...(purePredictionBundle.prediction?.source_summary || {}),
-          refreshed_now: data?.source?.refresh_meta?.refreshed_now === true,
+          refreshed_now: refreshMeta?.refreshed_now === true,
           freshness_status:
-            data?.source?.refresh_meta?.freshness_status ||
+            refreshMeta?.freshness_status ||
             purePredictionBundle.prediction?.source_summary?.freshness_status ||
             "stale",
-          primary_source_ok: data?.source?.refresh_meta?.primary_source_ok === true,
-          secondary_source_ok: data?.source?.refresh_meta?.secondary_source_ok === true,
+          primary_source_ok: refreshMeta?.primary_source_ok === true,
+          secondary_source_ok: refreshMeta?.secondary_source_ok === true,
           last_snapshot_updated_at:
-            data?.source?.refresh_meta?.last_snapshot_updated_at ||
+            refreshMeta?.last_snapshot_updated_at ||
             data?.source?.local_snapshots?.last_snapshot_updated_at ||
             null,
           fallback_used:
-            data?.source?.refresh_meta?.fallback_used === true ||
+            refreshMeta?.fallback_used === true ||
             purePredictionBundle.prediction?.source_summary?.fallback_used === true ||
             purePredictionBundle.prediction?.source_summary?.fallback?.used === true,
           field_coverage_report:
             purePredictionBundle.prediction?.field_coverage_report ||
             data?.source?.coverage_report?.fields ||
             null,
-          refresh_error: data?.source?.refresh_meta?.refresh_error || null
+          refresh_error: refreshMeta?.refresh_error || null
         }
       };
       const pureTop6Prediction = purePredictionBundle.pureTop6Prediction;
@@ -10141,7 +10380,7 @@ raceRouter.get("/race", async (req, res, next) => {
       return res.json({
         source: data.source || {},
         race: data.race,
-        racers: data.racers,
+        racers: apiRacers,
         raceId: data.raceId || data.source?.race_id || null,
         pureTop6Prediction,
         prediction,
@@ -10151,21 +10390,21 @@ raceRouter.get("/race", async (req, res, next) => {
         top6: pureTop6Prediction?.top6 || prediction?.top6 || null,
         top6_coverage: pureTop6Prediction?.top6_coverage ?? prediction?.top6_coverage ?? null,
         chaos_level: pureTop6Prediction?.chaos_level ?? prediction?.chaos_level ?? null,
-        refreshed_now: data?.source?.refresh_meta?.refreshed_now === true,
+        refreshed_now: refreshMeta?.refreshed_now === true,
         freshness_status:
-          data?.source?.refresh_meta?.freshness_status ||
+          refreshMeta?.freshness_status ||
           prediction?.source_summary?.freshness_status ||
           "stale",
-        primary_source_ok: data?.source?.refresh_meta?.primary_source_ok === true,
-        secondary_source_ok: data?.source?.refresh_meta?.secondary_source_ok === true,
+        primary_source_ok: refreshMeta?.primary_source_ok === true,
+        secondary_source_ok: refreshMeta?.secondary_source_ok === true,
         fallback_used:
-          data?.source?.refresh_meta?.fallback_used === true ||
+          refreshMeta?.fallback_used === true ||
           prediction?.source_summary?.fallback_used === true,
         field_coverage_report: prediction?.field_coverage_report || data?.source?.coverage_report?.fields || null,
         broken_fields_required: prediction?.source_summary?.broken_fields_required || [],
         broken_fields_optional: prediction?.source_summary?.broken_fields_optional || [],
         last_snapshot_updated_at:
-          data?.source?.refresh_meta?.last_snapshot_updated_at ||
+          refreshMeta?.last_snapshot_updated_at ||
           data?.source?.local_snapshots?.last_snapshot_updated_at ||
           null,
         top6Scenario: pureTop6Prediction?.top6Scenario || prediction?.top6Scenario || null,
@@ -10196,6 +10435,10 @@ raceRouter.get("/race", async (req, res, next) => {
       });
     } catch (fetchErr) {
       if (String(fetchErr?.code || "").startsWith("LATEST_")) {
+        routeTimings.snapshot_lookup_ms = firstFiniteTiming(
+          routeTimings.snapshot_lookup_ms,
+          fetchErr?.snapshotLookup?.index?.metadata?.timing?.snapshot_lookup_ms
+        );
         routeTimings.total_response_ms = Date.now() - routeStartedAt;
         logRaceRouteStage(traceBase, "response_return", {
           status: Number(fetchErr?.statusCode) || 503,
@@ -10222,6 +10465,12 @@ raceRouter.get("/race", async (req, res, next) => {
           },
           data_status: "SOURCE_ERROR",
           confidence_status: "SOURCE_ERROR",
+          refreshed_now: fetchErr?.refreshMeta?.refreshed_now === true,
+          freshness_status: fetchErr?.refreshMeta?.freshness_status || "stale",
+          primary_source_ok: fetchErr?.refreshMeta?.primary_source_ok === true,
+          secondary_source_ok: fetchErr?.refreshMeta?.secondary_source_ok === true,
+          fallback_used: fetchErr?.refreshMeta?.fallback_used === true,
+          last_snapshot_updated_at: fetchErr?.refreshMeta?.last_snapshot_updated_at || null,
           routeTiming: routeTimings
         });
       }
@@ -11338,10 +11587,16 @@ raceRouter.get("/race", async (req, res, next) => {
       entryMeta?.per_boat_lane_map && typeof entryMeta.per_boat_lane_map === "object"
         ? entryMeta.per_boat_lane_map
         : {};
-    const snapshotPlayers = safeArray(data?.racers).map((racer) => {
+    const laneOrderedRacers = sortRacersByLane(data?.racers || []);
+    const snapshotPlayers = laneOrderedRacers.map((racer) => {
       const lane = toInt(racer?.lane, null);
       const canonicalLaneMeta = canonicalPerBoatLaneMap[String(lane)] || null;
       const canonicalActualLane = toInt(canonicalLaneMeta?.actual_lane, lane);
+      const entryPayload = buildApiEntryPayload({
+        lane,
+        entryMeta,
+        fallbackEntryCourse: canonicalActualLane
+      });
       const laneFeatures = rankingFeatureByLane.get(lane) || {};
       const strictLap = getStrictLapPayload(racer);
       const predictionFieldMeta =
@@ -11379,6 +11634,9 @@ raceRouter.get("/race", async (req, res, next) => {
         lane,
         original_lane: lane,
         actual_lane: canonicalActualLane,
+        entry: entryPayload.entry,
+        entry_status: entryPayload.entryStatus,
+        entry_confirmed: entryPayload.entryConfirmed ? 1 : 0,
         course_change_occurred: canonicalActualLane !== lane ? 1 : 0,
         registration_no: toInt(racer?.registrationNo, null),
         name: racer?.name || null,
@@ -11438,7 +11696,7 @@ raceRouter.get("/race", async (req, res, next) => {
         exhibition_time_detail: racer?.exhibitionTimeDetail ?? racer?.kyoteiBiyoriExhibitionTimeDetail ?? null,
         turn_foot_detail: racer?.turnFootDetail ?? racer?.kyoteiBiyoriTurnFootDetail ?? null,
         straight_time_detail: racer?.straightTimeDetail ?? racer?.kyoteiBiyoriStraightTimeDetail ?? null,
-        entry_course: canonicalActualLane,
+        entry_course: entryPayload.entryCourse,
         tilt: toNullableNum(racer?.tilt),
         lane1st_score: lane1stVerified ? rawLane1st : null,
         lane2ren_score: lane2renVerified ? rawLane2ren : null,
@@ -12262,6 +12520,30 @@ raceRouter.get("/race", async (req, res, next) => {
       : null;
     routeTimings.prediction_build_ms = Date.now() - predictionStartedAt;
     routeTimings.total_response_ms = Date.now() - routeStartedAt;
+    const legacyRefreshMeta =
+      data?.source?.refresh_meta && typeof data.source.refresh_meta === "object"
+        ? data.source.refresh_meta
+        : {};
+    const apiRacers = sortRacersByLane(data?.racers || []).map((racer) => {
+      const lane = toInt(racer?.lane, null);
+      const entryPayload = buildApiEntryPayload({
+        lane,
+        entryMeta,
+        fallbackEntryCourse: racer?.entryCourse ?? racer?.entry_course ?? lane
+      });
+      const strictLap = getStrictLapPayload(racer);
+      return {
+        ...racer,
+        lane,
+        lapTime: strictLap.lapTime,
+        lapRaw: strictLap.lapRaw,
+        lapSource: strictLap.lapSource,
+        entry: entryPayload.entry,
+        entryStatus: entryPayload.entryStatus,
+        entryConfirmed: entryPayload.entryConfirmed,
+        entryCourse: entryPayload.entryCourse
+      };
+    });
     console.info(
       "[RACE_API_TIMING]",
       JSON.stringify({
@@ -12277,7 +12559,7 @@ raceRouter.get("/race", async (req, res, next) => {
     return res.json({
       source: data.source || {},
       race: data.race,
-      racers: data.racers,
+      racers: apiRacers,
       kyoteibiyori_debug:
         data?.kyoteibiyori_debug ||
         data?.source?.kyotei_biyori?.kyoteibiyori_debug ||
@@ -12353,6 +12635,15 @@ raceRouter.get("/race", async (req, res, next) => {
       raw_actual_entry_source_text: entryMeta.raw_actual_entry_source_text,
       per_boat_lane_map: entryMeta.per_boat_lane_map,
       entry_debug: compactEntryDebug,
+      refreshed_now: legacyRefreshMeta?.refreshed_now === true,
+      freshness_status: legacyRefreshMeta?.freshness_status || "stale",
+      primary_source_ok: legacyRefreshMeta?.primary_source_ok === true,
+      secondary_source_ok: legacyRefreshMeta?.secondary_source_ok === true,
+      fallback_used: legacyRefreshMeta?.fallback_used === true,
+      last_snapshot_updated_at:
+        legacyRefreshMeta?.last_snapshot_updated_at ||
+        data?.source?.local_snapshots?.last_snapshot_updated_at ||
+        null,
       dataAudit,
       hardRaceResponseContract,
       startSignalAnalysis: startSignals,
@@ -12415,12 +12706,19 @@ raceRouter.get("/race", async (req, res, next) => {
     });
   } catch (err) {
     const status = Number(err?.statusCode || err?.status || 500);
+    const refreshMeta = err?.refreshMeta && typeof err.refreshMeta === "object" ? err.refreshMeta : {};
     const payload = {
       error: status >= 500 ? "race_api_failed" : "bad_request",
       code: err?.code || "race_route_error",
       where: failureWhere,
       route: "/api/race",
-      message: String(err?.message || err || "unknown_error")
+      message: String(err?.message || err || "unknown_error"),
+      refreshed_now: refreshMeta?.refreshed_now === true,
+      freshness_status: refreshMeta?.freshness_status || "stale",
+      primary_source_ok: refreshMeta?.primary_source_ok === true,
+      secondary_source_ok: refreshMeta?.secondary_source_ok === true,
+      fallback_used: refreshMeta?.fallback_used === true,
+      last_snapshot_updated_at: refreshMeta?.last_snapshot_updated_at || null
     };
     if (temporaryFeaturePipelineDebug) {
       payload.temporary_backend_debug = temporaryFeaturePipelineDebug;

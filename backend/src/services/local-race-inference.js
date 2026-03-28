@@ -35,6 +35,12 @@ function toPositiveRangeNum(value, { min = Number.NEGATIVE_INFINITY, max = Numbe
   return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
 }
 
+function toTrimmedStringOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
 function getFeaturePredictionMeta(featureSnapshot = {}, field) {
   const meta =
     featureSnapshot?.prediction_field_meta && typeof featureSnapshot.prediction_field_meta === "object"
@@ -266,6 +272,14 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
   const featureEventSnapshot = getPredictionFeatureEventSnapshot(raceId);
   const predictionLogSnapshot = getPredictionLogSnapshot(raceId);
   const playerSnapshotMap = buildPlayerSnapshotMap(featureEventSnapshot || predictionLogSnapshot);
+  const snapshotTimingMeta =
+    snapshotIndex?.metadata?.timing && typeof snapshotIndex.metadata.timing === "object"
+      ? snapshotIndex.metadata.timing
+      : {};
+  const upstreamTimings =
+    snapshotTimingMeta?.upstream && typeof snapshotTimingMeta.upstream === "object"
+      ? snapshotTimingMeta.upstream
+      : {};
 
   const racers = entryRows.map((row) => {
     const lane = toInt(row?.lane, null);
@@ -278,9 +292,14 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
       featureSnapshot?.prediction_field_meta && typeof featureSnapshot.prediction_field_meta === "object"
         ? featureSnapshot.prediction_field_meta
         : {};
+    const lapPredictionMeta = getFeaturePredictionMeta(featureSnapshot, "lapTime") || {};
     const storedLapTime = getUsableFeaturePredictionValue(featureSnapshot, "lapTime", { min: 0.01, max: 20 });
     const storedExhibitionTime = getUsableFeaturePredictionValue(featureSnapshot, "exhibitionTime", { min: 4, max: 9 });
     const storedExhibitionSt = getUsableFeaturePredictionValue(featureSnapshot, "exhibitionST", { min: 0, max: 1 });
+    const storedLapRaw = toTrimmedStringOrNull(
+      lapPredictionMeta?.raw_cell_text ?? lapPredictionMeta?.raw ?? playerSnapshot?.lap_time_raw
+    );
+    const storedLapSource = toTrimmedStringOrNull(lapPredictionMeta?.source ?? lapPredictionMeta?.source_label);
 
     return {
       lane,
@@ -302,17 +321,12 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
       fHoldCount: toInt(row?.f_hold_count, playerSnapshot?.f_hold_count ?? 0),
       lHoldCount: toInt(playerSnapshot?.l_hold_count, null),
       lapTime: storedLapTime,
-      lapTimeRaw: toPositiveRangeNum(
-        getFeaturePredictionMeta(featureSnapshot, "lapTime")?.raw_cell_text ?? playerSnapshot?.lap_time_raw,
-        { min: 30, max: 50 },
-        null
-      ),
+      lapRaw: storedLapRaw,
+      lapSource: storedLapSource,
+      lapTimeRaw: storedLapRaw,
       kyoteiBiyoriLapTime: storedLapTime,
-      kyoteiBiyoriLapTimeRaw: toPositiveRangeNum(
-        getFeaturePredictionMeta(featureSnapshot, "lapTime")?.raw_cell_text ?? playerSnapshot?.lap_time_raw,
-        { min: 30, max: 50 },
-        null
-      ),
+      kyoteiBiyoriLapTimeRaw: storedLapRaw,
+      kyoteiBiyoriLapSource: storedLapSource,
       predictionFieldMeta,
       featureSnapshot,
       playerSnapshot
@@ -373,6 +387,8 @@ export function loadStoredRaceInferenceData({ date, venueId, raceNo, trace = nul
       },
       coverage_report: normalizedCoverageReport,
       coverage_report_summary: normalizedCoverageReport?.summary || snapshotIndex?.metadata?.coverage_report_summary || null,
+      timings: upstreamTimings,
+      fetch_timings: upstreamTimings,
       load_diagnostics: {
         race_id: raceId,
         snapshot_index: snapshotIndex,

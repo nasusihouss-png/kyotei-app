@@ -81,10 +81,25 @@ function buildRefreshMeta({
 
 function buildTransientRefreshData({ transientData, refreshMeta, snapshotIndex }) {
   if (!transientData || typeof transientData !== "object") return null;
+  const snapshotTimingMeta =
+    snapshotIndex?.metadata?.timing && typeof snapshotIndex.metadata.timing === "object"
+      ? snapshotIndex.metadata.timing
+      : {};
+  const upstreamTimings =
+    transientData?.source?.timings && typeof transientData.source.timings === "object"
+      ? transientData.source.timings
+      : snapshotTimingMeta?.upstream && typeof snapshotTimingMeta.upstream === "object"
+        ? snapshotTimingMeta.upstream
+        : {};
   return {
     ...transientData,
     source: {
       ...(transientData?.source || {}),
+      timings: upstreamTimings,
+      fetch_timings:
+        transientData?.source?.fetch_timings && typeof transientData.source.fetch_timings === "object"
+          ? transientData.source.fetch_timings
+          : upstreamTimings,
       refresh_meta: refreshMeta,
       local_snapshots: {
         ...(transientData?.source?.local_snapshots || {}),
@@ -178,6 +193,27 @@ export async function refreshLatestRaceData({
     coverageSummary
   });
 
+  const finalizeSuccess = ({ data }) => {
+    if (typeof trace === "function") {
+      trace("refresh_latest_end", {
+        ...normalizedKey,
+        refreshed_now: refreshMeta.refreshed_now,
+        freshness_status: refreshMeta.freshness_status,
+        primary_source_ok: refreshMeta.primary_source_ok,
+        secondary_source_ok: refreshMeta.secondary_source_ok,
+        refresh_error_code: refreshMeta.refresh_error?.code || null
+      });
+    }
+    return {
+      ok: true,
+      refreshMeta,
+      refreshError,
+      refreshResult,
+      snapshotIndex,
+      data
+    };
+  };
+
   if (!stored?.ok) {
     const transientData = buildTransientRefreshData({
       transientData: refreshResult?.transientData || null,
@@ -185,13 +221,7 @@ export async function refreshLatestRaceData({
       snapshotIndex
     });
     if (transientData?.ok) {
-      return {
-        ok: true,
-        refreshMeta,
-        refreshError,
-        snapshotIndex,
-        data: transientData
-      };
+      return finalizeSuccess({ data: transientData });
     }
     const sourceError = refreshError || createRefreshError(
       "LATEST_SOURCE_UNAVAILABLE",
@@ -217,31 +247,10 @@ export async function refreshLatestRaceData({
     snapshotIndex
   });
   if (latestTransientData?.ok) {
-    return {
-      ok: true,
-      refreshMeta,
-      refreshError,
-      snapshotIndex,
-      data: latestTransientData
-    };
+    return finalizeSuccess({ data: latestTransientData });
   }
 
-  if (typeof trace === "function") {
-    trace("refresh_latest_end", {
-      ...normalizedKey,
-      refreshed_now: refreshMeta.refreshed_now,
-      freshness_status: refreshMeta.freshness_status,
-      primary_source_ok: refreshMeta.primary_source_ok,
-      secondary_source_ok: refreshMeta.secondary_source_ok,
-      refresh_error_code: refreshMeta.refresh_error?.code || null
-    });
-  }
-
-  return {
-    ok: true,
-    refreshMeta,
-    refreshError,
-    snapshotIndex,
+  return finalizeSuccess({
     data: {
       ...stored,
       source: {
@@ -253,5 +262,5 @@ export async function refreshLatestRaceData({
         }
       }
     }
-  };
+  });
 }
