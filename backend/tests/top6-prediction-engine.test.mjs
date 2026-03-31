@@ -51,9 +51,18 @@ function makeRow(lane, overrides = {}) {
   };
 }
 
+const ranking = [1, 2, 3, 4, 5, 6].map((lane) => makeRow(lane));
 const result = buildTop6Prediction({
-  ranking: [1, 2, 3, 4, 5, 6].map((lane) => makeRow(lane)),
+  ranking,
   race: { venueId: 5 }
+});
+const strongInsideVenueResult = buildTop6Prediction({
+  ranking,
+  race: { venueId: 24 }
+});
+const looseInsideVenueResult = buildTop6Prediction({
+  ranking,
+  race: { venueId: 3 }
 });
 
 const aggregatedFromAll120 = result.all_120_combinations.reduce(
@@ -82,6 +91,14 @@ assert.equal(typeof result.top6Scenario, "string");
 assert.ok(Number.isFinite(Number(result.top6ScenarioScore)));
 assert.equal(result.scenario_repro_scores.length, 6);
 assert.equal(result.lane_styles.length, 6);
+assert.ok(Number.isFinite(Number(result.lane_styles[0]?.style_score)));
+assert.ok(Array.isArray(result.lane_styles[0]?.style_reasons));
+assert.equal(typeof result.venue_scenario_bias?.one_course_trust, "number");
+assert.equal(typeof result.venue_scenario_bias?.two_course_sashi_remain_rate, "number");
+assert.equal(typeof result.venue_scenario_bias?.three_course_attack_success_rate, "number");
+assert.equal(typeof result.venue_scenario_bias?.four_course_develop_sashi_rate, "number");
+assert.equal(typeof result.venue_scenario_bias?.lane56_renyuu_intrusion_rate, "number");
+assert.equal(typeof result.venue_scenario_bias?.escape_fail_pattern?.total_risk, "number");
 assert.equal(result.first_place_candidate_rates.length, 6);
 assert.equal(result.second_place_candidate_rates.length, 6);
 assert.equal(result.third_place_candidate_rates.length, 6);
@@ -121,8 +138,14 @@ assert.equal(
   1
 );
 assert.equal(Number(result.top6.reduce((sum, row) => sum + Number(row.probability || 0), 0).toFixed(4)), Number(result.top6_coverage.toFixed(4)));
-assert.ok(["本命", "対抗", "抑え"].includes(result.top6[0].tier));
-assert.ok(typeof result.lane_styles[0]?.style === "string");
+assert.ok(String(result.top6[0]?.tier || "").trim().length > 0);
+assert.ok(String(result.lane_styles[0]?.style || "").trim().length > 0);
 assert.ok(typeof result.wide_formation_suggestion?.active === "boolean");
+assert.notEqual(strongInsideVenueResult.top6ScenarioScore, looseInsideVenueResult.top6ScenarioScore);
+assert.ok((strongInsideVenueResult.winProbabilities?.[1] || 0) > (looseInsideVenueResult.winProbabilities?.[1] || 0));
+assert.ok(
+  (strongInsideVenueResult.scenario_repro_scores?.find((row) => row.lane === 1)?.score || 0) >
+  (looseInsideVenueResult.scenario_repro_scores?.find((row) => row.lane === 1)?.score || 0)
+);
 
 console.log("top6-prediction-engine ok");

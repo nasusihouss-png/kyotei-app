@@ -1,6 +1,13 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+  getVenueEscapeFailPressure,
+  getVenueLaneBiasScore,
+  getVenueScenarioContext,
+  getVenueStyleMatchScore,
+  VENUE_INNER_BIAS
+} from "./venue-scenario-bias.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,12 +25,6 @@ export const HARD_RACE_API_RESPONSE_KEYS = [
   "decision",
   "decision_reason"
 ];
-const VENUE_INNER_BIAS = {
-  1: 0.63, 2: 0.64, 3: 0.51, 4: 0.58, 5: 0.62, 6: 0.64, 7: 0.71, 8: 0.67,
-  9: 0.57, 10: 0.68, 11: 0.64, 12: 0.69, 13: 0.62, 14: 0.56, 15: 0.7, 16: 0.63,
-  17: 0.61, 18: 0.7, 19: 0.73, 20: 0.67, 21: 0.68, 22: 0.64, 23: 0.66, 24: 0.76
-};
-
 function toNum(value, fallback = null) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -246,6 +247,7 @@ function predictionValueFromCoverage(meta, fallbackValue = null) {
 
 function normalizeRaceData({ data }) {
   const venueId = toInt(data?.race?.venueId, null);
+  const venueScenario = getVenueScenarioContext(venueId);
   const lanes = (Array.isArray(data?.racers) ? data.racers : []).map((racer) => {
     const lane = toInt(racer?.lane, null);
     const snapshot =
@@ -330,7 +332,15 @@ function normalizeRaceData({ data }) {
       race_no: toInt(data?.race?.raceNo, null)
     },
     venue: {
-      inside_bias: asField(toNum(VENUE_INNER_BIAS[venueId] ?? 0.62, null) * 100, "stored_lookup", "snapshot.venue.inside_bias")
+      inside_bias: asField(toNum(VENUE_INNER_BIAS[venueId] ?? 0.62, null) * 100, "stored_lookup", "snapshot.venue.inside_bias"),
+      one_course_trust: asField(venueScenario.one_course_trust, "stored_lookup", "snapshot.venue.one_course_trust"),
+      two_course_sashi_remain_rate: asField(venueScenario.two_course_sashi_remain_rate, "stored_lookup", "snapshot.venue.two_course_sashi_remain_rate"),
+      three_course_attack_success_rate: asField(venueScenario.three_course_attack_success_rate, "stored_lookup", "snapshot.venue.three_course_attack_success_rate"),
+      four_course_develop_sashi_rate: asField(venueScenario.four_course_develop_sashi_rate, "stored_lookup", "snapshot.venue.four_course_develop_sashi_rate"),
+      outer_renyuu_entry_rate: asField(venueScenario.outer_renyuu_entry_rate, "stored_lookup", "snapshot.venue.outer_renyuu_entry_rate"),
+      lane56_renyuu_intrusion_rate: asField(venueScenario.lane56_renyuu_intrusion_rate, "stored_lookup", "snapshot.venue.lane56_renyuu_intrusion_rate"),
+      escape_fail_total_risk: asField(venueScenario.escape_fail_pattern?.total_risk, "stored_lookup", "snapshot.venue.escape_fail_total_risk"),
+      profile: venueScenario
     },
     lanes
   };
@@ -339,7 +349,12 @@ function normalizeRaceData({ data }) {
 function laneStyleScenarioScore(laneRow, normalized) {
   const lane = laneRow?.lane;
   const f = laneRow?.features || {};
+  const venueProfile = normalized?.venue?.profile || getVenueScenarioContext(normalized?.race?.venue_id);
   const venueInsideBias = normalized?.venue?.inside_bias?.value ?? 62;
+  const venueLaneBias = getVenueLaneBiasScore(venueProfile, lane);
+  const laneStyleCode =
+    lane === 1 ? "nige" : lane === 2 ? "sashi" : lane === 3 ? "makuri" : lane === 4 ? "makurisashi" : "outside_entry";
+  const venueStyleFit = getVenueStyleMatchScore(venueProfile, lane, laneStyleCode);
   const styleFit =
     lane === 1
       ? scoreBlend([
@@ -374,10 +389,17 @@ function laneStyleScenarioScore(laneRow, normalized) {
             : scoreBlend([
                 { value: f.outer_entry_tendency?.value, weight: 0.26 },
                 { value: f.makuri_rate?.value, weight: 0.18 },
-                { value: f.lane_2ren_rate?.value, weight: 0.16 },
-                { value: f.lane_3ren_rate?.value, weight: 0.18 },
-                { value: f.motor_total_score?.value, weight: 0.22 }
-              ]);
+              { value: f.lane_2ren_rate?.value, weight: 0.16 },
+              { value: f.lane_3ren_rate?.value, weight: 0.18 },
+              { value: f.motor_total_score?.value, weight: 0.22 }
+            ]);
+  const venueEscapeFailFit = lane === 1
+    ? clamp(0, 100, 100 - getVenueEscapeFailPressure(venueProfile, 1))
+    : weightedAverage([
+        { value: getVenueEscapeFailPressure(venueProfile, lane), weight: 0.56 },
+        { value: f.attack_quality?.value, weight: 0.24 },
+        { value: f.lane_course_rate?.value, weight: 0.2 }
+      ]);
 
   const recentPerformanceSupport = scoreBlend([
     { value: safeNorm(f.national_win_rate?.value, 4, 8.5) === null ? null : safeNorm(f.national_win_rate?.value, 4, 8.5) * 100, weight: 0.34 },
@@ -387,8 +409,11 @@ function laneStyleScenarioScore(laneRow, normalized) {
   ]);
 
   return scoreBlend([
-    { value: styleFit, weight: 0.58 },
-    { value: f.lane_course_rate?.value, weight: 0.12 },
+    { value: styleFit, weight: 0.42 },
+    { value: venueLaneBias, weight: 0.14 },
+    { value: venueStyleFit, weight: 0.12 },
+    { value: venueEscapeFailFit, weight: 0.08 },
+    { value: f.lane_course_rate?.value, weight: 0.1 },
     { value: safeNorm(f.motor_3ren?.value, 25, 75) === null ? null : safeNorm(f.motor_3ren?.value, 25, 75) * 100, weight: 0.08 },
     { value: safeNorm(f.motor_total_score?.value, 0, 18) === null ? null : safeNorm(f.motor_total_score?.value, 0, 18) * 100, weight: 0.1 },
     { value: recentPerformanceSupport, weight: 0.12 }
@@ -430,6 +455,7 @@ function buildMissingFieldDetails(normalized) {
 
 function computeScores(normalized) {
   const lanes = new Map((normalized?.lanes || []).map((row) => [row.lane, row]));
+  const venueProfile = normalized?.venue?.profile || getVenueScenarioContext(normalized?.race?.venue_id);
   const boat1 = lanes.get(1);
   const lane2 = lanes.get(2);
   const lane3 = lanes.get(3);
@@ -483,17 +509,28 @@ function computeScores(normalized) {
     { value: invNorm(f1.avg_st.value, 0.11, 0.24) === null ? null : invNorm(f1.avg_st.value, 0.11, 0.24) * 100, weight: 0.12 },
     { value: invNorm((f1.f_count.value || 0) * 0.8 + (f1.l_count.value || 0) * 0.4, 0, 2.5) === null ? null : invNorm((f1.f_count.value || 0) * 0.8 + (f1.l_count.value || 0) * 0.4, 0, 2.5) * 100, weight: 0.1 },
     { value: safeNorm(weightedAverage([{ value: f1.motor_2ren.value, weight: 0.6 }, { value: f1.boat_2ren.value, weight: 0.4 }]), 20, 60) === null ? null : safeNorm(weightedAverage([{ value: f1.motor_2ren.value, weight: 0.6 }, { value: f1.boat_2ren.value, weight: 0.4 }]), 20, 60) * 100, weight: 0.14 },
-    { value: normalized?.venue?.inside_bias?.value ?? null, weight: 0.13 }
+    { value: normalized?.venue?.inside_bias?.value ?? null, weight: 0.08 },
+    { value: venueProfile?.one_course_trust, weight: 0.08 },
+    { value: clamp(0, 100, 100 - getVenueEscapeFailPressure(venueProfile, 1)), weight: 0.05 }
   ]);
 
   const laneRemainScore = (laneRow, role = "generic") => {
     const f = laneRow.features;
+    const lane = laneRow?.lane;
+    const venueLaneBias = getVenueLaneBiasScore(venueProfile, lane);
+    const venueStyleFit = getVenueStyleMatchScore(
+      venueProfile,
+      lane,
+      role === "attack" ? "makuri" : role === "develop" ? "makurisashi" : role === "outside" ? "outside_entry" : "sashi"
+    );
     return scoreBlend([
       { value: f.lane_course_rate.value, weight: 0.3 },
-      { value: f.attack_quality.value, weight: role === "attack" ? 0.28 : 0.18 },
+      { value: f.attack_quality.value, weight: role === "attack" ? 0.24 : 0.16 },
       { value: safeNorm(f.motor_total_score.value, 0, 18) === null ? null : safeNorm(f.motor_total_score.value, 0, 18) * 100, weight: 0.16 },
       { value: invNorm(f.avg_st.value, 0.11, 0.24) === null ? null : invNorm(f.avg_st.value, 0.11, 0.24) * 100, weight: 0.18 },
-      { value: safeNorm(f.entry_advantage_score.value, 0, 14) === null ? null : safeNorm(f.entry_advantage_score.value, 0, 14) * 100, weight: 0.18 }
+      { value: safeNorm(f.entry_advantage_score.value, 0, 14) === null ? null : safeNorm(f.entry_advantage_score.value, 0, 14) * 100, weight: 0.12 },
+      { value: venueLaneBias, weight: 0.04 },
+      { value: venueStyleFit, weight: 0.04 }
     ]);
   };
 
@@ -559,10 +596,13 @@ function computeScores(normalized) {
     { value: pair34.value, weight: 0.33 }
   ]);
   const opponent234Fit = scoreBlend([
-    { value: pairSupportFit, weight: 0.46 },
-    { value: lane2SecondRemain, weight: 0.18 },
-    { value: lane3AttackRemain, weight: 0.18 },
-    { value: lane4DevelopRemain, weight: 0.18 }
+    { value: pairSupportFit, weight: 0.38 },
+    { value: lane2SecondRemain, weight: 0.14 },
+    { value: lane3AttackRemain, weight: 0.14 },
+    { value: lane4DevelopRemain, weight: 0.14 },
+    { value: venueProfile?.two_course_sashi_remain_rate, weight: 0.06 },
+    { value: venueProfile?.three_course_attack_success_rate, weight: 0.07 },
+    { value: venueProfile?.four_course_develop_sashi_rate, weight: 0.07 }
   ]);
 
   const killEscapeRisk = resolveMetricWithFallback({
@@ -598,24 +638,27 @@ function computeScores(normalized) {
   }).value;
 
   const outsideHeadRisk = scoreBlend([
-    { value: lane5Pressure, weight: 0.27 },
-    { value: lane6Pressure, weight: 0.27 },
+    { value: lane5Pressure, weight: 0.24 },
+    { value: lane6Pressure, weight: 0.24 },
     { value: lane5?.features?.makuri_rate?.value, weight: 0.12 },
     { value: lane6?.features?.makuri_rate?.value, weight: 0.12 },
-    { value: lane5ScenarioRepro, weight: 0.11 },
-    { value: lane6ScenarioRepro, weight: 0.11 }
+    { value: lane5ScenarioRepro, weight: 0.09 },
+    { value: lane6ScenarioRepro, weight: 0.09 },
+    { value: venueProfile?.outer_renyuu_entry_rate, weight: 0.1 }
   ]);
   const outside2ndRisk = clamp(0, 1, (scoreBlend([
-    { value: lane5Pressure, weight: 0.34 },
-    { value: lane6Pressure, weight: 0.34 },
+    { value: lane5Pressure, weight: 0.3 },
+    { value: lane6Pressure, weight: 0.3 },
     { value: lane5?.features?.outer_entry_tendency?.value, weight: 0.16 },
-    { value: lane6?.features?.outer_entry_tendency?.value, weight: 0.16 }
+    { value: lane6?.features?.outer_entry_tendency?.value, weight: 0.16 },
+    { value: venueProfile?.outer_renyuu_entry_rate, weight: 0.08 }
   ]) || 0) / 100);
   const outside3rdRisk = clamp(0, 1, (scoreBlend([
-    { value: lane5?.features?.lane_course_rate?.value, weight: 0.36 },
-    { value: lane6?.features?.lane_course_rate?.value, weight: 0.36 },
+    { value: lane5?.features?.lane_course_rate?.value, weight: 0.32 },
+    { value: lane6?.features?.lane_course_rate?.value, weight: 0.32 },
     { value: lane5?.features?.motor_total_score?.value, weight: 0.14 },
-    { value: lane6?.features?.motor_total_score?.value, weight: 0.14 }
+    { value: lane6?.features?.motor_total_score?.value, weight: 0.14 },
+    { value: venueProfile?.lane56_renyuu_intrusion_rate, weight: 0.08 }
   ]) || 0) / 100);
   const outsideBoxBreakRisk = clamp(0, 1, weightedAverage([
     { value: (outsideHeadRisk || 0) / 100, weight: 0.48 },
@@ -687,12 +730,19 @@ function computeScores(normalized) {
   const fit234Index = round(opponent234Fit, 1);
   const outsideBreakRiskPre = round(outsideBreakRisk, 4);
   const hardRaceIndex = round(scoreBlend([
-    { value: boat1EscapeTrust, weight: 0.34 },
-    { value: pairSupportFit, weight: 0.2 },
+    { value: boat1EscapeTrust, weight: 0.27 },
+    { value: pairSupportFit, weight: 0.15 },
     { value: opponent234Fit, weight: 0.16 },
-    { value: fixed1234TotalProbability * 100, weight: 0.16 },
+    { value: fixed1234TotalProbability * 100, weight: 0.14 },
     { value: (1 - outsideBreakRisk) * 100, weight: 0.08 },
-    { value: scenarioReproScore, weight: 0.06 }
+    { value: scenarioReproScore, weight: 0.08 },
+    { value: venueProfile?.one_course_trust, weight: 0.05 },
+    { value: clamp(0, 100, 100 - toNum(venueProfile?.escape_fail_pattern?.total_risk, 28)), weight: 0.04 },
+    { value: weightedAverage([
+      { value: venueProfile?.two_course_sashi_remain_rate, weight: 0.34 },
+      { value: venueProfile?.three_course_attack_success_rate, weight: 0.33 },
+      { value: venueProfile?.four_course_develop_sashi_rate, weight: 0.33 }
+    ]), weight: 0.03 }
   ]), 1);
 
   const unresolved = [];
@@ -772,6 +822,7 @@ function computeScores(normalized) {
       p1_formula: "pre-race blend of lane1 course-head rate, nationwide/local win rate, avg ST, F/L safety, motor/boat strength, venue bias, 3/4-course pressure, and outside head pressure",
       scenario_repro_score: round(scenarioReproScore, 1),
       lane_scenario_repro_scores: laneScenarioScores,
+      venue_scenario_bias: venueProfile,
       top4_share_within_fixed1234: round(fixed1234ShapeConcentration, 4),
       conditional_probabilities: {
         p_1st_1: round(headProbMap[1], 4),
@@ -908,6 +959,7 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo })
     raw_saved_paths: saved.rawSavedPaths,
     parsed_saved_paths: saved.parsedSavedPaths,
     normalized_data: normalizedData,
+    venue_scenario_bias: normalizedData?.venue?.profile || null,
     features: {
       ...computed.features,
       source_summary: sourceSummary

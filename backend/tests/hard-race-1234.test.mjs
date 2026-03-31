@@ -32,6 +32,24 @@ const result = await buildHardRace1234Response({
   venueId: 5,
   raceNo: 1
 });
+const strongInsideVenueResult = await buildHardRace1234Response({
+  data: {
+    ...baseData,
+    race: { ...baseData.race, venueId: 24, venueName: "Omura" }
+  },
+  date: "2026-03-21",
+  venueId: 24,
+  raceNo: 1
+});
+const looseInsideVenueResult = await buildHardRace1234Response({
+  data: {
+    ...baseData,
+    race: { ...baseData.race, venueId: 3, venueName: "Edogawa" }
+  },
+  date: "2026-03-21",
+  venueId: 3,
+  raceNo: 1
+});
 
 const exhibitionShifted = JSON.parse(JSON.stringify(baseData));
 exhibitionShifted.racers = exhibitionShifted.racers.map((racer, index) => ({
@@ -51,6 +69,12 @@ assert.ok(["READY", "FALLBACK", "BROKEN_PIPELINE"].includes(result.data_status))
 assert.equal(result.confidence_status, result.data_status);
 assert.equal(typeof result.hardScenario, "string");
 assert.equal(typeof result.hardScenarioScore, "number");
+assert.equal(typeof result.venue_scenario_bias?.one_course_trust, "number");
+assert.equal(typeof result.venue_scenario_bias?.two_course_sashi_remain_rate, "number");
+assert.equal(typeof result.venue_scenario_bias?.three_course_attack_success_rate, "number");
+assert.equal(typeof result.venue_scenario_bias?.four_course_develop_sashi_rate, "number");
+assert.equal(typeof result.venue_scenario_bias?.lane56_renyuu_intrusion_rate, "number");
+assert.equal(typeof result.venue_scenario_bias?.escape_fail_pattern?.total_risk, "number");
 assert.deepEqual(HARD_RACE_API_RESPONSE_KEYS, [
   "boat1_head_pre",
   "boat1_escape_trust",
@@ -130,5 +154,8 @@ assert.equal(result.hard_race_index, resultWithoutDisplayImpact.hard_race_index)
 assert.equal(result.fit_234_index, resultWithoutDisplayImpact.fit_234_index);
 assert.equal(result.outside_break_risk_pre, resultWithoutDisplayImpact.outside_break_risk_pre);
 assert.equal(result.scenario_repro_score, resultWithoutDisplayImpact.scenario_repro_score);
+assert.ok(strongInsideVenueResult.boat1_head_pre > looseInsideVenueResult.boat1_head_pre);
+assert.notEqual(strongInsideVenueResult.hard_race_index, looseInsideVenueResult.hard_race_index);
+assert.notEqual(strongInsideVenueResult.scenario_repro_score, looseInsideVenueResult.scenario_repro_score);
 
 console.log("hard-race-1234 ok");

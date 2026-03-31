@@ -301,6 +301,62 @@ function sortRacersByLane(racers = []) {
   });
 }
 
+export function applyLaneStylesToRacers(racers = [], pureTop6Prediction = null) {
+  const laneStyles = Array.isArray(pureTop6Prediction?.lane_styles) ? pureTop6Prediction.lane_styles : [];
+  const scenarioStyleRows = Array.isArray(pureTop6Prediction?.scenario_repro_scores)
+    ? pureTop6Prediction.scenario_repro_scores
+    : [];
+  const styleByLane = new Map(
+    laneStyles
+      .map((row) => [toInt(row?.lane, null), row])
+      .filter((row) => Number.isInteger(row[0]))
+  );
+  const scenarioByLane = new Map(
+    scenarioStyleRows
+      .map((row) => [toInt(row?.lane, null), row])
+      .filter((row) => Number.isInteger(row[0]))
+  );
+  for (const row of scenarioStyleRows) {
+    const lane = toInt(row?.lane, null);
+    if (!Number.isInteger(lane)) continue;
+    const current = styleByLane.get(lane) || {};
+    const currentStyle = String(current?.style || "").trim();
+    const currentStyleCode = String(current?.style_code || "").trim();
+    const currentReasons = Array.isArray(current?.style_reasons) ? current.style_reasons : [];
+    styleByLane.set(lane, {
+      ...current,
+      lane,
+      style: currentStyle || row?.style || null,
+      style_code: currentStyleCode || row?.style_code || null,
+      style_score:
+        current?.style_score !== null && current?.style_score !== undefined && current?.style_score !== ""
+          ? current.style_score
+          : row?.score ?? null,
+      style_reasons: currentReasons.length > 0
+        ? currentReasons
+        : Array.isArray(row?.style_reasons)
+          ? row.style_reasons
+          : []
+    });
+  }
+  return (Array.isArray(racers) ? racers : []).map((racer) => {
+    const lane = toInt(racer?.lane, null);
+    const styleMeta = styleByLane.get(lane) || {};
+    const scenarioMeta = scenarioByLane.get(lane) || {};
+    const style = String(styleMeta?.style || "").trim() || "unknown";
+    const styleCode = String(styleMeta?.style_code || "").trim() || "unknown";
+    const styleScore = toNullableNum(scenarioMeta?.score ?? styleMeta?.style_score);
+    const styleReasons = Array.isArray(styleMeta?.style_reasons) ? styleMeta.style_reasons : [];
+    return {
+      ...racer,
+      style,
+      style_code: styleCode,
+      style_score: styleScore,
+      style_reasons: styleReasons
+    };
+  });
+}
+
 function buildApiEntryPayload({ lane, entryMeta, fallbackEntryCourse = null }) {
   const baseLane = toNullableNum(lane);
   const perBoatLaneMap =
@@ -2992,6 +3048,9 @@ export function buildPureInferencePredictionPayload(data = {}) {
     ranking: derivedRanking,
     top3: Array.isArray(storedPrediction?.top3) && storedPrediction.top3.length === 3 ? storedPrediction.top3 : fallbackTop3,
     pure_top6_prediction: pureTop6Prediction || storedPrediction?.pure_top6_prediction || null,
+    lane_styles: pureTop6Prediction?.lane_styles || null,
+    scenario_style_trace: pureTop6Prediction?.lane_styles || null,
+    venue_scenario_bias: pureTop6Prediction?.venue_scenario_bias || null,
     winProbabilities: pureTop6Prediction?.winProbabilities || null,
     secondProbabilities: pureTop6Prediction?.secondProbabilities || null,
     thirdProbabilities: pureTop6Prediction?.thirdProbabilities || null,
@@ -3015,6 +3074,9 @@ export function buildPureInferencePredictionPayload(data = {}) {
     storedPrediction,
     pureTop6Prediction,
     prediction,
+    lane_styles: pureTop6Prediction?.lane_styles || null,
+    scenario_style_trace: pureTop6Prediction?.lane_styles || null,
+    venue_scenario_bias: pureTop6Prediction?.venue_scenario_bias || null,
     winProbabilities: pureTop6Prediction?.winProbabilities || null,
     secondProbabilities: pureTop6Prediction?.secondProbabilities || null,
     thirdProbabilities: pureTop6Prediction?.thirdProbabilities || null,
@@ -10393,6 +10455,21 @@ raceRouter.get("/race", async (req, res, next) => {
         }
       };
       const pureTop6Prediction = purePredictionBundle.pureTop6Prediction;
+      const styledApiRacers = applyLaneStylesToRacers(apiRacers, pureTop6Prediction);
+      console.info("[RACE_API][style_injection:pure_inference]", JSON.stringify({
+        route: "/api/race",
+        raceId: data.raceId || data.source?.race_id || null,
+        lane_styles_count: Array.isArray(pureTop6Prediction?.lane_styles) ? pureTop6Prediction.lane_styles.length : 0,
+        first_lane_style: pureTop6Prediction?.lane_styles?.[0] || null,
+        first_racer_style: styledApiRacers?.[0]
+          ? {
+              lane: styledApiRacers[0].lane,
+              style: styledApiRacers[0].style,
+              style_score: styledApiRacers[0].style_score,
+              style_reasons: styledApiRacers[0].style_reasons
+            }
+          : null
+      }));
       routeTimings.inference_ms = Date.now() - inferenceStartedAt;
       routeTimings.prediction_build_ms = routeTimings.inference_ms;
       routeTimings.total_response_ms = Date.now() - routeStartedAt;
@@ -10407,10 +10484,13 @@ raceRouter.get("/race", async (req, res, next) => {
       return res.json({
         source: data.source || {},
         race: data.race,
-        racers: apiRacers,
+        racers: styledApiRacers,
         raceId: data.raceId || data.source?.race_id || null,
         pureTop6Prediction,
         prediction,
+        lane_styles: pureTop6Prediction?.lane_styles || prediction?.lane_styles || null,
+        scenario_style_trace: pureTop6Prediction?.lane_styles || prediction?.scenario_style_trace || null,
+        venue_scenario_bias: pureTop6Prediction?.venue_scenario_bias || prediction?.venue_scenario_bias || null,
         winProbabilities: pureTop6Prediction?.winProbabilities || prediction?.winProbabilities || null,
         secondProbabilities: pureTop6Prediction?.secondProbabilities || prediction?.secondProbabilities || null,
         thirdProbabilities: pureTop6Prediction?.thirdProbabilities || prediction?.thirdProbabilities || null,
@@ -11411,6 +11491,21 @@ raceRouter.get("/race", async (req, res, next) => {
       ranking,
       race: data?.race || null
     });
+    const styledApiRacers = applyLaneStylesToRacers(apiRacers, pureTop6Prediction);
+    console.info("[RACE_API][style_injection:full_route]", JSON.stringify({
+      route: "/api/race",
+      raceId,
+      lane_styles_count: Array.isArray(pureTop6Prediction?.lane_styles) ? pureTop6Prediction.lane_styles.length : 0,
+      first_lane_style: pureTop6Prediction?.lane_styles?.[0] || null,
+      first_racer_style: styledApiRacers?.[0]
+        ? {
+            lane: styledApiRacers[0].lane,
+            style: styledApiRacers[0].style,
+            style_score: styledApiRacers[0].style_score,
+            style_reasons: styledApiRacers[0].style_reasons
+          }
+        : null
+    }));
     const segmentCorrectionUsage = buildSegmentCorrectionUsageSummary({
       learningWeights,
       race: data?.race || null,
@@ -12591,7 +12686,7 @@ raceRouter.get("/race", async (req, res, next) => {
     return res.json({
       source: data.source || {},
       race: data.race,
-      racers: apiRacers,
+      racers: styledApiRacers,
       kyoteibiyori_debug:
         data?.kyoteibiyori_debug ||
         data?.source?.kyotei_biyori?.kyoteibiyori_debug ||
@@ -12654,6 +12749,8 @@ raceRouter.get("/race", async (req, res, next) => {
       },
       recommendedShape: safeRecommendedShape,
       pureTop6Prediction,
+      lane_styles: pureTop6Prediction?.lane_styles || null,
+      scenario_style_trace: pureTop6Prediction?.lane_styles || null,
       prediction: predictionWithEntry,
       predicted_entry_order: entryMeta.predicted_entry_order,
       actual_entry_order: entryMeta.actual_entry_order,

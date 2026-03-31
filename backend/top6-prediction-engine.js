@@ -1,3 +1,10 @@
+import {
+  getVenueEscapeFailPressure,
+  getVenueLaneBiasScore,
+  getVenueScenarioContext,
+  getVenueStyleMatchScore
+} from "./src/services/venue-scenario-bias.js";
+
 function toNum(value, fallback = null) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -11,6 +18,17 @@ function round(value, digits = 4) {
   if (!Number.isFinite(Number(value))) return null;
   return Number(Number(value).toFixed(digits));
 }
+
+const STYLE_LABELS = {
+  nige: "イン逃げ型",
+  sashi: "差し型",
+  makuri: "まくり型",
+  makurisashi: "まくり差し型",
+  tenkai_machi: "展開待ち型",
+  outside_entry: "外連入型",
+  start_attack: "スタート勝負型",
+  stable_hold: "安定残し型"
+};
 
 function weightedAverage(values) {
   const present = (Array.isArray(values) ? values : []).filter(
@@ -144,6 +162,73 @@ function determinePrimaryStyle(styleScores = {}) {
   };
 }
 
+function determinePrimaryStyleEnhanced(styleScores = {}) {
+  const styleEntries = Object.entries(styleScores)
+    .map(([key, value]) => ({ key, value: Number(value) || 0 }))
+    .sort((a, b) => b.value - a.value);
+  const winner = styleEntries[0]?.key || "tenkai_machi";
+  return {
+    code: winner,
+    label: STYLE_LABELS[winner] || STYLE_LABELS.tenkai_machi
+  };
+}
+
+function buildStyleReasons(profile = {}, styleCode = "") {
+  const reasons = [];
+  const pushReason = (label, value, formatter = (input) => input) => {
+    if (value === null || value === undefined || value === "") return;
+    reasons.push(`${label}:${formatter(value)}`);
+  };
+  const toPct = (value) => `${round(value, 1)}%`;
+  const toMetric = (value) => String(round(value, 2));
+
+  pushReason("全国勝率", profile.nationwideWinRate, toMetric);
+  pushReason("当地勝率", profile.localWinRate, toMetric);
+  pushReason("平均ST", profile.avgSt, toMetric);
+  if (Number.isFinite(Number(profile.fCount)) || Number.isFinite(Number(profile.lCount))) {
+    reasons.push(`F/L:${Number(profile.fCount || 0)}/${Number(profile.lCount || 0)}`);
+  }
+
+  if (styleCode === "nige") {
+    pushReason("イン実績", profile.courseHeadRate, toPct);
+    pushReason("1着率", profile.lane1stRate, toPct);
+  } else if (styleCode === "sashi") {
+    pushReason("差し率", profile.sashiRate, toPct);
+    pushReason("2連率", profile.lane2RenRate, toPct);
+    pushReason("得意コース", profile.course2Rate, toPct);
+  } else if (styleCode === "makuri") {
+    pushReason("まくり率", profile.makuriRate, toPct);
+    pushReason("攻撃指数", profile.attackRate, toPct);
+    pushReason("最近成績", profile.recentPerformanceIndex, toPct);
+  } else if (styleCode === "makurisashi") {
+    pushReason("まくり差し率", profile.makuriSashiRate, toPct);
+    pushReason("差し支援", profile.supportRate, toPct);
+    pushReason("3連率", profile.lane3RenRate, toPct);
+  } else if (styleCode === "outside_entry") {
+    pushReason("前づけ傾向", profile.zentsukeTendency, toPct);
+    pushReason("外進入再現", profile.outsideEntryRepro, toPct);
+    pushReason("突破率", profile.breakoutRate, toPct);
+  } else if (styleCode === "start_attack") {
+    pushReason("スタート攻撃", profile.attackRate, toPct);
+    pushReason("突破率", profile.breakoutRate, toPct);
+    pushReason("最近成績", profile.recentPerformanceIndex, toPct);
+  } else if (styleCode === "stable_hold") {
+    pushReason("安定指数", profile.stability, toPct);
+    pushReason("残し率", profile.lane3RenRate, toPct);
+    pushReason("最近成績", profile.recentPerformanceIndex, toPct);
+  } else {
+    pushReason("展開待ち適性", profile.supportRate, toPct);
+    pushReason("得意コース", profile.course3Rate ?? profile.course2Rate, toPct);
+    pushReason("最近成績", profile.recentPerformanceIndex, toPct);
+  }
+
+  if (reasons.length < 6) {
+    pushReason("決まり手再現", profile.kimariteHistoryIndex, toPct);
+    pushReason("得意技", profile.styleScores?.[styleCode], toPct);
+  }
+  return reasons.slice(0, 6);
+}
+
 function buildLaneProfile(row = {}) {
   const racer = row?.racer || {};
   const features = row?.features || {};
@@ -244,16 +329,15 @@ function buildLaneProfile(row = {}) {
     ])
   };
   profile.styleScores = buildStyleScores(profile);
-  profile.style = determinePrimaryStyle(profile.styleScores);
+  profile.style = determinePrimaryStyleEnhanced(profile.styleScores);
+  profile.styleScore = round(profile.styleScores?.[profile.style?.code] || 0, 1);
+  profile.styleReasons = buildStyleReasons(profile, profile.style?.code);
   return profile;
 }
 
-function buildScenarioReproScore(profile, venueInsideBias = 0.62) {
-  const venueBias = profile.lane === 1
-    ? venueInsideBias * 100
-    : profile.lane >= 5
-      ? clamp(18, 84, 30 + (profile.outsideEntryRepro || 40) * 0.62)
-      : clamp(18, 84, 26 + (profile.courseFit || 0) * 4 + (profile.course2Rate || profile.course3Rate || 50) * 0.42);
+function buildScenarioReproScore(profile, venueContext = {}, raceContext = {}) {
+  const venueBias = getVenueLaneBiasScore(venueContext, profile.lane);
+  const venueKimariteFit = getVenueStyleMatchScore(venueContext, profile.lane, profile.style?.code);
   const styleFit = weightedAverage([
     { value: profile.styleScores?.nige, weight: profile.lane === 1 ? 0.38 : 0.08 },
     { value: profile.styleScores?.sashi, weight: profile.lane === 2 ? 0.28 : 0.12 },
@@ -268,6 +352,29 @@ function buildScenarioReproScore(profile, venueInsideBias = 0.62) {
     { value: profile.stability, weight: 0.24 },
     { value: profile.supportRate, weight: 0.22 }
   ]);
+  const lane56EntryRepro = profile.lane >= 5
+    ? weightedAverage([
+        { value: profile.outsideEntryRepro, weight: 0.52 },
+        { value: venueContext?.lane56_renyuu_intrusion_rate, weight: 0.3 },
+        { value: raceContext?.outsideHeadPressure, weight: 0.18 }
+      ])
+    : weightedAverage([
+        { value: profile.outsideEntryRepro, weight: 0.6 },
+        { value: venueContext?.lane56_renyuu_intrusion_rate, weight: 0.4 }
+      ]);
+  const escapeFailConditionScore = profile.lane === 1
+    ? clamp(0, 100, 100 - toNum(venueContext?.escape_fail_pattern?.total_risk, 28))
+    : weightedAverage([
+        { value: getVenueEscapeFailPressure(venueContext, profile.lane), weight: 0.54 },
+        { value: profile.attackRate, weight: 0.24 },
+        { value: profile.supportRate, weight: 0.22 }
+      ]);
+  const preferredCourseFit = weightedAverage([
+    { value: profile.courseHeadRate ?? profile.course2Rate ?? profile.course3Rate, weight: 0.48 },
+    { value: profile.courseFit === null ? null : normalize(profile.courseFit, -2, 8) * 100, weight: 0.28 },
+    { value: profile.lane1stRate ?? profile.lane2RenRate ?? profile.lane3RenRate, weight: 0.24 }
+  ]);
+  const preferredTechniqueFit = profile.styleScores?.[profile.style?.code] ?? null;
   const optionalDisplaySupport = weightedAverage([
     { value: invertNormalize(profile.exhibitionSt, 0.08, 0.22) === null ? null : invertNormalize(profile.exhibitionSt, 0.08, 0.22) * 100, weight: 0.28 },
     { value: invertNormalize(profile.exhibitionTime, 6.55, 7.15) === null ? null : invertNormalize(profile.exhibitionTime, 6.55, 7.15) * 100, weight: 0.34 },
@@ -275,11 +382,15 @@ function buildScenarioReproScore(profile, venueInsideBias = 0.62) {
   ]);
   return weightedAverage([
     { value: venueBias, weight: 0.14 },
-    { value: styleFit, weight: 0.28 },
-    { value: profile.kimariteHistoryIndex, weight: 0.16 },
-    { value: profile.recentPerformanceIndex, weight: 0.16 },
-    { value: profile.outsideEntryRepro, weight: 0.08 },
-    { value: escapeFailConditionResist, weight: 0.12 },
+    { value: venueKimariteFit, weight: 0.1 },
+    { value: styleFit, weight: 0.18 },
+    { value: profile.kimariteHistoryIndex, weight: 0.12 },
+    { value: lane56EntryRepro, weight: 0.08 },
+    { value: escapeFailConditionScore, weight: 0.08 },
+    { value: escapeFailConditionResist, weight: 0.08 },
+    { value: profile.recentPerformanceIndex, weight: 0.1 },
+    { value: preferredCourseFit, weight: 0.07 },
+    { value: preferredTechniqueFit, weight: 0.05 },
     { value: optionalDisplaySupport, weight: 0.06 }
   ]);
 }
@@ -296,14 +407,16 @@ function describeTop6Scenario(profiles = [], top6 = [], chaosValue = 0) {
   return "outside_mix_flow";
 }
 
-function firstPlaceScore(profile, venueInsideBias = 0.62, raceContext = {}) {
-  const laneBias = profile.lane === 1 ? venueInsideBias * 100 : clamp(18, 82, 78 - (profile.lane - 1) * 10);
+function firstPlaceScore(profile, venueContext = {}, raceContext = {}) {
+  const laneBias = getVenueLaneBiasScore(venueContext, profile.lane);
+  const venueStyleFit = getVenueStyleMatchScore(venueContext, profile.lane, profile.style?.code);
   const flSafety = invertNormalize((profile.fCount || 0) * 0.9 + (profile.lCount || 0) * 0.45, 0, 2.5);
   const escapeThreatPenalty = profile.lane === 1
     ? weightedAverage([
         { value: 100 - toNum(raceContext?.lane3Makuri, 50), weight: 0.44 },
         { value: 100 - toNum(raceContext?.lane4Breakout, 50), weight: 0.28 },
-        { value: 100 - toNum(raceContext?.outsideHeadPressure, 50), weight: 0.28 }
+        { value: 100 - toNum(raceContext?.outsideHeadPressure, 50), weight: 0.18 },
+        { value: 100 - getVenueEscapeFailPressure(venueContext, 1), weight: 0.1 }
       ])
     : null;
   return weightedAverage([
@@ -314,6 +427,7 @@ function firstPlaceScore(profile, venueInsideBias = 0.62, raceContext = {}) {
     { value: normalize(weightedAverage([{ value: profile.motor2, weight: 0.58 }, { value: profile.boat2, weight: 0.42 }]), 20, 60) === null ? null : normalize(weightedAverage([{ value: profile.motor2, weight: 0.58 }, { value: profile.boat2, weight: 0.42 }]), 20, 60) * 100, weight: 0.12 },
     { value: normalize(profile.courseHeadRate ?? profile.course2Rate ?? profile.course3Rate, 18, 80) === null ? null : normalize(profile.courseHeadRate ?? profile.course2Rate ?? profile.course3Rate, 18, 80) * 100, weight: 0.14 },
     { value: laneBias, weight: 0.08 },
+    { value: venueStyleFit, weight: 0.04 },
     { value: profile.recentPerformanceIndex, weight: 0.08 },
     { value: profile.scenarioReproScore, weight: 0.08 },
     { value: escapeThreatPenalty, weight: 0.04 },
@@ -323,9 +437,11 @@ function firstPlaceScore(profile, venueInsideBias = 0.62, raceContext = {}) {
   ]);
 }
 
-function secondPlaceScore(profile, headProfile, raceContext = {}) {
+function secondPlaceScore(profile, headProfile, raceContext = {}, venueContext = {}) {
   const laneRelation = clamp(0, 100, 82 - Math.abs(profile.lane - headProfile.lane) * 8);
   const outsideBoost = profile.lane >= 5 ? toNum(raceContext?.outside2ndPressure, 0) : 0;
+  const venueLaneBias = getVenueLaneBiasScore(venueContext, profile.lane);
+  const venueStyleFit = getVenueStyleMatchScore(venueContext, profile.lane, profile.style?.code);
   return weightedAverage([
     { value: profile.supportRate, weight: 0.26 },
     { value: normalize(profile.course2Rate ?? profile.course3Rate, 18, 80) === null ? null : normalize(profile.course2Rate ?? profile.course3Rate, 18, 80) * 100, weight: 0.2 },
@@ -333,6 +449,8 @@ function secondPlaceScore(profile, headProfile, raceContext = {}) {
     { value: normalize(profile.motor2, 20, 60) === null ? null : normalize(profile.motor2, 20, 60) * 100, weight: 0.11 },
     { value: profile.styleScores?.sashi, weight: 0.1 },
     { value: profile.styleScores?.makurisashi, weight: 0.08 },
+    { value: venueLaneBias, weight: 0.05 },
+    { value: venueStyleFit, weight: 0.03 },
     { value: laneRelation, weight: 0.05 },
     { value: outsideBoost, weight: 0.03 },
     { value: profile.recentPerformanceIndex, weight: 0.05 },
@@ -341,7 +459,7 @@ function secondPlaceScore(profile, headProfile, raceContext = {}) {
   ]);
 }
 
-function thirdPlaceScore(profile, headProfile, secondProfile, raceContext = {}) {
+function thirdPlaceScore(profile, headProfile, secondProfile, raceContext = {}, venueContext = {}) {
   const developmentGap = clamp(
     0,
     100,
@@ -354,6 +472,8 @@ function thirdPlaceScore(profile, headProfile, secondProfile, raceContext = {}) 
     )
   );
   const outsideThirdBoost = profile.lane >= 5 ? toNum(raceContext?.outside3rdPressure, 0) : 0;
+  const venueLaneBias = getVenueLaneBiasScore(venueContext, profile.lane);
+  const venueStyleFit = getVenueStyleMatchScore(venueContext, profile.lane, profile.style?.code);
   return weightedAverage([
     { value: normalize(profile.course3Rate ?? profile.course2Rate, 18, 85) === null ? null : normalize(profile.course3Rate ?? profile.course2Rate, 18, 85) * 100, weight: 0.24 },
     { value: profile.stability, weight: 0.2 },
@@ -361,6 +481,8 @@ function thirdPlaceScore(profile, headProfile, secondProfile, raceContext = {}) 
     { value: invertNormalize(profile.avgSt, 0.11, 0.24) === null ? null : invertNormalize(profile.avgSt, 0.11, 0.24) * 100, weight: 0.1 },
     { value: normalize(profile.motor2, 20, 60) === null ? null : normalize(profile.motor2, 20, 60) * 100, weight: 0.1 },
     { value: profile.styleScores?.tenkai_machi, weight: 0.08 },
+    { value: venueLaneBias, weight: 0.04 },
+    { value: venueStyleFit, weight: 0.02 },
     { value: developmentGap, weight: 0.08 },
     { value: outsideThirdBoost, weight: 0.02 },
     { value: invertNormalize(profile.lapGapFromBest, 0, 0.25) === null ? null : invertNormalize(profile.lapGapFromBest, 0, 0.25) * 100, weight: 0.04 },
@@ -463,9 +585,9 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     .sort((a, b) => a.lane - b.lane);
   if (profiles.length !== 6) return null;
 
-  const venueInsideBias = Number(VENUE_BIAS_BY_ID?.[Number(race?.venueId)] ?? 0.62);
+  const venueContext = getVenueScenarioContext(race?.venueId);
   profiles.forEach((profile) => {
-    profile.scenarioReproScore = buildScenarioReproScore(profile, venueInsideBias);
+    profile.scenarioReproScore = buildScenarioReproScore(profile, venueContext);
   });
 
   const lane3 = profiles.find((row) => row.lane === 3) || {};
@@ -488,8 +610,9 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
       { value: lane6.attackRate, weight: 0.22 },
       { value: lane5.makuriRate, weight: 0.16 },
       { value: lane6.makuriRate, weight: 0.16 },
-      { value: lane5.scenarioReproScore, weight: 0.12 },
-      { value: lane6.scenarioReproScore, weight: 0.12 }
+      { value: lane5.scenarioReproScore, weight: 0.1 },
+      { value: lane6.scenarioReproScore, weight: 0.1 },
+      { value: venueContext?.outer_renyuu_entry_rate, weight: 0.04 }
     ]),
     outside2ndPressure: weightedAverage([
       { value: lane5.supportRate, weight: 0.34 },
@@ -501,13 +624,17 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
       { value: lane5.course3Rate, weight: 0.4 },
       { value: lane6.course3Rate, weight: 0.4 },
       { value: lane5.stability, weight: 0.1 },
-      { value: lane6.stability, weight: 0.1 }
+      { value: lane6.stability, weight: 0.06 },
+      { value: venueContext?.outer_renyuu_entry_rate, weight: 0.04 }
     ])
   };
+  profiles.forEach((profile) => {
+    profile.scenarioReproScore = buildScenarioReproScore(profile, venueContext, raceContext);
+  });
 
   const headProbMap = normalizeMap(
     Object.fromEntries(
-      profiles.map((profile) => [profile.lane, Math.max(0.001, (firstPlaceScore(profile, venueInsideBias, raceContext) || 1) / 100)])
+      profiles.map((profile) => [profile.lane, Math.max(0.001, (firstPlaceScore(profile, venueContext, raceContext) || 1) / 100)])
     )
   );
 
@@ -517,7 +644,7 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
       Object.fromEntries(
         profiles
           .filter((profile) => profile.lane !== head.lane)
-          .map((profile) => [profile.lane, Math.max(0.001, (secondPlaceScore(profile, head, raceContext) || 1) / 100)])
+          .map((profile) => [profile.lane, Math.max(0.001, (secondPlaceScore(profile, head, raceContext, venueContext) || 1) / 100)])
       )
     );
   }
@@ -530,7 +657,7 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
         Object.fromEntries(
           profiles
             .filter((profile) => profile.lane !== head.lane && profile.lane !== second.lane)
-            .map((profile) => [profile.lane, Math.max(0.001, (thirdPlaceScore(profile, head, second, raceContext) || 1) / 100)])
+            .map((profile) => [profile.lane, Math.max(0.001, (thirdPlaceScore(profile, head, second, raceContext, venueContext) || 1) / 100)])
         )
       );
     }
@@ -626,20 +753,19 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     },
     lane_styles: profiles.map((profile) => ({
       lane: profile.lane,
-      style: profile.style?.label || null,
-      style_code: profile.style?.code || null,
+      style: profile.style?.label || STYLE_LABELS[profile.style?.code] || STYLE_LABELS.tenkai_machi,
+      style_code: profile.style?.code || "tenkai_machi",
+      style_score: round(profile.styleScore ?? profile.styleScores?.[profile.style?.code] ?? 0, 1),
+      style_reasons: Array.isArray(profile.styleReasons) && profile.styleReasons.length > 0
+        ? profile.styleReasons
+        : buildStyleReasons(profile, profile.style?.code || "tenkai_machi"),
       scenario_repro_score: round(profile.scenarioReproScore, 1)
     })),
+    venue_scenario_bias: venueContext,
     scenario_repro_scores: profiles.map((profile) => ({
       lane: profile.lane,
       score: round(profile.scenarioReproScore, 1),
-      style: profile.style?.label || null
+      style: profile.style?.label || STYLE_LABELS[profile.style?.code] || STYLE_LABELS.tenkai_machi
     }))
   };
 }
-
-const VENUE_BIAS_BY_ID = {
-  1: 0.63, 2: 0.64, 3: 0.51, 4: 0.58, 5: 0.62, 6: 0.64, 7: 0.71, 8: 0.67,
-  9: 0.57, 10: 0.68, 11: 0.64, 12: 0.69, 13: 0.62, 14: 0.56, 15: 0.7, 16: 0.63,
-  17: 0.61, 18: 0.7, 19: 0.73, 20: 0.67, 21: 0.68, 22: 0.64, 23: 0.66, 24: 0.76
-};

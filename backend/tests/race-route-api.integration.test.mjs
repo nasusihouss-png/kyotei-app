@@ -173,6 +173,16 @@ async function withServer(run) {
     assert.equal(body.racers[0].actual_entry, null);
     assert.equal(body.racers[0].entry_confirmed, false);
     assert.equal(typeof body.racers[0].entry_confirmed, "boolean");
+    assert.ok(String(body.racers[0].style || "").trim().length > 0);
+    assert.equal(typeof body.racers[0].style_score, "number");
+    assert.ok(Array.isArray(body.racers[0].style_reasons));
+    assert.equal(body.racers[0].style, body.scenario_repro_scores[0].style);
+    assert.equal(body.racers[0].style_score, body.scenario_repro_scores[0].score);
+    assert.ok(Array.isArray(body.lane_styles));
+    assert.ok(Array.isArray(body.scenario_style_trace));
+    assert.equal(typeof body.top6Scenario, "string");
+    assert.equal(typeof body.top6ScenarioScore, "number");
+    assert.equal(typeof body.venue_scenario_bias?.one_course_trust, "number");
   });
 }
 
