@@ -4442,6 +4442,13 @@ export default function App() {
         pureTop6Prediction?.thirdProbabilities || prediction?.thirdProbabilities || data?.thirdProbabilities || {},
         "third"
       );
+  const pureLaneStyles = Array.isArray(pureTop6Prediction?.lane_styles) && pureTop6Prediction.lane_styles.length > 0
+    ? pureTop6Prediction.lane_styles
+    : Array.isArray(prediction?.lane_styles) && prediction.lane_styles.length > 0
+      ? prediction.lane_styles
+      : Array.isArray(data?.lane_styles)
+        ? data.lane_styles
+        : [];
   const pureWideFormation = pureTop6Prediction?.optionalFormation16 && typeof pureTop6Prediction.optionalFormation16 === "object"
     ? pureTop6Prediction.optionalFormation16
     : pureTop6Prediction?.wide_formation_suggestion && typeof pureTop6Prediction.wide_formation_suggestion === "object"
@@ -6777,6 +6784,31 @@ export default function App() {
                           </div>
                         ))}
                       </div>
+                    </div>
+                    <div className="hardrace-block">
+                      <div className="hardrace-block-head">
+                        <div>
+                          <strong>選手タイプ判定</strong>
+                          <p className="muted">style を scenario / 着順候補率の補正に使っています。</p>
+                        </div>
+                      </div>
+                      {pureLaneStyles.length > 0 ? (
+                        <div className="ticket-stack compact-list">
+                          {pureLaneStyles.map((row) => (
+                            <div key={`lane-style-${row?.lane}`} className="premium-ticket-row">
+                              <div className="ticket-mainline">
+                                <strong>{`${row?.lane}号艇 ${row?.style || "--"}`}</strong>
+                              </div>
+                              <div className="ticket-meta">
+                                <span>{`score ${formatMaybeNumber(row?.style_score, 1)}`}</span>
+                                <span>{Array.isArray(row?.style_reasons) && row.style_reasons.length > 0 ? row.style_reasons.join(" / ") : "--"}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="muted">選手タイプ判定は未計算です。</p>
+                      )}
                     </div>
                     <div className="hardrace-block">
                       <div className="hardrace-block-head">
