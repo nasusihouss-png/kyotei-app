@@ -55,12 +55,15 @@ function buildRefreshMeta({
 }) {
   const primarySourceOk = sourceStatus?.primary_source_ok === true || refreshedNow === true;
   const secondarySourceOk = sourceStatus?.secondary_source_ok === true;
-  const freshnessStatus = deriveFreshnessStatus({
-    refreshedNow,
-    coverageSummary,
-    snapshotStatus: snapshotIndex?.snapshotStatus,
-    primarySourceOk
-  });
+  const fallbackCapable = !!(refreshError && snapshotIndex);
+  const freshnessStatus = fallbackCapable
+    ? "fallback"
+    : deriveFreshnessStatus({
+        refreshedNow,
+        coverageSummary,
+        snapshotStatus: snapshotIndex?.snapshotStatus,
+        primarySourceOk
+      });
 
   return {
     refresh_attempted: true,
@@ -69,11 +72,21 @@ function buildRefreshMeta({
     primary_source_ok: primarySourceOk,
     secondary_source_ok: secondarySourceOk,
     last_snapshot_updated_at: snapshotIndex?.updatedAt || snapshotIndex?.generatedAt || null,
-    fallback_used: freshnessStatus === "fallback",
+    fallback_used: freshnessStatus === "fallback" || fallbackCapable,
     refresh_error: refreshError
-      ? {
+        ? {
           code: refreshError?.code || "LATEST_SOURCE_UNAVAILABLE",
-          message: String(refreshError?.message || refreshError)
+          message: String(refreshError?.message || refreshError),
+          parser_stage: refreshError?.debug?.parser_stage || null,
+          matched_selector_count: refreshError?.debug?.matched_selector_count ?? null,
+          fetched_urls: refreshError?.debug?.fetched_urls || null,
+          raw_html_saved_path: refreshError?.debug?.raw_html_saved_path || null,
+          html_head_preview: refreshError?.debug?.html_head_preview || null,
+          beforeinfo_head_preview: refreshError?.debug?.beforeinfo_head_preview || null,
+          parsed_ajax_row_count: refreshError?.debug?.parsed_ajax_row_count ?? refreshError?.debug?.parsed_ajax_rows_count ?? null,
+          parsed_ajax_rows_count: refreshError?.debug?.parsed_ajax_rows_count ?? null,
+          mapped_field_count: refreshError?.debug?.mapped_field_count ?? null,
+          unknown_type_list: Array.isArray(refreshError?.debug?.unknown_type_list) ? refreshError.debug.unknown_type_list : []
         }
       : null
   };
@@ -126,7 +139,8 @@ export async function refreshLatestRaceData({
   raceNo,
   timeoutMs = 6500,
   forceRefresh = true,
-  trace = null
+  trace = null,
+  artifactCollector = null
 } = {}, deps = {}) {
   const generateSnapshot = deps.generateRaceSnapshot || generateRaceSnapshot;
   const loadSnapshot = deps.loadStoredRaceInferenceData || loadStoredRaceInferenceData;
@@ -156,7 +170,8 @@ export async function refreshLatestRaceData({
           raceNo,
           timeoutMs,
           includeKyoteiBiyori: true,
-          forceRefresh
+          forceRefresh,
+          artifactCollector
         }),
       timeoutMs,
       "LATEST_REFRESH_TIMEOUT"
@@ -238,6 +253,7 @@ export async function refreshLatestRaceData({
       coverageSummary
     });
     sourceError.snapshotLookup = stored?.snapshot || null;
+    sourceError.debug = refreshError?.cause?.debug || refreshError?.debug || null;
     throw sourceError;
   }
 

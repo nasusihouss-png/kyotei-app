@@ -357,6 +357,138 @@ export function applyLaneStylesToRacers(racers = [], pureTop6Prediction = null) 
   });
 }
 
+export function normalizeOptionalFormation16(optionalFormation16 = null) {
+  if (!optionalFormation16 || typeof optionalFormation16 !== "object" || Array.isArray(optionalFormation16)) {
+    return [];
+  }
+  const normalized = {
+    active: optionalFormation16?.active === true,
+    size: Number.isFinite(Number(optionalFormation16?.size)) ? Number(optionalFormation16.size) : 0,
+    combos: Array.isArray(optionalFormation16?.combos) ? optionalFormation16.combos : [],
+    first_candidates: Array.isArray(optionalFormation16?.first_candidates) ? optionalFormation16.first_candidates : [],
+    second_candidates: Array.isArray(optionalFormation16?.second_candidates) ? optionalFormation16.second_candidates : [],
+    third_candidates: Array.isArray(optionalFormation16?.third_candidates) ? optionalFormation16.third_candidates : [],
+    formation_string: optionalFormation16?.formation_string || null,
+    reason: optionalFormation16?.reason || null,
+    reasons: Array.isArray(optionalFormation16?.reasons) ? optionalFormation16.reasons : [],
+    trigger_flags: optionalFormation16?.trigger_flags && typeof optionalFormation16.trigger_flags === "object"
+      ? optionalFormation16.trigger_flags
+      : {}
+  };
+  return normalized.active ? normalized : [];
+}
+
+export function resolveFormationReason(pureTop6Prediction = null, prediction = null, optionalFormation16 = []) {
+  const normalizedFormation = Array.isArray(optionalFormation16) ? [] : optionalFormation16;
+  if (Array.isArray(normalizedFormation)) {
+    return null;
+  }
+  return (
+    (typeof pureTop6Prediction?.formationReason === "string" && pureTop6Prediction.formationReason.trim()
+      ? pureTop6Prediction.formationReason
+      : null) ||
+    (typeof prediction?.formationReason === "string" && prediction.formationReason.trim()
+      ? prediction.formationReason
+      : null) ||
+    (typeof normalizedFormation?.reason === "string" && normalizedFormation.reason.trim()
+      ? normalizedFormation.reason
+      : null) ||
+    (Array.isArray(normalizedFormation?.reasons) && normalizedFormation.reasons.length > 0
+      ? normalizedFormation.reasons.join("; ")
+      : null)
+  );
+}
+
+async function buildHardRaceRoutePayload({
+  data,
+  date,
+  venueId,
+  raceNo,
+  refreshMeta,
+  artifactCollector = null
+} = {}) {
+  let hardRace1234;
+  try {
+    hardRace1234 = await buildHardRace1234Response({
+      data,
+      date,
+      venueId,
+      raceNo,
+      artifactCollector
+    });
+  } catch (hardRaceErr) {
+    hardRace1234 = {
+      race_no: toInt(raceNo, null),
+      status: "BROKEN_PIPELINE",
+      data_status: "BROKEN_PIPELINE",
+      confidence_status: "BROKEN_PIPELINE",
+      hardScenario: null,
+      hardScenarioScore: null,
+      scenario_repro_score: null,
+      boat1_head_pre: null,
+      boat1_escape_trust: null,
+      fit_234_index: null,
+      outside_break_risk_pre: null,
+      hard_race_index: null,
+      decision: "SKIP",
+      decision_reason: String(hardRaceErr?.message || hardRaceErr || "hard race response build failed"),
+      source_summary: {
+        mode: "pure_inference",
+        fallback_used: false,
+        field_coverage_report: data?.source?.coverage_report?.fields || null
+      },
+      missing_fields: ["hard_race_response"],
+      missing_field_details: {
+        hard_race_response: {
+          reason: "not calculated",
+          source: "route",
+          lane: null,
+          field: "hard_race_response"
+        }
+      },
+      metric_status: {}
+    };
+    console.error("[RACE_ROUTE][hard_race_fail_open]", JSON.stringify({
+      route: "/api/race",
+      date,
+      venueId: toInt(venueId, null),
+      raceNo: toInt(raceNo, null),
+      message: hardRace1234.decision_reason
+    }));
+  }
+
+  const hardRaceSourceSummary =
+    hardRace1234?.source_summary && typeof hardRace1234.source_summary === "object"
+      ? hardRace1234.source_summary
+      : {};
+  return {
+    ...hardRace1234,
+    hardScenario: hardRace1234?.hardScenario || null,
+    hardScenarioScore: hardRace1234?.hardScenarioScore ?? hardRace1234?.scenario_repro_score ?? null,
+    hard_race_index: hardRace1234?.hard_race_index ?? hardRace1234?.scores?.hard_race_index ?? hardRace1234?.scores?.hard_race_score ?? null,
+    boat1_head_pre: hardRace1234?.boat1_head_pre ?? hardRace1234?.scores?.boat1_head_pre ?? null,
+    fit_234_index: hardRace1234?.fit_234_index ?? hardRace1234?.scores?.fit_234_index ?? hardRace1234?.scores?.opponent_234_fit ?? null,
+    outside_break_risk_pre: hardRace1234?.outside_break_risk_pre ?? hardRace1234?.scores?.outside_break_risk_pre ?? hardRace1234?.scores?.outside_break_risk ?? null,
+    source_summary: {
+      ...hardRaceSourceSummary,
+      refreshed_now: refreshMeta?.refreshed_now === true,
+      freshness_status: refreshMeta?.freshness_status || hardRaceSourceSummary?.freshness_status || "stale",
+      primary_source_ok: refreshMeta?.primary_source_ok === true,
+      secondary_source_ok: refreshMeta?.secondary_source_ok === true,
+      last_snapshot_updated_at:
+        refreshMeta?.last_snapshot_updated_at ||
+        data?.source?.local_snapshots?.last_snapshot_updated_at ||
+        null,
+      fallback_used:
+        refreshMeta?.fallback_used === true ||
+        hardRaceSourceSummary?.fallback_used === true ||
+        hardRaceSourceSummary?.fallback?.used === true,
+      field_coverage_report: data?.source?.coverage_report?.fields || null,
+      refresh_error: refreshMeta?.refresh_error || null
+    }
+  };
+}
+
 function buildApiEntryPayload({ lane, entryMeta, fallbackEntryCourse = null }) {
   const baseLane = toNullableNum(lane);
   const perBoatLaneMap =
@@ -3043,24 +3175,45 @@ export function buildPureInferencePredictionPayload(data = {}) {
     ? String(pureTop6Prediction.main_ticket.combo).split("-").map((value) => toInt(value, null)).filter(Number.isInteger).slice(0, 3)
     : derivedRanking.slice(0, 3).map((row) => toInt(row?.racer?.lane, null)).filter(Number.isInteger);
   const snapshotSummary = buildPureInferenceSnapshotSummary(data, storedPrediction, derivedRanking);
+  const optionalFormation16 = normalizeOptionalFormation16(pureTop6Prediction?.optionalFormation16);
+  const formationReason = resolveFormationReason(pureTop6Prediction, null, optionalFormation16);
+  const normalizedPureTop6Prediction = pureTop6Prediction
+    ? {
+        ...pureTop6Prediction,
+        optionalFormation16,
+        formationReason
+      }
+    : null;
   const prediction = {
     ...(storedPrediction && typeof storedPrediction === "object" ? storedPrediction : {}),
     ranking: derivedRanking,
     top3: Array.isArray(storedPrediction?.top3) && storedPrediction.top3.length === 3 ? storedPrediction.top3 : fallbackTop3,
-    pure_top6_prediction: pureTop6Prediction || storedPrediction?.pure_top6_prediction || null,
-    lane_styles: pureTop6Prediction?.lane_styles || null,
-    scenario_style_trace: pureTop6Prediction?.lane_styles || null,
-    venue_scenario_bias: pureTop6Prediction?.venue_scenario_bias || null,
-    winProbabilities: pureTop6Prediction?.winProbabilities || null,
-    secondProbabilities: pureTop6Prediction?.secondProbabilities || null,
-    thirdProbabilities: pureTop6Prediction?.thirdProbabilities || null,
-    top6: pureTop6Prediction?.top6 || null,
-    top6_coverage: pureTop6Prediction?.top6_coverage ?? null,
-    chaos_level: pureTop6Prediction?.chaos_level ?? null,
-    top6Scenario: pureTop6Prediction?.top6Scenario || null,
-    top6ScenarioScore: pureTop6Prediction?.top6ScenarioScore ?? pureTop6Prediction?.scenario_repro_score ?? null,
-    scenario_repro_score: pureTop6Prediction?.scenario_repro_score ?? null,
-    scenario_repro_scores: pureTop6Prediction?.scenario_repro_scores || null,
+    pure_top6_prediction: normalizedPureTop6Prediction || storedPrediction?.pure_top6_prediction || null,
+    lane_styles: normalizedPureTop6Prediction?.lane_styles || null,
+    scenario_style_trace: normalizedPureTop6Prediction?.lane_styles || null,
+    venue_scenario_bias: normalizedPureTop6Prediction?.venue_scenario_bias || null,
+    venueBiasProfile: normalizedPureTop6Prediction?.venueBiasProfile || normalizedPureTop6Prediction?.venue_scenario_bias?.venueBiasProfile || null,
+    buyPolicy: normalizedPureTop6Prediction?.buyPolicy || normalizedPureTop6Prediction?.venue_scenario_bias?.buyPolicy || null,
+    venueAdjustmentReason: normalizedPureTop6Prediction?.venueAdjustmentReason || normalizedPureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason || [],
+    winProbabilities: normalizedPureTop6Prediction?.winProbabilities || null,
+    secondProbabilities: normalizedPureTop6Prediction?.secondProbabilities || null,
+    thirdProbabilities: normalizedPureTop6Prediction?.thirdProbabilities || null,
+    boat1_second_keep_score: normalizedPureTop6Prediction?.boat1_second_keep_score ?? null,
+    boat1_second_keep_reason: normalizedPureTop6Prediction?.boat1_second_keep_reason ?? null,
+    second_given_head_probabilities: normalizedPureTop6Prediction?.second_given_head_probabilities || null,
+    exacta_shape_bias: normalizedPureTop6Prediction?.exacta_shape_bias || null,
+    near_tie_second_candidates: normalizedPureTop6Prediction?.near_tie_second_candidates || [],
+    close_combo_preserved: normalizedPureTop6Prediction?.close_combo_preserved === true,
+    combo_gap_score: normalizedPureTop6Prediction?.combo_gap_score ?? null,
+    top6: normalizedPureTop6Prediction?.top6 || null,
+    top6_coverage: normalizedPureTop6Prediction?.top6_coverage ?? null,
+    chaos_level: normalizedPureTop6Prediction?.chaos_level ?? null,
+    optionalFormation16,
+    formationReason,
+    top6Scenario: normalizedPureTop6Prediction?.top6Scenario || null,
+    top6ScenarioScore: normalizedPureTop6Prediction?.top6ScenarioScore ?? normalizedPureTop6Prediction?.scenario_repro_score ?? null,
+    scenario_repro_score: normalizedPureTop6Prediction?.scenario_repro_score ?? null,
+    scenario_repro_scores: normalizedPureTop6Prediction?.scenario_repro_scores || null,
     prediction_mode: "pure_inference_snapshot_only",
     data_status: snapshotSummary.dataStatus,
     confidence_status: snapshotSummary.confidenceStatus,
@@ -3072,17 +3225,29 @@ export function buildPureInferencePredictionPayload(data = {}) {
 
   return {
     storedPrediction,
-    pureTop6Prediction,
+    pureTop6Prediction: normalizedPureTop6Prediction,
     prediction,
-    lane_styles: pureTop6Prediction?.lane_styles || null,
-    scenario_style_trace: pureTop6Prediction?.lane_styles || null,
-    venue_scenario_bias: pureTop6Prediction?.venue_scenario_bias || null,
-    winProbabilities: pureTop6Prediction?.winProbabilities || null,
-    secondProbabilities: pureTop6Prediction?.secondProbabilities || null,
-    thirdProbabilities: pureTop6Prediction?.thirdProbabilities || null,
-    top6: pureTop6Prediction?.top6 || null,
-    top6_coverage: pureTop6Prediction?.top6_coverage ?? null,
-    chaos_level: pureTop6Prediction?.chaos_level ?? null,
+    lane_styles: normalizedPureTop6Prediction?.lane_styles || null,
+    scenario_style_trace: normalizedPureTop6Prediction?.lane_styles || null,
+    venue_scenario_bias: normalizedPureTop6Prediction?.venue_scenario_bias || null,
+    venueBiasProfile: normalizedPureTop6Prediction?.venueBiasProfile || normalizedPureTop6Prediction?.venue_scenario_bias?.venueBiasProfile || null,
+    buyPolicy: normalizedPureTop6Prediction?.buyPolicy || normalizedPureTop6Prediction?.venue_scenario_bias?.buyPolicy || null,
+    venueAdjustmentReason: normalizedPureTop6Prediction?.venueAdjustmentReason || normalizedPureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason || [],
+    winProbabilities: normalizedPureTop6Prediction?.winProbabilities || null,
+    secondProbabilities: normalizedPureTop6Prediction?.secondProbabilities || null,
+    thirdProbabilities: normalizedPureTop6Prediction?.thirdProbabilities || null,
+    boat1_second_keep_score: normalizedPureTop6Prediction?.boat1_second_keep_score ?? null,
+    boat1_second_keep_reason: normalizedPureTop6Prediction?.boat1_second_keep_reason ?? null,
+    second_given_head_probabilities: normalizedPureTop6Prediction?.second_given_head_probabilities || null,
+    exacta_shape_bias: normalizedPureTop6Prediction?.exacta_shape_bias || null,
+    near_tie_second_candidates: normalizedPureTop6Prediction?.near_tie_second_candidates || [],
+    close_combo_preserved: normalizedPureTop6Prediction?.close_combo_preserved === true,
+    combo_gap_score: normalizedPureTop6Prediction?.combo_gap_score ?? null,
+    top6: normalizedPureTop6Prediction?.top6 || null,
+    top6_coverage: normalizedPureTop6Prediction?.top6_coverage ?? null,
+    chaos_level: normalizedPureTop6Prediction?.chaos_level ?? null,
+    optionalFormation16,
+    formationReason,
     refreshed_now: snapshotSummary.sourceSummary?.refreshed_now === true,
     freshness_status: snapshotSummary.sourceSummary?.freshness_status || "stale",
     primary_source_ok: snapshotSummary.sourceSummary?.primary_source_ok === true,
@@ -9966,7 +10131,8 @@ export async function loadRaceDataForApiRoute({
   traceBase,
   routeTimings,
   routeStartedAt,
-  maxRouteTimeoutMs
+  maxRouteTimeoutMs,
+  artifactCollector = null
 } = {}, deps = {}) {
   const refreshRaceData = deps.refreshLatestRaceData || raceRouteRuntimeDeps.refreshLatestRaceData || refreshLatestRaceData;
   const ensureWithinDeadline = deps.ensureRaceRouteWithinDeadline || ensureRaceRouteWithinDeadline;
@@ -9978,6 +10144,7 @@ export async function loadRaceDataForApiRoute({
     raceNo,
     timeoutMs: latestRefreshTimeoutMs,
     forceRefresh,
+    artifactCollector,
     trace: (stage, extra) => {
       logStage(traceBase || {}, stage, extra);
     }
@@ -10103,7 +10270,7 @@ raceRouter.get("/race", async (req, res, next) => {
     let data;
     try {
       failureWhere = "race.route:snapshot_lookup";
-      artifactCollector = isHardRaceScreening ? {} : null;
+      artifactCollector = {};
       let stored = null;
       {
         const refreshOutcome = await loadRaceDataForApiRoute({
@@ -10115,7 +10282,8 @@ raceRouter.get("/race", async (req, res, next) => {
           traceBase,
           routeTimings,
           routeStartedAt,
-          maxRouteTimeoutMs
+          maxRouteTimeoutMs,
+          artifactCollector
         });
         stored = refreshOutcome?.data || null;
         ensureRaceRouteWithinDeadline(routeStartedAt, maxRouteTimeoutMs, failureWhere);
@@ -10272,123 +10440,14 @@ raceRouter.get("/race", async (req, res, next) => {
       logRaceRouteStage(traceBase, "inference_start", { screening: screeningMode || "default" });
       if (isHardRaceScreening) {
         const predictionStartedAt = Date.now();
-        let hardRace1234;
-        try {
-          hardRace1234 = await buildHardRace1234Response({
-            data,
-            date,
-            venueId,
-            raceNo,
-            artifactCollector
-          });
-        } catch (hardRaceErr) {
-          hardRace1234 = {
-            race_no: toInt(raceNo, null),
-            status: "BROKEN_PIPELINE",
-            data_status: "BROKEN_PIPELINE",
-            confidence_status: "BROKEN_PIPELINE",
-            boat1_head_pre: null,
-            hard_race_index: null,
-            fit_234_index: null,
-            outside_break_risk_pre: null,
-            boat1_escape_trust: null,
-            scenario_repro_score: null,
-            opponent_234_fit: null,
-            pair23_fit: null,
-            pair24_fit: null,
-            pair34_fit: null,
-            kill_escape_risk: null,
-            shape_shuffle_risk: null,
-            makuri_risk: null,
-            outside_break_risk: null,
-            box_hit_score: null,
-            shape_focus_score: null,
-            fixed1234_total_probability: null,
-            top4_fixed1234_probability: null,
-            fixed1234_shape_concentration: null,
-            p_123: null,
-            p_124: null,
-            p_132: null,
-            p_134: null,
-            p_142: null,
-            p_143: null,
-            fixed1234_matrix: {},
-            fixed1234_top4: [],
-            suggested_shape: null,
-            decision: "SKIP",
-            decision_reason: String(hardRaceErr?.message || hardRaceErr || "hard race response build failed"),
-            missing_fields: ["hard_race_response"],
-            missing_field_details: {
-              hard_race_response: {
-                reason: "not calculated",
-                source: "route",
-                lane: null,
-                field: "hard_race_response"
-              }
-            },
-            metric_status: {},
-            source_summary: {
-              mode: "pure_inference",
-              inference_source: "local_precomputed_only",
-              snapshot: {
-                race: "snapshot",
-                entries: "snapshot",
-                feature_snapshot: data?.source?.local_snapshots?.feature_snapshot ? "snapshot" : "missing"
-              },
-              fallback: {
-                used: false,
-                fields: []
-              },
-              estimated_fields: []
-            },
-            fetched_urls: artifactCollector?.fetched_urls || {},
-            fetch_timings: data?.source?.fetch_timings || data?.source?.timings || {},
-            raw_saved_paths: {},
-            parsed_saved_paths: {},
-            normalized_data: null,
-            features: {},
-            scores: {},
-            screeningDebug: {
-              fetch_success: true,
-              parse_success: false,
-              score_success: false,
-              pure_inference: true,
-              decision_reason: String(hardRaceErr?.message || hardRaceErr || "hard race response build failed"),
-              missing_required_scores: ["hard_race_response"]
-            }
-          };
-          console.error("[RACE_ROUTE][hard_race_fail_open]", JSON.stringify({
-            route: "/api/race",
-            date,
-            venueId: toInt(venueId, null),
-            raceNo: toInt(raceNo, null),
-            message: hardRace1234.decision_reason
-          }));
-        }
-        const hardRaceSourceSummary =
-          hardRace1234?.source_summary && typeof hardRace1234.source_summary === "object"
-            ? hardRace1234.source_summary
-            : {};
-        hardRace1234 = {
-          ...hardRace1234,
-          source_summary: {
-            ...hardRaceSourceSummary,
-            refreshed_now: refreshMeta?.refreshed_now === true,
-            freshness_status: refreshMeta?.freshness_status || hardRaceSourceSummary?.freshness_status || "stale",
-            primary_source_ok: refreshMeta?.primary_source_ok === true,
-            secondary_source_ok: refreshMeta?.secondary_source_ok === true,
-            last_snapshot_updated_at:
-              refreshMeta?.last_snapshot_updated_at ||
-              data?.source?.local_snapshots?.last_snapshot_updated_at ||
-              null,
-            fallback_used:
-              refreshMeta?.fallback_used === true ||
-              hardRaceSourceSummary?.fallback_used === true ||
-              hardRaceSourceSummary?.fallback?.used === true,
-            field_coverage_report: data?.source?.coverage_report?.fields || null,
-            refresh_error: refreshMeta?.refresh_error || null
-          }
-        };
+        const hardRace1234 = await buildHardRaceRoutePayload({
+          data,
+          date,
+          venueId,
+          raceNo,
+          refreshMeta,
+          artifactCollector
+        });
         routeTimings.inference_ms = Date.now() - predictionStartedAt;
         routeTimings.prediction_build_ms = routeTimings.inference_ms;
         routeTimings.total_response_ms = Date.now() - routeStartedAt;
@@ -10456,6 +10515,14 @@ raceRouter.get("/race", async (req, res, next) => {
       };
       const pureTop6Prediction = purePredictionBundle.pureTop6Prediction;
       const styledApiRacers = applyLaneStylesToRacers(apiRacers, pureTop6Prediction);
+      const hardRace1234 = await buildHardRaceRoutePayload({
+        data,
+        date,
+        venueId,
+        raceNo,
+        refreshMeta,
+        artifactCollector
+      });
       console.info("[RACE_API][style_injection:pure_inference]", JSON.stringify({
         route: "/api/race",
         raceId: data.raceId || data.source?.race_id || null,
@@ -10467,6 +10534,18 @@ raceRouter.get("/race", async (req, res, next) => {
               style: styledApiRacers[0].style,
               style_score: styledApiRacers[0].style_score,
               style_reasons: styledApiRacers[0].style_reasons
+            }
+          : null,
+        hard_race_preview: hardRace1234
+          ? {
+              hardScenario: hardRace1234.hardScenario,
+              hardScenarioScore: hardRace1234.hardScenarioScore,
+              hard_race_index: hardRace1234.hard_race_index,
+              boat1_head_pre: hardRace1234.boat1_head_pre,
+              fit_234_index: hardRace1234.fit_234_index,
+              outside_break_risk_pre: hardRace1234.outside_break_risk_pre,
+              decision: hardRace1234.decision,
+              decision_reason: hardRace1234.decision_reason
             }
           : null
       }));
@@ -10491,12 +10570,51 @@ raceRouter.get("/race", async (req, res, next) => {
         lane_styles: pureTop6Prediction?.lane_styles || prediction?.lane_styles || null,
         scenario_style_trace: pureTop6Prediction?.lane_styles || prediction?.scenario_style_trace || null,
         venue_scenario_bias: pureTop6Prediction?.venue_scenario_bias || prediction?.venue_scenario_bias || null,
+        venueBiasProfile:
+          pureTop6Prediction?.venueBiasProfile ||
+          prediction?.venueBiasProfile ||
+          pureTop6Prediction?.venue_scenario_bias?.venueBiasProfile ||
+          prediction?.venue_scenario_bias?.venueBiasProfile ||
+          null,
+        buyPolicy:
+          pureTop6Prediction?.buyPolicy ||
+          prediction?.buyPolicy ||
+          pureTop6Prediction?.venue_scenario_bias?.buyPolicy ||
+          prediction?.venue_scenario_bias?.buyPolicy ||
+          hardRace1234?.buyPolicy ||
+          null,
+        venueAdjustmentReason:
+          pureTop6Prediction?.venueAdjustmentReason ||
+          prediction?.venueAdjustmentReason ||
+          pureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason ||
+          prediction?.venue_scenario_bias?.venueAdjustmentReason ||
+          hardRace1234?.venueAdjustmentReason ||
+          [],
         winProbabilities: pureTop6Prediction?.winProbabilities || prediction?.winProbabilities || null,
         secondProbabilities: pureTop6Prediction?.secondProbabilities || prediction?.secondProbabilities || null,
         thirdProbabilities: pureTop6Prediction?.thirdProbabilities || prediction?.thirdProbabilities || null,
+        boat1_second_keep_score: pureTop6Prediction?.boat1_second_keep_score ?? prediction?.boat1_second_keep_score ?? null,
+        boat1_second_keep_reason: pureTop6Prediction?.boat1_second_keep_reason ?? prediction?.boat1_second_keep_reason ?? null,
+        second_given_head_probabilities: pureTop6Prediction?.second_given_head_probabilities || prediction?.second_given_head_probabilities || null,
+        exacta_shape_bias: pureTop6Prediction?.exacta_shape_bias || prediction?.exacta_shape_bias || null,
+        near_tie_second_candidates: pureTop6Prediction?.near_tie_second_candidates || prediction?.near_tie_second_candidates || [],
+        close_combo_preserved:
+          pureTop6Prediction?.close_combo_preserved === true ||
+          prediction?.close_combo_preserved === true,
+        combo_gap_score: pureTop6Prediction?.combo_gap_score ?? prediction?.combo_gap_score ?? null,
         top6: pureTop6Prediction?.top6 || prediction?.top6 || null,
         top6_coverage: pureTop6Prediction?.top6_coverage ?? prediction?.top6_coverage ?? null,
         chaos_level: pureTop6Prediction?.chaos_level ?? prediction?.chaos_level ?? null,
+        optionalFormation16: normalizeOptionalFormation16(
+          pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null
+        ),
+        formationReason: resolveFormationReason(
+          pureTop6Prediction,
+          prediction,
+          normalizeOptionalFormation16(
+            pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null
+          )
+        ),
         refreshed_now: refreshMeta?.refreshed_now === true,
         freshness_status:
           refreshMeta?.freshness_status ||
@@ -10518,6 +10636,15 @@ raceRouter.get("/race", async (req, res, next) => {
         top6ScenarioScore: pureTop6Prediction?.top6ScenarioScore ?? prediction?.top6ScenarioScore ?? prediction?.scenario_repro_score ?? null,
         scenario_repro_score: pureTop6Prediction?.scenario_repro_score ?? prediction?.scenario_repro_score ?? null,
         scenario_repro_scores: pureTop6Prediction?.scenario_repro_scores || prediction?.scenario_repro_scores || null,
+        hardRace1234,
+        hardScenario: hardRace1234?.hardScenario || null,
+        hardScenarioScore: hardRace1234?.hardScenarioScore ?? hardRace1234?.scenario_repro_score ?? null,
+        hard_race_index: hardRace1234?.hard_race_index ?? null,
+        boat1_head_pre: hardRace1234?.boat1_head_pre ?? null,
+        fit_234_index: hardRace1234?.fit_234_index ?? null,
+        outside_break_risk_pre: hardRace1234?.outside_break_risk_pre ?? null,
+        decision: hardRace1234?.decision ?? null,
+        decision_reason: hardRace1234?.decision_reason ?? null,
         field_coverage_report: prediction?.field_coverage_report || data?.source?.coverage_report?.fields || null,
         predicted_entry_order: Array.isArray(prediction?.predicted_entry_order) ? prediction.predicted_entry_order : data.racers.map((row) => toInt(row?.lane, null)).filter(Number.isInteger),
         actual_entry_order: Array.isArray(prediction?.actual_entry_order) ? prediction.actual_entry_order : data.racers.map((row) => toInt(row?.entryCourse ?? row?.lane, null)).filter(Number.isInteger),
@@ -10558,6 +10685,48 @@ raceRouter.get("/race", async (req, res, next) => {
           where: fetchErr?.where || failureWhere,
           route: fetchErr?.route || "/api/race",
           message: fetchErr?.message || "latest public data could not be refreshed and no snapshot is available",
+          fetched_urls:
+            fetchErr?.debug?.fetched_urls ||
+            fetchErr?.refreshMeta?.refresh_error?.fetched_urls ||
+            null,
+          parser_stage:
+            fetchErr?.debug?.parser_stage ||
+            fetchErr?.refreshMeta?.refresh_error?.parser_stage ||
+            null,
+          matched_selector_count:
+            fetchErr?.debug?.matched_selector_count ??
+            fetchErr?.refreshMeta?.refresh_error?.matched_selector_count ??
+            null,
+          raw_html_saved_path:
+            fetchErr?.debug?.raw_html_saved_path ||
+            fetchErr?.refreshMeta?.refresh_error?.raw_html_saved_path ||
+            null,
+          html_head_preview:
+            fetchErr?.debug?.html_head_preview ||
+            fetchErr?.refreshMeta?.refresh_error?.html_head_preview ||
+            null,
+          beforeinfo_head_preview:
+            fetchErr?.debug?.beforeinfo_head_preview ||
+            fetchErr?.refreshMeta?.refresh_error?.beforeinfo_head_preview ||
+            null,
+          parsed_ajax_rows_count:
+            fetchErr?.debug?.parsed_ajax_rows_count ??
+            fetchErr?.refreshMeta?.refresh_error?.parsed_ajax_rows_count ??
+            null,
+          parsed_ajax_row_count:
+            fetchErr?.debug?.parsed_ajax_row_count ??
+            fetchErr?.refreshMeta?.refresh_error?.parsed_ajax_row_count ??
+            fetchErr?.debug?.parsed_ajax_rows_count ??
+            fetchErr?.refreshMeta?.refresh_error?.parsed_ajax_rows_count ??
+            null,
+          mapped_field_count:
+            fetchErr?.debug?.mapped_field_count ??
+            fetchErr?.refreshMeta?.refresh_error?.mapped_field_count ??
+            null,
+          unknown_type_list:
+            fetchErr?.debug?.unknown_type_list ||
+            fetchErr?.refreshMeta?.refresh_error?.unknown_type_list ||
+            [],
           source: {
             mode: "pure_inference",
             local_inference: true,
@@ -12836,6 +13005,10 @@ raceRouter.get("/race", async (req, res, next) => {
   } catch (err) {
     const status = Number(err?.statusCode || err?.status || 500);
     const refreshMeta = err?.refreshMeta && typeof err.refreshMeta === "object" ? err.refreshMeta : {};
+    const debugPayload =
+      (err?.debug && typeof err.debug === "object" ? err.debug : null) ||
+      (refreshMeta?.refresh_error && typeof refreshMeta.refresh_error === "object" ? refreshMeta.refresh_error : null) ||
+      null;
     const payload = {
       error: status >= 500 ? "race_api_failed" : "bad_request",
       code: err?.code || "race_route_error",
@@ -12847,7 +13020,17 @@ raceRouter.get("/race", async (req, res, next) => {
       primary_source_ok: refreshMeta?.primary_source_ok === true,
       secondary_source_ok: refreshMeta?.secondary_source_ok === true,
       fallback_used: refreshMeta?.fallback_used === true,
-      last_snapshot_updated_at: refreshMeta?.last_snapshot_updated_at || null
+      last_snapshot_updated_at: refreshMeta?.last_snapshot_updated_at || null,
+      fetched_urls: debugPayload?.fetched_urls || null,
+      parser_stage: debugPayload?.parser_stage || null,
+      matched_selector_count: debugPayload?.matched_selector_count ?? null,
+      raw_html_saved_path: debugPayload?.raw_html_saved_path || null,
+      html_head_preview: debugPayload?.html_head_preview || null,
+      beforeinfo_head_preview: debugPayload?.beforeinfo_head_preview || null,
+      parsed_ajax_row_count: debugPayload?.parsed_ajax_row_count ?? debugPayload?.parsed_ajax_rows_count ?? null,
+      parsed_ajax_rows_count: debugPayload?.parsed_ajax_rows_count ?? null,
+      mapped_field_count: debugPayload?.mapped_field_count ?? null,
+      unknown_type_list: debugPayload?.unknown_type_list || []
     };
     if (temporaryFeaturePipelineDebug) {
       payload.temporary_backend_debug = temporaryFeaturePipelineDebug;

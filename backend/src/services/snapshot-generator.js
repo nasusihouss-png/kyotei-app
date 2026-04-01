@@ -148,7 +148,8 @@ export async function generateRaceSnapshot({
   raceNo,
   timeoutMs = 15000,
   includeKyoteiBiyori = true,
-  forceRefresh = true
+  forceRefresh = true,
+  artifactCollector = null
 }) {
   const startedAt = Date.now();
   const data = await getRaceData({
@@ -158,7 +159,8 @@ export async function generateRaceSnapshot({
     timeoutMs,
     includeKyoteiBiyori,
     forceRefresh,
-    screeningProfile: false
+    screeningProfile: false,
+    artifactCollector
   });
   const ranking = buildFeatureRanking(data);
   const coverageReport = buildRaceCoverageReport({ data, ranking });
@@ -169,8 +171,7 @@ export async function generateRaceSnapshot({
   const entrySnapshotCount = Array.isArray(data?.racers) ? data.racers.length : 0;
   const sourceStatus = {
     primary_source_ok:
-      String(data?.source?.official_fetch_status?.racelist || "").toLowerCase() === "success" ||
-      String(data?.source?.official_fetch_status?.beforeinfo || "").toLowerCase() === "success",
+      String(data?.source?.official_fetch_status?.racelist || "").toLowerCase() === "success",
     secondary_source_ok: !!data?.source?.kyotei_biyori?.ok,
     official_fetch_status: data?.source?.official_fetch_status || {},
     kyotei_biyori: {

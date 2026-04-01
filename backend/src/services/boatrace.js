@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import {
@@ -5,8 +8,11 @@ import {
   mergeKyoteiBiyoriDataIntoRaceContext
 } from "./kyoteibiyori.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const BOATRACE_BASE = "https://www.boatrace.jp";
 const BOATRACE_CACHE_TTL_MS = Number(process.env.BOATRACE_CACHE_TTL_MS || 45000);
+const DEBUG_ROOT = path.resolve(__dirname, "../../debug/race-parser");
 const raceDataCache = new Map();
 const VENUE_NAME_MAP = {
   1: "Kiryu",
@@ -577,139 +583,234 @@ function missingRequiredFields(racer) {
   if (!Number.isInteger(racer.registrationNo)) missing.push("registrationNo");
   if (!racer.name) missing.push("name");
   if (!racer.class) missing.push("class");
-  if (!racer.branch) missing.push("branch");
-  if (racer.age === null || Number.isNaN(racer.age)) missing.push("age");
-  if (racer.weight === null || Number.isNaN(racer.weight)) missing.push("weight");
 
   return missing;
 }
 
-function parseRacersFromRacelist(html) {
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function buildDebugArtifactDir({ date, venueId, raceNo }) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.resolve(
+    DEBUG_ROOT,
+    `${String(date || "").replace(/-/g, "")}_${String(venueId).padStart(2, "0")}_${String(raceNo)}_${stamp}`
+  );
+}
+
+function writeArtifact(filePath, body) {
+  ensureDir(path.dirname(filePath));
+  fs.writeFileSync(filePath, body, "utf8");
+  return filePath;
+}
+
+function persistRawArtifacts({ artifactCollector, date, venueId, raceNo }) {
+  if (!artifactCollector || typeof artifactCollector !== "object") return null;
+  const raw = artifactCollector.raw && typeof artifactCollector.raw === "object" ? artifactCollector.raw : {};
+  const fetchedUrls = artifactCollector.fetched_urls && typeof artifactCollector.fetched_urls === "object"
+    ? artifactCollector.fetched_urls
+    : {};
+  if (!Object.keys(raw).length && !Object.keys(fetchedUrls).length) return artifactCollector.raw_html_saved_path || null;
+
+  const dir = buildDebugArtifactDir({ date, venueId, raceNo });
+  const savedPaths = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === null || value === undefined || value === "") continue;
+    const ext = typeof value === "string" && /^\s*</.test(String(value)) ? "html" : "json";
+    const body = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    savedPaths[key] = writeArtifact(path.resolve(dir, "raw", `${key}.${ext}`), body);
+  }
+  savedPaths.fetched_urls = writeArtifact(
+    path.resolve(dir, "parsed", "fetched-urls.json"),
+    JSON.stringify(fetchedUrls, null, 2)
+  );
+  artifactCollector.raw_saved_paths = savedPaths;
+  artifactCollector.raw_html_saved_path = dir;
+  return dir;
+}
+
+export function buildFallbackRacersFromKyoteiBiyori(kyoteiBiyori = null) {
+  const byLane = kyoteiBiyori?.byLane instanceof Map ? kyoteiBiyori.byLane : new Map();
+  const lanes = [...byLane.keys()]
+    .map((lane) => Number(lane))
+    .filter((lane) => Number.isInteger(lane) && lane >= 1 && lane <= 6)
+    .sort((a, b) => a - b);
+  if (lanes.length !== 6) return [];
+
+  return lanes.map((lane) => {
+    const row = byLane.get(lane) || {};
+    return {
+      lane,
+      registrationNo: null,
+      name: row?.playerName || `Lane-${lane}`,
+      class: null,
+      branch: null,
+      age: null,
+      weight: null,
+      fHoldCount: row?.fCount ?? null,
+      lHoldCount: null,
+      avgSt: null,
+      nationwideWinRate: null,
+      localWinRate: null,
+      motor2Rate: row?.motor2ren ?? row?.motor2Rate ?? null,
+      boat2Rate: null
+    };
+  });
+}
+
+function parseSingleRacerRow($, rowLike, rowIndex, sourceLabel = "row_scan") {
+  const $row = $(rowLike);
+  const $cells = $row.children("td");
+  if ($cells.length < 5) {
+    return {
+      parsed: null,
+      debug: {
+        rowIndex,
+        sourceLabel,
+        tdCount: $cells.length
+      },
+      missingFields: ["tdCount"]
+    };
+  }
+
+  const laneCellText = normalizeSpace($row.find("[class*='is-boatColor']").first().text() || $cells.first().text());
+  const lane = toNumber(normalizeDigits(laneCellText));
+
+  const $profileCell = $cells.eq(2);
+  const $regClass = $profileCell.find("div.is-fs11").first();
+  const $name = $profileCell.find("div.is-fs18.is-fBold a, div.is-fs18 a, a").first();
+  const profileDivLines = $profileCell.find("div.is-fs11").toArray().map((el) => normalizeSpace($(el).text())).filter(Boolean);
+  const branchAgeText = profileDivLines.find((line) => /\d+\s*歳\s*\/\s*\d+(?:\.\d+)?kg/.test(normalizeDigits(line))) || profileDivLines[1] || "";
+
+  const regClassText = normalizeSpace($regClass.text());
+  const registrationNo = extractFirstNumber(regClassText);
+  const racerClass = normalizeSpace($regClass.find("span").first().text()) || null;
+  const name = normalizeSpace($name.text()) || null;
+
+  const profileLines = profileDivLines;
+  const branchLine = profileDivLines.find((line) => /\//.test(line) && !/\d+\s*歳/.test(normalizeDigits(line))) || profileDivLines[1] || "";
+  const ageWeightLine = branchAgeText || profileDivLines[profileDivLines.length - 1] || "";
+
+  const branch = normalizeSpace(branchLine.split("/")[0]) || null;
+  const ageWeightMatch = normalizeDigits(ageWeightLine).match(/(\d+)\u6B73\/(\d+(?:\.\d+)?)kg/);
+  const age = ageWeightMatch ? Number(ageWeightMatch[1]) : null;
+  const weight = ageWeightMatch ? Number(ageWeightMatch[2]) : null;
+
+  const $stats = $cells.filter("td.is-lineH2");
+  const nationwideLines = extractLinesFromCell($, $stats.eq(1));
+  const localLines = extractLinesFromCell($, $stats.eq(2));
+  const motorLines = extractLinesFromCell($, $stats.eq(3));
+  const boatLines = extractLinesFromCell($, $stats.eq(4));
+  const avgStResult = extractAvgStForRow($, $cells);
+  const fHoldCount = extractFHoldCountFromRow($, $cells);
+  const lHoldCount = extractLHoldCountFromRow($, $cells);
+
+  const parsed = {
+    lane,
+    registrationNo,
+    name,
+    class: racerClass,
+    branch,
+    age,
+    weight,
+    fHoldCount,
+    lHoldCount,
+    avgSt: avgStResult.value,
+    nationwideWinRate: toNumber(nationwideLines[0]),
+    localWinRate: toNumber(localLines[0]),
+    motor2Rate: toNumber(motorLines[1]),
+    boat2Rate: toNumber(boatLines[1])
+  };
+
+  const missingFields = missingRequiredFields(parsed);
+  return {
+    parsed,
+    debug: {
+      rowIndex,
+      sourceLabel,
+      laneCellText,
+      regClassText,
+      nameText: normalizeSpace($name.text()),
+      tdCount: $cells.length,
+      statCellCount: $stats.length,
+      avgStSource: avgStResult.source,
+      profileLines,
+      nationwideLines,
+      localLines,
+      motorLines,
+      boatLines
+    },
+    missingFields
+  };
+}
+
+export function parseRacersFromRacelist(html) {
   const $ = cheerio.load(html);
 
   const racerBodies = $(".table1.is-tableFixed__3rdadd table tbody.is-fs12");
   const debugRows = [];
+  const rowsByLane = new Map();
 
-  if (racerBodies.length !== 6) {
-    throw {
-      statusCode: 422,
-      code: "invalid_racer_count",
-      message: `Expected 6 racer body sections, found ${racerBodies.length}`,
-      debug: {
-        stage: "select_racer_bodies",
-        selectors: {
-          racerBodies: ".table1.is-tableFixed__3rdadd table tbody.is-fs12"
-        },
-        foundRacerBodyCount: racerBodies.length,
-        rows: []
-      }
-    };
-  }
-
-  const racers = [];
+  const registerRow = (rowResult) => {
+    if (!rowResult?.parsed) {
+      debugRows.push({
+        rowIndex: rowResult?.debug?.rowIndex ?? null,
+        raw: rowResult?.debug || {},
+        parsed: null,
+        missingFields: rowResult?.missingFields || ["parse_failed"]
+      });
+      return;
+    }
+    debugRows.push({
+      rowIndex: rowResult.debug.rowIndex,
+      raw: rowResult.debug,
+      parsed: rowResult.parsed,
+      missingFields: rowResult.missingFields
+    });
+    if (rowResult.missingFields.length === 0 && Number.isInteger(rowResult.parsed.lane) && !rowsByLane.has(rowResult.parsed.lane)) {
+      rowsByLane.set(rowResult.parsed.lane, rowResult.parsed);
+    }
+  };
 
   racerBodies.each((index, tbody) => {
     const rowIndex = index + 1;
     const $firstRow = $(tbody).children("tr").first();
-    const $cells = $firstRow.children("td");
-
-    const laneCellText = normalizeSpace($cells.filter("[class*='is-boatColor']").first().text());
-    const lane = toNumber(normalizeDigits(laneCellText));
-
-    const $profileCell = $cells.eq(2);
-    const $regClass = $profileCell.find("div.is-fs11").first();
-    const $name = $profileCell.find("div.is-fs18.is-fBold a").first();
-    const $branchAge = $profileCell.find("div.is-fs11").eq(1);
-
-    const regClassText = normalizeSpace($regClass.text());
-    const registrationNo = extractFirstNumber(regClassText);
-    const racerClass = normalizeSpace($regClass.find("span").first().text()) || null;
-    const name = normalizeSpace($name.text()) || null;
-
-    const profileLines = extractLinesFromCell($, $branchAge);
-    const branchLine = profileLines[0] || "";
-    const ageWeightLine = profileLines[1] || "";
-
-    const branch = normalizeSpace(branchLine.split("/")[0]) || null;
-
-    const ageWeightMatch = normalizeDigits(ageWeightLine).match(/(\d+)\u6B73\/(\d+(?:\.\d+)?)kg/);
-    const age = ageWeightMatch ? Number(ageWeightMatch[1]) : null;
-    const weight = ageWeightMatch ? Number(ageWeightMatch[2]) : null;
-
-    const $stats = $cells.filter("td.is-lineH2");
-    const stLines = extractLinesFromCell($, $stats.eq(0));
-    const nationwideLines = extractLinesFromCell($, $stats.eq(1));
-    const localLines = extractLinesFromCell($, $stats.eq(2));
-    const motorLines = extractLinesFromCell($, $stats.eq(3));
-    const boatLines = extractLinesFromCell($, $stats.eq(4));
-    const avgStResult = extractAvgStForRow($, $cells);
-    const fHoldCount = extractFHoldCountFromRow($, $cells);
-    const lHoldCount = extractLHoldCountFromRow($, $cells);
-
-    const parsed = {
-      lane,
-      registrationNo,
-      name,
-      class: racerClass,
-      branch,
-      age,
-      weight,
-      fHoldCount,
-      lHoldCount,
-      avgSt: avgStResult.value,
-      nationwideWinRate: toNumber(nationwideLines[0]),
-      localWinRate: toNumber(localLines[0]),
-      motor2Rate: toNumber(motorLines[1]),
-      boat2Rate: toNumber(boatLines[1])
-    };
-
-    const raw = {
-      rowIndex,
-      laneCellText,
-      regClassText,
-      classText: normalizeSpace($regClass.find("span").first().text()),
-      nameText: normalizeSpace($name.text()),
-      profileLines,
-      stLines,
-      nationwideLines,
-      localLines,
-      motorLines,
-      boatLines,
-      avgStSource: avgStResult.source,
-      tdCount: $cells.length,
-      statCellCount: $stats.length
-    };
-
-    const missingFields = missingRequiredFields(parsed);
-
-    debugRows.push({
-      rowIndex,
-      raw,
-      parsed,
-      missingFields
-    });
-
-    racers.push(parsed);
+    registerRow(parseSingleRacerRow($, $firstRow, rowIndex, "tbody_first_row"));
   });
 
-  const sorted = [...racers].sort((a, b) => a.lane - b.lane);
+  if (rowsByLane.size !== 6) {
+    const fallbackRowCandidates = $(".table1.is-tableFixed__3rdadd table tr, table tr")
+      .toArray()
+      .filter((row) => {
+        const $row = $(row);
+        const $cells = $row.children("td");
+        const laneText = normalizeSpace($row.find("[class*='is-boatColor']").first().text() || $cells.first().text());
+        return $cells.length >= 5 && Number.isInteger(toNumber(normalizeDigits(laneText)));
+      });
+    fallbackRowCandidates.forEach((row, index) => {
+      const parsed = parseSingleRacerRow($, row, 100 + index, "row_scan");
+      if (parsed?.parsed && !rowsByLane.has(parsed.parsed.lane)) {
+        registerRow(parsed);
+      }
+    });
+  }
+
+  const sorted = [...rowsByLane.values()].sort((a, b) => a.lane - b.lane);
   const invalidRows = debugRows.filter((r) => r.missingFields.length > 0);
 
   if (invalidRows.length > 0 || sorted.length !== 6) {
     throw {
       statusCode: 422,
       code: "invalid_racer_count",
-      message: `Expected exactly 6 complete racers, parsed ${6 - invalidRows.length}`,
+      message: `Expected exactly 6 complete racers, parsed ${sorted.length}`,
       debug: {
-        stage: "parse_racer_rows",
+        stage: racerBodies.length === 6 ? "parse_racer_rows" : "fallback_row_scan",
+        parser_stage: racerBodies.length === 6 ? "parse_racer_rows" : "fallback_row_scan",
+        matched_selector_count: racerBodies.length === 6 ? racerBodies.length : rowsByLane.size,
         selectors: {
           racerBodies: ".table1.is-tableFixed__3rdadd table tbody.is-fs12",
-          laneCell: "td[class*='is-boatColor']",
-          profileCell: "td:eq(2)",
-          regClass: "div.is-fs11:first",
-          name: "div.is-fs18.is-fBold a",
-          branchAge: "div.is-fs11:eq(1)",
-          statCells: "td.is-lineH2"
+          fallbackRows: ".table1.is-tableFixed__3rdadd table tr, table tr"
         },
         foundRacerBodyCount: racerBodies.length,
         rows: debugRows,
@@ -724,7 +825,15 @@ function parseRacersFromRacelist(html) {
 
   return {
     racers: sorted,
-    debugRows
+    debugRows,
+    parserDebug: {
+      parser_stage: racerBodies.length === 6 ? "tbody_first_row" : "row_scan",
+      matched_selector_count: racerBodies.length === 6 ? racerBodies.length : rowsByLane.size,
+      selectors: {
+        racerBodies: ".table1.is-tableFixed__3rdadd table tbody.is-fs12",
+        fallbackRows: ".table1.is-tableFixed__3rdadd table tr, table tr"
+      }
+    }
   };
 }
 
@@ -920,8 +1029,56 @@ export async function getRaceData({
     : null;
   const officialBaseFetchMs = Date.now() - officialFetchStartedAt;
 
+  if (artifactCollector && typeof artifactCollector === "object") {
+    artifactCollector.fetched_urls = {
+      ...(artifactCollector.fetched_urls || {}),
+      boatrace: {
+        racelist: racelistUrl,
+        racelist_sp: racelistSpUrl,
+        beforeinfo: beforeinfoUrl,
+        beforeinfo_sp: beforeinfoSpUrl
+      }
+    };
+    artifactCollector.raw = {
+      ...(artifactCollector.raw || {}),
+      boatrace_racelist: racelistHtml,
+      boatrace_beforeinfo: beforeinfoHtml
+    };
+    artifactCollector.raw_html_saved_path = artifactCollector.raw_html_saved_path || null;
+  }
+
   const parseStartedAt = Date.now();
-  const { racers } = parseRacersFromRacelist(racelistHtml);
+  let racers = [];
+  let racelistParserDebug = null;
+  let officialParseError = null;
+  try {
+    const parsedRacelist = parseRacersFromRacelist(racelistHtml);
+    racers = parsedRacelist.racers;
+    racelistParserDebug = parsedRacelist.parserDebug || null;
+  } catch (error) {
+    officialParseError = {
+      ...(error && typeof error === "object" ? error : {}),
+      statusCode: Number(error?.statusCode) || 422,
+      code: error?.code || "racelist_parse_failed",
+      message: String(error?.message || error || "official racelist parse failed"),
+      debug: {
+        ...(error?.debug || {}),
+        parser_stage: error?.debug?.parser_stage || error?.debug?.stage || "parse_racer_rows",
+        matched_selector_count: error?.debug?.matched_selector_count ?? error?.debug?.foundRacerBodyCount ?? 0,
+        fetched_urls: {
+          racelist: racelistUrl,
+          racelist_sp: racelistSpUrl,
+          beforeinfo: beforeinfoUrl,
+          beforeinfo_sp: beforeinfoSpUrl
+        },
+        html_head_preview: String(racelistHtml || "").slice(0, 500) || null,
+        beforeinfo_head_preview: String(beforeinfoHtml || "").slice(0, 500) || null,
+        primary_source: "boatrace.jp/racelist",
+        secondary_source: "boatrace.jp/beforeinfo",
+        raw_html_saved_path: artifactCollector?.raw_html_saved_path || null
+      }
+    };
+  }
   let beforeinfo = buildEmptyBeforeinfo();
   let beforeinfoParseError = null;
   if (beforeinfoHtml) {
@@ -1012,10 +1169,33 @@ export async function getRaceData({
     });
   }
   const kyoteibiyoriFetchMs = Date.now() - kyoteiFetchStartedAt;
+  persistRawArtifacts({ artifactCollector, date, venueId, raceNo });
+  let baseRacers = mergedRacers;
+  if (baseRacers.length !== 6 && kyoteiBiyori?.ok) {
+    baseRacers = buildFallbackRacersFromKyoteiBiyori(kyoteiBiyori);
+  }
+  if (baseRacers.length !== 6 && officialParseError) {
+    const ajaxDiagnostics =
+      kyoteiBiyori?.diagnostics?.parse_results?.request_oriten_kaiseki_custom?.diagnostics &&
+      typeof kyoteiBiyori.diagnostics.parse_results.request_oriten_kaiseki_custom.diagnostics === "object"
+        ? kyoteiBiyori.diagnostics.parse_results.request_oriten_kaiseki_custom.diagnostics
+        : {};
+    officialParseError.debug = {
+      ...(officialParseError.debug || {}),
+      fetched_urls: artifactCollector?.fetched_urls || officialParseError.debug?.fetched_urls || null,
+      raw_html_saved_path: artifactCollector?.raw_html_saved_path || officialParseError.debug?.raw_html_saved_path || null,
+      secondary_source_ok: !!kyoteiBiyori?.ok,
+      parsed_ajax_row_count: ajaxDiagnostics?.parsed_ajax_row_count ?? ajaxDiagnostics?.parsed_ajax_rows_count ?? null,
+      parsed_ajax_rows_count: ajaxDiagnostics?.parsed_ajax_rows_count ?? null,
+      mapped_field_count: ajaxDiagnostics?.mapped_field_count ?? null,
+      unknown_type_list: Array.isArray(ajaxDiagnostics?.unknown_type_list) ? ajaxDiagnostics.unknown_type_list : []
+    };
+    throw officialParseError;
+  }
   let mergedWithKyoteiBiyori = mergedRacers;
   try {
     mergedWithKyoteiBiyori = mergeKyoteiBiyoriDataIntoRaceContext({
-      racers: mergedRacers,
+      racers: baseRacers,
       kyoteiBiyori
     });
   } catch (error) {
@@ -1026,7 +1206,7 @@ export async function getRaceData({
       fallbackReason: `merge_failed: ${String(error?.message || error)}`,
       error: String(error?.message || error)
     };
-    mergedWithKyoteiBiyori = mergedRacers.map((racer) => ({
+    mergedWithKyoteiBiyori = baseRacers.map((racer) => ({
       ...racer,
       kyoteiBiyoriFetched: 0,
       kyoteiBiyoriLapTime: null,
@@ -1083,12 +1263,21 @@ export async function getRaceData({
         error: kyoteiBiyori?.error || null
       },
       official_fetch_status: {
-        racelist: "success",
+        racelist: racers.length === 6 ? "success" : kyoteiBiyori?.ok && baseRacers.length === 6 ? "secondary_fallback" : "parser_failed",
         beforeinfo: beforeinfoHtml ? "success" : "fallback",
         beforeinfo_fetch_error: beforeinfoFetchError,
         beforeinfo_parse_error: beforeinfoParseError,
         racelist_attempted_urls: racelistFetchDebug?.attempted_urls || [],
-        beforeinfo_attempted_urls: beforeinfoFetchDebug?.attempted_urls || []
+        beforeinfo_attempted_urls: beforeinfoFetchDebug?.attempted_urls || [],
+        parser_stage:
+          racelistParserDebug?.parser_stage ||
+          officialParseError?.debug?.parser_stage ||
+          (kyoteiBiyori?.ok && baseRacers.length === 6 ? "kyoteibiyori_secondary_fallback" : "tbody_first_row"),
+        matched_selector_count:
+          racelistParserDebug?.matched_selector_count ??
+          officialParseError?.debug?.matched_selector_count ??
+          (kyoteiBiyori?.ok && baseRacers.length === 6 ? baseRacers.length : 6),
+        official_parser_error: officialParseError?.message || null
       },
       actual_entry: beforeinfo.actualEntry,
       start_display_source: "official_pre_race_info",
@@ -1111,22 +1300,6 @@ export async function getRaceData({
     racers: mergedWithKyoteiBiyori,
     kyoteibiyori_debug: kyoteiBiyoriDebug
   };
-  if (artifactCollector && typeof artifactCollector === "object") {
-    artifactCollector.fetched_urls = {
-      ...(artifactCollector.fetched_urls || {}),
-      boatrace: {
-        racelist: racelistUrl,
-        racelist_sp: racelistSpUrl,
-        beforeinfo: beforeinfoUrl,
-        beforeinfo_sp: beforeinfoSpUrl
-      }
-    };
-    artifactCollector.raw = {
-      ...(artifactCollector.raw || {}),
-      boatrace_racelist: racelistHtml,
-      boatrace_beforeinfo: beforeinfoHtml
-    };
-  }
   setCachedRaceData({ date, venueId, raceNo }, result);
   logFetchEvent("getRaceData:end", {
     elapsed_ms: Date.now() - totalStartedAt,

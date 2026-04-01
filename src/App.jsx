@@ -4436,12 +4436,32 @@ export default function App() {
         pureTop6Prediction?.secondProbabilities || prediction?.secondProbabilities || data?.secondProbabilities || {},
         "second"
       );
+  const secondGivenHeadProbabilities = pureTop6Prediction?.second_given_head_probabilities && typeof pureTop6Prediction.second_given_head_probabilities === "object"
+    ? pureTop6Prediction.second_given_head_probabilities
+    : prediction?.second_given_head_probabilities && typeof prediction.second_given_head_probabilities === "object"
+      ? prediction.second_given_head_probabilities
+      : {};
   const pureThirdPlaceRates = Array.isArray(pureTop6Prediction?.third_place_candidate_rates) && pureTop6Prediction.third_place_candidate_rates.length > 0
     ? pureTop6Prediction.third_place_candidate_rates
     : buildFinishCandidateRows(
         pureTop6Prediction?.thirdProbabilities || prediction?.thirdProbabilities || data?.thirdProbabilities || {},
         "third"
       );
+  const boat1SecondKeepScore = pureTop6Prediction?.boat1_second_keep_score ?? prediction?.boat1_second_keep_score ?? data?.boat1_second_keep_score ?? null;
+  const boat1SecondKeepReason = pureTop6Prediction?.boat1_second_keep_reason ?? prediction?.boat1_second_keep_reason ?? data?.boat1_second_keep_reason ?? null;
+  const exactaShapeBias = pureTop6Prediction?.exacta_shape_bias || prediction?.exacta_shape_bias || data?.exacta_shape_bias || null;
+  const nearTieSecondCandidates = Array.isArray(pureTop6Prediction?.near_tie_second_candidates)
+    ? pureTop6Prediction.near_tie_second_candidates
+    : Array.isArray(prediction?.near_tie_second_candidates)
+      ? prediction.near_tie_second_candidates
+      : Array.isArray(data?.near_tie_second_candidates)
+        ? data.near_tie_second_candidates
+        : [];
+  const closeComboPreserved =
+    pureTop6Prediction?.close_combo_preserved === true ||
+    prediction?.close_combo_preserved === true ||
+    data?.close_combo_preserved === true;
+  const comboGapScore = pureTop6Prediction?.combo_gap_score ?? prediction?.combo_gap_score ?? data?.combo_gap_score ?? null;
   const pureLaneStyles = Array.isArray(pureTop6Prediction?.lane_styles) && pureTop6Prediction.lane_styles.length > 0
     ? pureTop6Prediction.lane_styles
     : Array.isArray(prediction?.lane_styles) && prediction.lane_styles.length > 0
@@ -4449,11 +4469,19 @@ export default function App() {
       : Array.isArray(data?.lane_styles)
         ? data.lane_styles
         : [];
-  const pureWideFormation = pureTop6Prediction?.optionalFormation16 && typeof pureTop6Prediction.optionalFormation16 === "object"
+  const pureWideFormation = pureTop6Prediction?.optionalFormation16 && typeof pureTop6Prediction.optionalFormation16 === "object" && !Array.isArray(pureTop6Prediction.optionalFormation16)
     ? pureTop6Prediction.optionalFormation16
     : pureTop6Prediction?.wide_formation_suggestion && typeof pureTop6Prediction.wide_formation_suggestion === "object"
       ? pureTop6Prediction.wide_formation_suggestion
     : {};
+  const pureFormationReason =
+    typeof pureTop6Prediction?.formationReason === "string" && pureTop6Prediction.formationReason.trim()
+      ? pureTop6Prediction.formationReason
+      : typeof pureWideFormation?.reason === "string" && pureWideFormation.reason.trim()
+        ? pureWideFormation.reason
+        : Array.isArray(pureWideFormation?.reasons) && pureWideFormation.reasons.length > 0
+          ? pureWideFormation.reasons.join("; ")
+          : "--";
   const predictionConfidenceState = getPredictionConfidenceState(sourceMeta);
   const isRecommendedRace =
     typeof data?.is_recommended === "boolean"
@@ -6788,6 +6816,39 @@ export default function App() {
                     <div className="hardrace-block">
                       <div className="hardrace-block-head">
                         <div>
+                          <strong>1着=1 の時の2着校正</strong>
+                          <p className="muted">1-2-4 / 1-3-4 の取り逃しを減らすための専用補正です。</p>
+                        </div>
+                      </div>
+                      <div className="kv-list">
+                        <div className="kv-row"><span>boat1_second_keep_score</span><strong>{boat1SecondKeepScore == null ? "--" : formatMaybeNumber(boat1SecondKeepScore, 1)}</strong></div>
+                        <div className="kv-row"><span>boat1_second_keep_reason</span><strong>{boat1SecondKeepReason || "--"}</strong></div>
+                        <div className="kv-row"><span>2着候補(1着=1)</span><strong>{[2, 3, 4, 5, 6].map((lane) => `${lane}:${formatMaybeNumber((Number(secondGivenHeadProbabilities?.[lane]) || 0) * 100, 1)}%`).join("  ") || "--"}</strong></div>
+                        <div className="kv-row"><span>exacta_shape_bias</span><strong>{exactaShapeBias ? `2差し ${formatMaybeNumber(exactaShapeBias?.lane2_sashi_bias, 1)} / 3攻め ${formatMaybeNumber(exactaShapeBias?.lane3_attack_bias, 1)} / 4展開 ${formatMaybeNumber(exactaShapeBias?.lane4_develop_bias, 1)}` : "--"}</strong></div>
+                        <div className="kv-row"><span>近差保護</span><strong>{closeComboPreserved ? "enabled" : "off"}</strong></div>
+                        <div className="kv-row"><span>combo_gap_score</span><strong>{comboGapScore == null ? "--" : formatMaybeNumber(comboGapScore, 4)}</strong></div>
+                      </div>
+                      {nearTieSecondCandidates.length > 0 ? (
+                        <div className="ticket-stack compact-list" style={{ marginTop: 10 }}>
+                          {nearTieSecondCandidates.map((row, idx) => (
+                            <div key={`near-tie-second-${row?.lane || idx}`} className="premium-ticket-row">
+                              <div className="ticket-mainline">
+                                <strong>{`${row?.lane}号艇`}</strong>
+                              </div>
+                              <div className="ticket-meta">
+                                <span>{formatPercentDisplay(row?.probability)}</span>
+                                {idx < 2 && closeComboPreserved ? <span>近差なので残し</span> : null}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="muted">1着=1 の専用2着校正は未計算です。</p>
+                      )}
+                    </div>
+                    <div className="hardrace-block">
+                      <div className="hardrace-block-head">
+                        <div>
                           <strong>選手タイプ判定</strong>
                           <p className="muted">style を scenario / 着順候補率の補正に使っています。</p>
                         </div>
@@ -6821,7 +6882,7 @@ export default function App() {
                         <div className="kv-row"><span>active</span><strong>{pureWideFormation?.active ? "yes" : "no"}</strong></div>
                         <div className="kv-row"><span>formation</span><strong>{pureWideFormation?.formation_string || "--"}</strong></div>
                         <div className="kv-row"><span>size</span><strong>{pureWideFormation?.size ?? 0}</strong></div>
-                        <div className="kv-row"><span>reason</span><strong>{pureWideFormation?.reason || "--"}</strong></div>
+                        <div className="kv-row"><span>reason</span><strong>{pureFormationReason}</strong></div>
                       </div>
                       {Array.isArray(pureWideFormation?.combos) && pureWideFormation.combos.length > 0 ? (
                         <div className="ticket-stack compact-list" style={{ marginTop: 10 }}>

@@ -93,6 +93,23 @@ function scoreBlend(values) {
   return v === null ? null : clamp(0, 100, v);
 }
 
+function venueMotorStReadiness(features = {}) {
+  return scoreBlend([
+    {
+      value: safeNorm(weightedAverage([{ value: features.motor_2ren?.value, weight: 0.58 }, { value: features.boat_2ren?.value, weight: 0.42 }]), 20, 60) === null
+        ? null
+        : safeNorm(weightedAverage([{ value: features.motor_2ren?.value, weight: 0.58 }, { value: features.boat_2ren?.value, weight: 0.42 }]), 20, 60) * 100,
+      weight: 0.62
+    },
+    {
+      value: invNorm(features.avg_st?.value, 0.11, 0.24) === null
+        ? null
+        : invNorm(features.avg_st?.value, 0.11, 0.24) * 100,
+      weight: 0.38
+    }
+  ]);
+}
+
 function courseRateByLane(snapshot, lane) {
   if (!snapshot || typeof snapshot !== "object") return null;
   if (lane === 1) {
@@ -501,6 +518,14 @@ function computeScores(normalized) {
   });
   const lane1CourseHead = lane1CourseHeadResolved.value;
   if (!Number.isFinite(lane1CourseHead)) missingFields.push("lane1.course_1_head_rate");
+  const lane1MotorStReadiness = venueMotorStReadiness(f1);
+  const lane1VenueHeadBonus = clamp(
+    0,
+    100,
+    50 +
+      toNum(venueProfile?.lane1_head_boost, 0) * 1.9 +
+      ((lane1MotorStReadiness || 0) >= 52 ? toNum(venueProfile?.lane1_motor_st_synergy_boost, 0) * 2.1 : 0)
+  );
 
   const lane1Strength = scoreBlend([
     { value: safeNorm(lane1CourseHead, 20, 80) === null ? null : safeNorm(lane1CourseHead, 20, 80) * 100, weight: 0.24 },
@@ -511,7 +536,9 @@ function computeScores(normalized) {
     { value: safeNorm(weightedAverage([{ value: f1.motor_2ren.value, weight: 0.6 }, { value: f1.boat_2ren.value, weight: 0.4 }]), 20, 60) === null ? null : safeNorm(weightedAverage([{ value: f1.motor_2ren.value, weight: 0.6 }, { value: f1.boat_2ren.value, weight: 0.4 }]), 20, 60) * 100, weight: 0.14 },
     { value: normalized?.venue?.inside_bias?.value ?? null, weight: 0.08 },
     { value: venueProfile?.one_course_trust, weight: 0.08 },
-    { value: clamp(0, 100, 100 - getVenueEscapeFailPressure(venueProfile, 1)), weight: 0.05 }
+    { value: clamp(0, 100, 100 - getVenueEscapeFailPressure(venueProfile, 1)), weight: 0.05 },
+    { value: clamp(0, 100, 50 + toNum(venueProfile?.venue_escape_bias, 0) * 2 + toNum(venueProfile?.venue_inside_stability, 0) * 1.4), weight: 0.03 },
+    { value: lane1VenueHeadBonus, weight: 0.07 }
   ]);
 
   const laneRemainScore = (laneRow, role = "generic") => {
@@ -530,7 +557,24 @@ function computeScores(normalized) {
       { value: invNorm(f.avg_st.value, 0.11, 0.24) === null ? null : invNorm(f.avg_st.value, 0.11, 0.24) * 100, weight: 0.18 },
       { value: safeNorm(f.entry_advantage_score.value, 0, 14) === null ? null : safeNorm(f.entry_advantage_score.value, 0, 14) * 100, weight: 0.12 },
       { value: venueLaneBias, weight: 0.04 },
-      { value: venueStyleFit, weight: 0.04 }
+      { value: venueStyleFit, weight: 0.04 },
+      {
+        value: clamp(
+          0,
+          100,
+          50 +
+            (role === "attack" ? toNum(venueProfile?.venue_makuri_bias, 0) * 2 : 0) +
+            (role === "develop" ? toNum(venueProfile?.venue_makurizashi_bias, 0) * 2 : 0) +
+            (role === "second" ? toNum(venueProfile?.venue_sashi_bias, 0) * 1.8 : 0) +
+            (role === "outside" ? toNum(venueProfile?.venue_outer_3rd_bias, 0) * 1.6 : 0) +
+            (role === "second" ? toNum(venueProfile?.lane2_second_boost, 0) * 1.5 : 0) +
+            (role === "attack" ? toNum(venueProfile?.lane3_attack_boost, 0) * 1.7 + toNum(venueProfile?.lane3_second_boost, 0) * 0.9 : 0) +
+            (role === "develop" ? toNum(venueProfile?.lane4_develop_boost, 0) * 1.9 : 0) +
+            (role === "outside" ? toNum(venueProfile?.volatility_boost, 0) * 0.9 - toNum(venueProfile?.lane56_head_penalty, 0) * 0.6 : 0) +
+            toNum(venueProfile?.venue_start_importance, 0) * (role === "attack" || role === "develop" ? 0.8 : 0.3)
+        ),
+        weight: 0.02
+      }
     ]);
   };
 
@@ -644,21 +688,24 @@ function computeScores(normalized) {
     { value: lane6?.features?.makuri_rate?.value, weight: 0.12 },
     { value: lane5ScenarioRepro, weight: 0.09 },
     { value: lane6ScenarioRepro, weight: 0.09 },
-    { value: venueProfile?.outer_renyuu_entry_rate, weight: 0.1 }
+    { value: venueProfile?.outer_renyuu_entry_rate, weight: 0.08 },
+    { value: clamp(0, 100, 50 + toNum(venueProfile?.venue_outer_3rd_bias, 0) * 1.8 - toNum(venueProfile?.venue_escape_bias, 0) * 0.7 - toNum(venueProfile?.lane56_head_penalty, 0) * 1.8 + toNum(venueProfile?.volatility_boost, 0) * 0.5), weight: 0.06 }
   ]);
   const outside2ndRisk = clamp(0, 1, (scoreBlend([
     { value: lane5Pressure, weight: 0.3 },
     { value: lane6Pressure, weight: 0.3 },
     { value: lane5?.features?.outer_entry_tendency?.value, weight: 0.16 },
     { value: lane6?.features?.outer_entry_tendency?.value, weight: 0.16 },
-    { value: venueProfile?.outer_renyuu_entry_rate, weight: 0.08 }
+    { value: venueProfile?.outer_renyuu_entry_rate, weight: 0.08 },
+    { value: clamp(0, 100, 50 + toNum(venueProfile?.volatility_boost, 0) * 1.1), weight: 0.06 }
   ]) || 0) / 100);
   const outside3rdRisk = clamp(0, 1, (scoreBlend([
     { value: lane5?.features?.lane_course_rate?.value, weight: 0.32 },
     { value: lane6?.features?.lane_course_rate?.value, weight: 0.32 },
     { value: lane5?.features?.motor_total_score?.value, weight: 0.14 },
     { value: lane6?.features?.motor_total_score?.value, weight: 0.14 },
-    { value: venueProfile?.lane56_renyuu_intrusion_rate, weight: 0.08 }
+    { value: venueProfile?.lane56_renyuu_intrusion_rate, weight: 0.06 },
+    { value: clamp(0, 100, 50 + toNum(venueProfile?.venue_outer_3rd_bias, 0) * 2.2 + toNum(venueProfile?.volatility_boost, 0) * 1.2), weight: 0.02 }
   ]) || 0) / 100);
   const outsideBoxBreakRisk = clamp(0, 1, weightedAverage([
     { value: (outsideHeadRisk || 0) / 100, weight: 0.48 },
@@ -681,7 +728,9 @@ function computeScores(normalized) {
     { value: pairSupportFit, weight: 0.1 },
     { value: scenarioReproScore, weight: 0.04 },
     { value: 100 - (lane3?.features?.makuri_rate?.value || 0), weight: 0.04 },
-    { value: 100 - (lane4?.features?.breakout_rate?.value || 0), weight: 0.04 }
+    { value: 100 - (lane4?.features?.breakout_rate?.value || 0), weight: 0.04 },
+    { value: clamp(0, 100, 50 + toNum(venueProfile?.venue_123_box_tightness, 0) * 1.6), weight: 0.04 },
+    { value: lane1VenueHeadBonus, weight: 0.06 }
   ]);
   const p1Escape = clamp(0, 1, (p1Score || 0) / 100);
   const hardScenario = describeHardScenario({
@@ -695,10 +744,10 @@ function computeScores(normalized) {
   const headProbMap = normalizeProbabilities({
     1: Math.max(0.001, p1Escape),
     2: Math.max(0.001, (lane2SecondRemain || 1) / 100 * 0.52),
-    3: Math.max(0.001, (lane3AttackRemain || 1) / 100 * 0.62),
-    4: Math.max(0.001, (lane4DevelopRemain || 1) / 100 * 0.56),
-    5: Math.max(0.001, (outsideHeadRisk || 1) / 100 * 0.24),
-    6: Math.max(0.001, (outsideHeadRisk || 1) / 100 * 0.2)
+    3: Math.max(0.001, (lane3AttackRemain || 1) / 100 * (0.62 + Math.max(0, toNum(venueProfile?.lane3_attack_boost, 0)) * 0.01)),
+    4: Math.max(0.001, (lane4DevelopRemain || 1) / 100 * (0.56 + Math.max(0, toNum(venueProfile?.lane4_develop_boost, 0)) * 0.008)),
+    5: Math.max(0.001, (outsideHeadRisk || 1) / 100 * Math.max(0.08, 0.24 - Math.max(0, toNum(venueProfile?.lane56_head_penalty, 0)) * 0.01)),
+    6: Math.max(0.001, (outsideHeadRisk || 1) / 100 * Math.max(0.06, 0.2 - Math.max(0, toNum(venueProfile?.lane56_head_penalty, 0)) * 0.01))
   });
 
   const secondWeights = normalizeWeights({
@@ -742,7 +791,9 @@ function computeScores(normalized) {
       { value: venueProfile?.two_course_sashi_remain_rate, weight: 0.34 },
       { value: venueProfile?.three_course_attack_success_rate, weight: 0.33 },
       { value: venueProfile?.four_course_develop_sashi_rate, weight: 0.33 }
-    ]), weight: 0.03 }
+    ]), weight: 0.03 },
+    { value: clamp(0, 100, 50 + toNum(venueProfile?.venue_123_box_tightness, 0) * 1.5 - toNum(venueProfile?.venue_outside_break_risk, 0) * 1.2), weight: 0.1 },
+    { value: clamp(0, 100, 50 + toNum(venueProfile?.lane1_head_boost, 0) * 1.5 + toNum(venueProfile?.lane2_second_boost, 0) * 0.6 + toNum(venueProfile?.lane3_attack_boost, 0) * 0.6 + toNum(venueProfile?.lane4_develop_boost, 0) * 0.5 + toNum(venueProfile?.volatility_boost, 0) * 0.4), weight: 0.04 }
   ]), 1);
 
   const unresolved = [];
@@ -758,15 +809,28 @@ function computeScores(normalized) {
     : fallbackTracker.used || optionalCoverageMissingFields.length > 0
       ? "FALLBACK"
       : "READY";
+  const buyPolicy = venueProfile?.buyPolicy || null;
+  const insideHeadTight = buyPolicy?.code === "inside_head_focus";
+  const attack34Capture = buyPolicy?.code === "attack_34_capture";
+  const wideCoverage = buyPolicy?.code === "wide_coverage_watch";
 
   const decision =
     dataStatus === "BROKEN_PIPELINE"
       ? "SKIP"
-      : boat1HeadPre >= 0.58 && hardRaceIndex >= 70 && fit234Index >= 63 && outsideBreakRiskPre <= 0.18
+      : boat1HeadPre >= (insideHeadTight ? 0.6 : 0.58) &&
+        hardRaceIndex >= (insideHeadTight ? 71 : attack34Capture ? 68 : 70) &&
+        fit234Index >= (insideHeadTight ? 64 : attack34Capture ? 61 : 63) &&
+        outsideBreakRiskPre <= (wideCoverage ? 0.2 : 0.18)
         ? "BUY-4"
-        : boat1HeadPre >= 0.52 && hardRaceIndex >= 61 && fit234Index >= 56 && outsideBreakRiskPre <= 0.24
+        : boat1HeadPre >= (insideHeadTight ? 0.54 : 0.52) &&
+          hardRaceIndex >= (wideCoverage ? 59 : 61) &&
+          fit234Index >= (attack34Capture ? 55 : 56) &&
+          outsideBreakRiskPre <= (wideCoverage ? 0.28 : 0.24)
           ? "BUY-6"
-          : boat1HeadPre >= 0.45 && hardRaceIndex >= 54 && fit234Index >= 50 && outsideBreakRiskPre <= 0.32
+          : boat1HeadPre >= (wideCoverage ? 0.42 : 0.45) &&
+            hardRaceIndex >= (wideCoverage ? 52 : 54) &&
+            fit234Index >= (attack34Capture ? 49 : 50) &&
+            outsideBreakRiskPre <= (wideCoverage ? 0.36 : 0.32)
           ? "BORDERLINE"
           : "SKIP";
 
@@ -836,7 +900,10 @@ function computeScores(normalized) {
         y_top4: 0,
         y_buy6: 0,
         y_buy4: 0
-      }
+      },
+      buyPolicy,
+      venueBiasProfile: venueProfile?.venueBiasProfile || venueProfile?.venue_bias_profile || null,
+      venueAdjustmentReason: Array.isArray(venueProfile?.venueAdjustmentReason) ? venueProfile.venueAdjustmentReason : []
     },
     fixed1234_matrix: fixed1234Matrix,
     fixed1234_top4: fixed1234Top4,
@@ -884,6 +951,9 @@ function computeScores(normalized) {
       { label: "5,6 3rd", risk: round(outside3rdRisk, 4) },
       { label: "box break", risk: round(outsideBoxBreakRisk, 4) }
     ],
+    buyPolicy,
+    venueBiasProfile: venueProfile?.venueBiasProfile || venueProfile?.venue_bias_profile || null,
+    venueAdjustmentReason: Array.isArray(venueProfile?.venueAdjustmentReason) ? venueProfile.venueAdjustmentReason : [],
     hard_mode: { active: decision === "BUY-4" || decision === "BUY-6" },
     open_mode: { active: decision === "SKIP" && dataStatus !== "BROKEN_PIPELINE" },
     missing_fields: [...requiredCoverageMissingFields, ...optionalCoverageMissingFields, ...unresolved],
@@ -960,6 +1030,9 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo })
     parsed_saved_paths: saved.parsedSavedPaths,
     normalized_data: normalizedData,
     venue_scenario_bias: normalizedData?.venue?.profile || null,
+    venueBiasProfile: computed.venueBiasProfile || normalizedData?.venue?.profile?.venueBiasProfile || null,
+    buyPolicy: computed.buyPolicy || normalizedData?.venue?.profile?.buyPolicy || null,
+    venueAdjustmentReason: computed.venueAdjustmentReason || normalizedData?.venue?.profile?.venueAdjustmentReason || [],
     features: {
       ...computed.features,
       source_summary: sourceSummary

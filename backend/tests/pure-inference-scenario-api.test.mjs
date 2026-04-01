@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { buildPureInferencePredictionPayload } from "../src/routes/race.js";
+import {
+  buildPureInferencePredictionPayload,
+  normalizeOptionalFormation16,
+  resolveFormationReason
+} from "../src/routes/race.js";
 
 function makeRacer(lane) {
   return {
@@ -93,6 +97,15 @@ assert.equal(typeof payload.pureTop6Prediction.scenario_repro_score, "number");
 assert.ok(Array.isArray(payload.pureTop6Prediction.scenario_repro_scores));
 assert.ok(Array.isArray(payload.pureTop6Prediction.lane_styles));
 assert.equal(typeof payload.pureTop6Prediction.venue_scenario_bias?.one_course_trust, "number");
+assert.equal(typeof payload.pureTop6Prediction.venueBiasProfile, "object");
+assert.equal(typeof payload.pureTop6Prediction.buyPolicy?.code, "string");
+assert.ok(Array.isArray(payload.pureTop6Prediction.venueAdjustmentReason));
+assert.equal(typeof payload.pureTop6Prediction.boat1_second_keep_score, "number");
+assert.equal(typeof payload.pureTop6Prediction.boat1_second_keep_reason, "string");
+assert.equal(typeof payload.pureTop6Prediction.second_given_head_probabilities, "object");
+assert.equal(typeof payload.pureTop6Prediction.exacta_shape_bias, "object");
+assert.ok(Array.isArray(payload.pureTop6Prediction.near_tie_second_candidates));
+assert.equal(typeof payload.pureTop6Prediction.close_combo_preserved, "boolean");
 assert.ok(String(payload.pureTop6Prediction.lane_styles[0]?.style || "").trim().length > 0);
 assert.equal(typeof payload.pureTop6Prediction.lane_styles[0]?.style_score, "number");
 assert.ok(Array.isArray(payload.pureTop6Prediction.lane_styles[0]?.style_reasons));
@@ -103,7 +116,14 @@ assert.equal(typeof payload.pureTop6Prediction.thirdProbabilities, "object");
 assert.ok(Array.isArray(payload.pureTop6Prediction.top6));
 assert.equal(typeof payload.pureTop6Prediction.top6_coverage, "number");
 assert.equal(typeof payload.pureTop6Prediction.chaos_level, "number");
-assert.equal(typeof payload.pureTop6Prediction.optionalFormation16, "object");
+assert.ok(
+  Array.isArray(payload.pureTop6Prediction.optionalFormation16) ||
+  typeof payload.pureTop6Prediction.optionalFormation16 === "object"
+);
+assert.ok(
+  payload.pureTop6Prediction.formationReason === null ||
+  typeof payload.pureTop6Prediction.formationReason === "string"
+);
 assert.equal(typeof payload.prediction.top6Scenario, "string");
 assert.equal(typeof payload.prediction.top6ScenarioScore, "number");
 assert.equal(typeof payload.prediction.scenario_repro_score, "number");
@@ -114,6 +134,14 @@ assert.equal(typeof payload.prediction.thirdProbabilities, "object");
 assert.ok(Array.isArray(payload.prediction.top6));
 assert.equal(typeof payload.prediction.top6_coverage, "number");
 assert.equal(typeof payload.prediction.chaos_level, "number");
+assert.ok(
+  Array.isArray(payload.prediction.optionalFormation16) ||
+  typeof payload.prediction.optionalFormation16 === "object"
+);
+assert.ok(
+  payload.prediction.formationReason === null ||
+  typeof payload.prediction.formationReason === "string"
+);
 assert.equal(typeof payload.winProbabilities, "object");
 assert.equal(typeof payload.secondProbabilities, "object");
 assert.equal(typeof payload.thirdProbabilities, "object");
@@ -121,8 +149,25 @@ assert.ok(Array.isArray(payload.top6));
 assert.ok(Array.isArray(payload.lane_styles));
 assert.ok(Array.isArray(payload.scenario_style_trace));
 assert.equal(typeof payload.venue_scenario_bias?.one_course_trust, "number");
+assert.equal(typeof payload.venueBiasProfile, "object");
+assert.equal(typeof payload.buyPolicy?.code, "string");
+assert.ok(Array.isArray(payload.venueAdjustmentReason));
+assert.equal(typeof payload.boat1_second_keep_score, "number");
+assert.equal(typeof payload.boat1_second_keep_reason, "string");
+assert.equal(typeof payload.second_given_head_probabilities, "object");
+assert.equal(typeof payload.exacta_shape_bias, "object");
+assert.ok(Array.isArray(payload.near_tie_second_candidates));
+assert.equal(typeof payload.close_combo_preserved, "boolean");
 assert.equal(typeof payload.top6_coverage, "number");
 assert.equal(typeof payload.chaos_level, "number");
+assert.ok(
+  Array.isArray(payload.optionalFormation16) ||
+  typeof payload.optionalFormation16 === "object"
+);
+assert.ok(
+  payload.formationReason === null ||
+  typeof payload.formationReason === "string"
+);
 assert.equal(payload.prediction.source_summary?.freshness_status, "stale");
 assert.equal(payload.prediction.source_summary?.refreshed_now, false);
 assert.equal(typeof payload.prediction.source_summary?.field_coverage_report, "object");
@@ -130,5 +175,28 @@ assert.ok(Array.isArray(payload.broken_fields_required));
 assert.ok(Array.isArray(payload.broken_fields_optional));
 assert.equal(payload.freshness_status, "stale");
 assert.equal(payload.refreshed_now, false);
+
+const inactiveFormation = normalizeOptionalFormation16({
+  active: false,
+  size: 0,
+  combos: [],
+  first_candidates: [1, 2],
+  second_candidates: [1, 2, 3],
+  third_candidates: [2, 3, 4],
+  formation_string: null,
+  reason: null,
+  reasons: [],
+  trigger_flags: { low_top6_coverage: false }
+});
+assert.ok(Array.isArray(inactiveFormation));
+assert.deepEqual(inactiveFormation, []);
+assert.equal(
+  resolveFormationReason(
+    { formationReason: "" },
+    { formationReason: "" },
+    inactiveFormation
+  ),
+  null
+);
 
 console.log("pure-inference-scenario-api ok");

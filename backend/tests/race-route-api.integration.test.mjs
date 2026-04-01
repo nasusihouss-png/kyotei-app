@@ -183,6 +183,26 @@ async function withServer(run) {
     assert.equal(typeof body.top6Scenario, "string");
     assert.equal(typeof body.top6ScenarioScore, "number");
     assert.equal(typeof body.venue_scenario_bias?.one_course_trust, "number");
+    assert.equal(typeof body.venueBiasProfile, "object");
+    assert.equal(typeof body.buyPolicy?.code, "string");
+    assert.ok(Array.isArray(body.venueAdjustmentReason));
+    assert.equal(typeof body.boat1_second_keep_score, "number");
+    assert.equal(typeof body.boat1_second_keep_reason, "string");
+    assert.equal(typeof body.second_given_head_probabilities, "object");
+    assert.equal(typeof body.exacta_shape_bias, "object");
+    assert.ok(Array.isArray(body.near_tie_second_candidates));
+    assert.equal(typeof body.close_combo_preserved, "boolean");
+    assert.ok(body.combo_gap_score === null || typeof body.combo_gap_score === "number");
+    assert.equal(typeof body.hardScenario, "string");
+    assert.equal(typeof body.hardScenarioScore, "number");
+    assert.equal(typeof body.hard_race_index, "number");
+    assert.equal(typeof body.boat1_head_pre, "number");
+    assert.equal(typeof body.fit_234_index, "number");
+    assert.equal(typeof body.outside_break_risk_pre, "number");
+    assert.ok(["BUY-6", "BUY-4", "BORDERLINE", "SKIP"].includes(body.decision));
+    assert.equal(typeof body.decision_reason, "string");
+    assert.ok(body.hardRace1234 && typeof body.hardRace1234 === "object");
+    assert.equal(typeof body.hardRace1234.buyPolicy?.code, "string");
   });
 }
 
@@ -217,6 +237,71 @@ async function withServer(run) {
     assert.equal(body.routeTiming.official_base_fetch_ms, 444);
     assert.equal(body.routeTiming.kyoteibiyori_fetch_ms, 555);
     assert.equal(body.routeTiming.parsing_ms, 666);
+  });
+}
+
+{
+  setRaceRouteRuntimeDepsForTests({
+    refreshLatestRaceData: async () => {
+      const error = new Error("Expected exactly 6 complete racers, parsed 0");
+      error.statusCode = 503;
+      error.code = "invalid_racer_count";
+      error.refreshMeta = {
+        refreshed_now: false,
+        freshness_status: "stale",
+        primary_source_ok: false,
+        secondary_source_ok: false,
+        fallback_used: false,
+        last_snapshot_updated_at: null
+      };
+      error.debug = {
+        fetched_urls: {
+          racelist: "https://www.boatrace.jp/owpc/pc/race/racelist?rno=1&jcd=24&hd=20260324",
+          beforeinfo: "https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno=1&jcd=24&hd=20260324",
+          kyoteibiyori: {
+            index: "https://kyoteibiyori.com/race_shusso.php?date=20260324&jyo=24",
+            lane_stats: "https://kyoteibiyori.com/race_shusso.html?date=20260324&jyo=24&race=1&slider=1",
+            pre_race: "https://kyoteibiyori.com/race_shusso.html?date=20260324&jyo=24&race=1&slider=4"
+          }
+        },
+        parser_stage: "fallback_row_scan",
+        matched_selector_count: 0,
+        raw_html_saved_path: null,
+        html_head_preview: "<html><body>omura-preview</body></html>",
+        parsed_ajax_row_count: 22,
+        parsed_ajax_rows_count: 22,
+        mapped_field_count: 12,
+        unknown_type_list: ["tenji_ave_data:unknown_type_1"]
+      };
+      throw error;
+    }
+  });
+
+  await withServer(async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/race?date=2026-03-24&venueId=24&raceNo=1`);
+    const body = await res.json();
+    assert.equal(res.status, 503);
+    assert.equal(body.error, "race_api_failed");
+    assert.equal(body.code, "invalid_racer_count");
+    assert.equal(body.freshness_status, "stale");
+    assert.equal(body.primary_source_ok, false);
+    assert.equal(body.fallback_used, false);
+    assert.equal(body.parser_stage, "fallback_row_scan");
+    assert.equal(body.matched_selector_count, 0);
+    assert.equal(
+      body.fetched_urls?.racelist,
+      "https://www.boatrace.jp/owpc/pc/race/racelist?rno=1&jcd=24&hd=20260324"
+    );
+    assert.equal(
+      body.fetched_urls?.kyoteibiyori?.index,
+      "https://kyoteibiyori.com/race_shusso.php?date=20260324&jyo=24"
+    );
+    assert.equal(body.raw_html_saved_path, null);
+    assert.ok(String(body.html_head_preview || "").includes("omura-preview"));
+    assert.equal(body.parsed_ajax_row_count, 22);
+    assert.equal(body.parsed_ajax_rows_count, 22);
+    assert.equal(body.mapped_field_count, 12);
+    assert.ok(Array.isArray(body.unknown_type_list));
   });
 }
 

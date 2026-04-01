@@ -115,8 +115,9 @@ function makeStoredSnapshot(overrides = {}) {
 
   assert.equal(result.ok, true);
   assert.equal(result.refreshMeta.refreshed_now, false);
-  assert.equal(result.refreshMeta.freshness_status, "stale");
+  assert.equal(result.refreshMeta.freshness_status, "fallback");
   assert.equal(result.refreshMeta.primary_source_ok, false);
+  assert.equal(result.refreshMeta.fallback_used, true);
   assert.equal(result.refreshMeta.refresh_error.code, "LATEST_REFRESH_FAILED");
 }
 

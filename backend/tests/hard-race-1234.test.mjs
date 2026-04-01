@@ -50,6 +50,51 @@ const looseInsideVenueResult = await buildHardRace1234Response({
   venueId: 3,
   raceNo: 1
 });
+const tokuyamaResult = await buildHardRace1234Response({
+  data: {
+    ...baseData,
+    race: { ...baseData.race, venueId: 18, venueName: "Tokuyama" }
+  },
+  date: "2026-03-21",
+  venueId: 18,
+  raceNo: 1
+});
+const ashiyaResult = await buildHardRace1234Response({
+  data: {
+    ...baseData,
+    race: { ...baseData.race, venueId: 21, venueName: "Ashiya" }
+  },
+  date: "2026-03-21",
+  venueId: 21,
+  raceNo: 1
+});
+const amagasakiResult = await buildHardRace1234Response({
+  data: {
+    ...baseData,
+    race: { ...baseData.race, venueId: 13, venueName: "Amagasaki" }
+  },
+  date: "2026-03-21",
+  venueId: 13,
+  raceNo: 1
+});
+const tamagawaResult = await buildHardRace1234Response({
+  data: {
+    ...baseData,
+    race: { ...baseData.race, venueId: 5, venueName: "Tamagawa" }
+  },
+  date: "2026-03-21",
+  venueId: 5,
+  raceNo: 1
+});
+const suminoeResult = await buildHardRace1234Response({
+  data: {
+    ...baseData,
+    race: { ...baseData.race, venueId: 12, venueName: "Suminoe" }
+  },
+  date: "2026-03-21",
+  venueId: 12,
+  raceNo: 1
+});
 
 const exhibitionShifted = JSON.parse(JSON.stringify(baseData));
 exhibitionShifted.racers = exhibitionShifted.racers.map((racer, index) => ({
@@ -70,6 +115,9 @@ assert.equal(result.confidence_status, result.data_status);
 assert.equal(typeof result.hardScenario, "string");
 assert.equal(typeof result.hardScenarioScore, "number");
 assert.equal(typeof result.venue_scenario_bias?.one_course_trust, "number");
+assert.equal(typeof result.venueBiasProfile, "object");
+assert.equal(typeof result.buyPolicy?.code, "string");
+assert.ok(Array.isArray(result.venueAdjustmentReason));
 assert.equal(typeof result.venue_scenario_bias?.two_course_sashi_remain_rate, "number");
 assert.equal(typeof result.venue_scenario_bias?.three_course_attack_success_rate, "number");
 assert.equal(typeof result.venue_scenario_bias?.four_course_develop_sashi_rate, "number");
@@ -157,5 +205,16 @@ assert.equal(result.scenario_repro_score, resultWithoutDisplayImpact.scenario_re
 assert.ok(strongInsideVenueResult.boat1_head_pre > looseInsideVenueResult.boat1_head_pre);
 assert.notEqual(strongInsideVenueResult.hard_race_index, looseInsideVenueResult.hard_race_index);
 assert.notEqual(strongInsideVenueResult.scenario_repro_score, looseInsideVenueResult.scenario_repro_score);
+assert.ok(amagasakiResult.boat1_head_pre >= tamagawaResult.boat1_head_pre);
+assert.ok((amagasakiResult.head_prob_5 + amagasakiResult.head_prob_6) <= (tamagawaResult.head_prob_5 + tamagawaResult.head_prob_6));
+assert.ok(tokuyamaResult.fit_234_index >= strongInsideVenueResult.fit_234_index);
+assert.ok(suminoeResult.fit_234_index >= strongInsideVenueResult.fit_234_index);
+assert.notEqual(tokuyamaResult.fit_234_index, suminoeResult.fit_234_index);
+assert.notEqual(ashiyaResult.outside_break_risk_pre, amagasakiResult.outside_break_risk_pre);
+assert.ok(ashiyaResult.outside_break_risk_pre >= amagasakiResult.outside_break_risk_pre);
+assert.ok(tamagawaResult.outside_break_risk_pre >= amagasakiResult.outside_break_risk_pre);
+assert.equal(typeof tokuyamaResult.hardScenario, "string");
+assert.equal(typeof ashiyaResult.hardScenario, "string");
+assert.equal(typeof suminoeResult.hardScenarioScore, "number");
 
 console.log("hard-race-1234 ok");

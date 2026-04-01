@@ -352,6 +352,94 @@ function normalizeLapTimeForModel(rawLapTime) {
   return normalized > 0 && normalized < 20 ? normalized : null;
 }
 
+const AJAX_AGGREGATE_TYPE_FIELD_MAP = {
+  tenji_ave_data: {
+    0: "exhibitionTime"
+  },
+  shukai_ave_data: {
+    0: "lapTimeRaw",
+    10: "lapTime"
+  }
+};
+
+function appendAjaxAggregateMetric(current, arrayKey, typeKey, metric) {
+  const next = current && typeof current === "object" ? { ...current } : {};
+  const bucket = next[arrayKey] && typeof next[arrayKey] === "object" ? { ...next[arrayKey] } : {};
+  bucket[typeKey] = metric;
+  next[arrayKey] = bucket;
+  return next;
+}
+
+function mergeAjaxAggregateRows({ payload, byLane, fieldSources }) {
+  const diagnostics = {
+    parsed_ajax_rows_count: 0,
+    mapped_field_count: 0,
+    unknown_type_list: [],
+    aggregate_sources: {}
+  };
+
+  for (const [arrayKey, typeFieldMap] of Object.entries(AJAX_AGGREGATE_TYPE_FIELD_MAP)) {
+    const rows = Array.isArray(payload?.[arrayKey]) ? payload[arrayKey] : [];
+    diagnostics.aggregate_sources[arrayKey] = {
+      rows: rows.length,
+      mapped_rows: 0
+    };
+    for (const row of rows) {
+      const typeKey = Number(row?.type);
+      const mappedField = typeFieldMap?.[typeKey] || null;
+      diagnostics.parsed_ajax_rows_count += 1;
+      if (!mappedField) {
+        diagnostics.unknown_type_list.push(`${arrayKey}:unknown_type_${Number.isFinite(typeKey) ? typeKey : "na"}`);
+      } else {
+        diagnostics.aggregate_sources[arrayKey].mapped_rows += 1;
+      }
+
+      for (let lane = 1; lane <= 6; lane += 1) {
+        const courseKey = `course${lane}`;
+        const rawValue = row?.[courseKey];
+        const numericValue = arrayKey === "tenji_ave_data"
+          ? parseScaledDecimal(rawValue, 100)
+          : parseScaledDecimal(rawValue, 100);
+        if (numericValue === null) continue;
+
+        const current = byLane.get(lane) || {};
+        const laneFieldSources = fieldSources[lane] || {};
+        const typeLabel = Number.isFinite(typeKey) ? `type_${typeKey}` : "type_unknown";
+        const metric = {
+          place_no: row?.place_no ?? null,
+          mode: row?.mode ?? null,
+          type: Number.isFinite(typeKey) ? typeKey : null,
+          value: numericValue,
+          raw: rawValue ?? null
+        };
+
+        current.ajaxAggregateMeta = appendAjaxAggregateMetric(
+          current.ajaxAggregateMeta,
+          arrayKey,
+          typeLabel,
+          metric
+        );
+
+        if (mappedField) {
+          if (current[mappedField] === null || current[mappedField] === undefined || current[mappedField] === "") {
+            current[mappedField] = numericValue;
+            laneFieldSources[mappedField] = `${arrayKey}.${typeLabel}`;
+            diagnostics.mapped_field_count += 1;
+          }
+        } else {
+          current[`unknown_type_${arrayKey}_${Number.isFinite(typeKey) ? typeKey : "na"}`] = numericValue;
+        }
+
+        byLane.set(lane, current);
+        fieldSources[lane] = laneFieldSources;
+      }
+    }
+  }
+
+  diagnostics.unknown_type_list = [...new Set(diagnostics.unknown_type_list)];
+  return diagnostics;
+}
+
 function normalizeExhibitionTimeForMeta(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return null;
@@ -1812,6 +1900,12 @@ export function parseKyoteiBiyoriAjaxData(payload) {
     );
   }
 
+  const aggregateDiagnostics = mergeAjaxAggregateRows({
+    payload,
+    byLane,
+    fieldSources
+  });
+
   return {
     byLane,
     fieldSources,
@@ -1819,7 +1913,12 @@ export function parseKyoteiBiyoriAjaxData(payload) {
       response_keys: Object.keys(payload || {}),
       chokuzen_count: chokuzenList.length,
       oriten_player_count: Object.keys(oritenAveList).length,
-      lane_stats_source: "request_oriten_kaiseki_custom.oriten_ave_list"
+      lane_stats_source: "request_oriten_kaiseki_custom.oriten_ave_list",
+      parsed_ajax_row_count: aggregateDiagnostics.parsed_ajax_rows_count,
+      parsed_ajax_rows_count: aggregateDiagnostics.parsed_ajax_rows_count,
+      mapped_field_count: aggregateDiagnostics.mapped_field_count,
+      unknown_type_list: aggregateDiagnostics.unknown_type_list,
+      aggregate_sources: aggregateDiagnostics.aggregate_sources
     }
   };
 }
@@ -2324,6 +2423,17 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       extractedLinks?.laneStatsHref || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 1 });
     const preRaceUrl =
       extractedLinks?.preRaceHref || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 4 });
+    if (artifactCollector && typeof artifactCollector === "object") {
+      artifactCollector.fetched_urls = {
+        ...(artifactCollector.fetched_urls || {}),
+        kyoteibiyori: {
+          index: indexUrl,
+          lane_stats: laneStatsUrl,
+          pre_race: preRaceUrl,
+          ajax: ORITEN_ENDPOINT
+        }
+      };
+    }
     diagnostics.fetch_results.lane_stats_tab.url = laneStatsUrl;
     diagnostics.fetch_results.pre_race_tab.url = preRaceUrl;
 
