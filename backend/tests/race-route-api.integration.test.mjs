@@ -190,6 +190,24 @@ async function withServer(run) {
     assert.equal(typeof body.boat1_second_keep_reason, "string");
     assert.equal(typeof body.second_given_head_probabilities, "object");
     assert.equal(typeof body.exacta_shape_bias, "object");
+    assert.ok(["high", "medium", "low"].includes(body.confidence_band));
+    assert.equal(typeof body.confidence_score, "number");
+    assert.equal(typeof body.prediction_stability_score, "number");
+    assert.equal(typeof body.buy_confidence_reason, "string");
+    assert.equal(typeof body.similarRaceSupport, "object");
+    assert.equal(typeof body.similarRaceCount, "number");
+    assert.equal(typeof body.similarRaceHitBias, "object");
+    assert.ok(Array.isArray(body.similarRaceExamples));
+    assert.equal(typeof body.recommendedBetMode, "string");
+    assert.equal(body.similarRaceSearchExecuted, true);
+    assert.equal(typeof body.similarRaceQueryKey, "object");
+    assert.equal(typeof body.similarRaceStoragePath, "string");
+    assert.equal(typeof body.similarRaceMatchedCount, "number");
+    if (body.similarRaceCount > 0) {
+      assert.equal(body.similarRaceSupport?.basis, "history_supported");
+      assert.equal(typeof body.similarRaceExamples[0]?.matchedPattern, "string");
+      assert.ok(Array.isArray(body.similarRaceExamples[0]?.result));
+    }
     assert.ok(Array.isArray(body.near_tie_second_candidates));
     assert.equal(typeof body.close_combo_preserved, "boolean");
     assert.ok(body.combo_gap_score === null || typeof body.combo_gap_score === "number");

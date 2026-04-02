@@ -13,6 +13,13 @@ import { evaluateRaceRisk } from "../../race-risk-engine.js";
 import { savePredictionLog } from "../../save-prediction-log.js";
 import { saveRaceResult } from "../../save-result.js";
 import {
+  backfillSimilarRaceFeatures,
+  ensureSimilarRaceFeatureTable,
+  SIMILAR_RACE_STORAGE_PATH,
+  updateSimilarRaceFeatureOutcome,
+  upsertSimilarRaceFeatureSnapshot
+} from "../../similar-race-feature-store.js";
+import {
   buildRaceIdFromParts,
   compareActualTop3VsPredictedBets,
   normalizeFinishOrder
@@ -193,6 +200,7 @@ function ensureVerificationLogColumns() {
 }
 
 ensureVerificationLogColumns();
+ensureSimilarRaceFeatureTable();
 
 function parseBooleanFlag(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -397,6 +405,857 @@ export function resolveFormationReason(pureTop6Prediction = null, prediction = n
       ? normalizedFormation.reasons.join("; ")
       : null)
   );
+}
+
+function buildReasonSummary(baseReason = null, extraReasons = []) {
+  const merged = [
+    typeof baseReason === "string" && baseReason.trim() ? baseReason.trim() : null,
+    ...(Array.isArray(extraReasons) ? extraReasons : [])
+      .map((reason) => (typeof reason === "string" ? reason.trim() : ""))
+      .filter(Boolean)
+  ];
+  return merged.length > 0 ? [...new Set(merged)].join("; ") : null;
+}
+
+function summarizeStyleSignature(laneStyles = []) {
+  return (Array.isArray(laneStyles) ? laneStyles : [])
+    .slice(0, 4)
+    .map((row) => `${toInt(row?.lane, 0)}:${String(row?.style_code || row?.style || "unknown")}`)
+    .join("|");
+}
+
+function averageNumbers(values = []) {
+  const usable = (Array.isArray(values) ? values : [])
+    .map((value) => toNullableNum(value))
+    .filter((value) => value !== null);
+  if (usable.length === 0) return null;
+  return usable.reduce((sum, value) => sum + value, 0) / usable.length;
+}
+
+function normalizeEntryOrder(values = []) {
+  return (Array.isArray(values) ? values : [])
+    .map((value) => toInt(value, null))
+    .filter(Number.isInteger)
+    .slice(0, 6);
+}
+
+function normalizeNearTieCandidates(values = []) {
+  return (Array.isArray(values) ? values : [])
+    .map((value) => {
+      if (typeof value === "object" && value) {
+        return toInt(value?.lane ?? value?.boat ?? value?.candidate, null);
+      }
+      return toInt(value, null);
+    })
+    .filter(Number.isInteger)
+    .slice(0, 4);
+}
+
+function parseStoredJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return [];
+  const parsed = safeJsonParse(value, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function parseStoredJsonObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return {};
+  const parsed = safeJsonParse(value, {});
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+}
+
+function buildEntrySignature(predictedEntryOrder = [], actualEntryOrder = []) {
+  const predicted = normalizeEntryOrder(predictedEntryOrder);
+  const actual = normalizeEntryOrder(actualEntryOrder);
+  return {
+    predicted,
+    actual,
+    signature: `${predicted.join("-") || "none"}|${actual.join("-") || "none"}`
+  };
+}
+
+function summarizeRacerFingerprint(racers = []) {
+  const rows = sortRacersByLane(racers)
+    .map((racer) => {
+      const strictLap = getStrictLapPayload(racer);
+      return {
+        lane: toInt(racer?.lane, null),
+        style: toTrimmedStringOrNull(racer?.style_code ?? racer?.style),
+        styleScore: toNullableNum(racer?.style_score),
+        lapTime: strictLap.lapTime ?? toNullableNum(racer?.lapTime ?? racer?.lap_time ?? racer?.kyoteiBiyoriLapTime),
+        exhibitionTime: toNullableNum(racer?.exhibitionTime ?? racer?.exhibition_time),
+        lane1st: toNullableNum(racer?.lane1stScore ?? racer?.lane1stAvg ?? racer?.lane1stRate ?? racer?.laneFirstRate),
+        lane2ren: toNullableNum(racer?.lane2renScore ?? racer?.lane2renAvg ?? racer?.lane2RenRate),
+        lane3ren: toNullableNum(racer?.lane3renScore ?? racer?.lane3renAvg ?? racer?.lane3RenRate),
+        entryConfirmed:
+          racer?.entry_confirmed === true || racer?.entryConfirmed === true
+            ? 1
+            : racer?.entry_confirmed === false || racer?.entryConfirmed === false
+              ? 0
+              : null
+      };
+    })
+    .filter((row) => Number.isInteger(row.lane))
+    .slice(0, 6);
+  const styleRows = rows.filter((row) => row.style).slice(0, 4);
+  return {
+    rows,
+    avgLapTime: averageNumbers(rows.map((row) => row.lapTime)),
+    avgExhibitionTime: averageNumbers(rows.map((row) => row.exhibitionTime)),
+    styleScoreAvg: averageNumbers(rows.map((row) => row.styleScore)),
+    laneRate: {
+      lane1st: averageNumbers(rows.map((row) => row.lane1st)),
+      lane2ren: averageNumbers(rows.map((row) => row.lane2ren)),
+      lane3ren: averageNumbers(rows.map((row) => row.lane3ren))
+    },
+    entryConfirmedRate: averageNumbers(rows.map((row) => row.entryConfirmed === null ? null : row.entryConfirmed * 100)),
+    styleSignature:
+      styleRows.length > 0
+        ? styleRows.map((row) => `${row.lane}:${row.style}`).join("|")
+        : ""
+  };
+}
+
+function buildCurrentRaceFingerprint({ race = null, pureTop6Prediction = null, hardRace1234 = null, prediction = null, racers = [] } = {}) {
+  const nearTieCount = Array.isArray(pureTop6Prediction?.near_tie_second_candidates)
+    ? pureTop6Prediction.near_tie_second_candidates.length
+    : 0;
+  const entryMeta = buildEntrySignature(
+    prediction?.predicted_entry_order ?? race?.predicted_entry_order,
+    prediction?.actual_entry_order ?? race?.actual_entry_order
+  );
+  const racerFingerprint = summarizeRacerFingerprint(
+    Array.isArray(racers) && racers.length > 0
+      ? racers
+      : prediction?.snapshot_context?.players
+  );
+  const venueBiasScore = toNullableNum(
+    pureTop6Prediction?.venue_scenario_bias?.one_course_trust ??
+      pureTop6Prediction?.venueBiasProfile?.one_course_trust
+  ) ?? 50;
+  const secondGivenHead =
+    pureTop6Prediction?.second_given_head_probabilities && typeof pureTop6Prediction.second_given_head_probabilities === "object"
+      ? pureTop6Prediction.second_given_head_probabilities
+      : {};
+  const optionalFormation =
+    pureTop6Prediction?.optionalFormation16 && typeof pureTop6Prediction.optionalFormation16 === "object" && !Array.isArray(pureTop6Prediction.optionalFormation16)
+      ? pureTop6Prediction.optionalFormation16
+      : null;
+  const predictedHead =
+    toInt(pureTop6Prediction?.head_candidate_ranking?.[0]?.lane, null) ??
+    toInt((String(pureTop6Prediction?.top6?.[0]?.combo || "").match(/[1-6]/) || [])[0], null);
+  const secondClusterScore =
+    nearTieCount >= 3 ? 100
+      : nearTieCount === 2 ? 78
+        : pureTop6Prediction?.close_combo_preserved === true ? 68
+          : 42;
+  return {
+    venueId: toInt(race?.venueId, null),
+    venueName: toTrimmedStringOrNull(race?.venueName),
+    racePattern: toTrimmedStringOrNull(pureTop6Prediction?.racePattern) || "mixed",
+    styleSignature: summarizeStyleSignature(pureTop6Prediction?.lane_styles || []),
+    boat1HeadPre: toNullableNum(
+      hardRace1234?.boat1_head_pre ??
+      pureTop6Prediction?.head_prob_1
+    ) ?? 0,
+    secondClusterScore,
+    nearTieCount,
+    nearTieActive: nearTieCount >= 2,
+    chaosLevel: toNullableNum(pureTop6Prediction?.chaos_level) ?? 0,
+    top6Coverage: toNullableNum(pureTop6Prediction?.top6_coverage) ?? 0,
+    outsideBreakRiskPre: toNullableNum(hardRace1234?.outside_break_risk_pre) ?? 0,
+    racePatternScore: toNullableNum(pureTop6Prediction?.racePatternScore) ?? 50,
+    venueBiasScore,
+    avgLapTime: averageNumbers([racerFingerprint.avgLapTime]),
+    avgExhibitionTime: averageNumbers([racerFingerprint.avgExhibitionTime]),
+    entrySignature: entryMeta.signature,
+    predictedEntryOrder: entryMeta.predicted,
+    actualEntryOrder: entryMeta.actual,
+    entryConfirmedRate: racerFingerprint.entryConfirmedRate,
+    styleScoreAvg: racerFingerprint.styleScoreAvg,
+    laneRate: racerFingerprint.laneRate,
+    hardScenario: toTrimmedStringOrNull(hardRace1234?.hardScenario),
+    hardScenarioScore: toNullableNum(hardRace1234?.hardScenarioScore ?? hardRace1234?.scenario_repro_score) ?? 50,
+    hardRaceIndex: toNullableNum(hardRace1234?.hard_race_index) ?? 50,
+    top6Scenario: toTrimmedStringOrNull(pureTop6Prediction?.top6Scenario),
+    top6ScenarioScore: toNullableNum(pureTop6Prediction?.top6ScenarioScore ?? pureTop6Prediction?.scenario_repro_score) ?? 50,
+    secondGivenHead,
+    nearTieCandidates: normalizeNearTieCandidates(pureTop6Prediction?.near_tie_second_candidates),
+    optionalActive: optionalFormation?.active === true,
+    optionalSize: toNullableNum(optionalFormation?.size) ?? 0,
+    formationReason: toTrimmedStringOrNull(
+      pureTop6Prediction?.formationReason ??
+        optionalFormation?.reason
+    ),
+    predictedHead
+  };
+}
+
+function scoreHistoricalFingerprintSimilarity(current = {}, sample = {}) {
+  let score = 0;
+  let weight = 0;
+  const add = (value, addWeight) => {
+    if (!Number.isFinite(Number(value)) || !(addWeight > 0)) return;
+    score += Number(value) * addWeight;
+    weight += addWeight;
+  };
+  const vectorSimilarity = (left = {}, right = {}, keys = []) => {
+    const usable = keys
+      .map((key) => {
+        const leftValue = toNullableNum(left?.[key]);
+        const rightValue = toNullableNum(right?.[key]);
+        if (leftValue === null || rightValue === null) return null;
+        return 100 - Math.min(100, Math.abs(leftValue - rightValue) * 100);
+      })
+      .filter((value) => value !== null);
+    return usable.length > 0 ? averageNumbers(usable) : null;
+  };
+  add(current.venueId && sample.venueId && current.venueId === sample.venueId ? 100 : 18, 0.18);
+  add(current.racePattern && sample.racePattern && current.racePattern === sample.racePattern ? 100 : 34, 0.12);
+  add(
+    current.styleSignature && sample.styleSignature
+      ? current.styleSignature.split("|").filter((part) => sample.styleSignature.includes(part)).length / Math.max(1, current.styleSignature.split("|").length) * 100
+      : 40,
+    0.07
+  );
+  add(100 - Math.min(100, Math.abs((current.venueBiasScore || 0) - (sample.venueBiasScore || 0)) * 1.4), 0.06);
+  add(100 - Math.min(100, Math.abs((current.boat1HeadPre || 0) - (sample.boat1HeadPre || 0)) * 400), 0.1);
+  add(100 - Math.min(100, Math.abs((current.secondClusterScore || 0) - (sample.secondClusterScore || 0)) * 1.2), 0.08);
+  add(100 - Math.min(100, Math.abs((current.avgLapTime || 0) - (sample.avgLapTime || 0)) * 22), 0.06);
+  add(100 - Math.min(100, Math.abs((current.avgExhibitionTime || 0) - (sample.avgExhibitionTime || 0)) * 120), 0.04);
+  add(current.entrySignature && sample.entrySignature && current.entrySignature === sample.entrySignature ? 100 : 46, 0.05);
+  add(100 - Math.min(100, Math.abs((current.entryConfirmedRate || 0) - (sample.entryConfirmedRate || 0)) * 0.9), 0.03);
+  add(100 - Math.min(100, Math.abs((current.styleScoreAvg || 0) - (sample.styleScoreAvg || 0)) * 1.6), 0.03);
+  add(vectorSimilarity(current.laneRate, sample.laneRate, ["lane1st", "lane2ren", "lane3ren"]) ?? 48, 0.08);
+  add(100 - Math.min(100, Math.abs((current.chaosLevel || 0) - (sample.chaosLevel || 0)) * 220), 0.08);
+  add(100 - Math.min(100, Math.abs((current.top6Coverage || 0) - (sample.top6Coverage || 0)) * 260), 0.06);
+  add(100 - Math.min(100, Math.abs((current.outsideBreakRiskPre || 0) - (sample.outsideBreakRiskPre || 0)) * 120), 0.05);
+  add(current.hardScenario && sample.hardScenario && current.hardScenario === sample.hardScenario ? 100 : 42, 0.04);
+  add(100 - Math.min(100, Math.abs((current.hardScenarioScore || 0) - (sample.hardScenarioScore || 0)) * 1.1), 0.03);
+  add(100 - Math.min(100, Math.abs((current.hardRaceIndex || 0) - (sample.hardRaceIndex || 0)) * 1.1), 0.04);
+  add(current.top6Scenario && sample.top6Scenario && current.top6Scenario === sample.top6Scenario ? 100 : 38, 0.04);
+  add(100 - Math.min(100, Math.abs((current.top6ScenarioScore || 0) - (sample.top6ScenarioScore || 0)) * 1.1), 0.04);
+  add(vectorSimilarity(current.secondGivenHead, sample.secondGivenHead, [2, 3, 4, 5, 6]) ?? 50, 0.08);
+  add(current.nearTieActive === sample.nearTieActive ? 100 : 55, 0.03);
+  add(
+    current.nearTieCandidates?.length && sample.nearTieCandidates?.length
+      ? current.nearTieCandidates.filter((lane) => sample.nearTieCandidates.includes(lane)).length / Math.max(1, current.nearTieCandidates.length) * 100
+      : 45,
+    0.04
+  );
+  add(current.optionalActive === sample.optionalActive ? 100 : 60, 0.02);
+  add(100 - Math.min(100, Math.abs((current.optionalSize || 0) - (sample.optionalSize || 0)) * 6), 0.01);
+  add(current.predictedHead && sample.predictedHead && current.predictedHead === sample.predictedHead ? 100 : 52, 0.03);
+  return weight > 0 ? Number((score / weight).toFixed(2)) : 0;
+}
+
+function extractHistoricalRaceSample(row = {}) {
+  const predictionJson = safeJsonParse(row?.prediction_json, {});
+  const pure = predictionJson?.pure_top6_prediction && typeof predictionJson.pure_top6_prediction === "object"
+    ? predictionJson.pure_top6_prediction
+    : predictionJson;
+  const actualTop3 = Array.isArray(safeJsonParse(row?.actual_top3, null))
+    ? safeJsonParse(row.actual_top3, [])
+    : String(row?.confirmed_result || "")
+        .split("-")
+        .map((value) => toInt(value, null))
+        .filter(Number.isInteger)
+        .slice(0, 3);
+  return {
+    raceId: toTrimmedStringOrNull(row?.race_id),
+    venueId: toInt(row?.venue_code, null),
+    venueName: toTrimmedStringOrNull(row?.venue_name),
+    racePattern: toTrimmedStringOrNull(
+      pure?.racePattern ||
+      predictionJson?.racePattern
+    ) || "mixed",
+    styleSignature: summarizeStyleSignature(
+      pure?.lane_styles ||
+      predictionJson?.lane_styles ||
+      []
+    ),
+    boat1HeadPre: toNullableNum(
+      predictionJson?.hardRace1234?.boat1_head_pre ??
+      pure?.head_prob_1 ??
+      predictionJson?.head_prob_1
+    ) ?? 0,
+    nearTieActive:
+      (Array.isArray(pure?.near_tie_second_candidates) && pure.near_tie_second_candidates.length >= 2) ||
+      pure?.close_combo_preserved === true,
+    chaosLevel: toNullableNum(pure?.chaos_level ?? predictionJson?.chaos_level) ?? 0,
+    top6Coverage: toNullableNum(pure?.top6_coverage ?? predictionJson?.top6_coverage) ?? 0,
+    actualTop3,
+    headHit: toNum(row?.head_hit, 0) === 1,
+    betHit: toNum(row?.bet_hit, 0) === 1
+  };
+}
+
+function buildFallbackSimilarRaceSupport({ pureTop6Prediction = null } = {}) {
+  const escapeRate = Number((toNullableNum(pureTop6Prediction?.head_prob_1) ?? 0) * 100);
+  const lane2RemainRate = Number((toNullableNum(pureTop6Prediction?.second_given_head_probabilities?.[2]) ?? 0) * 100);
+  const lane3AttackRate = Number((toNullableNum(pureTop6Prediction?.second_given_head_probabilities?.[3]) ?? 0) * 100);
+  const outer3rdRate = Number(
+    ((toNullableNum(pureTop6Prediction?.thirdProbabilities?.[5]) ?? 0) + (toNullableNum(pureTop6Prediction?.thirdProbabilities?.[6]) ?? 0)) * 100
+  );
+  const supportScore = Number((toNullableNum(pureTop6Prediction?.similarRacePatternScore) ?? 50).toFixed(1));
+  const fallbackTop6HitRate = Number(((toNullableNum(pureTop6Prediction?.top6_coverage) ?? 0) * 100).toFixed(1));
+  return {
+    similarRaceSupport: {
+      score: supportScore,
+      support_level: supportScore >= 68 ? "strong" : supportScore >= 50 ? "medium" : "weak",
+      basis: "heuristic_no_history",
+      metrics: {
+        one_escape_rate: Number(escapeRate.toFixed(1)),
+        lane2_second_rate: Number(lane2RemainRate.toFixed(1)),
+        lane3_attack_success_rate: Number(lane3AttackRate.toFixed(1)),
+        outer_3rd_invasion_rate: Number(outer3rdRate.toFixed(1)),
+        top6_hit_rate: fallbackTop6HitRate
+      }
+    },
+    similarRaceCount: 0,
+    similarRaceHitBias: {
+      head_hit_rate: null,
+      bet_hit_rate: null
+    },
+    similarRaceExamples: []
+  };
+}
+
+function buildSupportReason(current = {}, sample = {}) {
+  const reasons = [];
+  if (current.venueId && sample.venueId && current.venueId === sample.venueId) reasons.push("same venue");
+  if (current.venueId && sample.venueId && current.venueId !== sample.venueId) reasons.push("cross-venue fallback");
+  if (current.racePattern && sample.racePattern && current.racePattern === sample.racePattern) reasons.push("same racePattern");
+  if (current.styleSignature && sample.styleSignature && current.styleSignature === sample.styleSignature) reasons.push("same style signature");
+  if (current.top6Scenario && sample.top6Scenario && current.top6Scenario === sample.top6Scenario) reasons.push("same top6 scenario");
+  if (current.hardScenario && sample.hardScenario && current.hardScenario === sample.hardScenario) reasons.push("same hard scenario");
+  if (current.entrySignature && sample.entrySignature && current.entrySignature === sample.entrySignature) reasons.push("same entry signature");
+  if (Math.abs((current.boat1HeadPre || 0) - (sample.boat1HeadPre || 0)) <= 0.05) reasons.push("boat1 head pre is close");
+  if (Math.abs((current.avgLapTime || 0) - (sample.avgLapTime || 0)) <= 0.08) reasons.push("lap time is close");
+  if (Math.abs((current.avgExhibitionTime || 0) - (sample.avgExhibitionTime || 0)) <= 0.06) reasons.push("exhibition time is close");
+  if (Math.abs((current.chaosLevel || 0) - (sample.chaosLevel || 0)) <= 0.12) reasons.push("chaos level is close");
+  if (Math.abs((current.top6Coverage || 0) - (sample.top6Coverage || 0)) <= 0.05) reasons.push("top6 coverage is close");
+  if (Math.abs((current.outsideBreakRiskPre || 0) - (sample.outsideBreakRiskPre || 0)) <= 0.12) reasons.push("outside break risk is close");
+  return reasons.join(", ");
+}
+
+function didSecondClusterMatch(sample = {}) {
+  const secondLane = toInt(sample?.actualTop3?.[1], null);
+  if (!Number.isInteger(secondLane)) return null;
+  const candidates = Array.isArray(sample?.nearTieCandidates) ? sample.nearTieCandidates : [];
+  if (candidates.length === 0) return null;
+  return candidates.includes(secondLane);
+}
+
+function buildBuyHitImpact(sample = {}) {
+  if (sample?.betHit) return "buy hit supported by matched history";
+  if (sample?.top6Hit) return "top6 covered even when final buy missed";
+  if (sample?.headHit) return "head matched but partner side drifted";
+  return "matched history still missed this buy shape";
+}
+
+function buildSimilarRaceQueryKey(current = {}) {
+  return {
+    venueId: current.venueId ?? null,
+    venueBiasScore: current.venueBiasScore ?? null,
+    racePattern: current.racePattern || null,
+    styleSignature: current.styleSignature || null,
+    entrySignature: current.entrySignature || null,
+    boat1_head_pre: current.boat1HeadPre ?? null,
+    second_place_clustering: current.secondClusterScore ?? null,
+    avg_lap_time: current.avgLapTime ?? null,
+    avg_exhibition_time: current.avgExhibitionTime ?? null,
+    hardScenario: current.hardScenario || null,
+    top6Scenario: current.top6Scenario || null,
+    chaos_level: current.chaosLevel ?? null,
+    top6_coverage: current.top6Coverage ?? null,
+    outside_break_risk_pre: current.outsideBreakRiskPre ?? null
+  };
+}
+
+function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardRace1234 = null } = {}) {
+  try {
+    backfillSimilarRaceFeatures();
+    const current = buildCurrentRaceFingerprint({ race, pureTop6Prediction, hardRace1234 });
+    const queryKey = buildSimilarRaceQueryKey(current);
+    const selectBase = `
+      SELECT
+        race_id,
+        race_date,
+        venue_code,
+        venue_name,
+        race_no,
+        race_pattern,
+        race_pattern_score,
+        second_cluster_score,
+        style_signature,
+        boat1_head_pre,
+        near_tie_count,
+        chaos_level,
+        top6_coverage,
+        outside_break_risk_pre,
+        venue_bias_score,
+        venue_bias_json,
+        avg_lap_time,
+        avg_exhibition_time,
+        entry_signature,
+        predicted_entry_order_json,
+        actual_entry_order_json,
+        entry_confirmed,
+        final_result AS confirmed_result,
+        style_score_avg,
+        lane_rate_json,
+        hard_scenario,
+        hard_scenario_score,
+        hard_race_index,
+        top6_scenario,
+        top6_scenario_score,
+        second_given_head_json,
+        near_tie_second_json,
+        optional_active,
+        optional_size,
+        predicted_head,
+        racers_feature_json,
+        confidence_score,
+        prediction_stability_score,
+        recommended_bet_mode,
+        head_hit,
+        bet_hit,
+        top6_hit
+      FROM similar_race_features
+      WHERE final_result IS NOT NULL
+    `;
+    const sameVenueRows = db.prepare(
+      `${selectBase}
+        AND (
+          venue_code = @venueCode
+          OR venue_name = @venueName
+        )
+      ORDER BY updated_at DESC, race_id DESC
+      LIMIT 240`
+    ).all({
+      venueCode: current.venueId,
+      venueName: current.venueName
+    });
+    const allVenueRows = db.prepare(
+      `${selectBase}
+      ORDER BY updated_at DESC, race_id DESC
+      LIMIT 360`
+    ).all();
+    const dedupedRows = [];
+    const seenRaceIds = new Set();
+    for (const row of [...sameVenueRows, ...allVenueRows]) {
+      const raceId = String(row?.race_id || "");
+      if (!raceId || seenRaceIds.has(raceId)) continue;
+      seenRaceIds.add(raceId);
+      dedupedRows.push(row);
+    }
+    const rows = dedupedRows;
+    const samples = rows
+      .map((row) => ({
+        raceId: toTrimmedStringOrNull(row?.race_id),
+        raceDate: toTrimmedStringOrNull(row?.race_date),
+        venueId: toInt(row?.venue_code, null),
+        venueName: toTrimmedStringOrNull(row?.venue_name),
+        raceNo: toInt(row?.race_no, null),
+        racePattern: toTrimmedStringOrNull(row?.race_pattern) || "mixed",
+        racePatternScore: toNullableNum(row?.race_pattern_score) ?? 50,
+        secondClusterScore: toNullableNum(row?.second_cluster_score) ?? 42,
+        styleSignature: toTrimmedStringOrNull(row?.style_signature) || "",
+        boat1HeadPre: toNullableNum(row?.boat1_head_pre) ?? 0,
+        venueBiasScore: toNullableNum(row?.venue_bias_score) ?? 50,
+        avgLapTime: toNullableNum(row?.avg_lap_time) ?? null,
+        avgExhibitionTime: toNullableNum(row?.avg_exhibition_time) ?? null,
+        entrySignature: toTrimmedStringOrNull(row?.entry_signature) || "",
+        entryConfirmedRate: toNullableNum(row?.entry_confirmed) === null ? null : Number(row.entry_confirmed) * 100,
+        nearTieActive: toNum(row?.near_tie_count, 0) >= 2,
+        nearTieCandidates: normalizeNearTieCandidates(safeJsonParse(row?.near_tie_second_json, [])),
+        chaosLevel: toNullableNum(row?.chaos_level) ?? 0,
+        top6Coverage: toNullableNum(row?.top6_coverage) ?? 0,
+        outsideBreakRiskPre: toNullableNum(row?.outside_break_risk_pre) ?? 0,
+        styleScoreAvg: toNullableNum(row?.style_score_avg) ?? null,
+        laneRate: parseStoredJsonObject(row?.lane_rate_json),
+        hardScenario: toTrimmedStringOrNull(row?.hard_scenario),
+        hardScenarioScore: toNullableNum(row?.hard_scenario_score) ?? null,
+        hardRaceIndex: toNullableNum(row?.hard_race_index) ?? null,
+        top6Scenario: toTrimmedStringOrNull(row?.top6_scenario),
+        top6ScenarioScore: toNullableNum(row?.top6_scenario_score) ?? null,
+        secondGivenHead: parseStoredJsonObject(row?.second_given_head_json),
+        optionalActive: toNum(row?.optional_active, 0) === 1,
+        optionalSize: toNullableNum(row?.optional_size) ?? 0,
+        predictedHead: toInt(row?.predicted_head, null),
+        racersFeature: safeJsonParse(row?.racers_feature_json, []),
+        historicalConfidenceScore: toNullableNum(row?.confidence_score) ?? null,
+        historicalPredictionStabilityScore: toNullableNum(row?.prediction_stability_score) ?? null,
+        recommendedBetMode: toTrimmedStringOrNull(row?.recommended_bet_mode),
+        actualTop3: String(row?.confirmed_result || "")
+          .split("-")
+          .map((value) => toInt(value, null))
+          .filter(Number.isInteger)
+          .slice(0, 3),
+        headHit: toNum(row?.head_hit, 0) === 1,
+        betHit: toNum(row?.bet_hit, 0) === 1,
+        top6Hit: toNum(row?.top6_hit, 0) === 1
+      }))
+      .map((sample) => ({
+        ...sample,
+        similarity: scoreHistoricalFingerprintSimilarity(current, sample)
+      }))
+      .filter((sample) => sample.similarity >= 48)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 24);
+    if (samples.length === 0) {
+      const sameVenueSettledCount = sameVenueRows.filter((row) => toTrimmedStringOrNull(row?.confirmed_result)).length;
+      const allVenueSettledCount = allVenueRows.filter((row) => toTrimmedStringOrNull(row?.confirmed_result)).length;
+      console.info("[SIMILAR_RACE][fallback_heuristic]", JSON.stringify({
+        venueId: current.venueId,
+        racePattern: current.racePattern,
+        similarRaceStoragePath: SIMILAR_RACE_STORAGE_PATH,
+        sameVenueCandidateCount: sameVenueRows.length,
+        allVenueCandidateCount: allVenueRows.length,
+        sameVenueSettledCount,
+        allVenueSettledCount,
+        matchedCount: 0,
+        topSimilarity: rows
+          .map((row) => ({
+            similarity: scoreHistoricalFingerprintSimilarity(current, {
+              venueId: toInt(row?.venue_code, null),
+              racePattern: toTrimmedStringOrNull(row?.race_pattern) || "mixed",
+              styleSignature: toTrimmedStringOrNull(row?.style_signature) || "",
+              boat1HeadPre: toNullableNum(row?.boat1_head_pre) ?? 0,
+              venueBiasScore: toNullableNum(row?.venue_bias_score) ?? 50,
+              secondClusterScore: toNullableNum(row?.second_cluster_score) ?? 42,
+              avgLapTime: toNullableNum(row?.avg_lap_time) ?? null,
+              avgExhibitionTime: toNullableNum(row?.avg_exhibition_time) ?? null,
+              entrySignature: toTrimmedStringOrNull(row?.entry_signature) || "",
+              entryConfirmedRate: toNullableNum(row?.entry_confirmed) === null ? null : Number(row.entry_confirmed) * 100,
+              styleScoreAvg: toNullableNum(row?.style_score_avg) ?? null,
+              laneRate: parseStoredJsonObject(row?.lane_rate_json),
+              chaosLevel: toNullableNum(row?.chaos_level) ?? 0,
+              top6Coverage: toNullableNum(row?.top6_coverage) ?? 0,
+              outsideBreakRiskPre: toNullableNum(row?.outside_break_risk_pre) ?? 0,
+              hardScenario: toTrimmedStringOrNull(row?.hard_scenario),
+              hardScenarioScore: toNullableNum(row?.hard_scenario_score) ?? null,
+              hardRaceIndex: toNullableNum(row?.hard_race_index) ?? null,
+              top6Scenario: toTrimmedStringOrNull(row?.top6_scenario),
+              top6ScenarioScore: toNullableNum(row?.top6_scenario_score) ?? null,
+              secondGivenHead: parseStoredJsonObject(row?.second_given_head_json),
+              nearTieActive: toNum(row?.near_tie_count, 0) >= 2,
+              nearTieCandidates: normalizeNearTieCandidates(safeJsonParse(row?.near_tie_second_json, [])),
+              optionalActive: toNum(row?.optional_active, 0) === 1,
+              optionalSize: toNullableNum(row?.optional_size) ?? 0,
+              predictedHead: toInt(row?.predicted_head, null)
+            })
+          }))
+          .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+          .slice(0, 3),
+        reason:
+          allVenueSettledCount === 0
+            ? "no result-supported history is stored yet"
+            : "no historical races exceeded similarity threshold"
+      }));
+      return {
+        ...buildFallbackSimilarRaceSupport({ pureTop6Prediction }),
+        similarRaceSearchExecuted: true,
+        similarRaceQueryKey: queryKey,
+        similarRaceStoragePath: SIMILAR_RACE_STORAGE_PATH,
+        similarRaceMatchedCount: 0
+      };
+    }
+    const metric = (predicate) => Number(((samples.filter(predicate).length / samples.length) * 100).toFixed(1));
+    const headHitRate = metric((sample) => sample.headHit);
+    const betHitRate = metric((sample) => sample.betHit);
+    const oneEscapeRate = metric((sample) => sample.actualTop3?.[0] === 1);
+    const lane2SecondRate = metric((sample) => sample.actualTop3?.[1] === 2);
+    const lane3AttackSuccessRate = metric((sample) => {
+      const first = sample.actualTop3?.[0];
+      const second = sample.actualTop3?.[1];
+      return first === 3 || second === 3;
+    });
+    const outer3rdRate = metric((sample) => {
+      const third = sample.actualTop3?.[2];
+      return third === 5 || third === 6;
+    });
+    const top6HitRate = metric((sample) => sample.top6Hit);
+    const avgSimilarity = Number((averageNumbers(samples.map((sample) => sample.similarity)) ?? 0).toFixed(1));
+    const weightedBetHitRate = Number((
+      (
+        samples.reduce((sum, sample) => sum + (sample.betHit ? sample.similarity : 0), 0) /
+        Math.max(1, samples.reduce((sum, sample) => sum + sample.similarity, 0))
+      ) * 100
+    ).toFixed(1));
+    console.info("[SIMILAR_RACE][history_supported]", JSON.stringify({
+      venueId: current.venueId,
+      racePattern: current.racePattern,
+      similarRaceStoragePath: SIMILAR_RACE_STORAGE_PATH,
+      sameVenueCandidateCount: sameVenueRows.length,
+      allVenueCandidateCount: allVenueRows.length,
+      matchedCount: samples.length,
+      topSimilarity: samples[0]?.similarity ?? null,
+      avgSimilarity
+    }));
+    const supportScore = Number((
+      (
+        oneEscapeRate * 0.24 +
+        lane2SecondRate * 0.2 +
+        lane3AttackSuccessRate * 0.18 +
+        outer3rdRate * 0.12 +
+        headHitRate * 0.06 +
+        weightedBetHitRate * 0.1 +
+        top6HitRate * 0.1
+      ) *
+      (0.72 + Math.min(0.18, samples.length / 40) + Math.min(0.1, avgSimilarity / 1000))
+    ).toFixed(1));
+    return {
+      similarRaceSupport: {
+        score: supportScore,
+        support_level: supportScore >= 68 ? "strong" : supportScore >= 50 ? "medium" : "weak",
+        basis: "history_supported",
+        metrics: {
+          one_escape_rate: oneEscapeRate,
+          lane2_second_rate: lane2SecondRate,
+          lane3_attack_success_rate: lane3AttackSuccessRate,
+          outer_3rd_invasion_rate: outer3rdRate,
+          top6_hit_rate: top6HitRate,
+          avg_similarity: avgSimilarity,
+          weighted_bet_hit_rate: weightedBetHitRate
+        }
+      },
+      similarRaceCount: samples.length,
+      similarRaceHitBias: {
+        head_hit_rate: headHitRate,
+        bet_hit_rate: betHitRate
+      },
+      similarRaceExamples: samples.slice(0, 3).map((sample) => ({
+        date: sample.raceDate,
+        venueId: sample.venueId,
+        raceNo: sample.raceNo,
+        matchedPattern: sample.racePattern,
+        similarityScore: sample.similarity,
+        distanceScore: Number((100 - sample.similarity).toFixed(2)),
+        predictedHead: sample.predictedHead,
+        result: sample.actualTop3,
+        wasOneEscape: sample.actualTop3?.[0] === 1,
+        secondClusterMatched: didSecondClusterMatch(sample),
+        buyHitImpact: buildBuyHitImpact(sample),
+        supportReason: buildSupportReason(current, sample),
+        similarity: sample.similarity
+      })),
+      similarRaceSearchExecuted: true,
+      similarRaceQueryKey: queryKey,
+      similarRaceStoragePath: SIMILAR_RACE_STORAGE_PATH,
+      similarRaceMatchedCount: samples.length
+    };
+  } catch {
+    const current = buildCurrentRaceFingerprint({ race, pureTop6Prediction, hardRace1234 });
+    return {
+      ...buildFallbackSimilarRaceSupport({ pureTop6Prediction }),
+      similarRaceSearchExecuted: true,
+      similarRaceQueryKey: buildSimilarRaceQueryKey(current),
+      similarRaceStoragePath: SIMILAR_RACE_STORAGE_PATH,
+      similarRaceMatchedCount: 0
+    };
+  }
+}
+
+function buildPredictionConfidenceCalibration({
+  pureTop6Prediction = null,
+  hardRace1234 = null,
+  similarSupportBundle = null
+} = {}) {
+  const top6Coverage = toNullableNum(pureTop6Prediction?.top6_coverage) ?? 0;
+  const chaosLevel = toNullableNum(pureTop6Prediction?.chaos_level) ?? 0;
+  const scenarioReproScore = toNullableNum(pureTop6Prediction?.scenario_repro_score) ?? 50;
+  const hardRaceIndex = toNullableNum(hardRace1234?.hard_race_index) ?? 50;
+  const outsideRisk = toNullableNum(hardRace1234?.outside_break_risk_pre) ?? 0;
+  const similarSupportScore = toNullableNum(similarSupportBundle?.similarRaceSupport?.score) ?? (toNullableNum(pureTop6Prediction?.similarRacePatternScore) ?? 50);
+  const similarRaceCount = toNullableNum(similarSupportBundle?.similarRaceCount) ?? 0;
+  const similarHistoryBasis = String(similarSupportBundle?.similarRaceSupport?.basis || "");
+  const similarHitBias = similarSupportBundle?.similarRaceHitBias && typeof similarSupportBundle.similarRaceHitBias === "object"
+    ? similarSupportBundle.similarRaceHitBias
+    : {};
+  const avgSimilarity = toNullableNum(similarSupportBundle?.similarRaceSupport?.metrics?.avg_similarity) ?? 0;
+  const weightedBetHitRate = toNullableNum(similarSupportBundle?.similarRaceSupport?.metrics?.weighted_bet_hit_rate)
+    ?? toNullableNum(similarHitBias?.bet_hit_rate)
+    ?? 50;
+  const supportCountBoost =
+    similarHistoryBasis === "history_supported"
+      ? similarRaceCount >= 12 ? 8 : similarRaceCount >= 6 ? 5 : similarRaceCount >= 3 ? 3 : similarRaceCount >= 1 ? 1.5 : 0
+      : similarRaceCount >= 8 ? 6 : similarRaceCount >= 3 ? 3 : similarRaceCount >= 1 ? 1.5 : 0;
+  const clusteringPenalty =
+    Array.isArray(pureTop6Prediction?.near_tie_second_candidates) && pureTop6Prediction.near_tie_second_candidates.length >= 3
+      ? 52
+      : Array.isArray(pureTop6Prediction?.near_tie_second_candidates) && pureTop6Prediction.near_tie_second_candidates.length >= 2
+        ? 60
+        : 72;
+  const venueBiasScore = toNullableNum(pureTop6Prediction?.venue_scenario_bias?.one_course_trust) ?? 50;
+  const predictionStabilityScore = Number((
+    top6Coverage * 100 * 0.32 +
+    Math.max(0, 100 - chaosLevel * 100) * 0.18 +
+    scenarioReproScore * 0.18 +
+    Math.max(0, 100 - outsideRisk) * 0.14 +
+    clusteringPenalty * 0.08 +
+    venueBiasScore * 0.1
+  ).toFixed(1));
+  const confidenceScore = Number((
+    predictionStabilityScore * (similarHistoryBasis === "history_supported" ? 0.34 : 0.38) +
+    scenarioReproScore * 0.14 +
+    hardRaceIndex * 0.16 +
+    similarSupportScore * (similarHistoryBasis === "history_supported" ? 0.2 : 0.14) +
+    top6Coverage * 100 * 0.1 +
+    Math.max(0, 100 - outsideRisk) * 0.08 +
+    avgSimilarity * 0.06 +
+    weightedBetHitRate * (similarHistoryBasis === "history_supported" ? 0.06 : 0.02) +
+    supportCountBoost
+  ).toFixed(1));
+  const confidenceBand = confidenceScore >= 74 ? "high" : confidenceScore >= 54 ? "medium" : "low";
+  const reasons = [];
+  if (similarHistoryBasis === "history_supported" && similarSupportScore >= 66) reasons.push("similar race history strongly supports this shape");
+  else if (similarSupportScore >= 66) reasons.push("similar race support is strong");
+  if (similarHistoryBasis === "history_supported" && weightedBetHitRate >= 58) reasons.push("similar race buy hit tendency is supportive");
+  if (similarHistoryBasis === "history_supported" && similarRaceCount <= 2) reasons.push("history support exists but sample count is still thin");
+  if (predictionStabilityScore >= 68) reasons.push("prediction stability is high");
+  if (pureTop6Prediction?.close_combo_preserved === true) reasons.push("near-tie second-place structure needs wider coverage");
+  if (hardRaceIndex >= 68 && confidenceBand === "high") reasons.push("hard race confidence is high");
+  if (predictionStabilityScore <= 46) reasons.push("skip risk is elevated due to low stability");
+  return {
+    confidence_band: confidenceBand,
+    confidence_score: confidenceScore,
+    prediction_stability_score: predictionStabilityScore,
+    buy_confidence_reason: reasons.join("; ") || "confidence is neutral"
+  };
+}
+
+function buildRecommendedBetPolicy({
+  pureTop6Prediction = null,
+  hardRace1234 = null,
+  similarSupportBundle = null,
+  confidenceSummary = null
+} = {}) {
+  const confidenceScore = toNullableNum(confidenceSummary?.confidence_score) ?? 50;
+  const confidenceBand = confidenceSummary?.confidence_band || "medium";
+  const hardRaceIndex = toNullableNum(hardRace1234?.hard_race_index) ?? 0;
+  const top6Coverage = toNullableNum(pureTop6Prediction?.top6_coverage) ?? 0;
+  const optionalActive = pureTop6Prediction?.optionalFormation16?.active === true;
+  const similarSupportScore = toNullableNum(similarSupportBundle?.similarRaceSupport?.score) ?? 50;
+  const similarRaceCount = toNullableNum(similarSupportBundle?.similarRaceCount) ?? 0;
+  const similarHistoryBasis = String(similarSupportBundle?.similarRaceSupport?.basis || "");
+  const similarBetHitRate = toNullableNum(similarSupportBundle?.similarRaceHitBias?.bet_hit_rate) ?? 50;
+  const scenarioReproScore = toNullableNum(pureTop6Prediction?.scenario_repro_score) ?? 50;
+  const chaosLevel = toNullableNum(pureTop6Prediction?.chaos_level) ?? 0;
+  const weakSupport = similarSupportScore < 45 || similarRaceCount === 0;
+  const historySupported = similarHistoryBasis === "history_supported";
+  if (confidenceScore >= 76 && hardRaceIndex >= 70) {
+    return { recommendedBetMode: "hard_race_narrow", skipRiskReason: null };
+  }
+  if (historySupported && similarBetHitRate >= 60 && confidenceBand !== "low" && top6Coverage >= 0.18) {
+    return { recommendedBetMode: "buy_top6_only", skipRiskReason: null };
+  }
+  if (confidenceBand === "high" && top6Coverage >= 0.22) {
+    return { recommendedBetMode: "buy_top6_only", skipRiskReason: null };
+  }
+  if (confidenceScore >= 54 && optionalActive && (top6Coverage <= 0.18 || pureTop6Prediction?.close_combo_preserved === true)) {
+    return { recommendedBetMode: "buy_top6_plus_optional16", skipRiskReason: null };
+  }
+  if (confidenceScore >= 44 && scenarioReproScore >= 54) {
+    return {
+      recommendedBetMode: "borderline_reduce",
+      skipRiskReason:
+        weakSupport
+          ? historySupported
+            ? "similar race history exists but is not strong enough, so coverage should be reduced"
+            : "similar race support is weak and coverage should be reduced"
+          : "coverage is borderline so ticket count should be reduced"
+    };
+  }
+  return {
+    recommendedBetMode: "skip",
+    skipRiskReason:
+      chaosLevel >= 0.6 || weakSupport
+        ? historySupported
+          ? "skip risk is elevated because similar race history does not support an aggressive buy"
+          : "skip risk is elevated due to low stability"
+        : "skip risk is elevated due to weak support"
+  };
+}
+
+function enrichPredictionSupportFields({
+  race = null,
+  pureTop6Prediction = null,
+  prediction = null,
+  hardRace1234 = null,
+  racers = []
+} = {}) {
+  const similarSupportBundle = buildSimilarRaceSupport({
+    race: racers.length > 0 ? { ...(race || {}), racers } : race,
+    pureTop6Prediction,
+    hardRace1234
+  });
+  const confidenceSummary = buildPredictionConfidenceCalibration({
+    pureTop6Prediction,
+    hardRace1234,
+    similarSupportBundle
+  });
+  const betPolicySummary = buildRecommendedBetPolicy({
+    pureTop6Prediction,
+    hardRace1234,
+    similarSupportBundle,
+    confidenceSummary
+  });
+  const extraFormationReasons = [];
+  if ((similarSupportBundle?.similarRaceSupport?.score || 0) >= 66) extraFormationReasons.push("similar race support is strong");
+  if ((confidenceSummary?.prediction_stability_score || 0) >= 68) extraFormationReasons.push("prediction stability is high");
+  if (pureTop6Prediction?.close_combo_preserved === true) extraFormationReasons.push("near-tie second-place structure needs wider coverage");
+  if ((hardRace1234?.hard_race_index || 0) >= 68 && confidenceSummary?.confidence_band === "high") extraFormationReasons.push("hard race confidence is high");
+  if (betPolicySummary?.recommendedBetMode === "skip") extraFormationReasons.push("skip risk is elevated due to low stability");
+  const baseFormationReason = resolveFormationReason(
+    pureTop6Prediction,
+    prediction,
+    normalizeOptionalFormation16(pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null)
+  );
+  return {
+    ...similarSupportBundle,
+    ...confidenceSummary,
+    ...betPolicySummary,
+    formationReason: buildReasonSummary(baseFormationReason, extraFormationReasons)
+  };
+}
+
+function computeSimilarRaceOutcomeFromPrediction(predictionJson = {}, actualResult = null) {
+  const resultCombo = normalizeCombo(actualResult);
+  if (!resultCombo) {
+    return {
+      headHit: null,
+      betHit: null,
+      top6Hit: null
+    };
+  }
+  const pure = predictionJson?.pure_top6_prediction && typeof predictionJson.pure_top6_prediction === "object"
+    ? predictionJson.pure_top6_prediction
+    : predictionJson?.pureTop6Prediction && typeof predictionJson.pureTop6Prediction === "object"
+      ? predictionJson.pureTop6Prediction
+      : predictionJson;
+  const headCandidate =
+    Number.isFinite(Number(predictionJson?.hardRace1234?.boat1_head_pre))
+      ? (Number(predictionJson.hardRace1234.boat1_head_pre) >= 0.5 ? 1 : null)
+      : Array.isArray(pure?.head_candidate_ranking) && pure.head_candidate_ranking.length > 0
+        ? toInt(pure.head_candidate_ranking[0]?.lane, null)
+        : Number.isFinite(Number(pure?.head_prob_1)) && Number(pure.head_prob_1) >= 0.18
+          ? 1
+          : null;
+  const top6Rows = Array.isArray(pure?.top6)
+    ? pure.top6
+    : Array.isArray(predictionJson?.top6)
+      ? predictionJson.top6
+      : [];
+  return {
+    headHit: headCandidate === null ? null : (String(resultCombo).split("-")[0] === String(headCandidate)),
+    betHit: Array.isArray(predictionJson?.final_recommended_bets_snapshot)
+      ? predictionJson.final_recommended_bets_snapshot.some((row) => normalizeCombo(row?.combo) === resultCombo)
+      : null,
+    top6Hit: top6Rows.some((row) => normalizeCombo(row?.combo) === resultCombo)
+  };
 }
 
 async function buildHardRaceRoutePayload({
@@ -3177,13 +4036,48 @@ export function buildPureInferencePredictionPayload(data = {}) {
   const snapshotSummary = buildPureInferenceSnapshotSummary(data, storedPrediction, derivedRanking);
   const optionalFormation16 = normalizeOptionalFormation16(pureTop6Prediction?.optionalFormation16);
   const formationReason = resolveFormationReason(pureTop6Prediction, null, optionalFormation16);
+  const supportSummary = enrichPredictionSupportFields({
+    race: data?.race || null,
+    pureTop6Prediction,
+    prediction: null,
+    hardRace1234: null,
+    racers: Array.isArray(data?.racers) ? data.racers : []
+  });
   const normalizedPureTop6Prediction = pureTop6Prediction
     ? {
         ...pureTop6Prediction,
         optionalFormation16,
-        formationReason
+        formationReason: supportSummary.formationReason || formationReason,
+        confidence_band: supportSummary.confidence_band,
+        confidence_score: supportSummary.confidence_score,
+        prediction_stability_score: supportSummary.prediction_stability_score,
+        buy_confidence_reason: supportSummary.buy_confidence_reason,
+        similarRaceSupport: supportSummary.similarRaceSupport,
+        similarRaceCount: supportSummary.similarRaceCount,
+        similarRaceHitBias: supportSummary.similarRaceHitBias,
+        similarRaceExamples: supportSummary.similarRaceExamples,
+        similarRaceSearchExecuted: supportSummary.similarRaceSearchExecuted === true,
+        similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
+        similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
+        similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
+        recommendedBetMode: supportSummary.recommendedBetMode,
+        skipRiskReason: supportSummary.skipRiskReason
       }
     : null;
+  if (normalizedPureTop6Prediction) {
+    upsertSimilarRaceFeatureSnapshot({
+      raceId:
+        data?.raceId ||
+        buildRaceIdFromParts({
+          date: data?.race?.date,
+          venueId: data?.race?.venueId,
+          raceNo: data?.race?.raceNo
+        }) ||
+        null,
+      race: data?.race ? { ...data.race, racers: Array.isArray(data?.racers) ? data.racers : [] } : null,
+      prediction: normalizedPureTop6Prediction
+    });
+  }
   const prediction = {
     ...(storedPrediction && typeof storedPrediction === "object" ? storedPrediction : {}),
     ranking: derivedRanking,
@@ -3205,15 +4099,38 @@ export function buildPureInferencePredictionPayload(data = {}) {
     near_tie_second_candidates: normalizedPureTop6Prediction?.near_tie_second_candidates || [],
     close_combo_preserved: normalizedPureTop6Prediction?.close_combo_preserved === true,
     combo_gap_score: normalizedPureTop6Prediction?.combo_gap_score ?? null,
+    racePattern: normalizedPureTop6Prediction?.racePattern || null,
+    racePatternScore: normalizedPureTop6Prediction?.racePatternScore ?? null,
+    lane2_sashi_keep_score: normalizedPureTop6Prediction?.lane2_sashi_keep_score ?? null,
+    lane3_attack_keep_score: normalizedPureTop6Prediction?.lane3_attack_keep_score ?? null,
+    lane4_tenkaisashi_score: normalizedPureTop6Prediction?.lane4_tenkaisashi_score ?? null,
+    pressure_mode: normalizedPureTop6Prediction?.pressure_mode || null,
+    attack_intent_score: normalizedPureTop6Prediction?.attack_intent_score ?? null,
+    safe_run_bias: normalizedPureTop6Prediction?.safe_run_bias ?? null,
+    similarRacePatternScore: normalizedPureTop6Prediction?.similarRacePatternScore ?? null,
+    confidence_band: normalizedPureTop6Prediction?.confidence_band || null,
+    confidence_score: normalizedPureTop6Prediction?.confidence_score ?? null,
+    prediction_stability_score: normalizedPureTop6Prediction?.prediction_stability_score ?? null,
+    buy_confidence_reason: normalizedPureTop6Prediction?.buy_confidence_reason || null,
+    similarRaceSupport: normalizedPureTop6Prediction?.similarRaceSupport || null,
+    similarRaceCount: normalizedPureTop6Prediction?.similarRaceCount ?? 0,
+    similarRaceHitBias: normalizedPureTop6Prediction?.similarRaceHitBias || null,
+    similarRaceExamples: normalizedPureTop6Prediction?.similarRaceExamples || [],
+    similarRaceSearchExecuted: normalizedPureTop6Prediction?.similarRaceSearchExecuted === true,
+    similarRaceQueryKey: normalizedPureTop6Prediction?.similarRaceQueryKey || null,
+    similarRaceStoragePath: normalizedPureTop6Prediction?.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
+    similarRaceMatchedCount: normalizedPureTop6Prediction?.similarRaceMatchedCount ?? normalizedPureTop6Prediction?.similarRaceCount ?? 0,
     top6: normalizedPureTop6Prediction?.top6 || null,
     top6_coverage: normalizedPureTop6Prediction?.top6_coverage ?? null,
     chaos_level: normalizedPureTop6Prediction?.chaos_level ?? null,
     optionalFormation16,
-    formationReason,
+    formationReason: normalizedPureTop6Prediction?.formationReason || formationReason,
     top6Scenario: normalizedPureTop6Prediction?.top6Scenario || null,
     top6ScenarioScore: normalizedPureTop6Prediction?.top6ScenarioScore ?? normalizedPureTop6Prediction?.scenario_repro_score ?? null,
     scenario_repro_score: normalizedPureTop6Prediction?.scenario_repro_score ?? null,
     scenario_repro_scores: normalizedPureTop6Prediction?.scenario_repro_scores || null,
+    recommendedBetMode: normalizedPureTop6Prediction?.recommendedBetMode || null,
+    skipRiskReason: normalizedPureTop6Prediction?.skipRiskReason || null,
     prediction_mode: "pure_inference_snapshot_only",
     data_status: snapshotSummary.dataStatus,
     confidence_status: snapshotSummary.confidenceStatus,
@@ -3243,11 +4160,34 @@ export function buildPureInferencePredictionPayload(data = {}) {
     near_tie_second_candidates: normalizedPureTop6Prediction?.near_tie_second_candidates || [],
     close_combo_preserved: normalizedPureTop6Prediction?.close_combo_preserved === true,
     combo_gap_score: normalizedPureTop6Prediction?.combo_gap_score ?? null,
+    racePattern: normalizedPureTop6Prediction?.racePattern || null,
+    racePatternScore: normalizedPureTop6Prediction?.racePatternScore ?? null,
+    lane2_sashi_keep_score: normalizedPureTop6Prediction?.lane2_sashi_keep_score ?? null,
+    lane3_attack_keep_score: normalizedPureTop6Prediction?.lane3_attack_keep_score ?? null,
+    lane4_tenkaisashi_score: normalizedPureTop6Prediction?.lane4_tenkaisashi_score ?? null,
+    pressure_mode: normalizedPureTop6Prediction?.pressure_mode || null,
+    attack_intent_score: normalizedPureTop6Prediction?.attack_intent_score ?? null,
+    safe_run_bias: normalizedPureTop6Prediction?.safe_run_bias ?? null,
+    similarRacePatternScore: normalizedPureTop6Prediction?.similarRacePatternScore ?? null,
+    confidence_band: normalizedPureTop6Prediction?.confidence_band || null,
+    confidence_score: normalizedPureTop6Prediction?.confidence_score ?? null,
+    prediction_stability_score: normalizedPureTop6Prediction?.prediction_stability_score ?? null,
+    buy_confidence_reason: normalizedPureTop6Prediction?.buy_confidence_reason || null,
+    similarRaceSupport: normalizedPureTop6Prediction?.similarRaceSupport || null,
+    similarRaceCount: normalizedPureTop6Prediction?.similarRaceCount ?? 0,
+    similarRaceHitBias: normalizedPureTop6Prediction?.similarRaceHitBias || null,
+    similarRaceExamples: normalizedPureTop6Prediction?.similarRaceExamples || [],
+    similarRaceSearchExecuted: normalizedPureTop6Prediction?.similarRaceSearchExecuted === true,
+    similarRaceQueryKey: normalizedPureTop6Prediction?.similarRaceQueryKey || null,
+    similarRaceStoragePath: normalizedPureTop6Prediction?.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
+    similarRaceMatchedCount: normalizedPureTop6Prediction?.similarRaceMatchedCount ?? normalizedPureTop6Prediction?.similarRaceCount ?? 0,
     top6: normalizedPureTop6Prediction?.top6 || null,
     top6_coverage: normalizedPureTop6Prediction?.top6_coverage ?? null,
     chaos_level: normalizedPureTop6Prediction?.chaos_level ?? null,
     optionalFormation16,
-    formationReason,
+    formationReason: normalizedPureTop6Prediction?.formationReason || formationReason,
+    recommendedBetMode: normalizedPureTop6Prediction?.recommendedBetMode || null,
+    skipRiskReason: normalizedPureTop6Prediction?.skipRiskReason || null,
     refreshed_now: snapshotSummary.sourceSummary?.refreshed_now === true,
     freshness_status: snapshotSummary.sourceSummary?.freshness_status || "stale",
     primary_source_ok: snapshotSummary.sourceSummary?.primary_source_ok === true,
@@ -10523,6 +11463,75 @@ raceRouter.get("/race", async (req, res, next) => {
         refreshMeta,
         artifactCollector
       });
+      const supportSummary = enrichPredictionSupportFields({
+        race: data?.race || null,
+        pureTop6Prediction,
+        prediction,
+        hardRace1234,
+        racers: Array.isArray(styledApiRacers) && styledApiRacers.length > 0
+          ? styledApiRacers
+          : Array.isArray(data?.racers)
+            ? data.racers
+            : []
+      });
+      if (pureTop6Prediction && typeof pureTop6Prediction === "object") {
+        Object.assign(pureTop6Prediction, {
+          confidence_band: supportSummary.confidence_band,
+          confidence_score: supportSummary.confidence_score,
+          prediction_stability_score: supportSummary.prediction_stability_score,
+          buy_confidence_reason: supportSummary.buy_confidence_reason,
+          similarRaceSupport: supportSummary.similarRaceSupport,
+          similarRaceCount: supportSummary.similarRaceCount,
+          similarRaceHitBias: supportSummary.similarRaceHitBias,
+          similarRaceExamples: supportSummary.similarRaceExamples,
+          similarRaceSearchExecuted: supportSummary.similarRaceSearchExecuted === true,
+          similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
+          similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
+          similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
+          recommendedBetMode: supportSummary.recommendedBetMode,
+          skipRiskReason: supportSummary.skipRiskReason,
+          formationReason: supportSummary.formationReason || pureTop6Prediction.formationReason
+        });
+      }
+      if (prediction && typeof prediction === "object") {
+        Object.assign(prediction, {
+          confidence_band: supportSummary.confidence_band,
+          confidence_score: supportSummary.confidence_score,
+          prediction_stability_score: supportSummary.prediction_stability_score,
+          buy_confidence_reason: supportSummary.buy_confidence_reason,
+          similarRaceSupport: supportSummary.similarRaceSupport,
+          similarRaceCount: supportSummary.similarRaceCount,
+          similarRaceHitBias: supportSummary.similarRaceHitBias,
+          similarRaceExamples: supportSummary.similarRaceExamples,
+          similarRaceSearchExecuted: supportSummary.similarRaceSearchExecuted === true,
+          similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
+          similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
+          similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
+          recommendedBetMode: supportSummary.recommendedBetMode,
+          skipRiskReason: supportSummary.skipRiskReason,
+          formationReason: supportSummary.formationReason || prediction.formationReason
+        });
+      }
+      upsertSimilarRaceFeatureSnapshot({
+        raceId: data.raceId || data.source?.race_id || null,
+        race:
+          data?.race
+            ? {
+                ...data.race,
+                racers:
+                  Array.isArray(styledApiRacers) && styledApiRacers.length > 0
+                    ? styledApiRacers
+                    : Array.isArray(data?.racers)
+                      ? data.racers
+                      : []
+              }
+            : null,
+        prediction: {
+          ...prediction,
+          pure_top6_prediction: pureTop6Prediction,
+          hardRace1234
+        }
+      });
       console.info("[RACE_API][style_injection:pure_inference]", JSON.stringify({
         route: "/api/race",
         raceId: data.raceId || data.source?.race_id || null,
@@ -10577,8 +11586,11 @@ raceRouter.get("/race", async (req, res, next) => {
           prediction?.venue_scenario_bias?.venueBiasProfile ||
           null,
         buyPolicy:
-          pureTop6Prediction?.buyPolicy ||
-          prediction?.buyPolicy ||
+          (pureTop6Prediction?.buyPolicy
+            ? { ...pureTop6Prediction.buyPolicy, recommended_mode: supportSummary.recommendedBetMode }
+            : prediction?.buyPolicy
+              ? { ...prediction.buyPolicy, recommended_mode: supportSummary.recommendedBetMode }
+              : null) ||
           pureTop6Prediction?.venue_scenario_bias?.buyPolicy ||
           prediction?.venue_scenario_bias?.buyPolicy ||
           hardRace1234?.buyPolicy ||
@@ -10602,19 +11614,42 @@ raceRouter.get("/race", async (req, res, next) => {
           pureTop6Prediction?.close_combo_preserved === true ||
           prediction?.close_combo_preserved === true,
         combo_gap_score: pureTop6Prediction?.combo_gap_score ?? prediction?.combo_gap_score ?? null,
+        racePattern: pureTop6Prediction?.racePattern || prediction?.racePattern || null,
+        racePatternScore: pureTop6Prediction?.racePatternScore ?? prediction?.racePatternScore ?? null,
+        lane2_sashi_keep_score: pureTop6Prediction?.lane2_sashi_keep_score ?? prediction?.lane2_sashi_keep_score ?? null,
+        lane3_attack_keep_score: pureTop6Prediction?.lane3_attack_keep_score ?? prediction?.lane3_attack_keep_score ?? null,
+        lane4_tenkaisashi_score: pureTop6Prediction?.lane4_tenkaisashi_score ?? prediction?.lane4_tenkaisashi_score ?? null,
+        pressure_mode: pureTop6Prediction?.pressure_mode || prediction?.pressure_mode || null,
+        attack_intent_score: pureTop6Prediction?.attack_intent_score ?? prediction?.attack_intent_score ?? null,
+        safe_run_bias: pureTop6Prediction?.safe_run_bias ?? prediction?.safe_run_bias ?? null,
+        similarRacePatternScore: pureTop6Prediction?.similarRacePatternScore ?? prediction?.similarRacePatternScore ?? null,
+        confidence_band: supportSummary.confidence_band,
+        confidence_score: supportSummary.confidence_score,
+        prediction_stability_score: supportSummary.prediction_stability_score,
+        buy_confidence_reason: supportSummary.buy_confidence_reason,
+        similarRaceSupport: supportSummary.similarRaceSupport,
+        similarRaceCount: supportSummary.similarRaceCount,
+        similarRaceHitBias: supportSummary.similarRaceHitBias,
+        similarRaceExamples: supportSummary.similarRaceExamples,
+        similarRaceSearchExecuted: supportSummary.similarRaceSearchExecuted === true,
+        similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
+        similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
+        similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
         top6: pureTop6Prediction?.top6 || prediction?.top6 || null,
         top6_coverage: pureTop6Prediction?.top6_coverage ?? prediction?.top6_coverage ?? null,
         chaos_level: pureTop6Prediction?.chaos_level ?? prediction?.chaos_level ?? null,
         optionalFormation16: normalizeOptionalFormation16(
           pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null
         ),
-        formationReason: resolveFormationReason(
+        formationReason: supportSummary.formationReason || resolveFormationReason(
           pureTop6Prediction,
           prediction,
           normalizeOptionalFormation16(
             pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null
           )
         ),
+        recommendedBetMode: supportSummary.recommendedBetMode,
+        skipRiskReason: supportSummary.skipRiskReason,
         refreshed_now: refreshMeta?.refreshed_now === true,
         freshness_status:
           refreshMeta?.freshness_status ||
@@ -14225,6 +15260,28 @@ raceRouter.post("/race/result", async (req, res, next) => {
       payout3t,
       decisionType
     });
+    const latestPredictionForOutcome = db
+      .prepare(
+        `
+        SELECT prediction_json
+        FROM prediction_logs
+        WHERE race_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+    const similarOutcome = computeSimilarRaceOutcomeFromPrediction(
+      safeJsonParse(latestPredictionForOutcome?.prediction_json, {}),
+      top3.join("-")
+    );
+    updateSimilarRaceFeatureOutcome({
+      raceId,
+      finalResult: top3.join("-"),
+      headHit: similarOutcome.headHit,
+      betHit: similarOutcome.betHit,
+      top6Hit: similarOutcome.top6Hit
+    });
     saveRaceStartDisplayResult({
       raceId,
       settledResult: top3.join("-")
@@ -14315,6 +15372,28 @@ raceRouter.post("/results/edit", async (req, res, next) => {
       payout2t: existingResultRow?.payout_2t ?? null,
       payout3t: existingResultRow?.payout_3t ?? null,
       decisionType: existingResultRow?.decision_type ?? null
+    });
+    const latestPredictionForOutcome = db
+      .prepare(
+        `
+        SELECT prediction_json
+        FROM prediction_logs
+        WHERE race_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `
+      )
+      .get(raceId);
+    const similarOutcome = computeSimilarRaceOutcomeFromPrediction(
+      safeJsonParse(latestPredictionForOutcome?.prediction_json, {}),
+      confirmedResult
+    );
+    updateSimilarRaceFeatureOutcome({
+      raceId,
+      finalResult: confirmedResult,
+      headHit: similarOutcome.headHit,
+      betHit: similarOutcome.betHit,
+      top6Hit: similarOutcome.top6Hit
     });
     saveRaceStartDisplayResult({
       raceId,
@@ -16633,6 +17712,17 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         error_detail: persistErr?.message || String(persistErr)
       });
     }
+    updateSimilarRaceFeatureOutcome({
+      raceId,
+      finalResult: analysis.confirmed_result_canonical,
+      headHit: analysis.head_correct,
+      betHit: analysis.hit_miss === "HIT",
+      top6Hit: Array.isArray(predictionJson?.pure_top6_prediction?.top6)
+        ? predictionJson.pure_top6_prediction.top6.some((row) => row?.combo === analysis.confirmed_result_canonical)
+        : Array.isArray(predictionJson?.top6)
+          ? predictionJson.top6.some((row) => row?.combo === analysis.confirmed_result_canonical)
+          : null
+    });
 
     const continuousLearning = runContinuousLearningIfNeeded();
 

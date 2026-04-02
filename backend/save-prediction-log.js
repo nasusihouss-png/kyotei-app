@@ -1,5 +1,6 @@
 import db from "./db.js";
 import { ensurePredictionSnapshotColumns, nowIso } from "./prediction-snapshot-store.js";
+import { ensureSimilarRaceFeatureTable, upsertSimilarRaceFeatureSnapshot } from "./similar-race-feature-store.js";
 
 function ensurePredictionLogColumns() {
   const cols = db.prepare("PRAGMA table_info(prediction_logs)").all();
@@ -23,6 +24,7 @@ function ensurePredictionLogColumns() {
 
 ensurePredictionSnapshotColumns();
 ensurePredictionLogColumns();
+ensureSimilarRaceFeatureTable();
 
 const insertPredictionLog = db.prepare(`
   INSERT INTO prediction_logs (
@@ -193,7 +195,7 @@ export function savePredictionLog({
     ev_analysis,
     bet_plan
   });
-  insertPredictionLog.run({
+  const insertInfo = insertPredictionLog.run({
     race_id: raceId,
     race_key: normalizedPrediction.race_key ?? String(raceId || ""),
     race_date: normalizedPrediction?.snapshot_context?.race_date ?? race?.date ?? null,
@@ -221,4 +223,11 @@ export function savePredictionLog({
     ev_analysis_json: JSON.stringify(cloneJson(ev_analysis, {})),
     bet_plan_json: JSON.stringify(cloneJson(bet_plan, {}))
   });
+  upsertSimilarRaceFeatureSnapshot({
+    raceId,
+    race,
+    prediction: normalizedPrediction,
+    predictionSnapshotId: insertInfo?.lastInsertRowid ?? null
+  });
+  return insertInfo;
 }

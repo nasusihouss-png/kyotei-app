@@ -122,9 +122,30 @@ assert.ok(Number.isFinite(Number(result.boat1_second_keep_score)));
 assert.equal(typeof result.boat1_second_keep_reason, "string");
 assert.equal(typeof result.second_given_head_probabilities, "object");
 assert.equal(typeof result.exacta_shape_bias, "object");
+assert.ok([
+  "escape_stable",
+  "sashi_keep",
+  "attack_keep",
+  "tenkai_sashi",
+  "outer_3rd_invasion",
+  "chaotic_spread"
+].includes(result.racePattern));
+assert.equal(typeof result.racePatternScore, "number");
+assert.equal(typeof result.lane2_sashi_keep_score, "number");
+assert.equal(typeof result.lane3_attack_keep_score, "number");
+assert.equal(typeof result.lane4_tenkaisashi_score, "number");
+assert.equal(typeof result.pressure_mode, "string");
+assert.equal(typeof result.attack_intent_score, "number");
+assert.equal(typeof result.safe_run_bias, "number");
+assert.equal(typeof result.similarRacePatternScore, "number");
 assert.ok(Array.isArray(result.near_tie_second_candidates));
 assert.equal(typeof result.close_combo_preserved, "boolean");
 assert.ok(result.combo_gap_score === null || Number.isFinite(Number(result.combo_gap_score)));
+assert.ok(["high", "medium", "low"].includes(result.confidence_band));
+assert.equal(typeof result.confidence_score, "number");
+assert.equal(typeof result.prediction_stability_score, "number");
+assert.equal(typeof result.buy_confidence_reason, "string");
+assert.ok(["buy_top6_only", "buy_top6_plus_optional16", "borderline_reduce", "skip"].includes(result.recommendedBetMode));
 assert.equal(typeof result.venue_scenario_bias?.two_course_sashi_remain_rate, "number");
 assert.equal(typeof result.venue_scenario_bias?.three_course_attack_success_rate, "number");
 assert.equal(typeof result.venue_scenario_bias?.four_course_develop_sashi_rate, "number");

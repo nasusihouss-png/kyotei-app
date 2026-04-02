@@ -597,6 +597,217 @@ function buildExactaShapeBias(secondGivenHeadProbabilities = {}, venueContext = 
   };
 }
 
+function scoreBlend(values = []) {
+  const blended = weightedAverage(values);
+  return blended === null ? null : clamp(0, 100, blended);
+}
+
+function buildRemainScores({
+  profiles = [],
+  venueContext = {},
+  raceContext = {},
+  secondGivenHeadProbabilities = {},
+  boat1SecondKeep = { score: 0 }
+} = {}) {
+  const laneProfiles = new Map((Array.isArray(profiles) ? profiles : []).map((profile) => [profile.lane, profile]));
+  const lane2 = laneProfiles.get(2) || {};
+  const lane3 = laneProfiles.get(3) || {};
+  const lane4 = laneProfiles.get(4) || {};
+  const lane2Score = scoreBlend([
+    { value: (Number(secondGivenHeadProbabilities?.[2]) || 0) * 100, weight: 0.28 },
+    { value: lane2.styleScores?.sashi, weight: 0.2 },
+    { value: lane2.supportRate, weight: 0.18 },
+    { value: lane2.course2Rate, weight: 0.14 },
+    { value: getVenueLaneBiasScore(venueContext, 2), weight: 0.1 },
+    { value: toNum(venueContext?.two_course_sashi_remain_rate, 50), weight: 0.06 },
+    { value: toNum(boat1SecondKeep?.score, 50), weight: 0.04 }
+  ]);
+  const lane3Score = scoreBlend([
+    { value: (Number(secondGivenHeadProbabilities?.[3]) || 0) * 100, weight: 0.2 },
+    { value: lane3.styleScores?.makuri, weight: 0.2 },
+    { value: lane3.styleScores?.makurisashi, weight: 0.16 },
+    { value: lane3.attackRate, weight: 0.18 },
+    { value: lane3.course3Rate, weight: 0.1 },
+    { value: toNum(venueContext?.three_course_attack_success_rate, 50), weight: 0.1 },
+    { value: invertNormalize(lane3.avgSt, 0.11, 0.24) === null ? null : invertNormalize(lane3.avgSt, 0.11, 0.24) * 100, weight: 0.06 }
+  ]);
+  const lane4Score = scoreBlend([
+    { value: (Number(secondGivenHeadProbabilities?.[4]) || 0) * 100, weight: 0.22 },
+    { value: lane4.styleScores?.makurisashi, weight: 0.22 },
+    { value: lane4.supportRate, weight: 0.16 },
+    { value: lane4.breakoutRate, weight: 0.12 },
+    { value: lane4.course3Rate, weight: 0.1 },
+    { value: toNum(venueContext?.four_course_develop_sashi_rate, 50), weight: 0.1 },
+    { value: toNum(raceContext?.lane4Breakout, 50), weight: 0.08 }
+  ]);
+  return {
+    lane2_sashi_keep_score: round(lane2Score, 1),
+    lane3_attack_keep_score: round(lane3Score, 1),
+    lane4_tenkaisashi_score: round(lane4Score, 1)
+  };
+}
+
+function buildRacePatternSummary({
+  boat1HeadProbability = 0,
+  remainScores = {},
+  chaosValue = 0,
+  outsideRiskProxy = 0,
+  venueContext = {}
+} = {}) {
+  const lane2Score = toNum(remainScores?.lane2_sashi_keep_score, 0);
+  const lane3Score = toNum(remainScores?.lane3_attack_keep_score, 0);
+  const lane4Score = toNum(remainScores?.lane4_tenkaisashi_score, 0);
+  if (chaosValue >= 0.68 || outsideRiskProxy >= 0.58) {
+    return { racePattern: "chaotic_spread", racePatternScore: round(Math.max(chaosValue, outsideRiskProxy) * 100, 1) };
+  }
+  if (outsideRiskProxy >= 0.46 && toNum(venueContext?.venue_outer_3rd_bias, 0) >= 8) {
+    return {
+      racePattern: "outer_3rd_invasion",
+      racePatternScore: round(scoreBlend([
+        { value: outsideRiskProxy * 100, weight: 0.56 },
+        { value: toNum(venueContext?.venue_outer_3rd_bias, 50), weight: 0.24 },
+        { value: toNum(venueContext?.lane56_renyuu_intrusion_rate, 50), weight: 0.2 }
+      ]), 1)
+    };
+  }
+  if (boat1HeadProbability >= 0.54 && lane2Score >= 58 && lane2Score >= lane3Score - 1) {
+    return {
+      racePattern: "escape_stable",
+      racePatternScore: round(scoreBlend([
+        { value: boat1HeadProbability * 100, weight: 0.46 },
+        { value: lane2Score, weight: 0.18 },
+        { value: toNum(venueContext?.one_course_trust, 50), weight: 0.24 },
+        { value: (1 - chaosValue) * 100, weight: 0.12 }
+      ]), 1)
+    };
+  }
+  if (lane2Score >= lane3Score + 3 && lane2Score >= lane4Score + 2) {
+    return { racePattern: "sashi_keep", racePatternScore: round(lane2Score, 1) };
+  }
+  if (lane3Score >= lane2Score - 1 && lane3Score >= lane4Score + 1) {
+    return { racePattern: "attack_keep", racePatternScore: round(lane3Score, 1) };
+  }
+  if (lane4Score >= 54) {
+    return { racePattern: "tenkai_sashi", racePatternScore: round(lane4Score, 1) };
+  }
+  return {
+    racePattern: boat1HeadProbability >= 0.5 ? "escape_stable" : "chaotic_spread",
+    racePatternScore: round(scoreBlend([
+      { value: boat1HeadProbability * 100, weight: 0.52 },
+      { value: (1 - chaosValue) * 100, weight: 0.28 },
+      { value: lane2Score, weight: 0.2 }
+    ]), 1)
+  };
+}
+
+function buildPressureIntentSummary({
+  raceContext = {},
+  venueContext = {},
+  chaosValue = 0,
+  boat1SecondKeep = { score: 0 },
+  remainScores = {}
+} = {}) {
+  const attackIntentScore = scoreBlend([
+    { value: toNum(raceContext?.lane3Makuri, 50), weight: 0.28 },
+    { value: toNum(raceContext?.lane4Breakout, 50), weight: 0.24 },
+    { value: toNum(raceContext?.outsideHeadPressure, 50), weight: 0.12 },
+    { value: toNum(remainScores?.lane3_attack_keep_score, 50), weight: 0.2 },
+    { value: toNum(remainScores?.lane4_tenkaisashi_score, 50), weight: 0.1 },
+    { value: toNum(venueContext?.volatility_boost, 0) * 6 + 40, weight: 0.06 }
+  ]);
+  const safeRunBias = scoreBlend([
+    { value: toNum(boat1SecondKeep?.score, 50), weight: 0.34 },
+    { value: toNum(remainScores?.lane2_sashi_keep_score, 50), weight: 0.18 },
+    { value: toNum(venueContext?.one_course_trust, 50), weight: 0.26 },
+    { value: (1 - chaosValue) * 100, weight: 0.14 },
+    { value: 100 - toNum(raceContext?.outsideHeadPressure, 50), weight: 0.08 }
+  ]);
+  const pressureMode =
+    chaosValue >= 0.62 || attackIntentScore >= 63
+      ? "attack_pressure"
+      : safeRunBias >= 62
+        ? "safe_control"
+        : "balanced";
+  return {
+    pressure_mode: pressureMode,
+    attack_intent_score: round(attackIntentScore, 1),
+    safe_run_bias: round(safeRunBias, 1)
+  };
+}
+
+function buildConfidenceSummary({
+  top6Coverage = 0,
+  chaosValue = 0,
+  top6ScenarioScore = 50,
+  outsideRiskProxy = 0,
+  strongestHead = 0,
+  nearTieDiagnostics = {},
+  venueContext = {},
+  racePatternScore = 50
+} = {}) {
+  const clusteringPenalty = nearTieDiagnostics?.near_tie_candidate_count >= 3 ? 46 : nearTieDiagnostics?.near_tie_candidate_count >= 2 ? 58 : 70;
+  const predictionStabilityScore = scoreBlend([
+    { value: top6Coverage * 100, weight: 0.32 },
+    { value: (1 - chaosValue) * 100, weight: 0.22 },
+    { value: toNum(top6ScenarioScore, 50), weight: 0.2 },
+    { value: (1 - outsideRiskProxy) * 100, weight: 0.12 },
+    { value: clusteringPenalty, weight: 0.06 },
+    { value: toNum(venueContext?.one_course_trust, 50), weight: 0.08 }
+  ]);
+  const confidenceScore = scoreBlend([
+    { value: predictionStabilityScore, weight: 0.42 },
+    { value: strongestHead * 100, weight: 0.16 },
+    { value: top6Coverage * 100, weight: 0.18 },
+    { value: toNum(top6ScenarioScore, 50), weight: 0.14 },
+    { value: toNum(racePatternScore, 50), weight: 0.1 }
+  ]);
+  const confidenceBand = confidenceScore >= 72 ? "high" : confidenceScore >= 54 ? "medium" : "low";
+  const reasons = [];
+  if (predictionStabilityScore >= 70) reasons.push("prediction stability is high");
+  else if (predictionStabilityScore <= 46) reasons.push("prediction stability is weak");
+  if (nearTieDiagnostics?.near_tie_candidate_count >= 2) reasons.push("near-tie second-place structure needs wider coverage");
+  if (top6Coverage >= 0.24) reasons.push("top6 coverage is healthy");
+  if (outsideRiskProxy >= 0.42) reasons.push("outside break risk is elevated");
+  return {
+    confidence_band: confidenceBand,
+    confidence_score: round(confidenceScore, 1),
+    prediction_stability_score: round(predictionStabilityScore, 1),
+    buy_confidence_reason: reasons.join("; ") || "confidence is neutral"
+  };
+}
+
+function buildPreliminaryBetMode({
+  confidenceBand = "medium",
+  confidenceScore = 50,
+  predictionStabilityScore = 50,
+  optionalFormationActive = false,
+  top6Coverage = 0,
+  chaosValue = 0
+} = {}) {
+  if (confidenceBand === "high" && predictionStabilityScore >= 70 && top6Coverage >= 0.22) {
+    return {
+      recommendedBetMode: "buy_top6_only",
+      skipRiskReason: null
+    };
+  }
+  if (confidenceScore >= 55 && optionalFormationActive && (chaosValue >= 0.5 || top6Coverage <= 0.18)) {
+    return {
+      recommendedBetMode: "buy_top6_plus_optional16",
+      skipRiskReason: null
+    };
+  }
+  if (confidenceScore >= 42) {
+    return {
+      recommendedBetMode: "borderline_reduce",
+      skipRiskReason: "coverage is fragile and race shape is not fully stable"
+    };
+  }
+  return {
+    recommendedBetMode: "skip",
+    skipRiskReason: "skip risk is elevated due to low stability"
+  };
+}
+
 function buildNearTieSecondDiagnostics({
   all120 = [],
   secondGivenHeadProbabilities = {},
@@ -1175,8 +1386,54 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
   const secondPlaceCandidateRates = buildCandidateRows(finishProbabilities.second, profiles, "second");
   const thirdPlaceCandidateRates = buildCandidateRows(finishProbabilities.third, profiles, "third");
   const exactaShapeBias = buildExactaShapeBias(secondGivenHeadProbabilities, venueContext, boat1SecondKeep);
+  const remainScores = buildRemainScores({
+    profiles,
+    venueContext,
+    raceContext,
+    secondGivenHeadProbabilities,
+    boat1SecondKeep
+  });
+  const racePatternSummary = buildRacePatternSummary({
+    boat1HeadProbability: headProbMap[1] || 0,
+    remainScores,
+    chaosValue,
+    outsideRiskProxy,
+    venueContext
+  });
+  const pressureIntentSummary = buildPressureIntentSummary({
+    raceContext,
+    venueContext,
+    chaosValue,
+    boat1SecondKeep,
+    remainScores
+  });
+  const confidenceSummary = buildConfidenceSummary({
+    top6Coverage,
+    chaosValue,
+    top6ScenarioScore,
+    outsideRiskProxy,
+    strongestHead,
+    nearTieDiagnostics,
+    venueContext,
+    racePatternScore: racePatternSummary.racePatternScore
+  });
   const formationSuggestion = buildFormationSuggestion(all120, finishProbabilities, chaosValue, top6Coverage, venueContext, nearTieDiagnostics);
   const top6Scenario = describeTop6Scenario(profiles, top6, chaosValue);
+  const preliminaryBetMode = buildPreliminaryBetMode({
+    confidenceBand: confidenceSummary.confidence_band,
+    confidenceScore: confidenceSummary.confidence_score,
+    predictionStabilityScore: confidenceSummary.prediction_stability_score,
+    optionalFormationActive: formationSuggestion?.active === true,
+    top6Coverage,
+    chaosValue
+  });
+  const similarRacePatternScore = round(scoreBlend([
+    { value: toNum(racePatternSummary.racePatternScore, 50), weight: 0.34 },
+    { value: toNum(confidenceSummary.prediction_stability_score, 50), weight: 0.28 },
+    { value: (1 - chaosValue) * 100, weight: 0.18 },
+    { value: (1 - outsideRiskProxy) * 100, weight: 0.1 },
+    { value: toNum(venueContext?.one_course_trust, 50), weight: 0.1 }
+  ]), 1);
 
   return {
     head_prob_1: headProbMap[1] || 0,
@@ -1199,6 +1456,15 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     boat1_second_keep_reason: boat1SecondKeep.reason,
     second_given_head_probabilities: secondGivenHeadProbabilities,
     exacta_shape_bias: exactaShapeBias,
+    racePattern: racePatternSummary.racePattern,
+    racePatternScore: racePatternSummary.racePatternScore,
+    lane2_sashi_keep_score: remainScores.lane2_sashi_keep_score,
+    lane3_attack_keep_score: remainScores.lane3_attack_keep_score,
+    lane4_tenkaisashi_score: remainScores.lane4_tenkaisashi_score,
+    pressure_mode: pressureIntentSummary.pressure_mode,
+    attack_intent_score: pressureIntentSummary.attack_intent_score,
+    safe_run_bias: pressureIntentSummary.safe_run_bias,
+    similarRacePatternScore: similarRacePatternScore,
     near_tie_second_candidates: nearTieDiagnostics.near_tie_second_candidates,
     close_combo_preserved: nearTieDiagnostics.close_combo_preserved,
     combo_gap_score: nearTieDiagnostics.combo_gap_score,
@@ -1206,6 +1472,10 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     top6,
     top6_coverage: top6Coverage,
     confidence,
+    confidence_band: confidenceSummary.confidence_band,
+    confidence_score: confidenceSummary.confidence_score,
+    prediction_stability_score: confidenceSummary.prediction_stability_score,
+    buy_confidence_reason: confidenceSummary.buy_confidence_reason,
     chaos_level: round(chaosValue, 4),
     chaos_label: chaosValue >= 0.52 ? "高" : chaosValue >= 0.34 ? "中" : "低",
     top6Scenario,
@@ -1217,6 +1487,8 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
       Array.isArray(formationSuggestion?.reasons) && formationSuggestion.reasons.length > 0
         ? formationSuggestion.reasons.join("; ")
         : formationSuggestion?.reason || null,
+    recommendedBetMode: preliminaryBetMode.recommendedBetMode,
+    skipRiskReason: preliminaryBetMode.skipRiskReason,
     wide_formation_suggestion: formationSuggestion,
     venueBiasProfile: venueContext?.venueBiasProfile || venueContext?.venue_bias_profile || null,
     buyPolicy: venueContext?.buyPolicy || null,
