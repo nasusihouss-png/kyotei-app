@@ -50,10 +50,10 @@ export const TARGET_VENUE_BIAS_PROFILES = Object.freeze({
     buy_policy_label: "1-head focus",
     buy_policy_focus: "1st=1, 2nd=2/3",
     venue_adjustment_reason: [
-      "1号艇の逃げ信頼度が高い",
-      "1の機力とSTが並以上なら頭を厚くする",
-      "5,6頭はかなり抑える",
-      "2差しと3まくり差しの残り目を重視する"
+      "Omura is treated as a strong inside-water venue, so lane 1 hold and lane 1 remain patterns are weighted up.",
+      "When boat 1 has usable motor and ST support, keep 1st=1 and 2nd=1 rescue lines active instead of over-spreading.",
+      "Lanes 5 and 6 are intentionally capped unless pressure or chaos signals are unusually strong.",
+      "When 2 and 3 are close for second, preserve 1-2-4 and 1-3-4 before widening coverage."
     ]
   }),
   18: Object.freeze({
@@ -76,15 +76,16 @@ export const TARGET_VENUE_BIAS_PROFILES = Object.freeze({
     lane3_attack_boost: 9,
     lane4_develop_boost: 8,
     volatility_boost: 2,
-    optional_formation_trigger_boost: 2,
+    optional_formation_trigger_boost: 1,
     buy_policy_code: "attack_34_capture",
     buy_policy_label: "3-4 attack capture",
     buy_policy_focus: "3-4 attack line",
     venue_adjustment_reason: [
-      "3コース攻め成功率を強める",
-      "4コース差し残り率を強める",
-      "3-4攻め筋を厚く拾う",
-      "外頭は過剰評価しない"
+      "Tokuyama still leans to 1-2 and 1-3 as the base line, but lane 3 and lane 4 attacks are allowed to survive in the top tier.",
+      "Second-place clustering between lanes 2, 3, and 4 is preserved instead of forcing a single fixed read too early.",
+      "Outside lanes 5 and 6 are not removed, but they are prevented from taking too much share without strong support.",
+      "Optional formation is strengthened only when low coverage and a real near-tie second cluster are both present.",
+      "Threshold calibration prefers buy_top6 over optional16 unless the 1-2-4 / 1-3-4 rescue evidence is unusually strong."
     ]
   }),
   21: Object.freeze({
@@ -107,15 +108,16 @@ export const TARGET_VENUE_BIAS_PROFILES = Object.freeze({
     lane3_attack_boost: 5,
     lane4_develop_boost: 4,
     volatility_boost: 10,
-    optional_formation_trigger_boost: 9,
+    optional_formation_trigger_boost: 3,
     buy_policy_code: "wide_coverage_watch",
     buy_policy_label: "wide coverage",
     buy_policy_focus: "slightly wider tickets",
     venue_adjustment_reason: [
-      "ブレ補正を強める",
-      "STと進入変化の影響を高める",
-      "外3着侵入率をやや高める",
-      "top6で取り切れない時はoptionalFormation16を出しやすくする"
+      "Ashiya allows medium chaos, but the correction still starts from 1-2 and 1-3 before widening.",
+      "When lanes 2, 3, and 4 are close for second, keep the cluster intact and avoid over-trusting lanes 5 and 6.",
+      "Center attack patterns are allowed to enter the optional layer only when coverage is thin and the venue shape supports it.",
+      "Optional formation expands more readily here than at Omura or Amagasaki, but only with a real tie signal.",
+      "Threshold calibration now pushes weak optional cases back to buy_top6 or skip instead of widening by default."
     ]
   }),
   13: Object.freeze({
@@ -143,10 +145,10 @@ export const TARGET_VENUE_BIAS_PROFILES = Object.freeze({
     buy_policy_label: "1-head focus",
     buy_policy_focus: "1st=1, 2nd=2/3",
     venue_adjustment_reason: [
-      "1号艇頭の信頼度をさらに強める",
-      "1の機力とSTが並以上なら頭を厚くする",
-      "5,6頭はかなり抑える",
-      "2差しと3まくり差しの残り目を重視する"
+      "Amagasaki weights lane 1 motor/ST readiness heavily, so strong inside hold patterns stay concentrated.",
+      "Lane 1 second-place remain paths are retained when the inside engine is good but the head lock is not fully dominant.",
+      "Second-place emphasis stays on lanes 2 and 3, while outside lanes 5 and 6 are kept on a short leash.",
+      "Optional formation stays tighter here and only activates when coverage is fragile and the second cluster is real."
     ]
   }),
   5: Object.freeze({
@@ -169,15 +171,15 @@ export const TARGET_VENUE_BIAS_PROFILES = Object.freeze({
     lane3_attack_boost: 5,
     lane4_develop_boost: 4,
     volatility_boost: 9,
-    optional_formation_trigger_boost: 8,
+    optional_formation_trigger_boost: 6,
     buy_policy_code: "wide_coverage_watch",
     buy_policy_label: "wide coverage",
     buy_policy_focus: "slightly wider tickets",
     venue_adjustment_reason: [
-      "ブレ補正を強める",
-      "STと進入変化の影響を高める",
-      "外3着侵入率をやや高める",
-      "top6で取り切れない時はoptionalFormation16を出しやすくする"
+      "Tamagawa allows a medium-chaos read, but the correction still organizes the 2/3 second-place cluster before spreading.",
+      "Lane 3 attack and lane 4 development are allowed to surface, while lane 1 second remain lines are rescued when the inside shape is still alive.",
+      "Outside involvement is tolerated more than at Omura or Amagasaki, but it still needs support from pressure and chaos.",
+      "Optional formation becomes more active here only when low top6 coverage and near-tie second clustering happen together."
     ]
   }),
   12: Object.freeze({
@@ -200,15 +202,15 @@ export const TARGET_VENUE_BIAS_PROFILES = Object.freeze({
     lane3_attack_boost: 8,
     lane4_develop_boost: 9,
     volatility_boost: 3,
-    optional_formation_trigger_boost: 3,
+    optional_formation_trigger_boost: 2,
     buy_policy_code: "attack_34_capture",
     buy_policy_label: "3-4 attack capture",
     buy_policy_focus: "3-4 attack line",
     venue_adjustment_reason: [
-      "3コース攻め成功率を強める",
-      "4コース差し残り率を強める",
-      "3-4攻め筋を厚く拾う",
-      "外頭は過剰評価しない"
+      "Suminoe keeps the center attack routes visible, especially when lanes 3 and 4 can pressure the race flow.",
+      "At the same time, lane 1 second-place remain lines are preserved more than a pure center-attack model would allow.",
+      "The 1-2-4 and 1-3-4 near-miss pair is intentionally protected when second-place probabilities stay clustered.",
+      "Optional formation is expanded only when the venue shape and low-coverage cluster both justify it."
     ]
   })
 });

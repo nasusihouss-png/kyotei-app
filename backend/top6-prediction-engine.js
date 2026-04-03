@@ -19,6 +19,87 @@ function round(value, digits = 4) {
   return Number(Number(value).toFixed(digits));
 }
 
+const VENUE_FINISH_PATTERN_CORRECTIONS = Object.freeze({
+  24: Object.freeze({
+    name: "Omura",
+    lane1FirstBoost: 0.11,
+    lane1SecondBoost: 0.15,
+    lane2SecondBoost: 0.08,
+    lane3SecondBoost: 0.05,
+    lane4ThirdBoost: 0.12,
+    centerAttackFirstBoost: -0.02,
+    outerPenalty: 0.12,
+    optionalActivationBias: -0.04,
+    preserveCombos: ["1-2-4", "1-3-4", "2-1-3", "3-1-2"],
+    venueFitReason: "Omura correction keeps lane 1 in the race and protects the 1-2-4 / 1-3-4 near-tie shape."
+  }),
+  18: Object.freeze({
+    name: "Tokuyama",
+    lane1FirstBoost: 0.05,
+    lane1SecondBoost: 0.07,
+    lane2SecondBoost: 0.08,
+    lane3SecondBoost: 0.09,
+    lane4ThirdBoost: 0.1,
+    centerAttackFirstBoost: 0.05,
+    outerPenalty: 0.08,
+    optionalActivationBias: 0.015,
+    preserveCombos: ["1-2-4", "1-3-4", "3-1-2"],
+    venueFitReason: "Tokuyama correction keeps the 1-2 / 1-3 base while preserving center attack pressure."
+  }),
+  21: Object.freeze({
+    name: "Ashiya",
+    lane1FirstBoost: 0.03,
+    lane1SecondBoost: 0.05,
+    lane2SecondBoost: 0.06,
+    lane3SecondBoost: 0.07,
+    lane4ThirdBoost: 0.08,
+    centerAttackFirstBoost: 0.04,
+    outerPenalty: 0.06,
+    optionalActivationBias: 0.03,
+    preserveCombos: ["1-2-4", "1-3-4", "3-1-2", "2-1-3"],
+    venueFitReason: "Ashiya correction allows medium chaos but still organizes the 2/3/4 second cluster first."
+  }),
+  13: Object.freeze({
+    name: "Amagasaki",
+    lane1FirstBoost: 0.1,
+    lane1SecondBoost: 0.13,
+    lane2SecondBoost: 0.09,
+    lane3SecondBoost: 0.07,
+    lane4ThirdBoost: 0.08,
+    centerAttackFirstBoost: -0.01,
+    outerPenalty: 0.1,
+    optionalActivationBias: -0.03,
+    preserveCombos: ["1-2-4", "1-3-4", "2-1-3"],
+    venueFitReason: "Amagasaki correction leans on lane 1 motor/ST strength and rescues lane 1 remain patterns."
+  }),
+  5: Object.freeze({
+    name: "Tamagawa",
+    lane1FirstBoost: 0.01,
+    lane1SecondBoost: 0.1,
+    lane2SecondBoost: 0.07,
+    lane3SecondBoost: 0.1,
+    lane4ThirdBoost: 0.07,
+    centerAttackFirstBoost: 0.07,
+    outerPenalty: 0.03,
+    optionalActivationBias: 0.06,
+    preserveCombos: ["1-2-4", "1-3-4", "3-1-2", "2-1-3"],
+    venueFitReason: "Tamagawa correction keeps medium-chaos center pressure while tidying the 2/3 second cluster."
+  }),
+  12: Object.freeze({
+    name: "Suminoe",
+    lane1FirstBoost: 0.04,
+    lane1SecondBoost: 0.11,
+    lane2SecondBoost: 0.05,
+    lane3SecondBoost: 0.1,
+    lane4ThirdBoost: 0.11,
+    centerAttackFirstBoost: 0.08,
+    outerPenalty: 0.06,
+    optionalActivationBias: 0.03,
+    preserveCombos: ["1-2-4", "1-3-4", "3-1-2", "2-1-3"],
+    venueFitReason: "Suminoe correction shows the center attack path while preserving lane 1 second-place remain lines."
+  })
+});
+
 const STYLE_LABELS = {
   nige: "イン逃げ型",
   sashi: "差し型",
@@ -77,6 +158,84 @@ function entropy(values) {
   const list = Object.values(values || {}).filter((value) => Number.isFinite(Number(value)) && Number(value) > 0);
   if (!list.length) return 0;
   return -list.reduce((sum, value) => sum + Number(value) * Math.log(Number(value)), 0);
+}
+
+function getVenueFinishPatternCorrection(venueContext = {}) {
+  const venueId = Number(venueContext?.venue_id || venueContext?.venueId || 0);
+  return VENUE_FINISH_PATTERN_CORRECTIONS[venueId] || null;
+}
+
+function isInnerLaneStrongEnough(profile = {}) {
+  const lane1st = toNum(profile?.lane1stRate, 0);
+  const lane2ren = toNum(profile?.lane2RenRate, 0);
+  const lane3ren = toNum(profile?.lane3RenRate, 0);
+  const styleScore = toNum(profile?.styleScore ?? profile?.styleScores?.[profile?.style?.code], 0);
+  const motorReadiness = toNum(buildMotorStReadiness(profile), 0);
+  return lane1st >= 48 || lane2ren >= 60 || lane3ren >= 70 || styleScore >= 58 || motorReadiness >= 56;
+}
+
+function applyVenueFinishPatternCorrectionToCombos(
+  rows = [],
+  {
+    venueContext = {},
+    boat1Profile = {},
+    boat1SecondKeep = { score: 0 },
+    headProbMap = {},
+    nearTieDiagnostics = {}
+  } = {}
+) {
+  const correction = getVenueFinishPatternCorrection(venueContext);
+  if (!correction) return Array.isArray(rows) ? rows : [];
+
+  const boat1KeepScore = toNum(boat1SecondKeep?.score, 0);
+  const lane1HeadShare = toNum(headProbMap?.[1], 0);
+  const weakLane1HeadLock =
+    lane1HeadShare <= 0.58 ||
+    nearTieDiagnostics?.near_tie_candidate_count >= 2 ||
+    nearTieDiagnostics?.top_two_tied === true;
+  const lane1RemainReady =
+    boat1KeepScore >= 56 &&
+    isInnerLaneStrongEnough(boat1Profile) &&
+    toNum(venueContext?.one_course_trust, 0) >= 56;
+  const preserved = new Set(correction.preserveCombos || []);
+
+  const corrected = (Array.isArray(rows) ? rows : []).map((row) => {
+    const combo = String(row?.combo || "");
+    const probability = Number(row?.probability) || 0;
+    const [first, second, third] = combo.split("-").map((value) => Number(value));
+    if (!Number.isInteger(first) || !Number.isInteger(second) || !Number.isInteger(third)) {
+      return { ...row, probability };
+    }
+
+    let multiplier = 1;
+    if (first === 1) multiplier *= 1 + correction.lane1FirstBoost;
+    if (second === 1 && lane1RemainReady && weakLane1HeadLock) {
+      multiplier *= 1 + correction.lane1SecondBoost;
+    }
+    if (first === 1 && second === 2) multiplier *= 1 + correction.lane2SecondBoost;
+    if (first === 1 && second === 3) multiplier *= 1 + correction.lane3SecondBoost;
+    if (first === 1 && [2, 3].includes(second) && third === 4) {
+      multiplier *= 1 + correction.lane4ThirdBoost;
+    }
+    if ([3, 4].includes(first)) multiplier *= 1 + correction.centerAttackFirstBoost;
+    if (first >= 5) multiplier *= 1 - correction.outerPenalty;
+    if (second >= 5) multiplier *= 1 - correction.outerPenalty * 0.7;
+    if (preserved.has(combo) && nearTieDiagnostics?.near_tie_candidate_count >= 2) {
+      multiplier *= 1.08;
+    }
+
+    return {
+      ...row,
+      probability: probability * Math.max(0.6, multiplier)
+    };
+  });
+
+  const normalized = normalizeMap(
+    Object.fromEntries(corrected.map((row) => [row.combo, row.probability]))
+  );
+  return Object.entries(normalized)
+    .map(([combo, probability]) => ({ combo, probability: round(probability, 4) }))
+    .sort((a, b) => b.probability - a.probability);
 }
 
 function courseRateByLane(features = {}, lane) {
@@ -488,7 +647,7 @@ function venueThirdAdjustment(profile, venueContext = {}) {
   return 50;
 }
 
-function buildBoat1SecondKeep(profile = {}, venueContext = {}, raceContext = {}) {
+function buildBoat1SecondKeepEnhanced(profile = {}, venueContext = {}, raceContext = {}) {
   const motorStReadiness = buildMotorStReadiness(profile);
   const styleCode = String(profile?.style?.code || "");
   const styleFit = ["nige", "stable_hold", "start_attack"].includes(styleCode)
@@ -531,7 +690,7 @@ function buildBoat1SecondKeep(profile = {}, venueContext = {}, raceContext = {})
   };
 }
 
-function calibrateSecondGivenHeadOne(baseSecondMap = {}, profiles = [], venueContext = {}, boat1SecondKeep = { score: 0 }) {
+function calibrateSecondGivenHeadOneEnhanced(baseSecondMap = {}, profiles = [], venueContext = {}, boat1SecondKeep = { score: 0 }) {
   const laneProfiles = new Map((Array.isArray(profiles) ? profiles : []).map((profile) => [profile.lane, profile]));
   const calibratedRaw = {};
   for (const lane of [2, 3, 4, 5, 6]) {
@@ -595,6 +754,111 @@ function buildExactaShapeBias(secondGivenHeadProbabilities = {}, venueContext = 
     ),
     policy: venueContext?.buyPolicy?.code || "balanced_standard"
   };
+}
+
+function buildBoat1SecondKeep(profile = {}, venueContext = {}, raceContext = {}) {
+  const correction = getVenueFinishPatternCorrection(venueContext);
+  const motorStReadiness = buildMotorStReadiness(profile);
+  const styleCode = String(profile?.style?.code || "");
+  const styleFit = ["nige", "stable_hold", "start_attack"].includes(styleCode)
+    ? 72
+    : styleCode === "tenkai_machi"
+      ? 58
+      : 44;
+  const antiCollapse = weightedAverage([
+    { value: 100 - toNum(raceContext?.lane3Makuri, 50), weight: 0.48 },
+    { value: 100 - toNum(raceContext?.lane4Breakout, 50), weight: 0.26 },
+    { value: 100 - getVenueEscapeFailPressure(venueContext, 1), weight: 0.26 }
+  ]);
+  const keepScore = round(
+    clamp(
+      0,
+      100,
+      weightedAverage([
+        {
+          value: invertNormalize(profile.avgSt, 0.11, 0.24) === null ? null : invertNormalize(profile.avgSt, 0.11, 0.24) * 100,
+          weight: 0.22
+        },
+        { value: motorStReadiness, weight: 0.24 },
+        { value: toNum(venueContext?.one_course_trust, 50), weight: 0.16 },
+        { value: antiCollapse, weight: 0.18 },
+        { value: styleFit, weight: 0.12 },
+        { value: profile.stability, weight: 0.08 },
+        { value: correction ? 50 + correction.lane1SecondBoost * 100 : null, weight: 0.08 }
+      ]) || 0
+    ),
+    1
+  );
+  const reasons = [];
+  if ((invertNormalize(profile.avgSt, 0.11, 0.24) || 0) >= 0.45) reasons.push("boat 1 ST is stable enough to remain in the trifecta");
+  if ((motorStReadiness || 0) >= 52) reasons.push("boat 1 motor and ST readiness are above the remain threshold");
+  if (toNum(venueContext?.one_course_trust, 0) >= 64) reasons.push("venue profile favors inside boats staying in the race");
+  if ((antiCollapse || 0) >= 52) reasons.push("lane 3 / lane 4 pressure is not strong enough to erase boat 1");
+  if (styleFit >= 58) reasons.push("boat 1 style profile fits an inside hold or remain scenario");
+  if (correction?.lane1SecondBoost > 0.09) reasons.push("venue correction explicitly boosts lane 1 second-place remain lines");
+  return {
+    score: keepScore,
+    reason: reasons.length > 0 ? reasons.join(" / ") : "boat1 second keep is neutral"
+  };
+}
+
+function calibrateSecondGivenHeadOne(baseSecondMap = {}, profiles = [], venueContext = {}, boat1SecondKeep = { score: 0 }) {
+  const correction = getVenueFinishPatternCorrection(venueContext);
+  const laneProfiles = new Map((Array.isArray(profiles) ? profiles : []).map((profile) => [profile.lane, profile]));
+  const calibratedRaw = {};
+  for (const lane of [2, 3, 4, 5, 6]) {
+    const profile = laneProfiles.get(lane) || {};
+    const baseProbability = Number(baseSecondMap?.[lane]) || 0.0001;
+    const venueLaneBias = getVenueLaneBiasScore(venueContext, lane);
+    const courseFit = normalize(profile.course2Rate ?? profile.course3Rate ?? profile.courseHeadRate, 18, 80);
+    const styleBias =
+      lane === 2
+        ? weightedAverage([{ value: profile.styleScores?.sashi, weight: 0.62 }, { value: profile.supportRate, weight: 0.38 }])
+        : lane === 3
+          ? weightedAverage([{ value: profile.styleScores?.makuri, weight: 0.52 }, { value: profile.styleScores?.makurisashi, weight: 0.48 }])
+          : lane === 4
+            ? weightedAverage([{ value: profile.styleScores?.makurisashi, weight: 0.58 }, { value: profile.supportRate, weight: 0.42 }])
+            : weightedAverage([{ value: profile.supportRate, weight: 0.54 }, { value: profile.attackRate, weight: 0.46 }]);
+    const venueAdjustment =
+      lane === 2
+        ? 1 + toNum(venueContext?.lane2_second_boost, 0) * 0.015 + Math.max(0, toNum(venueContext?.one_course_trust, 50) - 60) * 0.003
+        : lane === 3
+          ? 1 + (toNum(venueContext?.lane3_attack_boost, 0) + toNum(venueContext?.lane3_second_boost, 0)) * 0.01
+          : lane === 4
+            ? 1 + toNum(venueContext?.lane4_develop_boost, 0) * 0.012 + Math.max(0, toNum(venueContext?.volatility_boost, 0)) * 0.003
+            : 1 + Math.max(0, toNum(venueContext?.volatility_boost, 0)) * 0.006 - Math.max(0, toNum(venueContext?.lane56_head_penalty, 0)) * 0.008;
+    const correctionAdjustment =
+      lane === 2
+        ? 1 + toNum(correction?.lane2SecondBoost, 0) * 0.7
+        : lane === 3
+          ? 1 + toNum(correction?.lane3SecondBoost, 0) * 0.7
+          : lane === 4
+            ? 1 + toNum(correction?.lane4ThirdBoost, 0) * 0.25
+            : 1 - toNum(correction?.outerPenalty, 0) * 0.45;
+    const boat1KeepTransfer =
+      lane === 2
+        ? 1 + Math.max(0, (toNum(boat1SecondKeep?.score, 0) - 50)) * 0.0028
+        : lane === 4
+          ? 1 + Math.max(0, (toNum(boat1SecondKeep?.score, 0) - 50)) * 0.0016
+          : lane === 3
+            ? 1 + Math.max(0, (toNum(boat1SecondKeep?.score, 0) - 50)) * 0.0006
+            : 1 - Math.max(0, toNum(correction?.outerPenalty, 0)) * 0.08;
+    const shapeSupport = weightedAverage([
+      { value: venueLaneBias, weight: 0.28 },
+      { value: courseFit === null ? null : courseFit * 100, weight: 0.24 },
+      { value: styleBias, weight: 0.28 },
+      { value: profile.recentPerformanceIndex, weight: 0.2 }
+    ]);
+    calibratedRaw[lane] = Math.max(
+      0.0001,
+      baseProbability *
+        venueAdjustment *
+        correctionAdjustment *
+        boat1KeepTransfer *
+        (1 + Math.max(-0.18, ((shapeSupport || 50) - 50) / 180))
+    );
+  }
+  return normalizeMap(calibratedRaw);
 }
 
 function scoreBlend(values = []) {
@@ -780,35 +1044,165 @@ function buildPreliminaryBetMode({
   confidenceBand = "medium",
   confidenceScore = 50,
   predictionStabilityScore = 50,
+  optionalFormation = null,
   optionalFormationActive = false,
   top6Coverage = 0,
-  chaosValue = 0
+  chaosValue = 0,
+  venueContext = {}
 } = {}) {
+  const venueName = String(venueContext?.venue_name || venueContext?.venueBiasProfile?.venue_name || "");
+  const buyPolicyCode = String(venueContext?.buyPolicy?.code || "");
+  const isOmura = venueName === "Omura";
+  const isAshiya = venueName === "Ashiya";
+  const isTokuyama = venueName === "Tokuyama";
+  const isAmagasaki = venueName === "Amagasaki";
+  const isTamagawa = venueName === "Tamagawa";
+  const isSuminoe = venueName === "Suminoe";
+  const triggerFlags = optionalFormation?.trigger_flags && typeof optionalFormation.trigger_flags === "object"
+    ? optionalFormation.trigger_flags
+    : {};
+  const strictOptionalReady =
+    optionalFormationActive &&
+    triggerFlags.low_top6_coverage === true &&
+    triggerFlags.near_tie_second_234 === true &&
+    triggerFlags.strong_near_tie_second_234 === true &&
+    triggerFlags.rescue_evidence_strong === true &&
+    triggerFlags.top_head_not_runaway === true &&
+    triggerFlags.venue_allows_optional === true &&
+    triggerFlags.enough_top6_coverage !== true &&
+    triggerFlags.hard_inside_shape !== true &&
+    triggerFlags.clean_inside_order !== true &&
+    triggerFlags.ashiya_strict_gate !== false &&
+    triggerFlags.tokuyama_strict_gate !== false;
+  const optionalRescueEvidence =
+    triggerFlags.rescue_evidence_strong === true ||
+    triggerFlags.strong_near_tie_second_234 === true;
+  const top6CoverageFloor =
+    isOmura ? 0.12
+      : isAmagasaki ? 0.135
+        : isAshiya ? 0.155
+          : isTokuyama ? 0.15
+            : isTamagawa ? 0.148
+              : isSuminoe ? 0.15
+                : 0.145;
+  const stableCoverageFloor =
+    isOmura ? 0.152
+      : isAmagasaki ? 0.158
+        : isAshiya ? 0.18
+          : isTokuyama ? 0.17
+            : isTamagawa ? 0.165
+              : isSuminoe ? 0.165
+                : 0.18;
+  const top6ConfidenceFloor =
+    isOmura ? 47
+      : isAmagasaki ? 49
+        : isAshiya ? 52
+          : isTokuyama ? 51
+            : isTamagawa ? 50
+              : isSuminoe ? 50
+                : 50;
+  const stabilityFloor =
+    isOmura ? 48
+      : isAmagasaki ? 50
+        : isAshiya ? 54
+          : isTokuyama ? 53
+            : isTamagawa ? 52
+              : isSuminoe ? 52
+                : 52;
+  const optionalConfidenceFloor =
+    isAshiya ? 58
+      : isTokuyama ? 57
+        : isTamagawa ? 56
+          : isSuminoe ? 55
+            : isOmura || isAmagasaki ? 999
+              : 55;
+  const optionalCoverageCeiling =
+    isAshiya ? 0.135
+      : isTokuyama ? 0.148
+        : isTamagawa ? 0.155
+          : isSuminoe ? 0.158
+            : 0.16;
+  const stableTop6Buy =
+    top6Coverage >= stableCoverageFloor &&
+    (
+      (confidenceBand === "high" && predictionStabilityScore >= Math.max(60, stabilityFloor + 8)) ||
+      (confidenceScore >= Math.max(54, top6ConfidenceFloor + 2) && predictionStabilityScore >= Math.max(56, stabilityFloor + 2))
+    );
+  const borderlineTop6Buy =
+    !optionalFormationActive &&
+    top6Coverage >= top6CoverageFloor &&
+    confidenceScore >= top6ConfidenceFloor &&
+    predictionStabilityScore >= stabilityFloor;
+  const insideFocusedTop6Buy =
+    (isOmura || isAmagasaki) &&
+    !optionalFormationActive &&
+    (
+      triggerFlags.hard_inside_shape === true ||
+      triggerFlags.clean_inside_order === true ||
+      buyPolicyCode === "inside_head_focus"
+    ) &&
+    top6Coverage >= top6CoverageFloor &&
+    confidenceScore >= top6ConfidenceFloor &&
+    predictionStabilityScore >= stabilityFloor;
   if (confidenceBand === "high" && predictionStabilityScore >= 70 && top6Coverage >= 0.22) {
     return {
-      recommendedBetMode: "buy_top6_only",
-      skipRiskReason: null
+      recommendedBetMode: "buy_top6",
+      skipRiskReason: null,
+      modeCalibrationReason: `${venueName || "default"} calibration keeps this race in buy_top6 because coverage and stability are already strong.`
     };
   }
-  if (confidenceScore >= 55 && optionalFormationActive && (chaosValue >= 0.5 || top6Coverage <= 0.18)) {
+  if (
+    confidenceScore >= optionalConfidenceFloor &&
+    strictOptionalReady &&
+    optionalRescueEvidence &&
+    (chaosValue >= 0.45 || top6Coverage <= optionalCoverageCeiling)
+  ) {
     return {
       recommendedBetMode: "buy_top6_plus_optional16",
-      skipRiskReason: null
+      skipRiskReason: null,
+      modeCalibrationReason:
+        isAshiya
+          ? "Ashiya calibration allows optional16 only because coverage is very thin and the 2/3/4 near-tie rescue signal is unusually clear."
+          : isTokuyama
+            ? "Tokuyama calibration allows optional16 because low coverage and 1-2-4 / 1-3-4 rescue evidence are both strong."
+            : `${venueName || "default"} calibration allows optional16 because low coverage and near-tie rescue evidence are both present.`
     };
   }
-  if (confidenceScore >= 42) {
+  if (insideFocusedTop6Buy || stableTop6Buy || borderlineTop6Buy) {
     return {
-      recommendedBetMode: "borderline_reduce",
-      skipRiskReason: "coverage is fragile and race shape is not fully stable"
+      recommendedBetMode: "buy_top6",
+      skipRiskReason: null,
+      modeCalibrationReason:
+        isOmura
+          ? "Omura calibration lifts this race to buy_top6 because the inside-head remain shape is organized enough without optional16."
+          : isAshiya
+            ? "Ashiya calibration keeps this at buy_top6 because optional16 evidence is not strong enough to justify widening."
+            : isTokuyama
+              ? "Tokuyama calibration keeps this at buy_top6 because the 3-4 attack shape is readable without optional16 expansion."
+              : `${venueName || "default"} calibration keeps this race in buy_top6 because top6 evidence is sufficient without widening.`
     };
   }
+  const skipReason =
+    top6Coverage < top6CoverageFloor
+      ? `${venueName || "This venue"} calibration still sees top6 coverage as too thin without optional16 support`
+      : confidenceScore < top6ConfidenceFloor
+        ? `${venueName || "This venue"} calibration still sees confidence as too weak for buy_top6`
+        : `${venueName || "This venue"} calibration still sees race shape as too unstable for buy_top6`;
   return {
     recommendedBetMode: "skip",
-    skipRiskReason: "skip risk is elevated due to low stability"
+    skipRiskReason: skipReason,
+    modeCalibrationReason:
+      isOmura
+        ? "Omura calibration suppresses optional16 but still skips races when the inside-head read does not clear the minimum coverage floor."
+        : isAshiya
+          ? "Ashiya calibration now withholds optional16 unless the tie signal is exceptional, so weaker races fall back to skip."
+          : isTokuyama
+            ? "Tokuyama calibration now needs both attack pressure and rescue evidence, so weaker races remain skip."
+            : `${venueName || "default"} calibration leaves this race on skip because venue-specific buy evidence is not strong enough.`
   };
 }
 
-function buildNearTieSecondDiagnostics({
+function buildNearTieSecondDiagnosticsEnhanced({
   all120 = [],
   secondGivenHeadProbabilities = {},
   top6Coverage = 0,
@@ -890,7 +1284,7 @@ function buildNearTieSecondDiagnostics({
   };
 }
 
-function preserveCloseSecondCombos(topRows = [], allRows = [], diagnostics = {}) {
+function preserveCloseSecondCombosEnhanced(topRows = [], allRows = [], diagnostics = {}) {
   if (!diagnostics?.close_combo_preserved) {
     return Array.isArray(topRows) ? topRows : [];
   }
@@ -1033,7 +1427,7 @@ function buildCandidateRows(probMap = {}, profiles = [], place) {
     .sort((a, b) => b.probability - a.probability);
 }
 
-export function buildFormationSuggestion(sortedCombos = [], finishProbabilities = {}, chaosLevel = 0, top6Coverage = 0, venueContext = {}, diagnostics = {}) {
+function buildFormationSuggestionEnhanced(sortedCombos = [], finishProbabilities = {}, chaosLevel = 0, top6Coverage = 0, venueContext = {}, diagnostics = {}) {
   const venueName = String(venueContext?.venue_name || "");
   const optionalFormationBoost = toNum(venueContext?.optional_formation_trigger_boost, 0);
   const firstEntries = Object.entries(finishProbabilities?.first || {})
@@ -1214,6 +1608,408 @@ export function buildFormationSuggestion(sortedCombos = [], finishProbabilities 
   };
 }
 
+function buildNearTieSecondDiagnostics({
+  all120 = [],
+  secondGivenHeadProbabilities = {},
+  top6Coverage = 0,
+  chaosLevel = 0,
+  venueContext = {},
+  outsideRiskProxy = 0
+} = {}) {
+  const correction = getVenueFinishPatternCorrection(venueContext);
+  const topSecondCandidates = [2, 3, 4, 5, 6]
+    .map((lane) => ({ lane, probability: Number(secondGivenHeadProbabilities?.[lane]) || 0 }))
+    .sort((a, b) => b.probability - a.probability);
+  const lane2 = topSecondCandidates.find((row) => row.lane === 2) || { lane: 2, probability: 0 };
+  const lane3 = topSecondCandidates.find((row) => row.lane === 3) || { lane: 3, probability: 0 };
+  const lane4 = topSecondCandidates.find((row) => row.lane === 4) || { lane: 4, probability: 0 };
+  const topGap = Math.abs((topSecondCandidates[0]?.probability || 0) - (topSecondCandidates[1]?.probability || 0));
+  const secondGap23 = Math.abs((lane2?.probability || 0) - (lane3?.probability || 0));
+  const clusterGap34 = Math.abs((lane3?.probability || 0) - (lane4?.probability || 0));
+  const combo124 = (Array.isArray(all120) ? all120 : []).find((row) => row.combo === "1-2-4")?.probability || 0;
+  const combo134 = (Array.isArray(all120) ? all120 : []).find((row) => row.combo === "1-3-4")?.probability || 0;
+  const combo213 = (Array.isArray(all120) ? all120 : []).find((row) => row.combo === "2-1-3")?.probability || 0;
+  const combo312 = (Array.isArray(all120) ? all120 : []).find((row) => row.combo === "3-1-2")?.probability || 0;
+  const comboGap = Math.abs(combo124 - combo134);
+  const comboGapScore = round(
+    clamp(0, 1, 1 - (comboGap / Math.max(0.0001, Math.max(combo124, combo134, 0.0001)))),
+    4
+  );
+  const topTwoTieThreshold = 0.075 + Math.max(0, toNum(correction?.optionalActivationBias, 0)) * 0.08;
+  const secondThirdTieThreshold = 0.058 + Math.max(0, toNum(correction?.optionalActivationBias, 0)) * 0.05;
+  const topTwoTied = topGap <= topTwoTieThreshold;
+  const secondThirdTied =
+    topSecondCandidates.length >= 3 &&
+    Math.abs((topSecondCandidates[1]?.probability || 0) - (topSecondCandidates[2]?.probability || 0)) <= secondThirdTieThreshold;
+  const nearTieCandidates = topSecondCandidates.filter((row, index) => {
+    if (index === 0) return true;
+    if (index === 1) return Math.abs((topSecondCandidates[0]?.probability || 0) - row.probability) <= topTwoTieThreshold;
+    if (index === 2) {
+      return secondThirdTied || Math.abs((topSecondCandidates[1]?.probability || 0) - row.probability) <= secondThirdTieThreshold;
+    }
+    return false;
+  });
+  const lowCoverage = top6Coverage <= 0.16;
+  const volatileVenue = toNum(venueContext?.volatility_boost, 0) >= 6;
+  const preserve =
+    (
+      comboGapScore >= 0.72 &&
+      secondGap23 <= 0.07 &&
+      (lowCoverage || chaosLevel >= 0.55 || outsideRiskProxy >= 0.38 || volatileVenue)
+    ) ||
+    (
+      nearTieCandidates.length >= 3 &&
+      (clusterGap34 <= 0.05 || combo213 >= 0.006 || combo312 >= 0.006)
+    );
+
+  return {
+    near_tie_second_candidates: nearTieCandidates,
+    close_combo_preserved: preserve,
+    combo_gap_score: comboGapScore,
+    combo_gap: round(comboGap, 4),
+    combo_124_probability: round(combo124, 4),
+    combo_134_probability: round(combo134, 4),
+    combo_213_probability: round(combo213, 4),
+    combo_312_probability: round(combo312, 4),
+    second_gap_2_vs_3: round(secondGap23, 4),
+    cluster_gap_3_vs_4: round(clusterGap34, 4),
+    top_second_gap: round(topGap, 4),
+    top_two_tied: topTwoTied,
+    second_third_tied: secondThirdTied,
+    near_tie_candidate_count: nearTieCandidates.length,
+    top_two_tie_threshold: topTwoTieThreshold,
+    second_third_tie_threshold: secondThirdTieThreshold,
+    venue_fit_reason: correction?.venueFitReason || null,
+    preserve_combos: correction?.preserveCombos || ["1-2-4", "1-3-4"]
+  };
+}
+
+function preserveCloseSecondCombos(topRows = [], allRows = [], diagnostics = {}) {
+  if (!diagnostics?.close_combo_preserved) {
+    return Array.isArray(topRows) ? topRows : [];
+  }
+  const current = [...(Array.isArray(topRows) ? topRows : [])];
+  const byCombo = new Map((Array.isArray(allRows) ? allRows : []).map((row) => [row.combo, row]));
+  const priorityCombos = Array.isArray(diagnostics?.preserve_combos) && diagnostics.preserve_combos.length > 0
+    ? diagnostics.preserve_combos
+    : diagnostics?.second_third_tied || diagnostics?.near_tie_candidate_count >= 3
+      ? ["1-2-4", "1-3-4", "1-2-3", "1-3-2", "1-4-2", "1-4-3", "2-1-3", "3-1-2"]
+      : ["1-2-4", "1-3-4"];
+  for (const combo of priorityCombos) {
+    if (current.some((row) => row.combo === combo)) continue;
+    const candidate = byCombo.get(combo);
+    if (!candidate) continue;
+    if (current.length >= 6) current.pop();
+    current.push(candidate);
+    current.sort((a, b) => (Number(b?.probability) || 0) - (Number(a?.probability) || 0));
+  }
+  return current.slice(0, 6);
+}
+
+export function buildFormationSuggestion(sortedCombos = [], finishProbabilities = {}, chaosLevel = 0, top6Coverage = 0, venueContext = {}, diagnostics = {}) {
+  const correction = getVenueFinishPatternCorrection(venueContext);
+  const venueName = String(venueContext?.venue_name || "");
+  const isOmura = venueName === "Omura";
+  const isAshiya = venueName === "Ashiya";
+  const isTokuyama = venueName === "Tokuyama";
+  const optionalFormationBoost = toNum(venueContext?.optional_formation_trigger_boost, 0) + toNum(correction?.optionalActivationBias, 0) * 100;
+  const firstEntries = Object.entries(finishProbabilities?.first || {})
+    .map(([lane, probability]) => [Number(lane), Number(probability) || 0])
+    .sort((a, b) => b[1] - a[1]);
+  const secondEntries = Object.entries(finishProbabilities?.second || {})
+    .map(([lane, probability]) => [Number(lane), Number(probability) || 0])
+    .sort((a, b) => b[1] - a[1]);
+  const thirdEntries = Object.entries(finishProbabilities?.third || {})
+    .map(([lane, probability]) => [Number(lane), Number(probability) || 0])
+    .sort((a, b) => b[1] - a[1]);
+  const topHeadProbability = firstEntries[0]?.[1] || 0;
+  const secondHeadProbability = firstEntries[1]?.[1] || 0;
+  const headGap = topHeadProbability - secondHeadProbability;
+  const outerHeadShare = firstEntries
+    .filter(([lane]) => lane >= 3)
+    .reduce((sum, [, probability]) => sum + probability, 0);
+  const outsideBreakRiskProxy = clamp(
+    0,
+    1,
+    Math.max(
+      toNum(venueContext?.venue_outside_break_risk, 0) / 100,
+      toNum(venueContext?.lane56_renyuu_intrusion_rate, 0) / 100,
+      chaosLevel * 0.85
+    )
+  );
+  const nearTieCluster = toNum(diagnostics?.near_tie_candidate_count, 0) >= 2;
+  const venueShapeFits = !!correction;
+  const nearTieSecond234 =
+    Array.isArray(diagnostics?.near_tie_second_candidates) &&
+    diagnostics.near_tie_second_candidates.filter((row) => [2, 3, 4].includes(Number(row?.lane))).length >= 2;
+  const strongNearTieSecond234 =
+    nearTieSecond234 &&
+    (
+      toNum(diagnostics?.second_gap_2_vs_3, 1) <= 0.055 ||
+      toNum(diagnostics?.cluster_gap_3_vs_4, 1) <= 0.05 ||
+      toNum(diagnostics?.near_tie_candidate_count, 0) >= 3
+    );
+  const lane1RemainWindow =
+    (toNum(diagnostics?.combo_213_probability, 0) >= 0.006 || toNum(diagnostics?.combo_312_probability, 0) >= 0.006) &&
+    topHeadProbability <= 0.58;
+  const rescueEvidenceStrong =
+    diagnostics?.close_combo_preserved === true ||
+    toNum(diagnostics?.combo_gap_score, 0) >= 0.76 ||
+    lane1RemainWindow;
+  const extremelyLowCoverage = top6Coverage <= 0.12 + Math.max(0, optionalFormationBoost) * 0.002;
+  const lowCoverageWithChaos = chaosLevel >= Math.max(0.9, 1 - Math.max(0, optionalFormationBoost) * 0.02) && top6Coverage <= 0.15 + Math.max(0, optionalFormationBoost) * 0.003;
+  const lowCoverage = top6Coverage <= 0.18 + Math.max(0, optionalFormationBoost) * 0.0015;
+  const enoughCoverage = top6Coverage >= 0.2;
+  const ashiyaStrictLowCoverage = top6Coverage <= 0.132;
+  const tokuyamaStrictLowCoverage = top6Coverage <= 0.148;
+  const ashiyaMultiTieReady =
+    toNum(diagnostics?.near_tie_candidate_count, 0) >= 3 &&
+    toNum(diagnostics?.second_gap_2_vs_3, 1) <= 0.045 &&
+    toNum(diagnostics?.cluster_gap_3_vs_4, 1) <= 0.047;
+  const tokuyamaAttackRescueReady =
+    (
+      toNum(diagnostics?.combo_124_probability, 0) >= 0.01 ||
+      toNum(diagnostics?.combo_134_probability, 0) >= 0.01
+    ) &&
+    toNum(diagnostics?.combo_gap_score, 0) >= 0.79;
+  const weakHeadDominance = topHeadProbability <= 0.52;
+  const topHeadNotRunaway = topHeadProbability <= 0.6 || headGap <= 0.12;
+  const weakHeadAxis = topHeadProbability <= 0.57 || headGap <= 0.09;
+  const hardInsideShape =
+    (venueName === "Omura" || venueName === "Amagasaki") &&
+    topHeadProbability >= 0.57 &&
+    topHeadNotRunaway === false;
+  const cleanInsideOrder =
+    topHeadProbability >= 0.55 &&
+    !nearTieCluster &&
+    toNum(diagnostics?.combo_gap_score, 0) < 0.68;
+  const multipleViableHeads = secondHeadProbability >= 0.18 || Math.abs(topHeadProbability - secondHeadProbability) <= 0.1;
+  const outerInvolvementElevated = outerHeadShare >= 0.34;
+  const highChaos = chaosLevel >= Math.max(0.3, 0.39 - Math.max(0, optionalFormationBoost) * 0.01);
+  const mediumOutsideRisk = outsideBreakRiskProxy >= Math.max(0.32, 0.42 - Math.max(0, optionalFormationBoost) * 0.008);
+  const elevatedOutsideBreakRisk = outsideBreakRiskProxy >= Math.max(0.38, 0.48 - Math.max(0, optionalFormationBoost) * 0.008);
+  const venueAllowsOptional = venueShapeFits && toNum(correction?.optionalActivationBias, 0) > -0.02;
+  const ashiyaStrictGate =
+    !isAshiya ||
+    (
+      ashiyaStrictLowCoverage &&
+      ashiyaMultiTieReady &&
+      strongNearTieSecond234 &&
+      rescueEvidenceStrong &&
+      weakHeadAxis &&
+      topHeadProbability <= 0.55 &&
+      toNum(diagnostics?.combo_gap_score, 0) >= 0.82
+    );
+  const tokuyamaStrictGate =
+    !isTokuyama ||
+    (
+      tokuyamaStrictLowCoverage &&
+      strongNearTieSecond234 &&
+      rescueEvidenceStrong &&
+      weakHeadAxis &&
+      tokuyamaAttackRescueReady
+    );
+  const venueTriggeredOptional =
+    lowCoverage &&
+    nearTieCluster &&
+    nearTieSecond234 &&
+    rescueEvidenceStrong &&
+    topHeadNotRunaway &&
+    venueAllowsOptional &&
+    ashiyaStrictGate &&
+    tokuyamaStrictGate;
+  const shouldSuppressOptional =
+    enoughCoverage ||
+    hardInsideShape ||
+    cleanInsideOrder ||
+    !nearTieCluster ||
+    !nearTieSecond234 ||
+    !rescueEvidenceStrong ||
+    !topHeadNotRunaway ||
+    !venueShapeFits ||
+    !venueAllowsOptional ||
+    !ashiyaStrictGate ||
+    !tokuyamaStrictGate;
+  const shouldSuggest =
+    !shouldSuppressOptional &&
+    (
+      extremelyLowCoverage ||
+      lowCoverageWithChaos ||
+      venueTriggeredOptional ||
+      (lowCoverage && lane1RemainWindow && nearTieSecond234) ||
+      (lowCoverage && multipleViableHeads && rescueEvidenceStrong) ||
+      (lowCoverage && highChaos && mediumOutsideRisk)
+    );
+  const reasons = [];
+  const suppressionReasons = [];
+  if (extremelyLowCoverage) reasons.push("top6 coverage is extremely low");
+  else if (lowCoverageWithChaos) reasons.push("top6 coverage is low under high chaos");
+  else if (lowCoverage) reasons.push("top6 coverage is low");
+  if (venueTriggeredOptional) reasons.push("venue-specific near-tie second cluster is active");
+  if (lane1RemainWindow) reasons.push("lane 1 second-place remain window is open");
+  if (multipleViableHeads || weakHeadDominance || topHeadNotRunaway) reasons.push("top head candidate is not dominant");
+  if (outerInvolvementElevated) reasons.push("outer lanes have increased involvement risk");
+  if (highChaos) reasons.push("chaos level is high");
+  if (elevatedOutsideBreakRisk || mediumOutsideRisk) reasons.push("outside break risk is elevated");
+  if (diagnostics?.close_combo_preserved) reasons.push("1-2-4 / 1-3-4 preservation is active");
+  if (diagnostics?.venue_fit_reason) reasons.push(diagnostics.venue_fit_reason);
+  if (enoughCoverage) suppressionReasons.push("top6 coverage is already sufficient");
+  if (hardInsideShape) suppressionReasons.push("inside-favored venue still points to a strong lane 1 remain shape");
+  if (cleanInsideOrder) suppressionReasons.push("1-2 / 1-3 ordering is already organized inside top6");
+  if (!nearTieCluster || !nearTieSecond234) suppressionReasons.push("near-tie second cluster around 2/3/4 is not strong enough");
+  if (!rescueEvidenceStrong) suppressionReasons.push("rescue evidence for 1-2-4 / 1-3-4 is not strong enough");
+  if (!topHeadNotRunaway) suppressionReasons.push("head candidate is too dominant to justify optional expansion");
+  if (!venueAllowsOptional && venueShapeFits) suppressionReasons.push("venue correction does not currently permit optional16 expansion");
+  if (isOmura) suppressionReasons.push("Omura calibration keeps optional16 heavily suppressed so strong inside-head races stay in top6 only.");
+  if (isAshiya && !ashiyaStrictGate) suppressionReasons.push("Ashiya now requires very low coverage, a multi-lane 2/3/4 tie, and weak 1-head dominance before optional16 can activate");
+  if (isTokuyama && !tokuyamaStrictGate) suppressionReasons.push("Tokuyama now requires both lower coverage and stronger 1-2-4 / 1-3-4 rescue evidence before optional16 can activate");
+
+  const firstCandidateLimit =
+    venueName === "Omura" || venueName === "Amagasaki"
+      ? 2
+      : chaosLevel >= 0.55 || venueName === "Tamagawa" || venueName === "Ashiya"
+        ? 3
+        : 2;
+  const secondCandidateLimit =
+    venueName === "Tamagawa" || venueName === "Ashiya"
+      ? 5
+      : 4;
+  const thirdCandidateLimit =
+    venueName === "Tamagawa" || venueName === "Ashiya"
+      ? 5
+      : 4;
+  const firstCandidates = firstEntries.map(([lane]) => Number(lane)).slice(0, firstCandidateLimit);
+  if (venueName === "Omura" || venueName === "Amagasaki") {
+    while (firstCandidates.length > 0 && firstCandidates[firstCandidates.length - 1] >= 5) firstCandidates.pop();
+  }
+  const secondCandidates = secondEntries.map(([lane]) => Number(lane)).slice(0, secondCandidateLimit);
+  const thirdCandidates = thirdEntries.map(([lane]) => Number(lane)).slice(0, thirdCandidateLimit);
+  if (nearTieCluster) {
+    for (const row of diagnostics?.near_tie_second_candidates || []) {
+      if (!secondCandidates.includes(row.lane)) secondCandidates.push(row.lane);
+    }
+  }
+  if (lane1RemainWindow && !secondCandidates.includes(1)) secondCandidates.push(1);
+  if (venueName === "Tokuyama" || venueName === "Suminoe") {
+    for (const lane of [3, 4]) {
+      if (!secondCandidates.includes(lane)) secondCandidates.push(lane);
+      if (!thirdCandidates.includes(lane)) thirdCandidates.push(lane);
+    }
+  }
+  if ((venueName === "Ashiya" || venueName === "Tamagawa") && !lane1RemainWindow) {
+    for (const lane of [5, 6]) {
+      if (!thirdCandidates.includes(lane)) thirdCandidates.push(lane);
+    }
+  }
+  if (lane1RemainWindow) {
+    for (const lane of [2, 3]) {
+      if (!firstCandidates.includes(lane) && firstCandidates.length < firstCandidateLimit + 1) firstCandidates.push(lane);
+    }
+  }
+  if (!shouldSuggest) {
+    return {
+      active: false,
+      size: 0,
+      combos: [],
+      first_candidates: [...new Set(firstCandidates)].slice(0, firstCandidateLimit + (lane1RemainWindow ? 1 : 0)),
+      second_candidates: [...new Set(secondCandidates)].slice(0, secondCandidateLimit + 1),
+      third_candidates: [...new Set(thirdCandidates)].slice(0, thirdCandidateLimit + 1),
+      formation_string: null,
+      reason: suppressionReasons[0] || "top6 is sufficient",
+      reasons: suppressionReasons,
+      trigger_flags: {
+        low_top6_coverage: lowCoverage,
+        extremely_low_top6_coverage: extremelyLowCoverage,
+        low_top6_coverage_with_chaos: lowCoverageWithChaos,
+        weak_head_dominance: weakHeadDominance,
+        top_head_not_runaway: topHeadNotRunaway,
+        multiple_viable_heads: multipleViableHeads,
+        outer_involvement_elevated: outerInvolvementElevated,
+        outer_head_share_3to6: round(outerHeadShare, 4),
+        high_chaos: highChaos,
+        medium_outside_break_risk: mediumOutsideRisk,
+        elevated_outside_break_risk: elevatedOutsideBreakRisk,
+        venue_triggered_optional: venueTriggeredOptional,
+        venue_allows_optional: venueAllowsOptional,
+        near_tie_second_234: nearTieSecond234,
+        strong_near_tie_second_234: strongNearTieSecond234,
+        rescue_evidence_strong: rescueEvidenceStrong,
+        lane1_second_window: lane1RemainWindow,
+        hard_inside_shape: hardInsideShape,
+        clean_inside_order: cleanInsideOrder,
+        enough_top6_coverage: enoughCoverage,
+        ashiya_strict_gate: ashiyaStrictGate,
+        tokuyama_strict_gate: tokuyamaStrictGate,
+        close_combo_preserved: diagnostics?.close_combo_preserved === true,
+        combo_gap_score: diagnostics?.combo_gap_score ?? null
+      }
+    };
+  }
+
+  const targetSize = Math.min(
+    16,
+    venueName === "Omura" || venueName === "Amagasaki"
+      ? 14
+      : venueName === "Tokuyama" || venueName === "Suminoe" || venueName === "Tamagawa" || venueName === "Ashiya"
+        ? 16
+        : highChaos || outerInvolvementElevated
+          ? 16
+          : 14
+  );
+  const filtered = sortedCombos.filter((row) => {
+    const [first, second, third] = String(row.combo).split("-").map(Number);
+    return firstCandidates.includes(first) && secondCandidates.includes(second) && thirdCandidates.includes(third) && first !== second && second !== third && first !== third;
+  });
+  const combos = (filtered.length >= 10 ? filtered : sortedCombos.filter((row) => {
+    const [first, second, third] = String(row.combo).split("-").map(Number);
+    return first !== second && second !== third && first !== third;
+  }))
+    .slice(0, targetSize)
+    .map((row, index) => ({
+      rank: index + 1,
+      combo: row.combo,
+      probability: round(row.probability, 4)
+    }));
+
+  return {
+    active: combos.length > 0,
+    size: combos.length,
+    combos,
+    first_candidates: [...new Set(firstCandidates)].slice(0, firstCandidateLimit + (lane1RemainWindow ? 1 : 0)),
+    second_candidates: [...new Set(secondCandidates)].slice(0, secondCandidateLimit + 1),
+    third_candidates: [...new Set(thirdCandidates)].slice(0, thirdCandidateLimit + 1),
+    formation_string: `${[...new Set(firstCandidates)].slice(0, firstCandidateLimit + (lane1RemainWindow ? 1 : 0)).join("")}-${[...new Set(secondCandidates)].slice(0, secondCandidateLimit + 1).join("")}-${[...new Set(thirdCandidates)].slice(0, thirdCandidateLimit + 1).join("")}`,
+    reason: reasons[0] || "high payout window",
+    reasons,
+    trigger_flags: {
+      low_top6_coverage: lowCoverage,
+      extremely_low_top6_coverage: extremelyLowCoverage,
+      low_top6_coverage_with_chaos: lowCoverageWithChaos,
+      weak_head_dominance: weakHeadDominance,
+      top_head_not_runaway: topHeadNotRunaway,
+      multiple_viable_heads: multipleViableHeads,
+      outer_involvement_elevated: outerInvolvementElevated,
+      outer_head_share_3to6: round(outerHeadShare, 4),
+      high_chaos: highChaos,
+      medium_outside_break_risk: mediumOutsideRisk,
+      elevated_outside_break_risk: elevatedOutsideBreakRisk,
+      venue_triggered_optional: venueTriggeredOptional,
+      venue_allows_optional: venueAllowsOptional,
+      near_tie_second_234: nearTieSecond234,
+      strong_near_tie_second_234: strongNearTieSecond234,
+      rescue_evidence_strong: rescueEvidenceStrong,
+      lane1_second_window: lane1RemainWindow,
+      hard_inside_shape: hardInsideShape,
+      clean_inside_order: cleanInsideOrder,
+      enough_top6_coverage: enoughCoverage,
+      ashiya_strict_gate: ashiyaStrictGate,
+      tokuyama_strict_gate: tokuyamaStrictGate,
+      close_combo_preserved: diagnostics?.close_combo_preserved === true,
+      combo_gap_score: diagnostics?.combo_gap_score ?? null
+    }
+  };
+}
+
 export function buildTop6Prediction({ ranking = [], race = null } = {}) {
   const profiles = (Array.isArray(ranking) ? ranking : [])
     .map((row) => buildLaneProfile(row))
@@ -1321,11 +2117,11 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
   }
 
   const normalized120 = normalizeMap(Object.fromEntries(comboRows.map((row) => [row.combo, row.probability])));
-  const all120 = Object.entries(normalized120)
+  const baseAll120 = Object.entries(normalized120)
     .map(([combo, probability]) => ({ combo, probability: round(probability, 4) }))
     .sort((a, b) => b.probability - a.probability);
-  const preTop6 = all120.slice(0, 6);
-  const top6CoverageSeed = round(preTop6.reduce((sum, row) => sum + Number(row.probability || 0), 0), 4);
+  const preCorrectionTop6 = baseAll120.slice(0, 6);
+  const top6CoverageSeed = round(preCorrectionTop6.reduce((sum, row) => sum + Number(row.probability || 0), 0), 4);
   const strongestHead = Math.max(...Object.values(headProbMap).map((value) => Number(value) || 0));
   const chaosValue = clamp(0, 1, 1 - top6CoverageSeed + Math.min(0.25, entropy(headProbMap) / 2));
   const outsideRiskProxy = clamp(
@@ -1339,13 +2135,21 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
   );
   const secondGivenHeadProbabilities = secondMap[1];
   const nearTieDiagnostics = buildNearTieSecondDiagnostics({
-    all120,
+    all120: baseAll120,
     secondGivenHeadProbabilities,
     top6Coverage: top6CoverageSeed,
     chaosLevel: chaosValue,
     venueContext,
     outsideRiskProxy
   });
+  const all120 = applyVenueFinishPatternCorrectionToCombos(baseAll120, {
+    venueContext,
+    boat1Profile,
+    boat1SecondKeep,
+    headProbMap,
+    nearTieDiagnostics
+  });
+  const preTop6 = all120.slice(0, 6);
   const top6 = preserveCloseSecondCombos(preTop6, all120, nearTieDiagnostics).map((row, index) => ({
     ...row,
     tier: index < 2 ? "本命" : index < 4 ? "対抗" : "抑え",
@@ -1423,9 +2227,11 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     confidenceBand: confidenceSummary.confidence_band,
     confidenceScore: confidenceSummary.confidence_score,
     predictionStabilityScore: confidenceSummary.prediction_stability_score,
+    optionalFormation: formationSuggestion,
     optionalFormationActive: formationSuggestion?.active === true,
     top6Coverage,
-    chaosValue
+    chaosValue,
+    venueContext
   });
   const similarRacePatternScore = round(scoreBlend([
     { value: toNum(racePatternSummary.racePatternScore, 50), weight: 0.34 },
@@ -1492,7 +2298,12 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     wide_formation_suggestion: formationSuggestion,
     venueBiasProfile: venueContext?.venueBiasProfile || venueContext?.venue_bias_profile || null,
     buyPolicy: venueContext?.buyPolicy || null,
-    venueAdjustmentReason: Array.isArray(venueContext?.venueAdjustmentReason) ? venueContext.venueAdjustmentReason : [],
+    venueAdjustmentReason: [
+      ...(Array.isArray(venueContext?.venueAdjustmentReason) ? venueContext.venueAdjustmentReason : []),
+      ...(nearTieDiagnostics?.venue_fit_reason ? [nearTieDiagnostics.venue_fit_reason] : []),
+      ...(boat1SecondKeep?.reason ? [`boat1 remain: ${boat1SecondKeep.reason}`] : []),
+      ...(preliminaryBetMode?.modeCalibrationReason ? [preliminaryBetMode.modeCalibrationReason] : [])
+    ],
     conditional_probabilities: {
       first: headProbMap,
       second: secondMap,

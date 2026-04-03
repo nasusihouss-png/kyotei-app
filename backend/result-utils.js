@@ -27,9 +27,20 @@ export function normalizeFinishOrder(finishOrder) {
   return top3;
 }
 
-function normalizeCombo(value) {
+export function normalizeTop3OrNull(values) {
+  if (!Array.isArray(values)) return null;
+  const top3 = values.slice(0, 3).map((v) => toInt(v));
+  if (top3.length !== 3 || top3.some((v) => !Number.isInteger(v) || v < 1 || v > 6)) {
+    return null;
+  }
+  if (new Set(top3).size !== 3) return null;
+  return top3;
+}
+
+export function normalizeCombo(value) {
   const digits = String(value || "").match(/[1-6]/g) || [];
-  return digits.slice(0, 3).join("-");
+  const normalized = digits.slice(0, 3);
+  return normalized.length === 3 ? normalized.join("-") : "";
 }
 
 export function compareActualTop3VsPredictedBets(actualTop3, predictedBets, options = {}) {

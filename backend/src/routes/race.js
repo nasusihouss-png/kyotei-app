@@ -11,7 +11,8 @@ import { analyzeExpectedValue } from "../../odds-engine.js";
 import { buildBetPlan } from "../../bankroll-engine.js";
 import { evaluateRaceRisk } from "../../race-risk-engine.js";
 import { savePredictionLog } from "../../save-prediction-log.js";
-import { saveRaceResult } from "../../save-result.js";
+import { updatePredictionLogResultSnapshot } from "../../save-prediction-log.js";
+import { fetchSavedRaceResult, saveRaceResult } from "../../save-result.js";
 import {
   backfillSimilarRaceFeatures,
   ensureSimilarRaceFeatureTable,
@@ -102,6 +103,7 @@ import {
 import { buildHardRace1234Response } from "../services/hard-race-1234-pure.js";
 import { loadStoredRaceInferenceData } from "../services/local-race-inference.js";
 import { refreshLatestRaceData } from "../services/refresh-latest-race-data.js";
+import { fetchAndStoreOfficialRaceResult } from "../services/official-race-result.js";
 import {
   OPTIONAL_COVERAGE_FIELDS,
   REQUIRED_COVERAGE_FIELDS,
@@ -111,17 +113,23 @@ import {
 
 export const raceRouter = Router();
 const raceRouteRuntimeDeps = {
-  refreshLatestRaceData
+  refreshLatestRaceData,
+  fetchAndStoreOfficialRaceResult
 };
 
 export function setRaceRouteRuntimeDepsForTests(overrides = {}) {
   if (Object.prototype.hasOwnProperty.call(overrides, "refreshLatestRaceData")) {
     raceRouteRuntimeDeps.refreshLatestRaceData = overrides.refreshLatestRaceData || refreshLatestRaceData;
   }
+  if (Object.prototype.hasOwnProperty.call(overrides, "fetchAndStoreOfficialRaceResult")) {
+    raceRouteRuntimeDeps.fetchAndStoreOfficialRaceResult =
+      overrides.fetchAndStoreOfficialRaceResult || fetchAndStoreOfficialRaceResult;
+  }
 }
 
 export function resetRaceRouteRuntimeDepsForTests() {
   raceRouteRuntimeDeps.refreshLatestRaceData = refreshLatestRaceData;
+  raceRouteRuntimeDeps.fetchAndStoreOfficialRaceResult = fetchAndStoreOfficialRaceResult;
 }
 
 db.exec(`
@@ -386,6 +394,26 @@ export function normalizeOptionalFormation16(optionalFormation16 = null) {
   return normalized.active ? normalized : [];
 }
 
+function enforceOptionalFormationConsistency(optionalFormation16 = null, recommendedBetMode = null) {
+  const normalized = normalizeOptionalFormation16(optionalFormation16);
+  if (recommendedBetMode !== "buy_top6_plus_optional16") {
+    return [];
+  }
+  if (Array.isArray(normalized)) {
+    return [];
+  }
+  const combos = Array.isArray(normalized.combos) ? normalized.combos.filter(Boolean) : [];
+  if (combos.length === 0 || !Number.isFinite(Number(normalized.size)) || Number(normalized.size) <= 0) {
+    return [];
+  }
+  return {
+    ...normalized,
+    active: true,
+    size: Math.max(1, Math.min(16, Number(normalized.size) || combos.length || 0)),
+    combos
+  };
+}
+
 export function resolveFormationReason(pureTop6Prediction = null, prediction = null, optionalFormation16 = []) {
   const normalizedFormation = Array.isArray(optionalFormation16) ? [] : optionalFormation16;
   if (Array.isArray(normalizedFormation)) {
@@ -415,6 +443,36 @@ function buildReasonSummary(baseReason = null, extraReasons = []) {
       .filter(Boolean)
   ];
   return merged.length > 0 ? [...new Set(merged)].join("; ") : null;
+}
+
+function mergeReasonList(...groups) {
+  return groups
+    .flatMap((group) => Array.isArray(group) ? group : [group])
+    .map((reason) => (typeof reason === "string" ? reason.trim() : ""))
+    .filter(Boolean)
+    .filter((reason, index, all) => all.indexOf(reason) === index);
+}
+
+function buildModeAwareBuyPolicy(buyPolicy = null, recommendedBetMode = null) {
+  if (!buyPolicy || typeof buyPolicy !== "object") return null;
+  const baseCode = typeof buyPolicy.code === "string" && buyPolicy.code.trim() ? buyPolicy.code.trim() : null;
+  const normalizedMode =
+    recommendedBetMode === "buy_top6_plus_optional16" || recommendedBetMode === "buy_top6" || recommendedBetMode === "skip"
+      ? recommendedBetMode
+      : (typeof buyPolicy.recommended_mode === "string" ? buyPolicy.recommended_mode : null);
+  return {
+    ...buyPolicy,
+    base_code: baseCode,
+    code: baseCode && normalizedMode ? `${baseCode}__${normalizedMode}` : baseCode,
+    recommended_mode: normalizedMode
+  };
+}
+
+function resolveConsistentRecommendedBetMode(recommendedBetMode = null, optionalFormation16 = null) {
+  if (recommendedBetMode !== "buy_top6_plus_optional16") {
+    return recommendedBetMode;
+  }
+  return Array.isArray(optionalFormation16) ? "buy_top6" : "buy_top6_plus_optional16";
 }
 
 function summarizeStyleSignature(laneStyles = []) {
@@ -1133,6 +1191,11 @@ function buildRecommendedBetPolicy({
   similarSupportBundle = null,
   confidenceSummary = null
 } = {}) {
+  const venueName = String(
+    pureTop6Prediction?.venue_scenario_bias?.venue_name ||
+    pureTop6Prediction?.venueBiasProfile?.venue_name ||
+    ""
+  );
   const confidenceScore = toNullableNum(confidenceSummary?.confidence_score) ?? 50;
   const confidenceBand = confidenceSummary?.confidence_band || "medium";
   const hardRaceIndex = toNullableNum(hardRace1234?.hard_race_index) ?? 0;
@@ -1146,37 +1209,156 @@ function buildRecommendedBetPolicy({
   const chaosLevel = toNullableNum(pureTop6Prediction?.chaos_level) ?? 0;
   const weakSupport = similarSupportScore < 45 || similarRaceCount === 0;
   const historySupported = similarHistoryBasis === "history_supported";
-  if (confidenceScore >= 76 && hardRaceIndex >= 70) {
-    return { recommendedBetMode: "hard_race_narrow", skipRiskReason: null };
-  }
-  if (historySupported && similarBetHitRate >= 60 && confidenceBand !== "low" && top6Coverage >= 0.18) {
-    return { recommendedBetMode: "buy_top6_only", skipRiskReason: null };
-  }
-  if (confidenceBand === "high" && top6Coverage >= 0.22) {
-    return { recommendedBetMode: "buy_top6_only", skipRiskReason: null };
-  }
-  if (confidenceScore >= 54 && optionalActive && (top6Coverage <= 0.18 || pureTop6Prediction?.close_combo_preserved === true)) {
-    return { recommendedBetMode: "buy_top6_plus_optional16", skipRiskReason: null };
-  }
-  if (confidenceScore >= 44 && scenarioReproScore >= 54) {
+  const optionalFlags =
+    pureTop6Prediction?.optionalFormation16?.trigger_flags &&
+    typeof pureTop6Prediction.optionalFormation16.trigger_flags === "object"
+      ? pureTop6Prediction.optionalFormation16.trigger_flags
+      : {};
+  const strictOptionalReady =
+    optionalActive &&
+    optionalFlags.low_top6_coverage === true &&
+    optionalFlags.near_tie_second_234 === true &&
+    optionalFlags.strong_near_tie_second_234 === true &&
+    optionalFlags.rescue_evidence_strong === true &&
+    optionalFlags.top_head_not_runaway === true &&
+    optionalFlags.venue_allows_optional === true &&
+    optionalFlags.enough_top6_coverage !== true &&
+    optionalFlags.hard_inside_shape !== true &&
+    optionalFlags.clean_inside_order !== true &&
+    optionalFlags.ashiya_strict_gate !== false &&
+    optionalFlags.tokuyama_strict_gate !== false;
+  const optionalRescueEvidence =
+    optionalFlags.rescue_evidence_strong === true ||
+    optionalFlags.strong_near_tie_second_234 === true;
+  const isOmura = venueName === "Omura";
+  const isAshiya = venueName === "Ashiya";
+  const isTokuyama = venueName === "Tokuyama";
+  const isAmagasaki = venueName === "Amagasaki";
+  const isTamagawa = venueName === "Tamagawa";
+  const isSuminoe = venueName === "Suminoe";
+  const top6CoverageFloor =
+    isOmura ? 0.12
+      : isAmagasaki ? 0.135
+        : isAshiya ? 0.155
+          : isTokuyama ? 0.15
+            : isTamagawa ? 0.148
+              : isSuminoe ? 0.15
+                : 0.145;
+  const stableCoverageFloor =
+    isOmura ? 0.152
+      : isAmagasaki ? 0.158
+        : isAshiya ? 0.18
+          : isTokuyama ? 0.17
+            : isTamagawa ? 0.165
+              : isSuminoe ? 0.165
+                : 0.17;
+  const confidenceFloor =
+    isOmura ? 47
+      : isAmagasaki ? 49
+        : isAshiya ? 52
+          : isTokuyama ? 51
+            : isTamagawa ? 50
+              : isSuminoe ? 50
+                : 50;
+  const scenarioFloor =
+    isOmura ? 48
+      : isAmagasaki ? 50
+        : isAshiya ? 54
+          : isTokuyama ? 53
+            : isTamagawa ? 52
+              : isSuminoe ? 52
+                : 50;
+  const optionalConfidenceFloor =
+    isAshiya ? 58
+      : isTokuyama ? 57
+        : isTamagawa ? 56
+          : isSuminoe ? 55
+            : isOmura || isAmagasaki ? 999
+              : 54;
+  const optionalCoverageCeiling =
+    isAshiya ? 0.135
+      : isTokuyama ? 0.148
+        : isTamagawa ? 0.155
+          : isSuminoe ? 0.158
+            : 0.16;
+  const stableTop6Buy =
+    top6Coverage >= stableCoverageFloor &&
+    (
+      (historySupported && similarBetHitRate >= 58 && confidenceBand !== "low") ||
+      (confidenceScore >= Math.max(54, confidenceFloor + 2) && scenarioReproScore >= Math.max(54, scenarioFloor)) ||
+      (confidenceBand === "high" && top6Coverage >= 0.2) ||
+      (confidenceScore >= 76 && hardRaceIndex >= 70)
+    );
+  const cautiousTop6Buy =
+    !optionalActive &&
+    !weakSupport &&
+    top6Coverage >= top6CoverageFloor &&
+    confidenceScore >= confidenceFloor &&
+    scenarioReproScore >= scenarioFloor;
+  const insideFocusedTop6Buy =
+    (isOmura || isAmagasaki) &&
+    !optionalActive &&
+    (
+      optionalFlags.hard_inside_shape === true ||
+      optionalFlags.clean_inside_order === true ||
+      pureTop6Prediction?.buyPolicy?.base_code === "inside_head_focus" ||
+      pureTop6Prediction?.buyPolicy?.code === "inside_head_focus"
+    ) &&
+    top6Coverage >= top6CoverageFloor &&
+    confidenceScore >= confidenceFloor &&
+    scenarioReproScore >= scenarioFloor;
+  if (
+    confidenceScore >= optionalConfidenceFloor &&
+    strictOptionalReady &&
+    optionalRescueEvidence &&
+    (top6Coverage <= optionalCoverageCeiling || pureTop6Prediction?.close_combo_preserved === true)
+  ) {
     return {
-      recommendedBetMode: "borderline_reduce",
-      skipRiskReason:
-        weakSupport
-          ? historySupported
-            ? "similar race history exists but is not strong enough, so coverage should be reduced"
-            : "similar race support is weak and coverage should be reduced"
-          : "coverage is borderline so ticket count should be reduced"
+      recommendedBetMode: "buy_top6_plus_optional16",
+      skipRiskReason: null,
+      modeCalibrationReason:
+        isAshiya
+          ? "Ashiya calibration allows optional16 only because coverage is very thin and the 2/3/4 near-tie rescue signal is unusually clear."
+          : isTokuyama
+            ? "Tokuyama calibration allows optional16 because low coverage and 1-2-4 / 1-3-4 rescue evidence are both strong."
+            : `${venueName || "default"} calibration allows optional16 because low coverage and near-tie rescue evidence are both present.`
     };
   }
+  if (insideFocusedTop6Buy || stableTop6Buy || cautiousTop6Buy) {
+    return {
+      recommendedBetMode: "buy_top6",
+      skipRiskReason: null,
+      modeCalibrationReason:
+        isOmura
+          ? "Omura calibration lifts this race to buy_top6 because the inside-head remain shape is organized enough without optional16."
+          : isAshiya
+            ? "Ashiya calibration keeps this at buy_top6 because optional16 evidence is not strong enough to justify widening."
+            : isTokuyama
+              ? "Tokuyama calibration keeps this at buy_top6 because the 3-4 attack shape is readable without optional16 expansion."
+              : `${venueName || "default"} calibration keeps this race in buy_top6 because top6 evidence is sufficient without widening.`
+    };
+  }
+  const skipRiskReason =
+    weakSupport
+      ? historySupported
+        ? "skip risk is elevated because similar race history exists but does not support an aggressive buy"
+        : "skip risk is elevated because similar race support is weak"
+      : top6Coverage < top6CoverageFloor
+        ? `${venueName || "This venue"} calibration still sees top6 coverage as too thin without optional16 expansion`
+        : chaosLevel >= 0.6
+          ? "skip risk is elevated because race chaos is too high for a clean top6 buy"
+          : `${venueName || "This venue"} calibration still sees confidence as too weak for buy_top6`;
   return {
     recommendedBetMode: "skip",
-    skipRiskReason:
-      chaosLevel >= 0.6 || weakSupport
-        ? historySupported
-          ? "skip risk is elevated because similar race history does not support an aggressive buy"
-          : "skip risk is elevated due to low stability"
-        : "skip risk is elevated due to weak support"
+    skipRiskReason,
+    modeCalibrationReason:
+      isOmura
+        ? "Omura calibration suppresses optional16 but still skips races when the inside-head read does not clear the minimum coverage floor."
+        : isAshiya
+          ? "Ashiya calibration now withholds optional16 unless the tie signal is exceptional, so weaker races fall back to skip."
+          : isTokuyama
+            ? "Tokuyama calibration now needs both attack pressure and rescue evidence, so weaker races remain skip."
+            : `${venueName || "default"} calibration leaves this race on skip because venue-specific buy evidence is not strong enough.`
   };
 }
 
@@ -1218,6 +1400,11 @@ function enrichPredictionSupportFields({
     ...similarSupportBundle,
     ...confidenceSummary,
     ...betPolicySummary,
+    venueAdjustmentReason: mergeReasonList(
+      pureTop6Prediction?.venueAdjustmentReason,
+      pureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason,
+      betPolicySummary?.modeCalibrationReason
+    ),
     formationReason: buildReasonSummary(baseFormationReason, extraFormationReasons)
   };
 }
@@ -3156,6 +3343,273 @@ function parseTop3FromCombo(comboLike) {
   return digits.slice(0, 3).map((x) => Number(x));
 }
 
+function normalizeTop3OrNull(values) {
+  const rows = safeArray(values)
+    .map((value) => toInt(value, null))
+    .filter(Number.isInteger)
+    .slice(0, 3);
+  return rows.length === 3 ? rows : null;
+}
+
+function shouldTryOfficialResultFetch(race = null) {
+  const raceDate = toTrimmedStringOrNull(race?.date);
+  if (!raceDate || !/^\d{4}-\d{2}-\d{2}$/.test(raceDate)) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return raceDate <= today;
+}
+
+function extractComparableDate(value) {
+  const text = toTrimmedStringOrNull(value);
+  if (!text) return null;
+  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) return isoMatch[1];
+  const compactMatch = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compactMatch) {
+    return `${compactMatch[1]}-${compactMatch[2]}-${compactMatch[3]}`;
+  }
+  return null;
+}
+
+function resolveActualResultFetchReferenceDate({ race = null, source = null } = {}) {
+  const candidates = [
+    extractComparableDate(source?.local_snapshots?.last_snapshot_updated_at),
+    extractComparableDate(source?.coverage_report?.generated_at),
+    extractComparableDate(source?.fetch_timings?.completed_at),
+    extractComparableDate(source?.refresh_meta?.last_snapshot_updated_at),
+    extractComparableDate(process.env.APP_CURRENT_DATE),
+    extractComparableDate(process.env.CURRENT_DATE),
+    extractComparableDate(new Date().toISOString())
+  ].filter(Boolean);
+  if (candidates.length === 0) return null;
+  return candidates.sort().at(-1) || null;
+}
+
+function shouldTryOfficialResultFetchWithContext({ race = null, source = null } = {}) {
+  const raceDate = extractComparableDate(race?.date);
+  if (!raceDate) return false;
+  const referenceDate = resolveActualResultFetchReferenceDate({ race, source });
+  if (!referenceDate) return false;
+  return raceDate <= referenceDate;
+}
+
+function buildRaceIdCandidates({ raceId = null, race = null } = {}) {
+  const candidates = [];
+  const push = (value) => {
+    const text = toTrimmedStringOrNull(value);
+    if (!text || candidates.includes(text)) return;
+    candidates.push(text);
+  };
+  const raceDate = toTrimmedStringOrNull(race?.date);
+  const venueId = toInt(race?.venueId, null);
+  const raceNo = toInt(race?.raceNo, null);
+  push(raceId);
+  if (raceDate && Number.isInteger(venueId) && Number.isInteger(raceNo)) {
+    const compactDate = raceDate.replace(/-/g, "");
+    push(`${compactDate}_${venueId}_${raceNo}`);
+    push(`${compactDate}_${venueId}_${String(raceNo).padStart(2, "0")}`);
+    push(`${compactDate}-${String(venueId).padStart(2, "0")}-${String(raceNo).padStart(2, "0")}`);
+    push(`${compactDate}-${venueId}-${String(raceNo).padStart(2, "0")}`);
+    push(`${compactDate}-${venueId}-${raceNo}`);
+  }
+  return candidates;
+}
+
+function resolveRaceResultSnapshot({ raceId = null, race = null } = {}) {
+  const raceDate = toTrimmedStringOrNull(race?.date);
+  const venueId = toInt(race?.venueId, null);
+  const raceNo = toInt(race?.raceNo, null);
+  const savedResult = fetchSavedRaceResult({
+    raceId,
+    date: raceDate,
+    venueId,
+    raceNo
+  });
+  if (savedResult?.winningTrifecta) {
+    return savedResult;
+  }
+  const raceIdCandidates = buildRaceIdCandidates({ raceId, race });
+  const byRaceId = raceIdCandidates.length > 0
+    ? db.prepare(`
+        SELECT race_id, finish_1, finish_2, finish_3, payout_3t
+        FROM results
+        WHERE race_id IN (${raceIdCandidates.map(() => "?").join(",")})
+        ORDER BY rowid DESC
+        LIMIT 1
+      `).get(...raceIdCandidates)
+    : null;
+  const byMeta =
+    raceDate && Number.isInteger(venueId) && Number.isInteger(raceNo)
+      ? db.prepare(`
+          SELECT re.finish_1, re.finish_2, re.finish_3, re.payout_3t
+          FROM results re
+          INNER JOIN races ra
+            ON ra.race_id = re.race_id
+          WHERE ra.race_date = ?
+            AND ra.venue_id = ?
+            AND ra.race_no = ?
+          ORDER BY re.created_at DESC
+          LIMIT 1
+        `).get(raceDate, venueId, raceNo)
+      : null;
+  const resultRow = byRaceId || byMeta || null;
+  const resultTop3 = normalizeTop3OrNull([
+    resultRow?.finish_1,
+    resultRow?.finish_2,
+    resultRow?.finish_3
+  ]);
+  if (resultTop3) {
+    return {
+      actualTop3: resultTop3,
+      winningTrifecta: resultTop3.join("-"),
+      actualResult: resultTop3.join("-"),
+      result: resultTop3.join("-"),
+      payout3t: toInt(resultRow?.payout_3t, null),
+      source: "results"
+    };
+  }
+
+  const verificationRow = raceIdCandidates.length > 0
+    ? db.prepare(`
+        SELECT confirmed_result
+        FROM race_verification_logs
+        WHERE race_id IN (${raceIdCandidates.map(() => "?").join(",")})
+        ORDER BY id DESC
+        LIMIT 1
+      `).get(...raceIdCandidates)
+    : (
+      raceDate && Number.isInteger(venueId) && Number.isInteger(raceNo)
+        ? db.prepare(`
+            SELECT confirmed_result
+            FROM race_verification_logs
+            WHERE race_date = ?
+              AND venue_code = ?
+              AND race_no = ?
+            ORDER BY id DESC
+            LIMIT 1
+          `).get(raceDate, venueId, raceNo)
+        : null
+    );
+  const verificationTop3 = normalizeTop3OrNull(parseTop3FromCombo(verificationRow?.confirmed_result));
+  if (verificationTop3) {
+    return {
+      actualTop3: verificationTop3,
+      winningTrifecta: verificationTop3.join("-"),
+      actualResult: verificationTop3.join("-"),
+      result: verificationTop3.join("-"),
+      payout3t: null,
+      source: "race_verification_logs"
+    };
+  }
+
+  const startDisplayRow = raceIdCandidates.length > 0
+    ? db.prepare(`
+        SELECT fetched_result, settled_result
+        FROM race_start_displays
+        WHERE race_id IN (${raceIdCandidates.map(() => "?").join(",")})
+        ORDER BY updated_at DESC
+        LIMIT 1
+      `).get(...raceIdCandidates)
+    : (
+      raceDate && Number.isInteger(venueId) && Number.isInteger(raceNo)
+        ? db.prepare(`
+            SELECT rsd.fetched_result, rsd.settled_result
+            FROM race_start_displays rsd
+            INNER JOIN races ra
+              ON ra.race_id = rsd.race_id
+            WHERE ra.race_date = ?
+              AND ra.venue_id = ?
+              AND ra.race_no = ?
+            ORDER BY rsd.updated_at DESC
+            LIMIT 1
+          `).get(raceDate, venueId, raceNo)
+        : null
+    );
+  const startDisplayCombo = normalizeCombo(startDisplayRow?.settled_result || startDisplayRow?.fetched_result);
+  const startDisplayTop3 = normalizeTop3OrNull(parseTop3FromCombo(startDisplayCombo));
+  if (startDisplayTop3) {
+    return {
+      actualTop3: startDisplayTop3,
+      winningTrifecta: startDisplayTop3.join("-"),
+      actualResult: startDisplayTop3.join("-"),
+      result: startDisplayTop3.join("-"),
+      payout3t: null,
+      source: "race_start_displays"
+    };
+  }
+
+  const predictionLogRow = raceIdCandidates.length > 0
+    ? db.prepare(`
+        SELECT actual_top3_json, winning_trifecta, actual_result_json, result_json
+        FROM prediction_logs
+        WHERE race_id IN (${raceIdCandidates.map(() => "?").join(",")})
+        ORDER BY id DESC
+        LIMIT 1
+      `).get(...raceIdCandidates)
+    : (
+      raceDate && Number.isInteger(venueId) && Number.isInteger(raceNo)
+        ? db.prepare(`
+            SELECT pl.actual_top3_json, pl.winning_trifecta, pl.actual_result_json, pl.result_json
+            FROM prediction_logs pl
+            WHERE pl.race_date = ?
+              AND pl.venue_code = ?
+              AND pl.race_no = ?
+            ORDER BY pl.id DESC
+            LIMIT 1
+          `).get(raceDate, venueId, raceNo)
+        : null
+    );
+  const predictionActualTop3 = normalizeTop3OrNull(safeJsonParse(predictionLogRow?.actual_top3_json, null));
+  const predictionWinningTrifecta =
+    normalizeCombo(predictionLogRow?.winning_trifecta) ||
+    normalizeCombo(safeJsonParse(predictionLogRow?.actual_result_json, null)?.winningTrifecta) ||
+    normalizeCombo(safeJsonParse(predictionLogRow?.result_json, null)?.winningTrifecta);
+  if (predictionActualTop3 || predictionWinningTrifecta) {
+    const actualTop3 = predictionActualTop3 || normalizeTop3OrNull(parseTop3FromCombo(predictionWinningTrifecta));
+    const winningTrifecta = predictionWinningTrifecta || (actualTop3 ? actualTop3.join("-") : null);
+    return {
+      actualTop3,
+      winningTrifecta,
+      actualResult: winningTrifecta,
+      result: winningTrifecta,
+      payout3t: null,
+      source: "prediction_logs"
+    };
+  }
+
+  return {
+    actualTop3: null,
+    winningTrifecta: null,
+    actualResult: null,
+    result: null,
+    payout3t: null,
+    source: null
+  };
+}
+
+function computeRouteHitFlags({ actualTop3 = null, top6 = [], optionalFormation16 = null } = {}) {
+  const normalizedTop3 = normalizeTop3OrNull(actualTop3);
+  if (!normalizedTop3) {
+    return {
+      top6Hit: null,
+      optional16Hit: null
+    };
+  }
+  const actualCombo = normalizeCombo(normalizedTop3.join("-"));
+  const top6Hit = safeArray(top6)
+    .some((row) => normalizeCombo(row?.combo ?? row) === actualCombo);
+  const optional16Combos =
+    optionalFormation16 && typeof optionalFormation16 === "object" && !Array.isArray(optionalFormation16)
+      ? safeArray(optionalFormation16?.combos)
+      : [];
+  const optional16Hit = optional16Combos.length > 0
+    ? optional16Combos.some((row) => normalizeCombo(row?.combo ?? row) === actualCombo)
+    : null;
+  return {
+    top6Hit,
+    optional16Hit
+  };
+}
+
 function downgradeModeForEntryChange(mode, severity) {
   const m = normalizeModeValue(mode);
   if (severity === "none") return m;
@@ -4043,11 +4497,20 @@ export function buildPureInferencePredictionPayload(data = {}) {
     hardRace1234: null,
     racers: Array.isArray(data?.racers) ? data.racers : []
   });
+  const resolvedOptionalFormation16 = enforceOptionalFormationConsistency(
+    optionalFormation16,
+    supportSummary.recommendedBetMode
+  );
+  const resolvedRecommendedBetMode = resolveConsistentRecommendedBetMode(
+    supportSummary.recommendedBetMode,
+    resolvedOptionalFormation16
+  );
   const normalizedPureTop6Prediction = pureTop6Prediction
     ? {
         ...pureTop6Prediction,
-        optionalFormation16,
-        formationReason: supportSummary.formationReason || formationReason,
+        buyPolicy: buildModeAwareBuyPolicy(pureTop6Prediction?.buyPolicy || pureTop6Prediction?.venue_scenario_bias?.buyPolicy || null, resolvedRecommendedBetMode),
+        optionalFormation16: resolvedOptionalFormation16,
+        formationReason: supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, null, resolvedOptionalFormation16),
         confidence_band: supportSummary.confidence_band,
         confidence_score: supportSummary.confidence_score,
         prediction_stability_score: supportSummary.prediction_stability_score,
@@ -4060,8 +4523,14 @@ export function buildPureInferencePredictionPayload(data = {}) {
         similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
         similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
         similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
-        recommendedBetMode: supportSummary.recommendedBetMode,
-        skipRiskReason: supportSummary.skipRiskReason
+        recommendedBetMode: resolvedRecommendedBetMode,
+        skipRiskReason: supportSummary.skipRiskReason,
+        venueAdjustmentReason: mergeReasonList(
+          pureTop6Prediction?.venueAdjustmentReason,
+          pureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason,
+          supportSummary.venueAdjustmentReason,
+          supportSummary.skipRiskReason ? `mode gate: ${supportSummary.skipRiskReason}` : null
+        )
       }
     : null;
   if (normalizedPureTop6Prediction) {
@@ -4087,8 +4556,8 @@ export function buildPureInferencePredictionPayload(data = {}) {
     scenario_style_trace: normalizedPureTop6Prediction?.lane_styles || null,
     venue_scenario_bias: normalizedPureTop6Prediction?.venue_scenario_bias || null,
     venueBiasProfile: normalizedPureTop6Prediction?.venueBiasProfile || normalizedPureTop6Prediction?.venue_scenario_bias?.venueBiasProfile || null,
-    buyPolicy: normalizedPureTop6Prediction?.buyPolicy || normalizedPureTop6Prediction?.venue_scenario_bias?.buyPolicy || null,
-    venueAdjustmentReason: normalizedPureTop6Prediction?.venueAdjustmentReason || normalizedPureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason || [],
+    buyPolicy: buildModeAwareBuyPolicy(normalizedPureTop6Prediction?.buyPolicy || normalizedPureTop6Prediction?.venue_scenario_bias?.buyPolicy || null, normalizedPureTop6Prediction?.recommendedBetMode),
+    venueAdjustmentReason: mergeReasonList(normalizedPureTop6Prediction?.venueAdjustmentReason, normalizedPureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason),
     winProbabilities: normalizedPureTop6Prediction?.winProbabilities || null,
     secondProbabilities: normalizedPureTop6Prediction?.secondProbabilities || null,
     thirdProbabilities: normalizedPureTop6Prediction?.thirdProbabilities || null,
@@ -4148,8 +4617,8 @@ export function buildPureInferencePredictionPayload(data = {}) {
     scenario_style_trace: normalizedPureTop6Prediction?.lane_styles || null,
     venue_scenario_bias: normalizedPureTop6Prediction?.venue_scenario_bias || null,
     venueBiasProfile: normalizedPureTop6Prediction?.venueBiasProfile || normalizedPureTop6Prediction?.venue_scenario_bias?.venueBiasProfile || null,
-    buyPolicy: normalizedPureTop6Prediction?.buyPolicy || normalizedPureTop6Prediction?.venue_scenario_bias?.buyPolicy || null,
-    venueAdjustmentReason: normalizedPureTop6Prediction?.venueAdjustmentReason || normalizedPureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason || [],
+    buyPolicy: buildModeAwareBuyPolicy(normalizedPureTop6Prediction?.buyPolicy || normalizedPureTop6Prediction?.venue_scenario_bias?.buyPolicy || null, normalizedPureTop6Prediction?.recommendedBetMode),
+    venueAdjustmentReason: mergeReasonList(normalizedPureTop6Prediction?.venueAdjustmentReason, normalizedPureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason),
     winProbabilities: normalizedPureTop6Prediction?.winProbabilities || null,
     secondProbabilities: normalizedPureTop6Prediction?.secondProbabilities || null,
     thirdProbabilities: normalizedPureTop6Prediction?.thirdProbabilities || null,
@@ -11474,6 +11943,14 @@ raceRouter.get("/race", async (req, res, next) => {
             ? data.racers
             : []
       });
+      const consistentOptionalFormation16 = enforceOptionalFormationConsistency(
+        pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null,
+        supportSummary.recommendedBetMode
+      );
+      const consistentRecommendedBetMode = resolveConsistentRecommendedBetMode(
+        supportSummary.recommendedBetMode,
+        consistentOptionalFormation16
+      );
       if (pureTop6Prediction && typeof pureTop6Prediction === "object") {
         Object.assign(pureTop6Prediction, {
           confidence_band: supportSummary.confidence_band,
@@ -11488,9 +11965,11 @@ raceRouter.get("/race", async (req, res, next) => {
           similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
           similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
           similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
-          recommendedBetMode: supportSummary.recommendedBetMode,
+          optionalFormation16: consistentOptionalFormation16,
+          buyPolicy: buildModeAwareBuyPolicy(pureTop6Prediction?.buyPolicy || pureTop6Prediction?.venue_scenario_bias?.buyPolicy || null, consistentRecommendedBetMode),
+          recommendedBetMode: consistentRecommendedBetMode,
           skipRiskReason: supportSummary.skipRiskReason,
-          formationReason: supportSummary.formationReason || pureTop6Prediction.formationReason
+          formationReason: supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, prediction, consistentOptionalFormation16)
         });
       }
       if (prediction && typeof prediction === "object") {
@@ -11507,9 +11986,11 @@ raceRouter.get("/race", async (req, res, next) => {
           similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
           similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
           similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
-          recommendedBetMode: supportSummary.recommendedBetMode,
+          optionalFormation16: consistentOptionalFormation16,
+          buyPolicy: buildModeAwareBuyPolicy(prediction?.buyPolicy || pureTop6Prediction?.buyPolicy || prediction?.venue_scenario_bias?.buyPolicy || pureTop6Prediction?.venue_scenario_bias?.buyPolicy || hardRace1234?.buyPolicy || null, consistentRecommendedBetMode),
+          recommendedBetMode: consistentRecommendedBetMode,
           skipRiskReason: supportSummary.skipRiskReason,
-          formationReason: supportSummary.formationReason || prediction.formationReason
+          formationReason: supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, prediction, consistentOptionalFormation16)
         });
       }
       upsertSimilarRaceFeatureSnapshot({
@@ -11569,11 +12050,86 @@ raceRouter.get("/race", async (req, res, next) => {
         status: 200,
         total_response_ms: routeTimings.total_response_ms
       });
+      const resolvedOptionalFormation16 = enforceOptionalFormationConsistency(
+        pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null,
+        supportSummary.recommendedBetMode
+      );
+      const resolvedRecommendedBetMode = resolveConsistentRecommendedBetMode(
+        supportSummary.recommendedBetMode,
+        resolvedOptionalFormation16
+      );
+      const resolvedActualResult = resolveRaceResultSnapshot({
+        raceId: data.raceId || data.source?.race_id || null,
+        race: data?.race || null
+      });
+      let finalizedActualResult = resolvedActualResult;
+      if (
+        !finalizedActualResult?.winningTrifecta &&
+        shouldTryOfficialResultFetchWithContext({
+          race: data?.race || null,
+          source: data?.source || null
+        })
+      ) {
+        try {
+          const fetchedActualResult = await raceRouteRuntimeDeps.fetchAndStoreOfficialRaceResult({
+            raceId: data.raceId || data.source?.race_id || null,
+            date: data?.race?.date,
+            venueId: data?.race?.venueId,
+            raceNo: data?.race?.raceNo,
+            timeoutMs: 5000
+          });
+          const fetchedTop3 = normalizeTop3OrNull(fetchedActualResult?.actualTop3);
+          const fetchedWinningTrifecta =
+            normalizeCombo(fetchedActualResult?.winningTrifecta) ||
+            (fetchedTop3 ? fetchedTop3.join("-") : null);
+          if (fetchedTop3 || fetchedWinningTrifecta) {
+            finalizedActualResult = {
+              ...fetchedActualResult,
+              actualTop3: fetchedTop3,
+              winningTrifecta: fetchedWinningTrifecta,
+              actualResult: fetchedWinningTrifecta || null,
+              result: fetchedWinningTrifecta || null
+            };
+            updatePredictionLogResultSnapshot({
+              raceId: data.raceId || data.source?.race_id || null,
+              actualTop3: finalizedActualResult.actualTop3,
+              winningTrifecta: finalizedActualResult.winningTrifecta,
+              resultSource: finalizedActualResult.source,
+              payout3t: finalizedActualResult.payout3t
+            });
+            console.info("[RACE_API][result_source_fallback]", JSON.stringify({
+              route: "/api/race",
+              raceId: data.raceId || data.source?.race_id || null,
+              source: finalizedActualResult.source,
+              winningTrifecta: finalizedActualResult.winningTrifecta,
+              url: finalizedActualResult.url || null
+            }));
+          }
+        } catch (resultFetchError) {
+          console.info("[RACE_API][result_source_fallback_miss]", JSON.stringify({
+            route: "/api/race",
+            raceId: data.raceId || data.source?.race_id || null,
+            message: String(resultFetchError?.message || resultFetchError)
+          }));
+        }
+      }
+      const routeHitFlags = computeRouteHitFlags({
+        actualTop3: finalizedActualResult.actualTop3,
+        top6: pureTop6Prediction?.top6 || prediction?.top6 || [],
+        optionalFormation16: resolvedOptionalFormation16
+      });
       return res.json({
         source: data.source || {},
         race: data.race,
         racers: styledApiRacers,
         raceId: data.raceId || data.source?.race_id || null,
+        actualTop3: finalizedActualResult.actualTop3,
+        top3: finalizedActualResult.actualTop3,
+        winningTrifecta: finalizedActualResult.winningTrifecta,
+        actualResult: finalizedActualResult.actualResult,
+        result: finalizedActualResult.result,
+        result_source: finalizedActualResult.source,
+        payout_3t: finalizedActualResult.payout3t,
         pureTop6Prediction,
         prediction,
         lane_styles: pureTop6Prediction?.lane_styles || prediction?.lane_styles || null,
@@ -11586,22 +12142,20 @@ raceRouter.get("/race", async (req, res, next) => {
           prediction?.venue_scenario_bias?.venueBiasProfile ||
           null,
         buyPolicy:
-          (pureTop6Prediction?.buyPolicy
-            ? { ...pureTop6Prediction.buyPolicy, recommended_mode: supportSummary.recommendedBetMode }
-            : prediction?.buyPolicy
-              ? { ...prediction.buyPolicy, recommended_mode: supportSummary.recommendedBetMode }
-              : null) ||
-          pureTop6Prediction?.venue_scenario_bias?.buyPolicy ||
-          prediction?.venue_scenario_bias?.buyPolicy ||
-          hardRace1234?.buyPolicy ||
-          null,
+          buildModeAwareBuyPolicy(
+            (pureTop6Prediction?.buyPolicy || prediction?.buyPolicy || pureTop6Prediction?.venue_scenario_bias?.buyPolicy || prediction?.venue_scenario_bias?.buyPolicy || hardRace1234?.buyPolicy || null),
+            resolvedRecommendedBetMode
+          ),
         venueAdjustmentReason:
-          pureTop6Prediction?.venueAdjustmentReason ||
-          prediction?.venueAdjustmentReason ||
-          pureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason ||
-          prediction?.venue_scenario_bias?.venueAdjustmentReason ||
-          hardRace1234?.venueAdjustmentReason ||
-          [],
+          mergeReasonList(
+            pureTop6Prediction?.venueAdjustmentReason,
+            prediction?.venueAdjustmentReason,
+            pureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason,
+            prediction?.venue_scenario_bias?.venueAdjustmentReason,
+            hardRace1234?.venueAdjustmentReason,
+            supportSummary.venueAdjustmentReason,
+            supportSummary.skipRiskReason ? `mode gate: ${supportSummary.skipRiskReason}` : null
+          ),
         winProbabilities: pureTop6Prediction?.winProbabilities || prediction?.winProbabilities || null,
         secondProbabilities: pureTop6Prediction?.secondProbabilities || prediction?.secondProbabilities || null,
         thirdProbabilities: pureTop6Prediction?.thirdProbabilities || prediction?.thirdProbabilities || null,
@@ -11638,17 +12192,15 @@ raceRouter.get("/race", async (req, res, next) => {
         top6: pureTop6Prediction?.top6 || prediction?.top6 || null,
         top6_coverage: pureTop6Prediction?.top6_coverage ?? prediction?.top6_coverage ?? null,
         chaos_level: pureTop6Prediction?.chaos_level ?? prediction?.chaos_level ?? null,
-        optionalFormation16: normalizeOptionalFormation16(
-          pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null
-        ),
+        optionalFormation16: resolvedOptionalFormation16,
+        top6Hit: routeHitFlags.top6Hit,
+        optional16Hit: routeHitFlags.optional16Hit,
         formationReason: supportSummary.formationReason || resolveFormationReason(
           pureTop6Prediction,
           prediction,
-          normalizeOptionalFormation16(
-            pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null
-          )
+          resolvedOptionalFormation16
         ),
-        recommendedBetMode: supportSummary.recommendedBetMode,
+        recommendedBetMode: resolvedRecommendedBetMode,
         skipRiskReason: supportSummary.skipRiskReason,
         refreshed_now: refreshMeta?.refreshed_now === true,
         freshness_status:

@@ -146,6 +146,10 @@ export function ensurePredictionSnapshotColumns() {
   if (!names.has("race_key")) db.exec("ALTER TABLE prediction_logs ADD COLUMN race_key TEXT");
   if (!names.has("prediction_timestamp")) db.exec("ALTER TABLE prediction_logs ADD COLUMN prediction_timestamp TEXT");
   if (!names.has("model_version")) db.exec("ALTER TABLE prediction_logs ADD COLUMN model_version TEXT");
+  if (!names.has("actual_top3_json")) db.exec("ALTER TABLE prediction_logs ADD COLUMN actual_top3_json TEXT");
+  if (!names.has("winning_trifecta")) db.exec("ALTER TABLE prediction_logs ADD COLUMN winning_trifecta TEXT");
+  if (!names.has("actual_result_json")) db.exec("ALTER TABLE prediction_logs ADD COLUMN actual_result_json TEXT");
+  if (!names.has("result_json")) db.exec("ALTER TABLE prediction_logs ADD COLUMN result_json TEXT");
 }
 
 export function ensureVerificationRecordColumns() {

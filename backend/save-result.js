@@ -1,4 +1,5 @@
 import db from "./db.js";
+import { buildRaceIdFromParts, normalizeCombo, normalizeTop3OrNull } from "./result-utils.js";
 
 const upsertResult = db.prepare(`
   INSERT INTO results (
@@ -66,4 +67,59 @@ export function saveRaceResult({
   });
 
   return raceId;
+}
+
+export function fetchSavedRaceResult({ raceId = null, date = null, venueId = null, raceNo = null } = {}) {
+  const normalizedRaceId =
+    raceId ||
+    buildRaceIdFromParts({
+      date,
+      venueId,
+      raceNo
+    });
+
+  const row = normalizedRaceId
+    ? db.prepare(
+      `
+        SELECT race_id, finish_1, finish_2, finish_3, payout_2t, payout_3t, decision_type
+        FROM results
+        WHERE race_id = ?
+        LIMIT 1
+      `
+    ).get(normalizedRaceId)
+    : (
+      String(date || "").trim() &&
+      Number.isInteger(toIntOrNull(venueId)) &&
+      Number.isInteger(toIntOrNull(raceNo))
+        ? db.prepare(
+          `
+            SELECT re.race_id, re.finish_1, re.finish_2, re.finish_3, re.payout_2t, re.payout_3t, re.decision_type
+            FROM results re
+            INNER JOIN races ra
+              ON ra.race_id = re.race_id
+            WHERE ra.race_date = ?
+              AND ra.venue_id = ?
+              AND ra.race_no = ?
+            ORDER BY re.created_at DESC, re.rowid DESC
+            LIMIT 1
+          `
+        ).get(String(date || "").trim(), toIntOrNull(venueId), toIntOrNull(raceNo))
+        : null
+    );
+
+  const actualTop3 = normalizeTop3OrNull([row?.finish_1, row?.finish_2, row?.finish_3]);
+  const winningTrifecta = actualTop3 ? normalizeCombo(actualTop3.join("-")) : "";
+  if (!actualTop3 || !winningTrifecta) return null;
+
+  return {
+    raceId: row?.race_id || normalizedRaceId || null,
+    actualTop3,
+    winningTrifecta,
+    actualResult: winningTrifecta,
+    result: winningTrifecta,
+    payout2t: toIntOrNull(row?.payout_2t),
+    payout3t: toIntOrNull(row?.payout_3t),
+    decisionType: row?.decision_type ?? null,
+    source: "results"
+  };
 }
