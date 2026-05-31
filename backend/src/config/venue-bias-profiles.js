@@ -25,6 +25,66 @@ const BASE_PROFILE = Object.freeze({
 });
 
 export const TARGET_VENUE_BIAS_PROFILES = Object.freeze({
+  1: Object.freeze({
+    venue_name: "Kiryu",
+    venue_escape_bias: 5,
+    venue_sashi_bias: 2,
+    venue_makuri_bias: 5,
+    venue_makurizashi_bias: 4,
+    venue_outer_3rd_bias: 1,
+    venue_entry_change_bias: 2,
+    venue_start_importance: 5,
+    venue_inside_stability: 4,
+    venue_outside_break_risk: -1,
+    venue_123_box_tightness: 3,
+    lane1_head_boost: 4,
+    lane1_motor_st_synergy_boost: 3,
+    lane56_head_penalty: 4,
+    lane2_second_boost: 3,
+    lane3_second_boost: 5,
+    lane3_attack_boost: 6,
+    lane4_develop_boost: 5,
+    volatility_boost: 2,
+    optional_formation_trigger_boost: 1,
+    buy_policy_code: "attack_34_capture",
+    buy_policy_label: "3-4 attack capture",
+    buy_policy_focus: "3-4 attack line",
+    venue_adjustment_reason: [
+      "Kiryu keeps lane 1 honest, but 3-course attack and 4-course development stay live when ST pressure is visible.",
+      "Second-turn recovery is not ignored, so 1-3-2 and 1-3-4 remain usable when the center has foot.",
+      "Entry shifts matter, but not as violently as Toda or Shimonoseki."
+    ]
+  }),
+  2: Object.freeze({
+    venue_name: "Toda",
+    venue_escape_bias: -4,
+    venue_sashi_bias: 5,
+    venue_makuri_bias: 7,
+    venue_makurizashi_bias: 8,
+    venue_outer_3rd_bias: 5,
+    venue_entry_change_bias: 11,
+    venue_start_importance: 10,
+    venue_inside_stability: -4,
+    venue_outside_break_risk: 7,
+    venue_123_box_tightness: -5,
+    lane1_head_boost: -3,
+    lane1_motor_st_synergy_boost: 1,
+    lane56_head_penalty: -2,
+    lane2_second_boost: 4,
+    lane3_second_boost: 6,
+    lane3_attack_boost: 10,
+    lane4_develop_boost: 11,
+    volatility_boost: 11,
+    optional_formation_trigger_boost: 7,
+    buy_policy_code: "wide_coverage_watch",
+    buy_policy_label: "wide coverage",
+    buy_policy_focus: "entry and center attack",
+    venue_adjustment_reason: [
+      "Toda is treated as highly entry-sensitive, so entry shifts and center acceleration are amplified.",
+      "Boat 1 is not discarded automatically, but a weak inside lock quickly moves weight to 3 and 4.",
+      "When the actual entry differs from the preview, re-rank 1-2-4 / 1-3-4 / 1-4-2 aggressively."
+    ]
+  }),
   24: Object.freeze({
     venue_name: "Omura",
     venue_escape_bias: 12,
@@ -211,6 +271,66 @@ export const TARGET_VENUE_BIAS_PROFILES = Object.freeze({
       "At the same time, lane 1 second-place remain lines are preserved more than a pure center-attack model would allow.",
       "The 1-2-4 and 1-3-4 near-miss pair is intentionally protected when second-place probabilities stay clustered.",
       "Optional formation is expanded only when the venue shape and low-coverage cluster both justify it."
+    ]
+  }),
+  16: Object.freeze({
+    venue_name: "Kojima",
+    venue_escape_bias: 4,
+    venue_sashi_bias: 4,
+    venue_makuri_bias: 3,
+    venue_makurizashi_bias: 5,
+    venue_outer_3rd_bias: 2,
+    venue_entry_change_bias: 4,
+    venue_start_importance: 6,
+    venue_inside_stability: 3,
+    venue_outside_break_risk: 1,
+    venue_123_box_tightness: 2,
+    lane1_head_boost: 3,
+    lane1_motor_st_synergy_boost: 3,
+    lane56_head_penalty: 2,
+    lane2_second_boost: 5,
+    lane3_second_boost: 5,
+    lane3_attack_boost: 4,
+    lane4_develop_boost: 6,
+    volatility_boost: 3,
+    optional_formation_trigger_boost: 2,
+    buy_policy_code: "balanced_standard",
+    buy_policy_label: "balanced standard",
+    buy_policy_focus: "turn balance",
+    venue_adjustment_reason: [
+      "Kojima is balanced, so compare lane 1 hold, lane 2 precision, and 3-4 attack with equal discipline.",
+      "Second-turn residual value is meaningful here, keeping 1-2-4 and 1-3-4 alive when the race opens only slightly.",
+      "Entry shifts matter, but the correction stays moderate unless the inside boat loses the pole."
+    ]
+  }),
+  19: Object.freeze({
+    venue_name: "Shimonoseki",
+    venue_escape_bias: 6,
+    venue_sashi_bias: 3,
+    venue_makuri_bias: 8,
+    venue_makurizashi_bias: 9,
+    venue_outer_3rd_bias: 4,
+    venue_entry_change_bias: 10,
+    venue_start_importance: 8,
+    venue_inside_stability: 3,
+    venue_outside_break_risk: 3,
+    venue_123_box_tightness: -1,
+    lane1_head_boost: 2,
+    lane1_motor_st_synergy_boost: 2,
+    lane56_head_penalty: 1,
+    lane2_second_boost: 3,
+    lane3_second_boost: 7,
+    lane3_attack_boost: 10,
+    lane4_develop_boost: 10,
+    volatility_boost: 8,
+    optional_formation_trigger_boost: 5,
+    buy_policy_code: "attack_34_capture",
+    buy_policy_label: "3-4 attack capture",
+    buy_policy_focus: "entry shift and center attack",
+    venue_adjustment_reason: [
+      "Shimonoseki is treated as a venue where center attack and entry movement can change the whole race quickly.",
+      "Boat 1 can still remain in second even after pressure, so keep rescue lines alive when foot and turn quality hold.",
+      "3-course attack and 4-course cado development are elevated whenever the actual entry shape supports them."
     ]
   })
 });

@@ -45,6 +45,8 @@ export function estimateRaceOutcomeProbabilities({
   const l2 = laneRow(rows, 2);
   const l3 = laneRow(rows, 3);
   const l4 = laneRow(rows, 4);
+  const l5 = laneRow(rows, 5);
+  const l6 = laneRow(rows, 6);
 
   const scores = rows.map((r) => toNum(r?.score));
   const mean = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
@@ -79,6 +81,13 @@ export function estimateRaceOutcomeProbabilities({
   const motor4 = toNum(l4.features?.motor_total_score);
   const trend3 = toNum(l3.features?.motor_trend_score);
   const trend4 = toNum(l4.features?.motor_trend_score);
+  const outerStraightAttack = Math.max(
+    0,
+    toNum(l3.features?.straight_line_speed_zscore, 0),
+    toNum(l4.features?.straight_line_speed_zscore, 0),
+    toNum(l5.features?.straight_line_speed_zscore, 0),
+    toNum(l6.features?.straight_line_speed_zscore, 0)
+  );
 
   // Escape: lane1 quality/stability vs attack and risk.
   let escapeLogit =
@@ -112,6 +121,7 @@ export function estimateRaceOutcomeProbabilities({
     (motor3 + motor4) * 0.035 +
     (trend3 + trend4) * 0.06 +
     Math.max(entryAdv3, toNum(l4.features?.entry_advantage_score)) * 0.1 +
+    outerStraightAttack * 0.22 +
     areIndex * 0.01 -
     riskScore * 0.005;
 

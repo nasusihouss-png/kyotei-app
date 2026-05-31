@@ -10,6 +10,7 @@ const EXPECTED_FIELDS = [
   "lapTimeRaw",
   "lapExhibitionScore",
   "stretchFootLabel",
+  "straightTime",
   "exhibitionSt",
   "exhibitionTime",
   "motor2Rate",
@@ -23,6 +24,7 @@ const PREDICTION_FIELD_META_CONFIG = {
   lapTime: { key: "lapTime", minConfidence: 0.6, required: true },
   exhibitionST: { key: "exhibitionST", minConfidence: 0.6, required: true },
   exhibitionTime: { key: "exhibitionTime", minConfidence: 0.6, required: true },
+  straightTime: { key: "straightTime", minConfidence: 0.6, required: false },
   lapExStretch: { key: "lapExStretch", minConfidence: 0.6, required: true },
   motor2ren: { key: "motor2ren", minConfidence: 0.6, required: true },
   motor3ren: { key: "motor3ren", minConfidence: 0.5, required: false },
@@ -71,6 +73,55 @@ function resolveLapTimeSource({ laneSources = {}, debugEntry = null, hasParsedVa
   if (debugEntry?.sourceLabel) return debugEntry.sourceLabel;
   if (hasParsedValue) return "race_shusso_html";
   return null;
+}
+
+function toPositiveInteger(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function isLaneFallbackName(value) {
+  return /^Lane-\d+$/i.test(normalizeSpace(value || ""));
+}
+
+function pickPreferredIdentityName(row = {}, lane = null) {
+  const candidates = [
+    row?.playerName,
+    row?.name,
+    row?.player_name,
+    row?.racerName,
+    row?.displayName,
+    row?.fallbackPlayerName,
+    row?.fallbackName
+  ]
+    .map((value) => normalizeSpace(value))
+    .filter((value) => value && !isLaneFallbackName(value));
+  return candidates[0] || (Number.isInteger(lane) ? `Lane-${lane}` : null);
+}
+
+function pickPreferredIdentityRegistrationNo(row = {}) {
+  const candidates = [
+    row?.registrationNo,
+    row?.registrationNumber,
+    row?.registration_no,
+    row?.registration_number,
+    row?.regNo,
+    row?.playerRegNo,
+    row?.fallbackRegistrationNo,
+    row?.fallbackRegistrationNumber
+  ];
+  for (const candidate of candidates) {
+    const registrationNo = toPositiveInteger(candidate);
+    if (registrationNo !== null) return registrationNo;
+  }
+  return null;
+}
+
+function pickPreferredIdentityClass(row = {}) {
+  const candidates = [row?.class, row?.grade, row?.playerClass, row?.fallbackClass, row?.fallbackGrade]
+    .map((value) => normalizeSpace(value))
+    .filter(Boolean);
+  return candidates[0] || null;
 }
 
 function makePredictionFieldMeta({
@@ -137,6 +188,20 @@ function makePredictionFieldMeta({
 function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fieldDebugs }) {
   const laneSources = fieldSources?.[lane] || {};
   const laneDebug = fieldDebugs?.[lane] || {};
+  const racerFieldSources = racer?.fieldSources && typeof racer.fieldSources === "object" ? racer.fieldSources : {};
+  const authoritativeExhibitionSt = firstFiniteValue(racer?.exhibitionSt, racer?.exST, racer?.exhibitionST);
+  const authoritativeExhibitionTime = normalizeExhibitionTimeForMeta(
+    firstFiniteValue(racer?.exhibitionTime, racer?.exTime)
+  );
+  const authoritativeExhibitionStSource =
+    racerFieldSources.exhibitionSt ||
+    racerFieldSources.exhibitionST ||
+    racer?.exhibitionSTDetail?.source ||
+    (Number.isFinite(Number(authoritativeExhibitionSt)) ? "boatrace_beforeinfo" : null);
+  const authoritativeExhibitionTimeSource =
+    racerFieldSources.exhibitionTime ||
+    racer?.exhibitionTimeDetail?.source ||
+    (normalizeExhibitionTimeForMeta(authoritativeExhibitionTime) !== null ? "boatrace_beforeinfo" : null);
   const laneRawVerified = {
     lane1st: isVerifiedLaneStatDebug(extra?.lane1stDebug || laneDebug?.lane1stRate, "1着率"),
     lane2ren: isVerifiedLaneStatDebug(extra?.lane2renDebug || laneDebug?.lane2renRate, "2連対率"),
@@ -170,14 +235,23 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
       publishedInSource: lapTimePublished
     }),
     exhibitionST: getFieldMeta("exhibitionST", {
-      value: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
-      source: laneSources.exhibitionSt || (Number.isFinite(Number(racer?.exhibitionSt)) ? "boatrace_racelist" : null),
-      debugEntry: laneDebug?.exhibitionST || null
+      value: authoritativeExhibitionSt,
+      source: authoritativeExhibitionStSource,
+      debugEntry: racer?.exhibitionSTDetail || null
     }),
     exhibitionTime: getFieldMeta("exhibitionTime", {
-      value: normalizeExhibitionTimeForMeta(extra?.exhibitionTime ?? racer?.exhibitionTime ?? null),
-      source: laneSources.exhibitionTime || (normalizeExhibitionTimeForMeta(racer?.exhibitionTime) !== null ? "boatrace_racelist" : null),
-      debugEntry: laneDebug?.exhibitionTime || null
+      value: authoritativeExhibitionTime,
+      source: authoritativeExhibitionTimeSource,
+      debugEntry: racer?.exhibitionTimeDetail || null
+    }),
+    straightTime: getFieldMeta("straightTime", {
+      value: normalizeExhibitionTimeForMeta(extra?.straightTime ?? extra?.nobiashi ?? racer?.straightTime ?? racer?.nobiashi ?? null),
+      source:
+        laneSources.straightTime ||
+        laneSources.nobiashi ||
+        laneSources.__nobiashi ||
+        (normalizeExhibitionTimeForMeta(racer?.straightTime ?? racer?.nobiashi) !== null ? "kyoteibiyori_original_exhibition.straight" : null),
+      debugEntry: laneDebug?.straightTime || null
     }),
     lapExStretch: getFieldMeta("lapExStretch", {
       value: normalizeExhibitionTimeForMeta(extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExStretch ?? racer?.lapExhibitionScore ?? null),
@@ -654,6 +728,7 @@ const FIELD_DEBUG_NAME_MAP = {
   lapTimeRaw: "lapTime",
   exhibitionSt: "exhibitionST",
   exhibitionTime: "exhibitionTime",
+  straightTime: "straightTime",
   motor2Rate: "motor2ren",
   motor3Rate: "motor3ren",
   lapExStretch: "lapExStretch"
@@ -1244,7 +1319,7 @@ function parseExplicitTargetCell(field, rawText) {
   if (field === "nobiashi") {
     const value = parseDecimal(rawText);
     return {
-      fields: { __nobiashi: value },
+      fields: { straightTime: value, nobiashi: value, __nobiashi: value },
       value
     };
   }
@@ -1514,6 +1589,210 @@ function detectColumnIndex(headers, patterns) {
   return idx >= 0 ? idx : null;
 }
 
+function normalizeJapaneseColumnHeader(value) {
+  return normalizeText(value)
+    .replace(/[ \t\r\n\u3000]/g, "")
+    .replace(/[()（）［］\[\]【】:：/／・]/g, "")
+    .replace(/秒/g, "")
+    .toUpperCase();
+}
+
+function findHeaderIndexByLabels(headers, labels) {
+  const normalizedHeaders = headers.map((header) => normalizeJapaneseColumnHeader(header));
+  const normalizedLabels = labels.map((label) => normalizeJapaneseColumnHeader(label)).filter(Boolean);
+  for (const label of normalizedLabels) {
+    const exactIndex = normalizedHeaders.findIndex((header) => header === label);
+    if (exactIndex >= 0) return exactIndex;
+  }
+  for (const label of normalizedLabels) {
+    const partialIndex = normalizedHeaders.findIndex((header) => header.includes(label) || label.includes(header));
+    if (partialIndex >= 0) return partialIndex;
+  }
+  return null;
+}
+
+function setParsedHeaderField({ row, laneFieldSources, fieldDebugs, lane, sourceLabel, field, rawText, parser, debugName, rowLabel }) {
+  if (rawText === null || rawText === undefined || rawText === "") return;
+  const parsed = parser(rawText);
+  const fields = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ? parsed.fields || {}
+    : { [field]: parsed };
+  const value = typeof parsed === "object" && parsed !== null && Object.prototype.hasOwnProperty.call(parsed, "value")
+    ? parsed.value
+    : fields[field];
+
+  Object.assign(row, fields);
+  for (const [key, fieldValue] of Object.entries(fields)) {
+    if (fieldValue === null || fieldValue === undefined || fieldValue === "") continue;
+    laneFieldSources[key] = sourceLabel;
+  }
+  setLaneFieldDebug(fieldDebugs, lane, debugName || FIELD_DEBUG_NAME_MAP[field] || field, {
+    section: JAPANESE_LABELS.preRaceSection,
+    metric: rowLabel,
+    row: rowLabel,
+    sourceLabel,
+    column: rowLabel,
+    boatColumn: `${lane}号艇`,
+    raw: normalizeSpace(rawText) || null,
+    value,
+    exact_match_verified: true
+  });
+}
+
+function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
+  const byLane = new Map();
+  const fieldSources = {};
+  const fieldDebugs = {};
+  const tableDiagnostics = [];
+  const tables = extractTableMaps(html);
+  const sourceLabel = options?.sourceLabel || "race_shusso_html";
+
+  for (const table of tables) {
+    const headers = table.headers || [];
+    const indexes = {
+      lane: findHeaderIndexByLabels(headers, ["艇番", "艇", "枠", "枠番", "コース"]),
+      playerName: findHeaderIndexByLabels(headers, ["選手名", "選手", "名前"]),
+      exhibitionSt: findHeaderIndexByLabels(headers, ["ST", "展示ST"]),
+      exhibitionTime: findHeaderIndexByLabels(headers, ["展示", "展示タイム"]),
+      lapTime: findHeaderIndexByLabels(headers, ["周回", "周回タイム", "周回展示"]),
+      straightTime: findHeaderIndexByLabels(headers, ["直線", "直線タイム"]),
+      motor2Rate: findHeaderIndexByLabels(headers, ["モーター2連率", "モーター2連対率", "モーター2連"])
+    };
+    const hasPreRaceColumns =
+      indexes.lane !== null &&
+      [indexes.exhibitionSt, indexes.exhibitionTime, indexes.lapTime, indexes.straightTime, indexes.motor2Rate].some((idx) => idx !== null);
+    if (!hasPreRaceColumns) continue;
+
+    let parsedCount = 0;
+    const matchedRows = [];
+    table.$table.find("tr").slice(1).each((_, tr) => {
+      const values = [];
+      table.$(tr)
+        .children("td,th")
+        .each((__, cell) => {
+          values.push(normalizeSpace(table.$(cell).text()));
+        });
+      if (values.length < 2) return;
+
+      const lane =
+        (indexes.lane !== null ? detectLaneText(values[indexes.lane]) ?? toNumber(values[indexes.lane]) : null) ??
+        values.map((value) => detectLaneText(value)).find((value) => Number.isInteger(value)) ??
+        null;
+      if (!Number.isInteger(lane) || lane < 1 || lane > 6) return;
+
+      const current = byLane.get(lane) || {};
+      const laneFieldSources = fieldSources[lane] || {};
+      if (indexes.playerName !== null && values[indexes.playerName]) {
+        current.playerName = values[indexes.playerName];
+        current.name = values[indexes.playerName];
+        current.racerName = values[indexes.playerName];
+        laneFieldSources.playerName = sourceLabel;
+      }
+
+      setParsedHeaderField({
+        row: current,
+        laneFieldSources,
+        fieldDebugs,
+        lane,
+        sourceLabel,
+        field: "exhibitionSt",
+        rawText: indexes.exhibitionSt !== null ? values[indexes.exhibitionSt] : null,
+        rowLabel: "ST",
+        debugName: "exhibitionST",
+        parser: (rawText) => {
+          const parsed = parseStartTimingRaw(rawText);
+          return {
+            fields: {
+              exhibitionSt: parsed.numeric,
+              exhibitionStRaw: parsed.raw,
+              exhibitionStFlag: parsed.flag,
+              exhibitionStSignedValue: parsed.signedValue
+            },
+            value: parsed.numeric
+          };
+        }
+      });
+      setParsedHeaderField({
+        row: current,
+        laneFieldSources,
+        fieldDebugs,
+        lane,
+        sourceLabel,
+        field: "exhibitionTime",
+        rawText: indexes.exhibitionTime !== null ? values[indexes.exhibitionTime] : null,
+        rowLabel: "展示",
+        parser: (rawText) => parseDecimal(rawText)
+      });
+      setParsedHeaderField({
+        row: current,
+        laneFieldSources,
+        fieldDebugs,
+        lane,
+        sourceLabel,
+        field: "lapTime",
+        rawText: indexes.lapTime !== null ? values[indexes.lapTime] : null,
+        rowLabel: "周回",
+        parser: (rawText) => {
+          const lapTimeRaw = parseDecimal(rawText);
+          return {
+            fields: { lapTimeRaw, lapTime: lapTimeRaw },
+            value: lapTimeRaw
+          };
+        }
+      });
+      setParsedHeaderField({
+        row: current,
+        laneFieldSources,
+        fieldDebugs,
+        lane,
+        sourceLabel,
+        field: "straightTime",
+        rawText: indexes.straightTime !== null ? values[indexes.straightTime] : null,
+        rowLabel: "直線",
+        parser: (rawText) => {
+          const straightTime = parseDecimal(rawText);
+          return {
+            fields: {
+              straightTime,
+              nobiashi: straightTime,
+              __nobiashi: straightTime
+            },
+            value: straightTime
+          };
+        }
+      });
+      setParsedHeaderField({
+        row: current,
+        laneFieldSources,
+        fieldDebugs,
+        lane,
+        sourceLabel,
+        field: "motor2Rate",
+        rawText: indexes.motor2Rate !== null ? values[indexes.motor2Rate] : null,
+        rowLabel: "モーター2連率",
+        debugName: "motor2ren",
+        parser: (rawText) => parsePercent(rawText)
+      });
+
+      byLane.set(lane, current);
+      fieldSources[lane] = laneFieldSources;
+      parsedCount += 1;
+      matchedRows.push({ lane, values });
+    });
+
+    tableDiagnostics.push({
+      mode: options?.mode || "all",
+      parser: "japanese_header_columns",
+      headers,
+      indexes,
+      parsedCount,
+      matched_rows: matchedRows
+    });
+  }
+
+  return { byLane, fieldSources, fieldDebugs, tableDiagnostics };
+}
+
 function detectBoatHeaderLane(text) {
   const normalized = normalizeDigits(normalizeSpace(text)).replace(/\s+/g, "");
   const exact = normalized.match(/^([1-6])号艇$/);
@@ -1607,7 +1886,7 @@ function parseSupplementCell(rowLabel, rawText) {
   if (rowLabel === "直線") {
     const chokusen = parseDecimal(rawText);
     return {
-      fields: { __chokusen: chokusen },
+      fields: { straightTime: chokusen, nobiashi: chokusen, __nobiashi: chokusen, __chokusen: chokusen },
       parsedValue: chokusen
     };
   }
@@ -1869,6 +2148,19 @@ export function parseKyoteiBiyoriAjaxData(payload) {
 
     const laneRow = {
       playerName: normalizeSpace(row?.player_name) || null,
+      name: normalizeSpace(row?.player_name) || null,
+      racerName: normalizeSpace(row?.player_name) || null,
+      displayName: normalizeSpace(row?.player_name) || null,
+      player_name: normalizeSpace(row?.player_name) || null,
+      registrationNo: toPositiveInteger(row?.player_no),
+      registrationNumber: toPositiveInteger(row?.player_no),
+      registration_no: toPositiveInteger(row?.player_no),
+      playerRegNo: toPositiveInteger(row?.player_no),
+      regNo: toPositiveInteger(row?.player_no),
+      class: normalizeSpace(row?.kyubetsu) || null,
+      grade: normalizeSpace(row?.kyubetsu) || null,
+      playerClass: normalizeSpace(row?.kyubetsu) || null,
+      weight: parseDecimal(row?.taiju),
       lapTimeRaw,
       lapTime: lapTimeRaw,
       lapExStretch: lapExhibitionScore,
@@ -1880,7 +2172,9 @@ export function parseKyoteiBiyoriAjaxData(payload) {
       exhibitionStSignedValue: startParsed.signedValue,
       exhibitionTime,
       mawariashi,
+      straightTime: chokusen,
       nobiashi: chokusen,
+      __nobiashi: chokusen,
       entryCourse: Number.isInteger(entryCourse) ? entryCourse : null,
       laneFirstRate: currentCourseField("shukai_1_1"),
       lane2RenRate: currentCourseField("shukai_1_2"),
@@ -1923,6 +2217,221 @@ export function parseKyoteiBiyoriAjaxData(payload) {
   };
 }
 
+function parseKyoteiBiyoriIndexIdentities(html, raceNo) {
+  const byLane = new Map();
+  const fieldSources = {};
+  const diagnostics = {
+    race_no: Number(raceNo) || null,
+    found_table: false,
+    parsed_lanes: 0
+  };
+  if (!html) return { byLane, fieldSources, diagnostics };
+
+  const $ = cheerio.load(html);
+  const $container = $(`div.menu_box#${Number(raceNo)}`).first();
+  const $table = $container.find("table.table_fixed").first();
+  if (!$table.length) return { byLane, fieldSources, diagnostics };
+
+  const rows = $table.find("tr").toArray().map((row) =>
+    $(row)
+      .children("th,td")
+      .toArray()
+      .map((cell) => normalizeSpace($(cell).text()))
+  );
+  if (rows.length < 5) return { byLane, fieldSources, diagnostics };
+
+  diagnostics.found_table = true;
+  const registrationRow = rows[1] || [];
+  const nameRow = rows[2] || [];
+  const classRow = rows[3] || [];
+  const branchRow = rows[5] || [];
+
+  for (let lane = 1; lane <= 6; lane += 1) {
+    const index = lane - 1;
+    const registrationNo = toPositiveInteger(registrationRow[index]);
+    const name = normalizeSpace(nameRow[index]) || null;
+    const racerClass = normalizeSpace(classRow[index]) || null;
+    const branch = normalizeSpace(branchRow[index]) || null;
+    const row = {
+      lane,
+      playerName: name,
+      name,
+      racerName: name,
+      displayName: name,
+      player_name: name,
+      registrationNo,
+      registrationNumber: registrationNo,
+      registration_no: registrationNo,
+      playerRegNo: registrationNo,
+      regNo: registrationNo,
+      class: racerClass,
+      grade: racerClass,
+      playerClass: racerClass,
+      branch
+    };
+    byLane.set(lane, row);
+    fieldSources[lane] = Object.fromEntries(
+      Object.entries(row)
+        .filter(([, value]) => value !== null && value !== undefined && value !== "")
+        .map(([key]) => [key, "kyoteibiyori_race_ichiran"])
+    );
+  }
+
+  diagnostics.parsed_lanes = byLane.size;
+  return { byLane, fieldSources, diagnostics };
+}
+
+function buildKyoteiBiyoriPlayerIdentities({
+  racers = [],
+  byLane = new Map(),
+  mergedByLane = new Map(),
+  identityByLane = new Map(),
+  entries = []
+} = {}) {
+  const racerByLane = new Map(
+    (Array.isArray(racers) ? racers : [])
+      .map((row) => [Number(row?.lane), row])
+      .filter(([lane, row]) => Number.isInteger(lane) && row && typeof row === "object")
+  );
+  const entryByLane = new Map(
+    (Array.isArray(entries) ? entries : [])
+      .map((row) => [Number(row?.lane), row])
+      .filter(([lane, row]) => Number.isInteger(lane) && row && typeof row === "object")
+  );
+
+  function pickStrictIdentityName(rows, numericLane) {
+    const candidateKeys = ["playerName", "name", "racerName", "displayName", "player_name"];
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      for (const key of candidateKeys) {
+        const value = normalizeSpace(row?.[key]);
+        if (value && !isLaneFallbackName(value)) return value;
+      }
+    }
+    return Number.isInteger(numericLane) ? `Lane-${numericLane}` : null;
+  }
+
+  function pickStrictIdentityRegistrationNo(rows) {
+    const candidateKeys = [
+      "registrationNo",
+      "registrationNumber",
+      "registration_no",
+      "registration_number",
+      "regNo",
+      "playerRegNo"
+    ];
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      for (const key of candidateKeys) {
+        const value = toPositiveInteger(row?.[key]);
+        if (value !== null) return value;
+      }
+    }
+    return null;
+  }
+
+  function pickStrictIdentityClass(rows) {
+    const candidateKeys = ["class", "grade", "playerClass"];
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      for (const key of candidateKeys) {
+        const value = normalizeSpace(row?.[key]);
+        if (value) return value;
+      }
+    }
+    return null;
+  }
+
+  return [1, 2, 3, 4, 5, 6]
+    .map((numericLane) => {
+      const sourceRows = [
+        identityByLane.get(numericLane),
+        mergedByLane.get(numericLane),
+        byLane.get(numericLane),
+        entryByLane.get(numericLane),
+        racerByLane.get(numericLane)
+      ].filter((row) => row && typeof row === "object");
+      const extra = sourceRows[0] || {};
+      const racer = sourceRows[sourceRows.length - 1] || sourceRows[0] || {};
+      const mergedRow = {
+        ...byLane.get(numericLane),
+        ...mergedByLane.get(numericLane),
+        ...entryByLane.get(numericLane),
+        ...racer,
+        ...extra
+      };
+      const resolvedName = pickStrictIdentityName(sourceRows, numericLane);
+      const registrationNo = pickStrictIdentityRegistrationNo([...sourceRows, mergedRow]);
+      const racerClass = pickStrictIdentityClass([...sourceRows, mergedRow]);
+      const branch = normalizeSpace(extra?.branch || racer?.branch || mergedRow?.branch) || null;
+      const age = toPositiveInteger(extra?.age ?? racer?.age ?? mergedRow?.age);
+      const weight = parseDecimal(extra?.weight ?? racer?.weight ?? mergedRow?.weight ?? mergedRow?.taiju);
+      if (!resolvedName && !registrationNo && !racerClass && !branch && !age && weight === null) {
+        return null;
+      }
+      const identity = { lane: numericLane };
+      if (resolvedName) identity.name = resolvedName;
+      if (registrationNo) {
+        identity.registrationNo = registrationNo;
+        identity.registrationNumber = registrationNo;
+      }
+      if (racerClass) identity.class = racerClass;
+      if (branch) identity.branch = branch;
+      if (age) identity.age = age;
+      if (weight !== null) identity.weight = weight;
+      return identity;
+    })
+    .filter(Boolean);
+}
+
+function buildKyoteiBiyoriIdentityRows(...laneMaps) {
+  const maps = laneMaps.filter((map) => map instanceof Map);
+  return buildKyoteiBiyoriPlayerIdentities({
+    byLane: maps[0] || new Map(),
+    mergedByLane: maps[1] || new Map(),
+    identityByLane: maps[0] || new Map()
+  });
+}
+
+function mergeIdentityLaneMaps(target, source) {
+  if (!(target instanceof Map) || !(source instanceof Map)) return;
+  for (const [lane, row] of source.entries()) {
+    const numericLane = Number(lane);
+    if (!Number.isInteger(numericLane) || numericLane < 1 || numericLane > 6) continue;
+    const current = target.get(numericLane) || {};
+    const next = { ...current };
+    const name = pickPreferredIdentityName(row, numericLane);
+    const registrationNo = pickPreferredIdentityRegistrationNo(row);
+    const racerClass = pickPreferredIdentityClass(row);
+    const branch = normalizeSpace(row?.branch) || null;
+    const age = toPositiveInteger(row?.age);
+    const weight = parseDecimal(row?.weight ?? row?.taiju);
+    if (name && !isLaneFallbackName(name)) {
+      next.playerName = name;
+      next.name = name;
+      next.racerName = name;
+      next.displayName = name;
+      next.player_name = name;
+    }
+    if (registrationNo) {
+      next.registrationNo = registrationNo;
+      next.registrationNumber = registrationNo;
+      next.registration_no = registrationNo;
+      next.playerRegNo = registrationNo;
+      next.regNo = registrationNo;
+    }
+    if (racerClass) {
+      next.class = racerClass;
+      next.grade = racerClass;
+      next.playerClass = racerClass;
+    }
+    if (branch) next.branch = branch;
+    if (age) next.age = age;
+    if (weight !== null) next.weight = weight;
+    target.set(numericLane, next);
+  }
+}
+
 function mergeLaneMaps(target, source, fieldSources, sourceLabel) {
   for (const [lane, row] of source.entries()) {
     const current = target.get(lane) || {};
@@ -1937,8 +2446,18 @@ function mergeLaneMaps(target, source, fieldSources, sourceLabel) {
   }
 }
 
+function mergeFieldDebugMaps(target, source) {
+  for (const [lane, row] of Object.entries(source || {})) {
+    target[lane] = {
+      ...(target[lane] || {}),
+      ...(row || {})
+    };
+  }
+}
+
 export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
   const baseSupplement = parseHtmlSupplement(html);
+  const headerSupplement = parseHtmlSupplementByJapaneseHeaders(html, options);
   const supplement = parseHtmlSupplementExplicit(html, options);
   const targetFields = new Set([
     "laneFirstRate",
@@ -1950,14 +2469,17 @@ export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
     "lapExStretch",
     "lapExhibitionScore",
     "stretchFootLabel",
+    "straightTime",
     "exhibitionSt",
     "motor2Rate",
     "motor3Rate",
     "__mawariashi",
-    "__nobiashi"
+    "__nobiashi",
+    "nobiashi"
   ]);
   const byLane = new Map();
   const fieldSources = {};
+  const fieldDebugs = {};
 
   mergeLaneMaps(byLane, baseSupplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
   for (const [lane, row] of byLane.entries()) {
@@ -1965,13 +2487,16 @@ export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
     for (const field of targetFields) delete cleaned[field];
     byLane.set(lane, cleaned);
   }
+  mergeLaneMaps(byLane, headerSupplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
+  mergeFieldDebugMaps(fieldDebugs, headerSupplement.fieldDebugs);
   mergeLaneMaps(byLane, supplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
+  mergeFieldDebugMaps(fieldDebugs, supplement.fieldDebugs);
 
   return {
     byLane,
     fieldSources,
-    fieldDebugs: supplement.fieldDebugs,
-    tableDiagnostics: [...(baseSupplement.tableDiagnostics || []), ...(supplement.tableDiagnostics || [])],
+    fieldDebugs,
+    tableDiagnostics: [...(baseSupplement.tableDiagnostics || []), ...(headerSupplement.tableDiagnostics || []), ...(supplement.tableDiagnostics || [])],
     fieldDiagnostics: buildFieldDiagnostics(byLane, fieldSources)
   };
 }
@@ -2044,7 +2569,7 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       lane3renDebug: row?.lane3renDebug
     });
     const mawariashi = toFiniteNumberOrNull(row?.mawariashi ?? row?.__mawariashi);
-    const nobiashi = toFiniteNumberOrNull(row?.nobiashi ?? row?.__nobiashi);
+    const nobiashi = toFiniteNumberOrNull(row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi);
     normalizedRow.motor2Rate = normalizedRow.motor2ren;
     normalizedRow.motor3Rate = normalizedRow.motor3ren;
     normalizedRow.lapExStretch =
@@ -2058,6 +2583,7 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
     normalizedRow.lane3renScore = normalizedRow.lane3renScore ?? normalizedRow.lane3RenRate;
     normalizedRow.mawariashi = mawariashi;
     normalizedRow.nobiashi = nobiashi;
+    normalizedRow.straightTime = nobiashi;
     normalizedRow.stretchFootLabel =
       normalizedRow.stretchFootLabel ||
       makeStretchLabel({ mawariashi, chokusen: nobiashi });
@@ -2092,7 +2618,7 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       status: mawariashi !== null ? "ok" : "not_published"
     });
     normalizedRow.straightTimeDetail = buildFieldSourceDetail({
-      source: laneFieldSources?.__nobiashi || laneFieldSources?.nobiashi || null,
+      source: laneFieldSources?.straightTime || laneFieldSources?.__nobiashi || laneFieldSources?.nobiashi || null,
       rowLabel: "直線",
       raw: nobiashi,
       normalized: nobiashi,
@@ -2176,9 +2702,52 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         "lapTime",
         extra?.lapTime
       );
+      const resolvedName = pickPreferredIdentityName({
+        playerName: extra?.playerName,
+        name: extra?.name,
+        fallbackPlayerName: racer?.playerName,
+        fallbackName: racer?.name,
+        racerName: racer?.racerName,
+        displayName: racer?.displayName,
+        player_name: racer?.player_name
+      }, lane);
+      const resolvedRegistrationNo =
+        pickPreferredIdentityRegistrationNo({
+          registrationNo: extra?.registrationNo,
+          registrationNumber: extra?.registrationNumber,
+          registration_no: extra?.registration_no,
+          regNo: extra?.regNo,
+          playerRegNo: extra?.playerRegNo,
+          fallbackRegistrationNo: racer?.registrationNo,
+          fallbackRegistrationNumber: racer?.registrationNumber,
+          registration_number: racer?.registration_number,
+          registration_no_fallback: racer?.registration_no,
+          regNo_fallback: racer?.regNo,
+          playerRegNo_fallback: racer?.playerRegNo
+        }) ??
+        pickPreferredIdentityRegistrationNo(racer);
+      const resolvedClass =
+        pickPreferredIdentityClass({
+          class: extra?.class,
+          grade: extra?.grade,
+          fallbackClass: racer?.class,
+          fallbackGrade: racer?.grade,
+          playerClass: racer?.playerClass
+        }) || null;
       return {
         ...racer,
-        name: extra?.playerName || racer?.name || null,
+        name: resolvedName,
+        playerName: !isLaneFallbackName(resolvedName) ? resolvedName : racer?.playerName || null,
+        racerName: !isLaneFallbackName(resolvedName) ? resolvedName : racer?.racerName || null,
+        displayName: !isLaneFallbackName(resolvedName) ? resolvedName : racer?.displayName || null,
+        player_name: !isLaneFallbackName(resolvedName) ? resolvedName : racer?.player_name || null,
+        registrationNo: resolvedRegistrationNo,
+        registrationNumber: resolvedRegistrationNo,
+        registration_no: resolvedRegistrationNo,
+        playerRegNo: resolvedRegistrationNo,
+        class: resolvedClass,
+        grade: resolvedClass,
+        playerClass: resolvedClass,
         fHoldCount: extra?.fCount ?? racer?.fHoldCount ?? null,
         kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,
         kyoteiBiyoriLapTime: trustedLapTime,
@@ -2190,12 +2759,15 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
         kyoteiBiyoriMawariashi: extra?.mawariashi ?? null,
         kyoteiBiyoriNobiashi: extra?.nobiashi ?? null,
+        kyoteiBiyoriStraightTime: extra?.straightTime ?? extra?.nobiashi ?? null,
         kyoteiBiyoriExhibitionSt: extra?.exhibitionSt ?? null,
+        kyoteiBiyoriExST: extra?.exhibitionSt ?? null,
         kyoteiBiyoriExhibitionStRaw: extra?.exhibitionStRaw ?? null,
         kyoteiBiyoriExhibitionStFlag: extra?.exhibitionStFlag ?? null,
         kyoteiBiyoriExhibitionStSignedValue: extra?.exhibitionStSignedValue ?? null,
         kyoteiBiyoriExhibitionSTDetail: extra?.exhibitionSTDetail ?? null,
         kyoteiBiyoriExhibitionTime: extra?.exhibitionTime ?? null,
+        kyoteiBiyoriExTime: extra?.exhibitionTime ?? null,
         kyoteiBiyoriExhibitionTimeDetail: extra?.exhibitionTimeDetail ?? null,
         kyoteiBiyoriTurnFootDetail: extra?.turnFootDetail ?? null,
         kyoteiBiyoriStraightTimeDetail: extra?.straightTimeDetail ?? null,
@@ -2204,6 +2776,9 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         lapExStretch: extra?.lapExStretch ?? racer?.lapExStretch ?? null,
         mawariashi: extra?.mawariashi ?? racer?.mawariashi ?? null,
         nobiashi: extra?.nobiashi ?? racer?.nobiashi ?? null,
+        straightTime: extra?.straightTime ?? extra?.nobiashi ?? racer?.straightTime ?? null,
+        exST: racer?.exST ?? racer?.exhibitionSt ?? null,
+        exTime: racer?.exTime ?? racer?.exhibitionTime ?? null,
         motor2ren: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2ren ?? racer?.motor2Rate ?? null,
         motor3ren: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3ren ?? racer?.motor3Rate ?? null,
         lane1stScoreRawParsed: firstFiniteValue(extra?.lane1stScore, extra?.lane1stAvg, extra?.laneFirstRate),
@@ -2222,13 +2797,13 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         lapTimeDetail: extra?.lapTimeDetail ?? null,
         lapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
         stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,
-        exhibitionSt: extra?.exhibitionSt ?? racer?.exhibitionSt ?? null,
-        exhibitionStRaw: extra?.exhibitionStRaw ?? racer?.exhibitionStRaw ?? null,
-        exhibitionStFlag: extra?.exhibitionStFlag ?? racer?.exhibitionStFlag ?? null,
-        exhibitionStSignedValue: extra?.exhibitionStSignedValue ?? racer?.exhibitionStSignedValue ?? null,
-        exhibitionSTDetail: extra?.exhibitionSTDetail ?? null,
-        exhibitionTime: extra?.exhibitionTime ?? racer?.exhibitionTime ?? null,
-        exhibitionTimeDetail: extra?.exhibitionTimeDetail ?? null,
+        exhibitionSt: racer?.exhibitionSt ?? racer?.exST ?? null,
+        exhibitionStRaw: racer?.exhibitionStRaw ?? null,
+        exhibitionStFlag: racer?.exhibitionStFlag ?? null,
+        exhibitionStSignedValue: racer?.exhibitionStSignedValue ?? null,
+        exhibitionSTDetail: racer?.exhibitionSTDetail ?? null,
+        exhibitionTime: racer?.exhibitionTime ?? racer?.exTime ?? null,
+        exhibitionTimeDetail: racer?.exhibitionTimeDetail ?? null,
         turnFootDetail: extra?.turnFootDetail ?? null,
         straightTimeDetail: extra?.straightTimeDetail ?? null,
         motor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2Rate ?? null,
@@ -2393,6 +2968,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     };
 
     const mergedByLane = new Map();
+    const identityByLane = new Map();
     const fieldSources = {};
     const tableDiagnostics = [];
     let lastError = null;
@@ -2417,7 +2993,15 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     }
 
     const extractedLinks = indexHtml ? extractActualRaceTabLinks(indexHtml, raceNo) : {};
+    const parsedIndexIdentities = parseKyoteiBiyoriIndexIdentities(indexHtml, raceNo);
+    mergeLaneMaps(mergedByLane, parsedIndexIdentities.byLane, fieldSources, "kyoteibiyori_race_ichiran");
+    mergeIdentityLaneMaps(identityByLane, parsedIndexIdentities.byLane);
     diagnostics.extracted_hrefs = extractedLinks;
+    diagnostics.parse_results.race_ichiran = {
+      ok: parsedIndexIdentities.byLane.size === 6,
+      parsed_lanes: parsedIndexIdentities.byLane.size,
+      diagnostics: parsedIndexIdentities.diagnostics
+    };
 
     const laneStatsUrl =
       extractedLinks?.laneStatsHref || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 1 });
@@ -2462,6 +3046,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
           const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);
           diagnostics.timings.ajax_parse_ms = elapsedMs(ajaxParseStartedAt);
           mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");
+          mergeIdentityLaneMaps(identityByLane, parsedAjax.byLane);
           diagnostics.fetch_results.request_oriten_kaiseki_custom.ok = true;
           diagnostics.fetch_results.request_oriten_kaiseki_custom.referer = laneStatsUrl;
           diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");
@@ -2511,6 +3096,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
             if (label === "lane_stats_tab") diagnostics.timings.lane_stats_parse_ms = parseDurationMs;
             else diagnostics.timings.pre_race_parse_ms = parseDurationMs;
             mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);
+            mergeIdentityLaneMaps(identityByLane, parsed.byLane);
             tableDiagnostics.push(...(parsed.tableDiagnostics || []));
             diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);
             diagnostics.fetch_results[label] = {
@@ -2576,6 +3162,15 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     diagnostics.fallback_reason = fallbackReason;
     diagnostics.kyoteibiyori_fetch_success = ok;
     diagnostics.timings.total_ms = elapsedMs(startedAt);
+    mergeIdentityLaneMaps(identityByLane, mergedByLane);
+    const playerIdentityRows = [...mergedByLane.entries()].map(([lane, racer]) => ({ lane: Number(lane), ...(racer || {}) }));
+    const playerIdentities = buildKyoteiBiyoriPlayerIdentities({
+      racers: playerIdentityRows,
+      byLane: mergedByLane,
+      mergedByLane,
+      identityByLane,
+      entries: playerIdentityRows
+    });
 
     return {
       ok,
@@ -2589,6 +3184,9 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       tableDiagnostics,
       fieldDiagnostics,
       fieldSources,
+      playerIdentities,
+      racers: playerIdentities,
+      entries: playerIdentities,
       fallbackUsed: !ok,
       fallbackReason,
       diagnostics,
@@ -2676,6 +3274,9 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       tableDiagnostics: [],
       fieldDiagnostics: buildFieldDiagnostics(new Map(), {}),
       fieldSources: {},
+      playerIdentities: [],
+      racers: [],
+      entries: [],
       fallbackUsed: true,
       fallbackReason: String(error?.message || error),
       diagnostics: {

@@ -1,0 +1,417 @@
+warning: in the working copy of 'backend/src/services/kyoteibiyori.js', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/backend/src/services/kyoteibiyori.js b/backend/src/services/kyoteibiyori.js[m
+[1mindex ec29eb1..c4bc97e 100644[m
+[1m--- a/backend/src/services/kyoteibiyori.js[m
+[1m+++ b/backend/src/services/kyoteibiyori.js[m
+[36m@@ -73,6 +73,55 @@[m [mfunction resolveLapTimeSource({ laneSources = {}, debugEntry = null, hasParsedVa[m
+   return null;[m
+ }[m
+ [m
+[32m+[m[32mfunction toPositiveInteger(value) {[m
+[32m+[m[32m  const n = Number(value);[m
+[32m+[m[32m  return Number.isInteger(n) && n > 0 ? n : null;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction isLaneFallbackName(value) {[m
+[32m+[m[32m  return /^Lane-\d+$/i.test(normalizeSpace(value || ""));[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction pickPreferredIdentityName(row = {}, lane = null) {[m
+[32m+[m[32m  const candidates = [[m
+[32m+[m[32m    row?.playerName,[m
+[32m+[m[32m    row?.name,[m
+[32m+[m[32m    row?.player_name,[m
+[32m+[m[32m    row?.racerName,[m
+[32m+[m[32m    row?.displayName,[m
+[32m+[m[32m    row?.fallbackPlayerName,[m
+[32m+[m[32m    row?.fallbackName[m
+[32m+[m[32m  ][m
+[32m+[m[32m    .map((value) => normalizeSpace(value))[m
+[32m+[m[32m    .filter((value) => value && !isLaneFallbackName(value));[m
+[32m+[m[32m  return candidates[0] || (Number.isInteger(lane) ? `Lane-${lane}` : null);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction pickPreferredIdentityRegistrationNo(row = {}) {[m
+[32m+[m[32m  const candidates = [[m
+[32m+[m[32m    row?.registrationNo,[m
+[32m+[m[32m    row?.registrationNumber,[m
+[32m+[m[32m    row?.registration_no,[m
+[32m+[m[32m    row?.registration_number,[m
+[32m+[m[32m    row?.regNo,[m
+[32m+[m[32m    row?.playerRegNo,[m
+[32m+[m[32m    row?.fallbackRegistrationNo,[m
+[32m+[m[32m    row?.fallbackRegistrationNumber[m
+[32m+[m[32m  ];[m
+[32m+[m[32m  for (const candidate of candidates) {[m
+[32m+[m[32m    const registrationNo = toPositiveInteger(candidate);[m
+[32m+[m[32m    if (registrationNo !== null) return registrationNo;[m
+[32m+[m[32m  }[m
+[32m+[m[32m  return null;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction pickPreferredIdentityClass(row = {}) {[m
+[32m+[m[32m  const candidates = [row?.class, row?.grade, row?.playerClass, row?.fallbackClass, row?.fallbackGrade][m
+[32m+[m[32m    .map((value) => normalizeSpace(value))[m
+[32m+[m[32m    .filter(Boolean);[m
+[32m+[m[32m  return candidates[0] || null;[m
+[32m+[m[32m}[m
+[32m+[m
+ function makePredictionFieldMeta({[m
+   field,[m
+   value,[m
+[36m@@ -1869,6 +1918,19 @@[m [mexport function parseKyoteiBiyoriAjaxData(payload) {[m
+ [m
+     const laneRow = {[m
+       playerName: normalizeSpace(row?.player_name) || null,[m
+[32m+[m[32m      name: normalizeSpace(row?.player_name) || null,[m
+[32m+[m[32m      racerName: normalizeSpace(row?.player_name) || null,[m
+[32m+[m[32m      displayName: normalizeSpace(row?.player_name) || null,[m
+[32m+[m[32m      player_name: normalizeSpace(row?.player_name) || null,[m
+[32m+[m[32m      registrationNo: toPositiveInteger(row?.player_no),[m
+[32m+[m[32m      registrationNumber: toPositiveInteger(row?.player_no),[m
+[32m+[m[32m      registration_no: toPositiveInteger(row?.player_no),[m
+[32m+[m[32m      playerRegNo: toPositiveInteger(row?.player_no),[m
+[32m+[m[32m      regNo: toPositiveInteger(row?.player_no),[m
+[32m+[m[32m      class: normalizeSpace(row?.kyubetsu) || null,[m
+[32m+[m[32m      grade: normalizeSpace(row?.kyubetsu) || null,[m
+[32m+[m[32m      playerClass: normalizeSpace(row?.kyubetsu) || null,[m
+[32m+[m[32m      weight: parseDecimal(row?.taiju),[m
+       lapTimeRaw,[m
+       lapTime: lapTimeRaw,[m
+       lapExStretch: lapExhibitionScore,[m
+[36m@@ -1923,6 +1985,205 @@[m [mexport function parseKyoteiBiyoriAjaxData(payload) {[m
+   };[m
+ }[m
+ [m
+[32m+[m[32mfunction parseKyoteiBiyoriIndexIdentities(html, raceNo) {[m
+[32m+[m[32m  const byLane = new Map();[m
+[32m+[m[32m  const fieldSources = {};[m
+[32m+[m[32m  const diagnostics = {[m
+[32m+[m[32m    race_no: Number(raceNo) || null,[m
+[32m+[m[32m    found_table: false,[m
+[32m+[m[32m    parsed_lanes: 0[m
+[32m+[m[32m  };[m
+[32m+[m[32m  if (!html) return { byLane, fieldSources, diagnostics };[m
+[32m+[m
+[32m+[m[32m  const $ = cheerio.load(html);[m
+[32m+[m[32m  const $container = $(`div.menu_box#${Number(raceNo)}`).first();[m
+[32m+[m[32m  const $table = $container.find("table.table_fixed").first();[m
+[32m+[m[32m  if (!$table.length) return { byLane, fieldSources, diagnostics };[m
+[32m+[m
+[32m+[m[32m  const rows = $table.find("tr").toArray().map((row) =>[m
+[32m+[m[32m    $(row)[m
+[32m+[m[32m      .children("th,td")[m
+[32m+[m[32m      .toArray()[m
+[32m+[m[32m      .map((cell) => normalizeSpace($(cell).text()))[m
+[32m+[m[32m  );[m
+[32m+[m[32m  if (rows.length < 5) return { byLane, fieldSources, diagnostics };[m
+[32m+[m
+[32m+[m[32m  diagnostics.found_table = true;[m
+[32m+[m[32m  const registrationRow = rows[1] || [];[m
+[32m+[m[32m  const nameRow = rows[2] || [];[m
+[32m+[m[32m  const classRow = rows[3] || [];[m
+[32m+[m[32m  const branchRow = rows[5] || [];[m
+[32m+[m
+[32m+[m[32m  for (let lane = 1; lane <= 6; lane += 1) {[m
+[32m+[m[32m    const index = lane - 1;[m
+[32m+[m[32m    const registrationNo = toPositiveInteger(registrationRow[index]);[m
+[32m+[m[32m    const name = normalizeSpace(nameRow[index]) || null;[m
+[32m+[m[32m    const racerClass = normalizeSpace(classRow[index]) || null;[m
+[32m+[m[32m    const branch = normalizeSpace(branchRow[index]) || null;[m
+[32m+[m[32m    const row = {[m
+[32m+[m[32m      lane,[m
+[32m+[m[32m      playerName: name,[m
+[32m+[m[32m      name,[m
+[32m+[m[32m      racerName: name,[m
+[32m+[m[32m      displayName: name,[m
+[32m+[m[32m      player_name: name,[m
+[32m+[m[32m      registrationNo,[m
+[32m+[m[32m      registrationNumber: registrationNo,[m
+[32m+[m[32m      registration_no: registrationNo,[m
+[32m+[m[32m      playerRegNo: registrationNo,[m
+[32m+[m[32m      regNo: registrationNo,[m
+[32m+[m[32m      class: racerClass,[m
+[32m+[m[32m      grade: racerClass,[m
+[32m+[m[32m      playerClass: racerClass,[m
+[32m+[m[32m      branch[m
+[32m+[m[32m    };[m
+[32m+[m[32m    byLane.set(lane, row);[m
+[32m+[m[32m    fieldSources[lane] = Object.fromEntries([m
+[32m+[m[32m      Object.entries(row)[m
+[32m+[m[32m        .filter(([, value]) => value !== null && value !== undefined && value !== "")[m
+[32m+[m[32m        .map(([key]) => [key, "kyoteibiyori_race_ichiran"])[m
+[32m+[m[32m    );[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  diagnostics.parsed_lanes = byLane.size;[m
+[32m+[m[32m  return { byLane, fieldSources, diagnostics };[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction buildKyoteiBiyoriPlayerIdentities({[m
+[32m+[m[32m  racers = [],[m
+[32m+[m[32m  byLane = new Map(),[m
+[32m+[m[32m  mergedByLane = new Map(),[m
+[32m+[m[32m  identityByLane = new Map(),[m
+[32m+[m[32m  entries = [][m
+[32m+[m[32m} = {}) {[m
+[32m+[m[32m  const racerByLane = new Map([m
+[32m+[m[32m    (Array.isArray(racers) ? racers : [])[m
+[32m+[m[32m      .map((row) => [Number(row?.lane), row])[m
+[32m+[m[32m      .filter(([lane, row]) => Number.isInteger(lane) && row && typeof row === "object")[m
+[32m+[m[32m  );[m
+[32m+[m[32m  const entryByLane = new Map([m
+[32m+[m[32m    (Array.isArray(entries) ? entries : [])[m
+[32m+[m[32m      .map((row) => [Number(row?.lane), row])[m
+[32m+[m[32m      .filter(([lane, row]) => Number.isInteger(lane) && row && typeof row === "object")[m
+[32m+[m[32m  );[m
+[32m+[m[32m  return [1, 2, 3, 4, 5, 6][m
+[32m+[m[32m    .map((numericLane) => {[m
+[32m+[m[32m      const extra = identityByLane.get(numericLane) || mergedByLane.get(numericLane) || byLane.get(numericLane) || entryByLane.get(numericLane) || {};[m
+[32m+[m[32m      const racer = racerByLane.get(numericLane) || mergedByLane.get(numericLane) || byLane.get(numericLane) || entryByLane.get(numericLane) || {};[m
+[32m+[m[32m      const mergedRow = {[m
+[32m+[m[32m        ...byLane.get(numericLane),[m
+[32m+[m[32m        ...mergedByLane.get(numericLane),[m
+[32m+[m[32m        ...entryByLane.get(numericLane),[m
+[32m+[m[32m        ...racer,[m
+[32m+[m[32m        ...extra[m
+[32m+[m[32m      };[m
+[32m+[m[32m      const name = pickPreferredIdentityName({[m
+[32m+[m[32m        playerName: extra?.playerName,[m
+[32m+[m[32m        name: extra?.name,[m
+[32m+[m[32m        player_name: racer?.player_name,[m
+[32m+[m[32m        racerName: racer?.racerName,[m
+[32m+[m[32m        displayName: racer?.displayName,[m
+[32m+[m[32m        fallbackPlayerName: racer?.playerName,[m
+[32m+[m[32m        fallbackName: racer?.name[m
+[32m+[m[32m      }, numericLane);[m
+[32m+[m[32m      const resolvedName =[m
+[32m+[m[32m        !name || isLaneFallbackName(name)[m
+[32m+[m[32m          ? pickPreferredIdentityName(mergedRow, numericLane)[m
+[32m+[m[32m          : name;[m
+[32m+[m[32m      const registrationNo =[m
+[32m+[m[32m        pickPreferredIdentityRegistrationNo({[m
+[32m+[m[32m          registrationNo: extra?.registrationNo,[m
+[32m+[m[32m          registrationNumber: extra?.registrationNumber,[m
+[32m+[m[32m          registration_no: racer?.registration_no,[m
+[32m+[m[32m          regNo: racer?.regNo,[m
+[32m+[m[32m          playerRegNo: racer?.playerRegNo,[m
+[32m+[m[32m          fallbackRegistrationNo: racer?.registrationNo,[m
+[32m+[m[32m          fallbackRegistrationNumber: racer?.registrationNumber[m
+[32m+[m[32m        }) ?? pickPreferredIdentityRegistrationNo(mergedRow);[m
+[32m+[m[32m      const racerClass =[m
+[32m+[m[32m        pickPreferredIdentityClass({[m
+[32m+[m[32m          class: extra?.class,[m
+[32m+[m[32m          grade: extra?.grade,[m
+[32m+[m[32m          playerClass: racer?.playerClass,[m
+[32m+[m[32m          fallbackClass: racer?.class,[m
+[32m+[m[32m          fallbackGrade: racer?.grade[m
+[32m+[m[32m        }) || pickPreferredIdentityClass(mergedRow);[m
+[32m+[m[32m      const branch = normalizeSpace(extra?.branch || racer?.branch || mergedRow?.branch) || null;[m
+[32m+[m[32m      const age = toPositiveInteger(extra?.age ?? racer?.age ?? mergedRow?.age);[m
+[32m+[m[32m      const weight = parseDecimal(extra?.weight ?? racer?.weight ?? mergedRow?.weight ?? mergedRow?.taiju);[m
+[32m+[m[32m      if ([m
+[32m+[m[32m        (!resolvedName || isLaneFallbackName(resolvedName)) &&[m
+[32m+[m[32m        !registrationNo &&[m
+[32m+[m[32m        !racerClass &&[m
+[32m+[m[32m        !branch &&[m
+[32m+[m[32m        !age &&[m
+[32m+[m[32m        weight === null[m
+[32m+[m[32m      ) {[m
+[32m+[m[32m        return null;[m
+[32m+[m[32m      }[m
+[32m+[m[32m      const identity = { lane: numericLane };[m
+[32m+[m[32m      if (resolvedName) identity.name = resolvedName;[m
+[32m+[m[32m      if (registrationNo) {[m
+[32m+[m[32m        identity.registrationNo = registrationNo;[m
+[32m+[m[32m        identity.registrationNumber = registrationNo;[m
+[32m+[m[32m      }[m
+[32m+[m[32m      if (racerClass) identity.class = racerClass;[m
+[32m+[m[32m      if (branch) identity.branch = branch;[m
+[32m+[m[32m      if (age) identity.age = age;[m
+[32m+[m[32m      if (weight !== null) identity.weight = weight;[m
+[32m+[m[32m      return identity;[m
+[32m+[m[32m    })[m
+[32m+[m[32m    .filter(Boolean);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction buildKyoteiBiyoriIdentityRows(...laneMaps) {[m
+[32m+[m[32m  const maps = laneMaps.filter((map) => map instanceof Map);[m
+[32m+[m[32m  return buildKyoteiBiyoriPlayerIdentities({[m
+[32m+[m[32m    byLane: maps[0] || new Map(),[m
+[32m+[m[32m    mergedByLane: maps[1] || new Map(),[m
+[32m+[m[32m    identityByLane: maps[0] || new Map()[m
+[32m+[m[32m  });[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction mergeIdentityLaneMaps(target, source) {[m
+[32m+[m[32m  if (!(target instanceof Map) || !(source instanceof Map)) return;[m
+[32m+[m[32m  for (const [lane, row] of source.entries()) {[m
+[32m+[m[32m    const numericLane = Number(lane);[m
+[32m+[m[32m    if (!Number.isInteger(numericLane) || numericLane < 1 || numericLane > 6) continue;[m
+[32m+[m[32m    const current = target.get(numericLane) || {};[m
+[32m+[m[32m    const next = { ...current };[m
+[32m+[m[32m    const name = pickPreferredIdentityName(row, numericLane);[m
+[32m+[m[32m    const registrationNo = pickPreferredIdentityRegistrationNo(row);[m
+[32m+[m[32m    const racerClass = pickPreferredIdentityClass(row);[m
+[32m+[m[32m    const branch = normalizeSpace(row?.branch) || null;[m
+[32m+[m[32m    const age = toPositiveInteger(row?.age);[m
+[32m+[m[32m    const weight = parseDecimal(row?.weight ?? row?.taiju);[m
+[32m+[m[32m    if (name && !isLaneFallbackName(name)) {[m
+[32m+[m[32m      next.playerName = name;[m
+[32m+[m[32m      next.name = name;[m
+[32m+[m[32m      next.racerName = name;[m
+[32m+[m[32m      next.displayName = name;[m
+[32m+[m[32m      next.player_name = name;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (registrationNo) {[m
+[32m+[m[32m      next.registrationNo = registrationNo;[m
+[32m+[m[32m      next.registrationNumber = registrationNo;[m
+[32m+[m[32m      next.registration_no = registrationNo;[m
+[32m+[m[32m      next.playerRegNo = registrationNo;[m
+[32m+[m[32m      next.regNo = registrationNo;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (racerClass) {[m
+[32m+[m[32m      next.class = racerClass;[m
+[32m+[m[32m      next.grade = racerClass;[m
+[32m+[m[32m      next.playerClass = racerClass;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (branch) next.branch = branch;[m
+[32m+[m[32m    if (age) next.age = age;[m
+[32m+[m[32m    if (weight !== null) next.weight = weight;[m
+[32m+[m[32m    target.set(numericLane, next);[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m
+ function mergeLaneMaps(target, source, fieldSources, sourceLabel) {[m
+   for (const [lane, row] of source.entries()) {[m
+     const current = target.get(lane) || {};[m
+[36m@@ -2176,9 +2437,52 @@[m [mexport function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {[m
+         "lapTime",[m
+         extra?.lapTime[m
+       );[m
+[32m+[m[32m      const resolvedName = pickPreferredIdentityName({[m
+[32m+[m[32m        playerName: extra?.playerName,[m
+[32m+[m[32m        name: extra?.name,[m
+[32m+[m[32m        fallbackPlayerName: racer?.playerName,[m
+[32m+[m[32m        fallbackName: racer?.name,[m
+[32m+[m[32m        racerName: racer?.racerName,[m
+[32m+[m[32m        displayName: racer?.displayName,[m
+[32m+[m[32m        player_name: racer?.player_name[m
+[32m+[m[32m      }, lane);[m
+[32m+[m[32m      const resolvedRegistrationNo =[m
+[32m+[m[32m        pickPreferredIdentityRegistrationNo({[m
+[32m+[m[32m          registrationNo: extra?.registrationNo,[m
+[32m+[m[32m          registrationNumber: extra?.registrationNumber,[m
+[32m+[m[32m          registration_no: extra?.registration_no,[m
+[32m+[m[32m          regNo: extra?.regNo,[m
+[32m+[m[32m          playerRegNo: extra?.playerRegNo,[m
+[32m+[m[32m          fallbackRegistrationNo: racer?.registrationNo,[m
+[32m+[m[32m          fallbackRegistrationNumber: racer?.registrationNumber,[m
+[32m+[m[32m          registration_number: racer?.registration_number,[m
+[32m+[m[32m          registration_no_fallback: racer?.registration_no,[m
+[32m+[m[32m          regNo_fallback: racer?.regNo,[m
+[32m+[m[32m          playerRegNo_fallback: racer?.playerRegNo[m
+[32m+[m[32m        }) ??[m
+[32m+[m[32m        pickPreferredIdentityRegistrationNo(racer);[m
+[32m+[m[32m      const resolvedClass =[m
+[32m+[m[32m        pickPreferredIdentityClass({[m
+[32m+[m[32m          class: extra?.class,[m
+[32m+[m[32m          grade: extra?.grade,[m
+[32m+[m[32m          fallbackClass: racer?.class,[m
+[32m+[m[32m          fallbackGrade: racer?.grade,[m
+[32m+[m[32m          playerClass: racer?.playerClass[m
+[32m+[m[32m        }) || null;[m
+       return {[m
+         ...racer,[m
+[31m-        name: extra?.playerName || racer?.name || null,[m
+[32m+[m[32m        name: resolvedName,[m
+[32m+[m[32m        playerName: !isLaneFallbackName(resolvedName) ? resolvedName : racer?.playerName || null,[m
+[32m+[m[32m        racerName: !isLaneFallbackName(resolvedName) ? resolvedName : racer?.racerName || null,[m
+[32m+[m[32m        displayName: !isLaneFallbackName(resolvedName) ? resolvedName : racer?.displayName || null,[m
+[32m+[m[32m        player_name: !isLaneFallbackName(resolvedName) ? resolvedName : racer?.player_name || null,[m
+[32m+[m[32m        registrationNo: resolvedRegistrationNo,[m
+[32m+[m[32m        registrationNumber: resolvedRegistrationNo,[m
+[32m+[m[32m        registration_no: resolvedRegistrationNo,[m
+[32m+[m[32m        playerRegNo: resolvedRegistrationNo,[m
+[32m+[m[32m        class: resolvedClass,[m
+[32m+[m[32m        grade: resolvedClass,[m
+[32m+[m[32m        playerClass: resolvedClass,[m
+         fHoldCount: extra?.fCount ?? racer?.fHoldCount ?? null,[m
+         kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,[m
+         kyoteiBiyoriLapTime: trustedLapTime,[m
+[36m@@ -2393,6 +2697,7 @@[m [mexport async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout[m
+     };[m
+ [m
+     const mergedByLane = new Map();[m
+[32m+[m[32m    const identityByLane = new Map();[m
+     const fieldSources = {};[m
+     const tableDiagnostics = [];[m
+     let lastError = null;[m
+[36m@@ -2417,7 +2722,15 @@[m [mexport async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout[m
+     }[m
+ [m
+     const extractedLinks = indexHtml ? extractActualRaceTabLinks(indexHtml, raceNo) : {};[m
+[32m+[m[32m    const parsedIndexIdentities = parseKyoteiBiyoriIndexIdentities(indexHtml, raceNo);[m
+[32m+[m[32m    mergeLaneMaps(mergedByLane, parsedIndexIdentities.byLane, fieldSources, "kyoteibiyori_race_ichiran");[m
+[32m+[m[32m    mergeIdentityLaneMaps(identityByLane, parsedIndexIdentities.byLane);[m
+     diagnostics.extracted_hrefs = extractedLinks;[m
+[32m+[m[32m    diagnostics.parse_results.race_ichiran = {[m
+[32m+[m[32m      ok: parsedIndexIdentities.byLane.size === 6,[m
+[32m+[m[32m      parsed_lanes: parsedIndexIdentities.byLane.size,[m
+[32m+[m[32m      diagnostics: parsedIndexIdentities.diagnostics[m
+[32m+[m[32m    };[m
+ [m
+     const laneStatsUrl =[m
+       extractedLinks?.laneStatsHref || buildFallbackSliderUrl({ date, venueId, raceNo, slider: 1 });[m
+[36m@@ -2462,6 +2775,7 @@[m [mexport async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout[m
+           const parsedAjax = parseKyoteiBiyoriAjaxData(ajaxPayload);[m
+           diagnostics.timings.ajax_parse_ms = elapsedMs(ajaxParseStartedAt);[m
+           mergeLaneMaps(mergedByLane, parsedAjax.byLane, fieldSources, "request_oriten_kaiseki_custom");[m
+[32m+[m[32m          mergeIdentityLaneMaps(identityByLane, parsedAjax.byLane);[m
+           diagnostics.fetch_results.request_oriten_kaiseki_custom.ok = true;[m
+           diagnostics.fetch_results.request_oriten_kaiseki_custom.referer = laneStatsUrl;[m
+           diagnostics.actual_fetch_paths.push("request_oriten_kaiseki_custom(mode=2)");[m
+[36m@@ -2511,6 +2825,7 @@[m [mexport async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout[m
+             if (label === "lane_stats_tab") diagnostics.timings.lane_stats_parse_ms = parseDurationMs;[m
+             else diagnostics.timings.pre_race_parse_ms = parseDurationMs;[m
+             mergeLaneMaps(mergedByLane, parsed.byLane, fieldSources, label);[m
+[32m+[m[32m            mergeIdentityLaneMaps(identityByLane, parsed.byLane);[m
+             tableDiagnostics.push(...(parsed.tableDiagnostics || []));[m
+             diagnostics.actual_fetch_paths.push(`race_shusso_html(${label})`);[m
+             diagnostics.fetch_results[label] = {[m
+[36m@@ -2576,6 +2891,15 @@[m [mexport async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout[m
+     diagnostics.fallback_reason = fallbackReason;[m
+     diagnostics.kyoteibiyori_fetch_success = ok;[m
+     diagnostics.timings.total_ms = elapsedMs(startedAt);[m
+[32m+[m[32m    mergeIdentityLaneMaps(identityByLane, mergedByLane);[m
+[32m+[m[32m    const playerIdentityRows = [...mergedByLane.entries()].map(([lane, racer]) => ({ lane: Number(lane), ...(racer || {}) }));[m
+[32m+[m[32m    const playerIdentities = buildKyoteiBiyoriPlayerIdentities({[m
+[32m+[m[32m      racers: playerIdentityRows,[m
+[32m+[m[32m      byLane: mergedByLane,[m
+[32m+[m[32m      mergedByLane,[m
+[32m+[m[32m      identityByLane,[m
+[32m+[m[32m      entries: playerIdentityRows[m
+[32m+[m[32m    });[m
+ [m
+     return {[m
+       ok,[m
+[36m@@ -2589,6 +2913,9 @@[m [mexport async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout[m
+       tableDiagnostics,[m
+       fieldDiagnostics,[m
+       fieldSources,[m
+[32m+[m[32m      playerIdentities,[m
+[32m+[m[32m      racers: playerIdentities,[m
+[32m+[m[32m      entries: playerIdentities,[m
+       fallbackUsed: !ok,[m
+       fallbackReason,[m
+       diagnostics,[m
+[36m@@ -2676,6 +3003,9 @@[m [mexport async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout[m
+       tableDiagnostics: [],[m
+       fieldDiagnostics: buildFieldDiagnostics(new Map(), {}),[m
+       fieldSources: {},[m
+[32m+[m[32m      playerIdentities: [],[m
+[32m+[m[32m      racers: [],[m
+[32m+[m[32m      entries: [],[m
+       fallbackUsed: true,[m
+       fallbackReason: String(error?.message || error),[m
+       diagnostics: {[m

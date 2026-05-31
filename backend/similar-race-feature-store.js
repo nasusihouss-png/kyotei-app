@@ -53,6 +53,16 @@ function parseRaceIdMeta(raceId) {
   return {};
 }
 
+function buildStableRaceKey({ raceId = null, raceDate = null, venueCode = null, raceNo = null } = {}) {
+  const dateText = toText(raceDate);
+  const venue = toInt(venueCode, null);
+  const race = toInt(raceNo, null);
+  if (dateText && Number.isInteger(venue) && Number.isInteger(race)) {
+    return `${dateText.replace(/-/g, "")}_${venue}_${race}`;
+  }
+  return toText(raceId);
+}
+
 export function ensureSimilarRaceFeatureTable() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS similar_race_features (
@@ -90,6 +100,7 @@ export function ensureSimilarRaceFeatureTable() {
       second_given_head_json TEXT,
       near_tie_second_json TEXT,
       top6_json TEXT,
+      optional16_json TEXT,
       optional_active INTEGER NOT NULL DEFAULT 0,
       optional_size INTEGER,
       formation_reason TEXT,
@@ -102,6 +113,8 @@ export function ensureSimilarRaceFeatureTable() {
       head_hit INTEGER,
       bet_hit INTEGER,
       top6_hit INTEGER,
+      optional16_hit INTEGER,
+      settled INTEGER NOT NULL DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -132,6 +145,10 @@ export function ensureSimilarRaceFeatureTable() {
   addColumn("formation_reason", "TEXT");
   addColumn("predicted_head", "INTEGER");
   addColumn("racers_feature_json", "TEXT");
+  addColumn("optional16_json", "TEXT");
+  addColumn("optional16_hit", "INTEGER");
+  addColumn("settled", "INTEGER NOT NULL DEFAULT 0");
+  db.exec("UPDATE similar_race_features SET settled = 1 WHERE final_result IS NOT NULL AND COALESCE(settled, 0) = 0");
 }
 
 ensureSimilarRaceFeatureTable();
@@ -172,6 +189,7 @@ const upsertFeatureStmt = db.prepare(`
     second_given_head_json,
     near_tie_second_json,
     top6_json,
+    optional16_json,
     optional_active,
     optional_size,
     formation_reason,
@@ -184,6 +202,8 @@ const upsertFeatureStmt = db.prepare(`
     head_hit,
     bet_hit,
     top6_hit,
+    optional16_hit,
+    settled,
     created_at,
     updated_at
   ) VALUES (
@@ -221,6 +241,7 @@ const upsertFeatureStmt = db.prepare(`
     @second_given_head_json,
     @near_tie_second_json,
     @top6_json,
+    @optional16_json,
     @optional_active,
     @optional_size,
     @formation_reason,
@@ -233,6 +254,8 @@ const upsertFeatureStmt = db.prepare(`
     @head_hit,
     @bet_hit,
     @top6_hit,
+    @optional16_hit,
+    @settled,
     COALESCE(@created_at, CURRENT_TIMESTAMP),
     @updated_at
   )
@@ -270,6 +293,7 @@ const upsertFeatureStmt = db.prepare(`
     second_given_head_json=excluded.second_given_head_json,
     near_tie_second_json=excluded.near_tie_second_json,
     top6_json=excluded.top6_json,
+    optional16_json=excluded.optional16_json,
     optional_active=excluded.optional_active,
     optional_size=excluded.optional_size,
     formation_reason=excluded.formation_reason,
@@ -282,6 +306,11 @@ const upsertFeatureStmt = db.prepare(`
     head_hit=COALESCE(excluded.head_hit, similar_race_features.head_hit),
     bet_hit=COALESCE(excluded.bet_hit, similar_race_features.bet_hit),
     top6_hit=COALESCE(excluded.top6_hit, similar_race_features.top6_hit),
+    optional16_hit=COALESCE(excluded.optional16_hit, similar_race_features.optional16_hit),
+    settled=CASE
+      WHEN COALESCE(excluded.settled, 0) = 1 OR COALESCE(excluded.final_result, similar_race_features.final_result) IS NOT NULL THEN 1
+      ELSE COALESCE(similar_race_features.settled, 0)
+    END,
     updated_at=excluded.updated_at
 `);
 
@@ -292,6 +321,8 @@ const updateOutcomeStmt = db.prepare(`
     head_hit = COALESCE(@head_hit, head_hit),
     bet_hit = COALESCE(@bet_hit, bet_hit),
     top6_hit = COALESCE(@top6_hit, top6_hit),
+    optional16_hit = COALESCE(@optional16_hit, optional16_hit),
+    settled = CASE WHEN COALESCE(@settled, 0) = 1 OR COALESCE(@final_result, final_result) IS NOT NULL THEN 1 ELSE settled END,
     updated_at = @updated_at
   WHERE race_id = @race_id
 `);
@@ -305,6 +336,11 @@ function normalizeTop6Combos(value) {
     })
     .filter(Boolean)
     .slice(0, 6);
+}
+
+function normalizeOptional16Combos(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return normalizeTop6Combos(value.combos || []);
 }
 
 function normalizeCombo(value) {
@@ -503,13 +539,22 @@ export function extractSimilarRaceFeatureSnapshot({ raceId, race = null, predict
       : predictionObj?.optionalFormation16 && typeof predictionObj.optionalFormation16 === "object" && !Array.isArray(predictionObj.optionalFormation16)
         ? predictionObj.optionalFormation16
         : null;
+  const raceDate = toText(race?.date ?? predictionObj?.snapshot_context?.race_date ?? raceIdMeta.race_date);
+  const venueCode = toInt(race?.venueId ?? predictionObj?.snapshot_context?.venue_code ?? raceIdMeta.venue_code, null);
+  const raceNo = toInt(race?.raceNo ?? predictionObj?.snapshot_context?.race_no ?? raceIdMeta.race_no, null);
+  const stableRaceId = buildStableRaceKey({
+    raceId,
+    raceDate,
+    venueCode,
+    raceNo
+  });
   return {
-    race_id: toText(raceId),
+    race_id: stableRaceId,
     prediction_snapshot_id: toInt(predictionSnapshotId, null),
-    race_date: toText(race?.date ?? predictionObj?.snapshot_context?.race_date ?? raceIdMeta.race_date),
-    venue_code: toInt(race?.venueId ?? predictionObj?.snapshot_context?.venue_code ?? raceIdMeta.venue_code, null),
+    race_date: raceDate,
+    venue_code: venueCode,
     venue_name: toText(race?.venueName ?? predictionObj?.snapshot_context?.venue_name),
-    race_no: toInt(race?.raceNo ?? predictionObj?.snapshot_context?.race_no ?? raceIdMeta.race_no, null),
+    race_no: raceNo,
     race_pattern: toText(pure?.racePattern ?? predictionObj?.racePattern ?? predictionObj?.race_pattern) || "mixed",
     race_pattern_score: toNum(pure?.racePatternScore ?? predictionObj?.racePatternScore, null),
     boat1_head_pre: toNum(hard?.boat1_head_pre ?? pure?.head_prob_1 ?? predictionObj?.head_prob_1, null),
@@ -548,6 +593,7 @@ export function extractSimilarRaceFeatureSnapshot({ raceId, race = null, predict
     ),
     near_tie_second_json: JSON.stringify(nearTieCandidates),
     top6_json: JSON.stringify(top6Rows),
+    optional16_json: JSON.stringify(normalizeOptional16Combos(optionalFormation)),
     optional_active: pure?.optionalFormation16?.active === true || predictionObj?.optionalFormation16?.active === true ? 1 : 0,
     optional_size: toInt(optionalFormation?.size, null),
     formation_reason: toText(
@@ -564,6 +610,8 @@ export function extractSimilarRaceFeatureSnapshot({ raceId, race = null, predict
     head_hit: null,
     bet_hit: null,
     top6_hit: null,
+    optional16_hit: null,
+    settled: 0,
     created_at: null,
     updated_at: nowIso()
   };
@@ -577,21 +625,77 @@ export function upsertSimilarRaceFeatureSnapshot(args = {}) {
   return snapshot;
 }
 
-export function updateSimilarRaceFeatureOutcome({ raceId, finalResult = null, headHit = null, betHit = null, top6Hit = null } = {}) {
+export function updateSimilarRaceFeatureOutcome({ raceId, date = null, venueId = null, raceNo = null, finalResult = null, headHit = null, betHit = null, top6Hit = null, optional16Hit = null } = {}) {
   ensureSimilarRaceFeatureTable();
-  if (!toText(raceId)) return;
+  const stableRaceId = buildStableRaceKey({ raceId, raceDate: date, venueCode: venueId, raceNo });
+  if (!stableRaceId) return;
+  const finalResultText = toText(finalResult);
+  const existing = db.prepare("SELECT top6_json, optional16_json, optional_active, optional_size FROM similar_race_features WHERE race_id = ? LIMIT 1").get(stableRaceId);
+  const existingTop6 = safeJsonParse(existing?.top6_json, []);
+  const storedOptional = existing
+    ? {
+      active: Number(existing.optional_active || 0) === 1,
+      size: toInt(existing.optional_size, 0),
+      combos: safeJsonParse(existing.optional16_json, [])
+    }
+    : null;
+  const computedTop6Hit =
+    top6Hit === null || top6Hit === undefined
+      ? finalResultText && Array.isArray(existingTop6)
+        ? existingTop6.some((row) => row?.combo === finalResultText)
+        : null
+      : top6Hit;
+  const optionalCombos = storedOptional?.combos || [];
+  const computedOptional16Hit =
+    optional16Hit === null || optional16Hit === undefined
+      ? finalResultText && Array.isArray(optionalCombos) && optionalCombos.length > 0
+        ? optionalCombos.some((row) => row?.combo === finalResultText)
+        : null
+      : optional16Hit;
   updateOutcomeStmt.run({
-    race_id: toText(raceId),
-    final_result: toText(finalResult),
+    race_id: stableRaceId,
+    final_result: finalResultText,
     head_hit: headHit === null || headHit === undefined ? null : (toNum(headHit, 0) ? 1 : 0),
     bet_hit: betHit === null || betHit === undefined ? null : (toNum(betHit, 0) ? 1 : 0),
-    top6_hit: top6Hit === null || top6Hit === undefined ? null : (toNum(top6Hit, 0) ? 1 : 0),
+    top6_hit: computedTop6Hit === null || computedTop6Hit === undefined ? null : (toNum(computedTop6Hit, 0) ? 1 : 0),
+    optional16_hit: computedOptional16Hit === null || computedOptional16Hit === undefined ? null : (toNum(computedOptional16Hit, 0) ? 1 : 0),
+    settled: finalResultText ? 1 : 0,
     updated_at: nowIso()
   });
 }
 
-export function backfillSimilarRaceFeatures({ limit = 4000 } = {}) {
+function normalizeVenueFilter(venueIds = null) {
+  if (!venueIds) return null;
+  const rows = Array.isArray(venueIds) ? venueIds : String(venueIds).split(",");
+  const ids = rows
+    .map((value) => toInt(value, null))
+    .filter(Number.isInteger);
+  return ids.length > 0 ? [...new Set(ids)] : null;
+}
+
+function isWithinBackfillScope(snapshot = {}, { dateFrom = null, dateTo = null, venueIds = null } = {}) {
+  const raceDate = toText(snapshot?.race_date);
+  const venueCode = toInt(snapshot?.venue_code, null);
+  if (dateFrom && (!raceDate || raceDate < dateFrom)) return false;
+  if (dateTo && (!raceDate || raceDate > dateTo)) return false;
+  if (Array.isArray(venueIds) && venueIds.length > 0 && !venueIds.includes(venueCode)) return false;
+  return true;
+}
+
+export function backfillSimilarRaceFeatures({
+  limit = 4000,
+  dateFrom = null,
+  dateTo = null,
+  venueIds = null,
+  dryRun = false,
+  logger = null,
+  progressEvery = 100
+} = {}) {
   ensureSimilarRaceFeatureTable();
+  const normalizedVenueIds = normalizeVenueFilter(venueIds);
+  const normalizedDateFrom = toText(dateFrom);
+  const normalizedDateTo = toText(dateTo);
+  const log = typeof logger === "function" ? logger : null;
   const raceMetaRows = db.prepare(`
     SELECT race_id, race_date, venue_id, venue_name, race_no
     FROM races
@@ -684,15 +788,32 @@ export function backfillSimilarRaceFeatures({ limit = 4000 } = {}) {
   const verificationByRace = new Map(latestVerificationRows.map((row) => [String(row.race_id), row]));
   const rows = [...predictionRows, ...featureRows, ...featureEventRows];
   const existingRows = db.prepare(`
-    SELECT race_id, final_result, head_hit, bet_hit, top6_hit
+    SELECT race_id, final_result, head_hit, bet_hit, top6_hit, optional16_hit, settled
     FROM similar_race_features
   `).all();
   const existingByRace = new Map(existingRows.map((row) => [String(row.race_id), row]));
   const seenRaceIds = new Set();
-  let inserted = 0;
+  const summary = {
+    backfillInsertedCount: 0,
+    backfillUpdatedCount: 0,
+    backfillSkippedCount: 0,
+    backfillDryRun: dryRun === true,
+    backfillRange: {
+      dateFrom: normalizedDateFrom,
+      dateTo: normalizedDateTo
+    },
+    backfillVenueIds: normalizedVenueIds || [],
+    sourceRowsScanned: rows.length,
+    sourceRowsConsidered: 0,
+    sourceRowsWithResult: 0,
+    storagePath: SIMILAR_RACE_STORAGE_PATH
+  };
   for (const row of rows) {
     const raceId = toText(row?.race_id);
-    if (!raceId || seenRaceIds.has(raceId)) continue;
+    if (!raceId || seenRaceIds.has(raceId)) {
+      summary.backfillSkippedCount += 1;
+      continue;
+    }
     seenRaceIds.add(raceId);
     const raceMeta = raceMetaByRace.get(raceId) || {};
     const resultRow = resultByRace.get(raceId) || {};
@@ -727,26 +848,63 @@ export function backfillSimilarRaceFeatures({ limit = 4000 } = {}) {
       prediction,
       predictionSnapshotId: row?.id
     });
-    if (!snapshot?.race_id) continue;
+    if (!snapshot?.race_id) {
+      summary.backfillSkippedCount += 1;
+      continue;
+    }
+    if (!isWithinBackfillScope(snapshot, {
+      dateFrom: normalizedDateFrom,
+      dateTo: normalizedDateTo,
+      venueIds: normalizedVenueIds
+    })) {
+      summary.backfillSkippedCount += 1;
+      continue;
+    }
+    summary.sourceRowsConsidered += 1;
     const existing = existingByRace.get(String(snapshot.race_id));
     const actual = toText(storedActualResult);
     if (actual) {
+      summary.sourceRowsWithResult += 1;
       snapshot.final_result = actual;
       snapshot.head_hit = toNum(row?.head_hit ?? verificationRow?.head_hit, null);
       snapshot.bet_hit = toNum(row?.bet_hit ?? verificationRow?.bet_hit ?? settlementRow?.bet_hit, null);
       const top6Rows = safeJsonParse(snapshot.top6_json, []);
+      const optional16Rows = safeJsonParse(snapshot.optional16_json, []);
       if (snapshot.head_hit === null && Number.isInteger(snapshot.predicted_head)) {
         snapshot.head_hit = String(actual).split("-")[0] === String(snapshot.predicted_head) ? 1 : 0;
       }
       snapshot.top6_hit = Array.isArray(top6Rows) && top6Rows.some((item) => item?.combo === actual) ? 1 : 0;
+      snapshot.optional16_hit = Array.isArray(optional16Rows) && optional16Rows.some((item) => item?.combo === actual) ? 1 : 0;
+      snapshot.settled = 1;
     } else if (existing) {
       snapshot.final_result = existing.final_result ?? null;
       snapshot.head_hit = toNum(existing.head_hit, null);
       snapshot.bet_hit = toNum(existing.bet_hit, null);
       snapshot.top6_hit = toNum(existing.top6_hit, null);
+      snapshot.optional16_hit = toNum(existing.optional16_hit, null);
+      snapshot.settled = toNum(existing.settled, 0);
     }
-    upsertFeatureStmt.run(snapshot);
-    inserted += 1;
+    if (dryRun !== true) {
+      upsertFeatureStmt.run(snapshot);
+    }
+    if (existing) {
+      summary.backfillUpdatedCount += 1;
+    } else {
+      summary.backfillInsertedCount += 1;
+    }
+    const completed = summary.backfillInsertedCount + summary.backfillUpdatedCount;
+    if (log && progressEvery > 0 && completed % progressEvery === 0) {
+      log({
+        ...summary,
+        message: "similar-race backfill progress"
+      });
+    }
   }
-  return inserted;
+  if (log) {
+    log({
+      ...summary,
+      message: "similar-race backfill complete"
+    });
+  }
+  return summary;
 }

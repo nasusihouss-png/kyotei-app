@@ -28,6 +28,8 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   const l2 = laneRow(ranking, 2);
   const l3 = laneRow(ranking, 3);
   const l4 = laneRow(ranking, 4);
+  const l5 = laneRow(ranking, 5);
+  const l6 = laneRow(ranking, 6);
 
   const s1 = toNum(l1.score);
   const s2 = toNum(l2.score);
@@ -50,6 +52,12 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
   const lap2 = 7 - toNum(l2.features?.lap_time_rank, 6);
   const lap3 = 7 - toNum(l3.features?.lap_time_rank, 6);
   const lap4 = 7 - toNum(l4.features?.lap_time_rank, 6);
+  const straight3 = Math.max(0, toNum(l3.features?.straight_line_speed_zscore, 0));
+  const straight4 = Math.max(0, toNum(l4.features?.straight_line_speed_zscore, 0));
+  const straight5 = Math.max(0, toNum(l5.features?.straight_line_speed_zscore, 0));
+  const straight6 = Math.max(0, toNum(l6.features?.straight_line_speed_zscore, 0));
+  const outerStraightBoost = Math.max(straight3, straight4, straight5, straight6);
+  const farOuterStraightBoost = Math.max(straight5, straight6);
   const motor21 = toNum(l1.features?.motor2_rate, 0);
   const motor22 = toNum(l2.features?.motor2_rate, 0);
   const motor23 = toNum(l3.features?.motor2_rate, 0);
@@ -95,6 +103,7 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     (e1 + launchEdge1) * 0.17 -
     Math.max(0, launchEdge2 - launchEdge1) * 0.045 -
     Math.max(0, launchEdge3 - launchEdge1) * 0.03 -
+    outerStraightBoost * 0.12 -
     (chaosIdx - 50) * 0.03 +
     toNum(p1.nige_style_score, 50) * 0.006 +
     toNum(p1.start_stability_score, 50) * 0.005;
@@ -117,6 +126,7 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     (e3 + launchEdge3) * 0.14 +
     (e4 + launchEdge4) * 0.085 +
     Math.max(lap3, lap4) * 0.05 +
+    outerStraightBoost * 0.18 +
     Math.max(motor23, motor24) * 0.002 +
     (toNum(p3.makuri_style_score, 50) + toNum(p4.makuri_style_score, 50)) * 0.003 +
     Math.max(...slitBoost34);
@@ -130,6 +140,8 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     ((s3 + s4) * 0.5 - s1) * 0.028 +
     ((e3 + launchEdge3 + e4 + launchEdge4) * 0.5) * 0.13 +
     ((lap3 + lap4) * 0.5) * 0.04 +
+    (straight3 + straight4) * 0.08 +
+    farOuterStraightBoost * 0.06 +
     (toNum(p3.start_attack_score, 50) + toNum(p4.start_attack_score, 50)) * 0.0025 +
     (slitBoost34[0] * 0.7 + slitBoost34[1] * 0.7);
   makurizashiLogit -=
@@ -167,13 +179,14 @@ export function analyzeRaceFlow({ ranking, raceIndexes, racePattern, raceRisk, p
     chaos_prob: Number(toNum(chaos, 0).toFixed(4)),
     flow_confidence: Number(flow_confidence.toFixed(4)),
     slit_alert_lanes: [slit2 ? 2 : null, slit3 ? 3 : null, slit4 ? 4 : null].filter(Boolean),
+    straight_line_alert_lanes: [straight3 >= 0.5 ? 3 : null, straight4 >= 0.5 ? 4 : null, straight5 >= 0.5 ? 5 : null, straight6 >= 0.5 ? 6 : null].filter(Boolean),
     f_hold_caution_lanes: [fHold1 ? 1 : null, fHold2 ? 2 : null, fHold3 ? 3 : null, fHold4 ? 4 : null].filter(Boolean),
     start_signal_debug: {
       by_lane: {
         1: { launch_edge: Number(launchEdge1.toFixed(2)), exhibition_rank_signal: e1, st_rank_signal: st1, expected_actual_st_signal: expSt1, lap_rank_signal: lap1, motor2_signal: motor21 },
         2: { launch_edge: Number(launchEdge2.toFixed(2)), exhibition_rank_signal: e2, st_rank_signal: st2, expected_actual_st_signal: expSt2, lap_rank_signal: lap2, motor2_signal: motor22 },
-        3: { launch_edge: Number(launchEdge3.toFixed(2)), exhibition_rank_signal: e3, st_rank_signal: st3, expected_actual_st_signal: expSt3, lap_rank_signal: lap3, motor2_signal: motor23 },
-        4: { launch_edge: Number(launchEdge4.toFixed(2)), exhibition_rank_signal: e4, st_rank_signal: st4, expected_actual_st_signal: expSt4, lap_rank_signal: lap4, motor2_signal: motor24 }
+        3: { launch_edge: Number(launchEdge3.toFixed(2)), exhibition_rank_signal: e3, st_rank_signal: st3, expected_actual_st_signal: expSt3, lap_rank_signal: lap3, straight_line_signal: Number(straight3.toFixed(3)), motor2_signal: motor23 },
+        4: { launch_edge: Number(launchEdge4.toFixed(2)), exhibition_rank_signal: e4, st_rank_signal: st4, expected_actual_st_signal: expSt4, lap_rank_signal: lap4, straight_line_signal: Number(straight4.toFixed(3)), motor2_signal: motor24 }
       },
       scenario_driver_scores: {
         boat1_escape: Number(nigeLogit.toFixed(3)),

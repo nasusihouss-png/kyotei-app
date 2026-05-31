@@ -110,6 +110,15 @@ import {
   SCENARIO_COVERAGE_FIELDS,
   SOURCE_PRIORITY_RULES
 } from "../services/snapshot-coverage.js";
+import { buildRaceRuleInsights } from "../services/race-rule-insights.js";
+import {
+  DEFAULT_FETCHED_DATA_FIELDS,
+  buildPlayerMasterPersistenceModel,
+  buildPredictionExplanationModel,
+  buildQuickInputModel,
+  buildRaceLogPersistenceModel,
+  buildTicketsModel
+} from "../../../src/lib/kyotei-models.js";
 
 export const raceRouter = Router();
 const raceRouteRuntimeDeps = {
@@ -257,6 +266,174 @@ function toTrimmedStringOrNull(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text ? text : null;
+}
+
+function isLaneFallbackName(value) {
+  const text = toTrimmedStringOrNull(value);
+  return !!text && /^Lane-\d+$/i.test(text);
+}
+
+function toPositiveRegistrationNo(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function pickPreferredName(row = {}, lane = null) {
+  const candidates = [
+    row?.playerName,
+    row?.name,
+    row?.racerName,
+    row?.displayName,
+    row?.player_name
+  ]
+    .map((value) => toTrimmedStringOrNull(value))
+    .filter((value) => value && !isLaneFallbackName(value));
+  return candidates[0] || (Number.isInteger(lane) ? `Lane-${lane}` : null);
+}
+
+function pickPreferredRegistrationNo(row = {}) {
+  const candidates = [
+    row?.registrationNo,
+    row?.registrationNumber,
+    row?.registration_no,
+    row?.registration_number,
+    row?.regNo,
+    row?.playerRegNo
+  ];
+  for (const candidate of candidates) {
+    const n = toPositiveRegistrationNo(candidate);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function pickPreferredClass(row = {}) {
+  const candidates = [row?.class, row?.grade, row?.playerClass]
+    .map((value) => toTrimmedStringOrNull(value))
+    .filter(Boolean);
+  return candidates[0] || null;
+}
+
+function loadRacerIdentityByLane(raceId = null) {
+  const normalizedRaceId = toTrimmedStringOrNull(raceId);
+  if (!normalizedRaceId) return new Map();
+  const rows = [
+    ...db.prepare(`SELECT lane, registration_no, name, class, 'local_snapshot' AS identity_source FROM entries WHERE race_id = ? ORDER BY lane`).all(normalizedRaceId),
+    ...db.prepare(`SELECT lane, registration_no, name, class, 'local_snapshot' AS identity_source FROM feature_snapshots WHERE race_id = ? ORDER BY lane`).all(normalizedRaceId)
+  ];
+  const byLane = new Map();
+  for (const row of rows) {
+    const lane = toInt(row?.lane, null);
+    if (!Number.isInteger(lane)) continue;
+    const current = byLane.get(lane) || {};
+    const preferredName = pickPreferredName(row);
+    byLane.set(lane, {
+      lane,
+      name: preferredName && !isLaneFallbackName(preferredName) ? preferredName : current.name || null,
+      registrationNo: pickPreferredRegistrationNo(row) ?? current.registrationNo ?? null,
+      class: pickPreferredClass(row) || current.class || null,
+      source: toTrimmedStringOrNull(row?.identity_source) || current.source || "local_snapshot"
+    });
+  }
+  return byLane;
+}
+
+function loadKyoteiBiyoriIdentityByLane(sourceKyoteiBiyori = null) {
+  const byLane = new Map();
+  const rows = [
+    ...(Array.isArray(sourceKyoteiBiyori?.playerIdentities) ? sourceKyoteiBiyori.playerIdentities : []),
+    ...(Array.isArray(sourceKyoteiBiyori?.racers) ? sourceKyoteiBiyori.racers : []),
+    ...(Array.isArray(sourceKyoteiBiyori?.entries) ? sourceKyoteiBiyori.entries : [])
+  ];
+  for (const row of rows) {
+    const lane = toInt(row?.lane, null);
+    if (!Number.isInteger(lane)) continue;
+    const current = byLane.get(lane) || {};
+    const preferredName = pickPreferredName(row, lane);
+    byLane.set(lane, {
+      lane,
+      name: preferredName && !isLaneFallbackName(preferredName) ? preferredName : current.name || null,
+      registrationNo: pickPreferredRegistrationNo(row) ?? current.registrationNo ?? null,
+      class: pickPreferredClass(row) || current.class || null,
+      branch: toTrimmedStringOrNull(row?.branch) || current.branch || null,
+      age: toInt(row?.age, current.age ?? null),
+      weight: toNullableNum(row?.weight) ?? current.weight ?? null,
+      source: "kyoteibiyori"
+    });
+  }
+  return byLane;
+}
+
+function resolveApiRacerIdentity(racer = {}, identityByLane = new Map(), kyoteiIdentityByLane = new Map()) {
+  const lane = toInt(racer?.lane, null);
+  const persisted = Number.isInteger(lane) ? identityByLane.get(lane) || {} : {};
+  const kyoteiExplicit = Number.isInteger(lane) ? kyoteiIdentityByLane.get(lane) || {} : {};
+  const officialName = pickPreferredName({
+    playerName: racer?.officialBaseName
+  }, lane);
+  const kyoteiExplicitName = pickPreferredName(kyoteiExplicit, lane);
+  const kyoteiName = pickPreferredName({
+    playerName: racer?.kyoteiBiyoriPlayerName
+  }, lane);
+  const localSnapshotName = pickPreferredName({
+    playerName: persisted?.name
+  }, lane);
+  const existingName = pickPreferredName({
+    playerName: racer?.playerName,
+    name: racer?.name,
+    racerName: racer?.racerName,
+    displayName: racer?.displayName,
+    player_name: racer?.player_name
+  }, lane);
+  const chosenIdentity =
+    (officialName && !isLaneFallbackName(officialName) && ["official", officialName]) ||
+    (kyoteiExplicitName && !isLaneFallbackName(kyoteiExplicitName) && ["kyoteibiyori", kyoteiExplicitName]) ||
+    (kyoteiName && !isLaneFallbackName(kyoteiName) && ["kyoteibiyori", kyoteiName]) ||
+    (localSnapshotName && !isLaneFallbackName(localSnapshotName) && ["existing_racer", localSnapshotName]) ||
+    (existingName && !isLaneFallbackName(existingName) && ["existing_racer", existingName]) ||
+    ["fallback_lane", Number.isInteger(lane) ? `Lane-${lane}` : null];
+  const existingRegistrationNo = pickPreferredRegistrationNo({
+    registrationNo: persisted?.registrationNo
+  });
+  const registrationNo =
+    pickPreferredRegistrationNo({
+      registrationNo: racer?.officialBaseRegistrationNo
+    }) ??
+    pickPreferredRegistrationNo({
+      registrationNo: kyoteiExplicit?.registrationNo
+    }) ??
+    pickPreferredRegistrationNo({
+      registrationNo: racer?.kyoteiBiyoriRegistrationNo
+    }) ??
+    pickPreferredRegistrationNo({
+      registrationNo: racer?.registrationNo,
+      registrationNumber: racer?.registrationNumber,
+      registration_number: racer?.registration_number,
+      registration_no: racer?.registration_no,
+      regNo: racer?.regNo,
+      playerRegNo: racer?.playerRegNo
+    }) ??
+    existingRegistrationNo;
+  const racerClass =
+    pickPreferredClass({
+      class: racer?.officialBaseClass
+    }) ||
+    pickPreferredClass(kyoteiExplicit) ||
+    pickPreferredClass(racer) ||
+    pickPreferredClass(persisted) ||
+    null;
+  return {
+    ...racer,
+    name: chosenIdentity[1],
+    registrationNo,
+    registrationNumber: registrationNo,
+    registration_no: registrationNo,
+    class: racerClass,
+    branch: toTrimmedStringOrNull(racer?.branch) || toTrimmedStringOrNull(kyoteiExplicit?.branch) || toTrimmedStringOrNull(persisted?.branch),
+    age: toInt(racer?.age, toInt(kyoteiExplicit?.age, toInt(persisted?.age, null))),
+    weight: toNullableNum(racer?.weight) ?? toNullableNum(kyoteiExplicit?.weight) ?? toNullableNum(persisted?.weight),
+    playerIdentitySource: chosenIdentity[0]
+  };
 }
 
 function getStrictLapPayload(racer = {}) {
@@ -416,7 +593,7 @@ function enforceOptionalFormationConsistency(optionalFormation16 = null, recomme
 
 export function resolveFormationReason(pureTop6Prediction = null, prediction = null, optionalFormation16 = []) {
   const normalizedFormation = Array.isArray(optionalFormation16) ? [] : optionalFormation16;
-  if (Array.isArray(normalizedFormation)) {
+  if (!isOptionalFormationActive(normalizedFormation)) {
     return null;
   }
   return (
@@ -441,8 +618,19 @@ function buildReasonSummary(baseReason = null, extraReasons = []) {
     ...(Array.isArray(extraReasons) ? extraReasons : [])
       .map((reason) => (typeof reason === "string" ? reason.trim() : ""))
       .filter(Boolean)
-  ];
+  ].filter(Boolean);
   return merged.length > 0 ? [...new Set(merged)].join("; ") : null;
+}
+
+function isOptionalFormationActive(optionalFormation16 = null) {
+  return (
+    optionalFormation16 &&
+    typeof optionalFormation16 === "object" &&
+    !Array.isArray(optionalFormation16) &&
+    optionalFormation16.active === true &&
+    Array.isArray(optionalFormation16.combos) &&
+    optionalFormation16.combos.length > 0
+  );
 }
 
 function mergeReasonList(...groups) {
@@ -642,10 +830,12 @@ function buildCurrentRaceFingerprint({ race = null, pureTop6Prediction = null, h
     nearTieCandidates: normalizeNearTieCandidates(pureTop6Prediction?.near_tie_second_candidates),
     optionalActive: optionalFormation?.active === true,
     optionalSize: toNullableNum(optionalFormation?.size) ?? 0,
-    formationReason: toTrimmedStringOrNull(
-      pureTop6Prediction?.formationReason ??
-        optionalFormation?.reason
-    ),
+    formationReason: isOptionalFormationActive(optionalFormation)
+      ? toTrimmedStringOrNull(
+        pureTop6Prediction?.formationReason ??
+          optionalFormation?.reason
+      )
+      : null,
     predictedHead
   };
 }
@@ -832,11 +1022,25 @@ function buildSimilarRaceQueryKey(current = {}) {
   };
 }
 
+function buildSimilarRaceCurrentKey(race = null) {
+  const compactDate = String(race?.date || "").replace(/-/g, "");
+  const venueId = toInt(race?.venueId, null);
+  const raceNo = toInt(race?.raceNo, null);
+  if (!/^\d{8}$/.test(compactDate) || !Number.isInteger(venueId) || !Number.isInteger(raceNo)) {
+    return null;
+  }
+  return `${compactDate}_${venueId}_${raceNo}`;
+}
+
 function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardRace1234 = null } = {}) {
   try {
     backfillSimilarRaceFeatures();
     const current = buildCurrentRaceFingerprint({ race, pureTop6Prediction, hardRace1234 });
     const queryKey = buildSimilarRaceQueryKey(current);
+    const currentKey = buildSimilarRaceCurrentKey(race);
+    const currentDate = toTrimmedStringOrNull(race?.date);
+    const currentVenueCode = toInt(race?.venueId, null);
+    const currentRaceNo = toInt(race?.raceNo, null);
     const selectBase = `
       SELECT
         race_id,
@@ -880,10 +1084,31 @@ function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardR
         recommended_bet_mode,
         head_hit,
         bet_hit,
-        top6_hit
+        top6_hit,
+        optional16_hit,
+        settled
       FROM similar_race_features
-      WHERE final_result IS NOT NULL
+      WHERE settled = 1
+        AND final_result IS NOT NULL
+        AND NOT (
+          (@currentKey IS NOT NULL AND race_id = @currentKey)
+          OR (
+            @currentDate IS NOT NULL
+            AND @currentVenueCode IS NOT NULL
+            AND @currentRaceNo IS NOT NULL
+            AND race_date = @currentDate
+            AND CAST(venue_code AS INTEGER) = @currentVenueCode
+            AND CAST(race_no AS INTEGER) = @currentRaceNo
+          )
+        )
     `;
+    const settleEligibleCount = db.prepare("SELECT COUNT(*) AS count FROM similar_race_features WHERE settled = 1 AND final_result IS NOT NULL").get()?.count || 0;
+    const selfExclusionParams = {
+      currentKey,
+      currentDate,
+      currentVenueCode,
+      currentRaceNo
+    };
     const sameVenueRows = db.prepare(
       `${selectBase}
         AND (
@@ -893,6 +1118,7 @@ function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardR
       ORDER BY updated_at DESC, race_id DESC
       LIMIT 240`
     ).all({
+      ...selfExclusionParams,
       venueCode: current.venueId,
       venueName: current.venueName
     });
@@ -900,7 +1126,7 @@ function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardR
       `${selectBase}
       ORDER BY updated_at DESC, race_id DESC
       LIMIT 360`
-    ).all();
+    ).all(selfExclusionParams);
     const dedupedRows = [];
     const seenRaceIds = new Set();
     for (const row of [...sameVenueRows, ...allVenueRows]) {
@@ -910,7 +1136,7 @@ function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardR
       dedupedRows.push(row);
     }
     const rows = dedupedRows;
-    const samples = rows
+    const scoredSamples = rows
       .map((row) => ({
         raceId: toTrimmedStringOrNull(row?.race_id),
         raceDate: toTrimmedStringOrNull(row?.race_date),
@@ -954,15 +1180,17 @@ function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardR
           .slice(0, 3),
         headHit: toNum(row?.head_hit, 0) === 1,
         betHit: toNum(row?.bet_hit, 0) === 1,
-        top6Hit: toNum(row?.top6_hit, 0) === 1
+        top6Hit: toNum(row?.top6_hit, 0) === 1,
+        optional16Hit: toNum(row?.optional16_hit, 0) === 1
       }))
       .map((sample) => ({
         ...sample,
         similarity: scoreHistoricalFingerprintSimilarity(current, sample)
       }))
-      .filter((sample) => sample.similarity >= 48)
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, 24);
+      .sort((a, b) => b.similarity - a.similarity);
+    const thresholdSamples = scoredSamples.filter((sample) => sample.similarity >= 48);
+    const samples = (thresholdSamples.length > 0 ? thresholdSamples : scoredSamples).slice(0, 24);
+    const matchedKeys = samples.map((sample) => sample.raceId).filter(Boolean);
     if (samples.length === 0) {
       const sameVenueSettledCount = sameVenueRows.filter((row) => toTrimmedStringOrNull(row?.confirmed_result)).length;
       const allVenueSettledCount = allVenueRows.filter((row) => toTrimmedStringOrNull(row?.confirmed_result)).length;
@@ -1017,8 +1245,13 @@ function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardR
         ...buildFallbackSimilarRaceSupport({ pureTop6Prediction }),
         similarRaceSearchExecuted: true,
         similarRaceQueryKey: queryKey,
+        similarRaceCurrentKey: currentKey,
+        similarRaceMatchedKeys: [],
+        similarRaceExcludedSelf: true,
         similarRaceStoragePath: SIMILAR_RACE_STORAGE_PATH,
-        similarRaceMatchedCount: 0
+        similarRaceMatchedCount: 0,
+        similarRaceHistoryAvailable: false,
+        similarRaceSettleEligibleCount: settleEligibleCount
       };
     }
     const metric = (predicate) => Number(((samples.filter(predicate).length / samples.length) * 100).toFixed(1));
@@ -1050,6 +1283,7 @@ function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardR
       sameVenueCandidateCount: sameVenueRows.length,
       allVenueCandidateCount: allVenueRows.length,
       matchedCount: samples.length,
+      matchedKeys,
       topSimilarity: samples[0]?.similarity ?? null,
       avgSimilarity
     }));
@@ -1102,17 +1336,28 @@ function buildSimilarRaceSupport({ race = null, pureTop6Prediction = null, hardR
       })),
       similarRaceSearchExecuted: true,
       similarRaceQueryKey: queryKey,
+      similarRaceCurrentKey: currentKey,
+      similarRaceMatchedKeys: matchedKeys,
+      similarRaceExcludedSelf: true,
       similarRaceStoragePath: SIMILAR_RACE_STORAGE_PATH,
-      similarRaceMatchedCount: samples.length
+      similarRaceMatchedCount: samples.length,
+      similarRaceHistoryAvailable: true,
+      similarRaceSettleEligibleCount: settleEligibleCount
     };
   } catch {
     const current = buildCurrentRaceFingerprint({ race, pureTop6Prediction, hardRace1234 });
+    const currentKey = buildSimilarRaceCurrentKey(race);
     return {
       ...buildFallbackSimilarRaceSupport({ pureTop6Prediction }),
       similarRaceSearchExecuted: true,
       similarRaceQueryKey: buildSimilarRaceQueryKey(current),
+      similarRaceCurrentKey: currentKey,
+      similarRaceMatchedKeys: [],
+      similarRaceExcludedSelf: true,
       similarRaceStoragePath: SIMILAR_RACE_STORAGE_PATH,
-      similarRaceMatchedCount: 0
+      similarRaceMatchedCount: 0,
+      similarRaceHistoryAvailable: false,
+      similarRaceSettleEligibleCount: 0
     };
   }
 }
@@ -1185,6 +1430,50 @@ function buildPredictionConfidenceCalibration({
   };
 }
 
+function analyzeSecondPlaceCluster(pureTop6Prediction = null) {
+  const secondGivenHead =
+    pureTop6Prediction?.second_given_head_probabilities && typeof pureTop6Prediction.second_given_head_probabilities === "object"
+      ? pureTop6Prediction.second_given_head_probabilities
+      : {};
+  const rows = [2, 3, 4]
+    .map((lane) => ({
+      lane,
+      probability: toNullableNum(secondGivenHead?.[lane]) ?? 0
+    }))
+    .sort((a, b) => b.probability - a.probability);
+  const top = rows[0]?.probability ?? 0;
+  const second = rows[1]?.probability ?? 0;
+  const third = rows[2]?.probability ?? 0;
+  const clusterTotal = rows.reduce((sum, row) => sum + row.probability, 0);
+  const topGap = top - second;
+  const spread = top - third;
+  const nearTieCandidates = normalizeNearTieCandidates(pureTop6Prediction?.near_tie_second_candidates);
+  const closeComboPreserved = pureTop6Prediction?.close_combo_preserved === true;
+  const tieStrength = clamp(
+    0,
+    100,
+    50 +
+      clusterTotal * 42 +
+      Math.max(0, 0.06 - topGap) * 420 +
+      Math.max(0, 0.12 - spread) * 180 +
+      (nearTieCandidates.length >= 3 ? 14 : nearTieCandidates.length >= 2 ? 8 : 0) +
+      (closeComboPreserved ? 8 : 0)
+  );
+  return {
+    rows,
+    clusterTotal,
+    topGap,
+    spread,
+    nearTieCandidates,
+    closeComboPreserved,
+    tieStrength,
+    strongTie: tieStrength >= 67,
+    moderateTie: tieStrength >= 58,
+    rescue124Score: clamp(0, 100, ((toNullableNum(secondGivenHead?.[2]) ?? 0) * 58 + (toNullableNum(secondGivenHead?.[4]) ?? 0) * 42) * 100),
+    rescue134Score: clamp(0, 100, ((toNullableNum(secondGivenHead?.[3]) ?? 0) * 58 + (toNullableNum(secondGivenHead?.[4]) ?? 0) * 42) * 100)
+  };
+}
+
 function buildRecommendedBetPolicy({
   pureTop6Prediction = null,
   hardRace1234 = null,
@@ -1207,6 +1496,12 @@ function buildRecommendedBetPolicy({
   const similarBetHitRate = toNullableNum(similarSupportBundle?.similarRaceHitBias?.bet_hit_rate) ?? 50;
   const scenarioReproScore = toNullableNum(pureTop6Prediction?.scenario_repro_score) ?? 50;
   const chaosLevel = toNullableNum(pureTop6Prediction?.chaos_level) ?? 0;
+  const headProb1 = toNullableNum(pureTop6Prediction?.head_prob_1) ?? toNullableNum(hardRace1234?.boat1_head_pre) ?? 0;
+  const venueOneCourseTrust =
+    toNullableNum(pureTop6Prediction?.venue_scenario_bias?.one_course_trust) ??
+    toNullableNum(pureTop6Prediction?.venueBiasProfile?.one_course_trust) ??
+    50;
+  const cluster = analyzeSecondPlaceCluster(pureTop6Prediction);
   const weakSupport = similarSupportScore < 45 || similarRaceCount === 0;
   const historySupported = similarHistoryBasis === "history_supported";
   const optionalFlags =
@@ -1229,7 +1524,8 @@ function buildRecommendedBetPolicy({
     optionalFlags.tokuyama_strict_gate !== false;
   const optionalRescueEvidence =
     optionalFlags.rescue_evidence_strong === true ||
-    optionalFlags.strong_near_tie_second_234 === true;
+    optionalFlags.strong_near_tie_second_234 === true ||
+    cluster.strongTie === true;
   const isOmura = venueName === "Omura";
   const isAshiya = venueName === "Ashiya";
   const isTokuyama = venueName === "Tokuyama";
@@ -1281,6 +1577,33 @@ function buildRecommendedBetPolicy({
         : isTamagawa ? 0.155
           : isSuminoe ? 0.158
             : 0.16;
+  const venueInsideRescue =
+    (isOmura || isAmagasaki) &&
+    venueOneCourseTrust >= 58 &&
+    headProb1 >= 0.43 &&
+    cluster.clusterTotal >= 0.76 &&
+    cluster.moderateTie === true;
+  const venueMidChaosRescue =
+    (isTamagawa || isSuminoe) &&
+    cluster.clusterTotal >= 0.8 &&
+    cluster.tieStrength >= 61 &&
+    chaosLevel <= 0.66 &&
+    headProb1 >= 0.38;
+  const attackClusterRescue =
+    (isTokuyama || isAshiya) &&
+    cluster.tieStrength >= 66 &&
+    Math.max(cluster.rescue124Score, cluster.rescue134Score) >= 31 &&
+    headProb1 >= 0.36 &&
+    headProb1 <= 0.68;
+  const strictOptionalGate =
+    confidenceScore >= optionalConfidenceFloor &&
+    strictOptionalReady &&
+    optionalRescueEvidence &&
+    (top6Coverage <= optionalCoverageCeiling || pureTop6Prediction?.close_combo_preserved === true) &&
+    cluster.tieStrength >= (isAshiya || isTokuyama ? 69 : 63) &&
+    Math.max(cluster.rescue124Score, cluster.rescue134Score) >= (isAshiya || isTokuyama ? 33 : 29) &&
+    headProb1 >= 0.36 &&
+    headProb1 <= 0.72;
   const stableTop6Buy =
     top6Coverage >= stableCoverageFloor &&
     (
@@ -1291,7 +1614,7 @@ function buildRecommendedBetPolicy({
     );
   const cautiousTop6Buy =
     !optionalActive &&
-    !weakSupport &&
+    (!weakSupport || venueInsideRescue || venueMidChaosRescue || attackClusterRescue) &&
     top6Coverage >= top6CoverageFloor &&
     confidenceScore >= confidenceFloor &&
     scenarioReproScore >= scenarioFloor;
@@ -1307,12 +1630,13 @@ function buildRecommendedBetPolicy({
     top6Coverage >= top6CoverageFloor &&
     confidenceScore >= confidenceFloor &&
     scenarioReproScore >= scenarioFloor;
-  if (
-    confidenceScore >= optionalConfidenceFloor &&
-    strictOptionalReady &&
-    optionalRescueEvidence &&
-    (top6Coverage <= optionalCoverageCeiling || pureTop6Prediction?.close_combo_preserved === true)
-  ) {
+  const remainRescueTop6Buy =
+    !optionalActive &&
+    (venueInsideRescue || venueMidChaosRescue || attackClusterRescue) &&
+    top6Coverage >= Math.max(0.118, top6CoverageFloor - 0.01) &&
+    confidenceScore >= Math.max(45, confidenceFloor - 3) &&
+    scenarioReproScore >= Math.max(46, scenarioFloor - 4);
+  if (strictOptionalGate) {
     return {
       recommendedBetMode: "buy_top6_plus_optional16",
       skipRiskReason: null,
@@ -1324,7 +1648,7 @@ function buildRecommendedBetPolicy({
             : `${venueName || "default"} calibration allows optional16 because low coverage and near-tie rescue evidence are both present.`
     };
   }
-  if (insideFocusedTop6Buy || stableTop6Buy || cautiousTop6Buy) {
+  if (insideFocusedTop6Buy || stableTop6Buy || cautiousTop6Buy || remainRescueTop6Buy) {
     return {
       recommendedBetMode: "buy_top6",
       skipRiskReason: null,
@@ -1332,14 +1656,14 @@ function buildRecommendedBetPolicy({
         isOmura
           ? "Omura calibration lifts this race to buy_top6 because the inside-head remain shape is organized enough without optional16."
           : isAshiya
-            ? "Ashiya calibration keeps this at buy_top6 because optional16 evidence is not strong enough to justify widening."
+            ? "Ashiya calibration keeps this at buy_top6 because the 2/3/4 cluster is readable but still not strong enough to justify optional16."
             : isTokuyama
               ? "Tokuyama calibration keeps this at buy_top6 because the 3-4 attack shape is readable without optional16 expansion."
               : `${venueName || "default"} calibration keeps this race in buy_top6 because top6 evidence is sufficient without widening.`
     };
   }
   const skipRiskReason =
-    weakSupport
+    weakSupport && !venueInsideRescue && !venueMidChaosRescue && !attackClusterRescue
       ? historySupported
         ? "skip risk is elevated because similar race history exists but does not support an aggressive buy"
         : "skip risk is elevated because similar race support is weak"
@@ -1391,10 +1715,11 @@ function enrichPredictionSupportFields({
   if (pureTop6Prediction?.close_combo_preserved === true) extraFormationReasons.push("near-tie second-place structure needs wider coverage");
   if ((hardRace1234?.hard_race_index || 0) >= 68 && confidenceSummary?.confidence_band === "high") extraFormationReasons.push("hard race confidence is high");
   if (betPolicySummary?.recommendedBetMode === "skip") extraFormationReasons.push("skip risk is elevated due to low stability");
+  const normalizedOptionalFormation = normalizeOptionalFormation16(pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null);
   const baseFormationReason = resolveFormationReason(
     pureTop6Prediction,
     prediction,
-    normalizeOptionalFormation16(pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null)
+    normalizedOptionalFormation
   );
   return {
     ...similarSupportBundle,
@@ -1405,7 +1730,9 @@ function enrichPredictionSupportFields({
       pureTop6Prediction?.venue_scenario_bias?.venueAdjustmentReason,
       betPolicySummary?.modeCalibrationReason
     ),
-    formationReason: buildReasonSummary(baseFormationReason, extraFormationReasons)
+    formationReason: isOptionalFormationActive(normalizedOptionalFormation)
+      ? buildReasonSummary(baseFormationReason, extraFormationReasons)
+      : null
   };
 }
 
@@ -1415,7 +1742,8 @@ function computeSimilarRaceOutcomeFromPrediction(predictionJson = {}, actualResu
     return {
       headHit: null,
       betHit: null,
-      top6Hit: null
+      top6Hit: null,
+      optional16Hit: null
     };
   }
   const pure = predictionJson?.pure_top6_prediction && typeof predictionJson.pure_top6_prediction === "object"
@@ -1436,12 +1764,19 @@ function computeSimilarRaceOutcomeFromPrediction(predictionJson = {}, actualResu
     : Array.isArray(predictionJson?.top6)
       ? predictionJson.top6
       : [];
+  const optional16Rows =
+    pure?.optionalFormation16 && typeof pure.optionalFormation16 === "object" && Array.isArray(pure.optionalFormation16.combos)
+      ? pure.optionalFormation16.combos
+      : predictionJson?.optionalFormation16 && typeof predictionJson.optionalFormation16 === "object" && Array.isArray(predictionJson.optionalFormation16.combos)
+        ? predictionJson.optionalFormation16.combos
+        : [];
   return {
     headHit: headCandidate === null ? null : (String(resultCombo).split("-")[0] === String(headCandidate)),
     betHit: Array.isArray(predictionJson?.final_recommended_bets_snapshot)
       ? predictionJson.final_recommended_bets_snapshot.some((row) => normalizeCombo(row?.combo) === resultCombo)
       : null,
-    top6Hit: top6Rows.some((row) => normalizeCombo(row?.combo) === resultCombo)
+    top6Hit: top6Rows.some((row) => normalizeCombo(row?.combo) === resultCombo),
+    optional16Hit: optional16Rows.some((row) => normalizeCombo(row?.combo) === resultCombo)
   };
 }
 
@@ -3590,11 +3925,16 @@ function computeRouteHitFlags({ actualTop3 = null, top6 = [], optionalFormation1
   const normalizedTop3 = normalizeTop3OrNull(actualTop3);
   if (!normalizedTop3) {
     return {
+      actualCombo: null,
+      headHit: null,
       top6Hit: null,
       optional16Hit: null
     };
   }
   const actualCombo = normalizeCombo(normalizedTop3.join("-"));
+  const predictedHead = safeArray(top6)
+    .map((row) => normalizeCombo(row?.combo ?? row).split("-")[0])
+    .find((value) => value);
   const top6Hit = safeArray(top6)
     .some((row) => normalizeCombo(row?.combo ?? row) === actualCombo);
   const optional16Combos =
@@ -3605,6 +3945,8 @@ function computeRouteHitFlags({ actualTop3 = null, top6 = [], optionalFormation1
     ? optional16Combos.some((row) => normalizeCombo(row?.combo ?? row) === actualCombo)
     : null;
   return {
+    actualCombo,
+    headHit: predictedHead ? String(normalizedTop3[0]) === String(predictedHead) : null,
     top6Hit,
     optional16Hit
   };
@@ -4191,6 +4533,7 @@ function loadRaceSnapshotFromDb({ date, venueId, raceNo }) {
         motor2_rate,
         boat2_rate,
         exhibition_time,
+        lap_time,
         exhibition_st,
         f_hold_count,
         entry_course,
@@ -4236,6 +4579,9 @@ function loadRaceSnapshotFromDb({ date, venueId, raceNo }) {
       boat2Rate: nullableNum(r.boat2_rate),
       exhibitionTime: nullableNum(r.exhibition_time),
       exhibitionSt: nullableNum(r.exhibition_st),
+      exTime: nullableNum(r.exhibition_time),
+      exST: nullableNum(r.exhibition_st),
+      lapTime: nullableNum(r.lap_time),
       fHoldCount: toInt(r.f_hold_count, 0),
       entryCourse: toInt(r.entry_course, null),
       tilt: nullableNum(r.tilt)
@@ -4510,7 +4856,9 @@ export function buildPureInferencePredictionPayload(data = {}) {
         ...pureTop6Prediction,
         buyPolicy: buildModeAwareBuyPolicy(pureTop6Prediction?.buyPolicy || pureTop6Prediction?.venue_scenario_bias?.buyPolicy || null, resolvedRecommendedBetMode),
         optionalFormation16: resolvedOptionalFormation16,
-        formationReason: supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, null, resolvedOptionalFormation16),
+        formationReason: isOptionalFormationActive(resolvedOptionalFormation16)
+          ? supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, null, resolvedOptionalFormation16)
+          : null,
         confidence_band: supportSummary.confidence_band,
         confidence_score: supportSummary.confidence_score,
         prediction_stability_score: supportSummary.prediction_stability_score,
@@ -4521,8 +4869,16 @@ export function buildPureInferencePredictionPayload(data = {}) {
         similarRaceExamples: supportSummary.similarRaceExamples,
         similarRaceSearchExecuted: supportSummary.similarRaceSearchExecuted === true,
         similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
+        similarRaceCurrentKey: supportSummary.similarRaceCurrentKey || null,
+        similarRaceMatchedKeys: Array.isArray(supportSummary.similarRaceMatchedKeys)
+          ? supportSummary.similarRaceMatchedKeys
+          : [],
+        similarRaceExcludedSelf: supportSummary.similarRaceExcludedSelf === true,
         similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
         similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
+        similarRaceHistoryAvailable: supportSummary.similarRaceHistoryAvailable === true,
+        similarRaceStoredNow: false,
+        similarRaceSettleEligibleCount: supportSummary.similarRaceSettleEligibleCount ?? 0,
         recommendedBetMode: resolvedRecommendedBetMode,
         skipRiskReason: supportSummary.skipRiskReason,
         venueAdjustmentReason: mergeReasonList(
@@ -4533,8 +4889,9 @@ export function buildPureInferencePredictionPayload(data = {}) {
         )
       }
     : null;
+  let similarRaceStoredNow = false;
   if (normalizedPureTop6Prediction) {
-    upsertSimilarRaceFeatureSnapshot({
+    const storedSimilarRaceSnapshot = upsertSimilarRaceFeatureSnapshot({
       raceId:
         data?.raceId ||
         buildRaceIdFromParts({
@@ -4546,6 +4903,8 @@ export function buildPureInferencePredictionPayload(data = {}) {
       race: data?.race ? { ...data.race, racers: Array.isArray(data?.racers) ? data.racers : [] } : null,
       prediction: normalizedPureTop6Prediction
     });
+    similarRaceStoredNow = !!storedSimilarRaceSnapshot?.race_id;
+    normalizedPureTop6Prediction.similarRaceStoredNow = similarRaceStoredNow;
   }
   const prediction = {
     ...(storedPrediction && typeof storedPrediction === "object" ? storedPrediction : {}),
@@ -4587,13 +4946,23 @@ export function buildPureInferencePredictionPayload(data = {}) {
     similarRaceExamples: normalizedPureTop6Prediction?.similarRaceExamples || [],
     similarRaceSearchExecuted: normalizedPureTop6Prediction?.similarRaceSearchExecuted === true,
     similarRaceQueryKey: normalizedPureTop6Prediction?.similarRaceQueryKey || null,
+    similarRaceCurrentKey: normalizedPureTop6Prediction?.similarRaceCurrentKey || null,
+    similarRaceMatchedKeys: Array.isArray(normalizedPureTop6Prediction?.similarRaceMatchedKeys)
+      ? normalizedPureTop6Prediction.similarRaceMatchedKeys
+      : [],
+    similarRaceExcludedSelf: normalizedPureTop6Prediction?.similarRaceExcludedSelf === true,
     similarRaceStoragePath: normalizedPureTop6Prediction?.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
     similarRaceMatchedCount: normalizedPureTop6Prediction?.similarRaceMatchedCount ?? normalizedPureTop6Prediction?.similarRaceCount ?? 0,
+    similarRaceHistoryAvailable: normalizedPureTop6Prediction?.similarRaceHistoryAvailable === true,
+    similarRaceStoredNow,
+    similarRaceSettleEligibleCount: normalizedPureTop6Prediction?.similarRaceSettleEligibleCount ?? 0,
     top6: normalizedPureTop6Prediction?.top6 || null,
     top6_coverage: normalizedPureTop6Prediction?.top6_coverage ?? null,
     chaos_level: normalizedPureTop6Prediction?.chaos_level ?? null,
     optionalFormation16,
-    formationReason: normalizedPureTop6Prediction?.formationReason || formationReason,
+    formationReason: isOptionalFormationActive(resolvedOptionalFormation16)
+      ? normalizedPureTop6Prediction?.formationReason || formationReason
+      : null,
     top6Scenario: normalizedPureTop6Prediction?.top6Scenario || null,
     top6ScenarioScore: normalizedPureTop6Prediction?.top6ScenarioScore ?? normalizedPureTop6Prediction?.scenario_repro_score ?? null,
     scenario_repro_score: normalizedPureTop6Prediction?.scenario_repro_score ?? null,
@@ -4648,13 +5017,23 @@ export function buildPureInferencePredictionPayload(data = {}) {
     similarRaceExamples: normalizedPureTop6Prediction?.similarRaceExamples || [],
     similarRaceSearchExecuted: normalizedPureTop6Prediction?.similarRaceSearchExecuted === true,
     similarRaceQueryKey: normalizedPureTop6Prediction?.similarRaceQueryKey || null,
+    similarRaceCurrentKey: normalizedPureTop6Prediction?.similarRaceCurrentKey || null,
+    similarRaceMatchedKeys: Array.isArray(normalizedPureTop6Prediction?.similarRaceMatchedKeys)
+      ? normalizedPureTop6Prediction.similarRaceMatchedKeys
+      : [],
+    similarRaceExcludedSelf: normalizedPureTop6Prediction?.similarRaceExcludedSelf === true,
     similarRaceStoragePath: normalizedPureTop6Prediction?.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
     similarRaceMatchedCount: normalizedPureTop6Prediction?.similarRaceMatchedCount ?? normalizedPureTop6Prediction?.similarRaceCount ?? 0,
+    similarRaceHistoryAvailable: normalizedPureTop6Prediction?.similarRaceHistoryAvailable === true,
+    similarRaceStoredNow,
+    similarRaceSettleEligibleCount: normalizedPureTop6Prediction?.similarRaceSettleEligibleCount ?? 0,
     top6: normalizedPureTop6Prediction?.top6 || null,
     top6_coverage: normalizedPureTop6Prediction?.top6_coverage ?? null,
     chaos_level: normalizedPureTop6Prediction?.chaos_level ?? null,
-    optionalFormation16,
-    formationReason: normalizedPureTop6Prediction?.formationReason || formationReason,
+    optionalFormation16: resolvedOptionalFormation16,
+    formationReason: isOptionalFormationActive(resolvedOptionalFormation16)
+      ? normalizedPureTop6Prediction?.formationReason || formationReason
+      : null,
     recommendedBetMode: normalizedPureTop6Prediction?.recommendedBetMode || null,
     skipRiskReason: normalizedPureTop6Prediction?.skipRiskReason || null,
     refreshed_now: snapshotSummary.sourceSummary?.refreshed_now === true,
@@ -11809,7 +12188,10 @@ raceRouter.get("/race", async (req, res, next) => {
         data?.source?.actual_entry && typeof data.source.actual_entry === "object"
           ? data.source.actual_entry
           : {};
-      const apiRacers = sortRacersByLane(data?.racers || []).map((racer) => {
+      const identityByLane = loadRacerIdentityByLane(data?.raceId || raceId || buildRaceIdFromParts({ date, venueId, raceNo }));
+      const kyoteiIdentityByLane = loadKyoteiBiyoriIdentityByLane(data?.source?.kyotei_biyori || null);
+      const apiRacers = sortRacersByLane(data?.racers || []).map((baseRacer) => {
+        const racer = resolveApiRacerIdentity(baseRacer, identityByLane, kyoteiIdentityByLane);
         const lane = toInt(racer?.lane, null);
         const entryPayload = buildApiEntryPayload({
           lane,
@@ -11821,10 +12203,19 @@ raceRouter.get("/race", async (req, res, next) => {
           fallbackEntryCourse: racer?.entryCourse ?? racer?.entry_course ?? lane
         });
         const strictLap = getStrictLapPayload(racer);
+        const exST = toNullableNum(racer?.exST ?? racer?.exhibitionSt ?? racer?.exhibitionST);
+        const exTime = toNullableNum(racer?.exTime ?? racer?.exhibitionTime);
+        const motor2Rate = toNullableNum(racer?.motor2ren ?? racer?.motor2Rate);
         return {
           ...racer,
           lane,
           lapTime: strictLap.lapTime,
+          exST,
+          exTime,
+          exhibitionSt: exST,
+          exhibitionTime: exTime,
+          motor2Rate,
+          motor2ren: motor2Rate,
           lapRaw: strictLap.lapRaw,
           lapSource: strictLap.lapSource,
           entry: entryPayload.entry,
@@ -11840,6 +12231,7 @@ raceRouter.get("/race", async (req, res, next) => {
       const featureGenerationStartedAt = Date.now();
       logRaceRouteStage(traceBase, "feature_generation_start");
       const purePredictionBundle = buildPureInferencePredictionPayload(data);
+      const preEntryMeta = buildCanonicalEntryOrderMeta(data.racers, data?.source?.actual_entry || null);
       routeTimings.feature_generation_ms = Date.now() - featureGenerationStartedAt;
       logRaceRouteStage(traceBase, "feature_generation_end", {
         feature_generation_ms: routeTimings.feature_generation_ms,
@@ -11856,6 +12248,22 @@ raceRouter.get("/race", async (req, res, next) => {
           raceNo,
           refreshMeta,
           artifactCollector
+        });
+        const hardRaceSupportSummary = enrichPredictionSupportFields({
+          race: data?.race || null,
+          pureTop6Prediction: purePredictionBundle?.pureTop6Prediction || null,
+          prediction: purePredictionBundle?.prediction || null,
+          hardRace1234,
+          racers: apiRacers
+        });
+        const raceRuleInsights = buildRaceRuleInsights({
+          race: data?.race || null,
+          racers: apiRacers,
+          pureTop6Prediction: purePredictionBundle?.pureTop6Prediction || null,
+          prediction: purePredictionBundle?.prediction || null,
+          hardRace1234,
+          supportSummary: hardRaceSupportSummary,
+          entryMeta: preEntryMeta
         });
         routeTimings.inference_ms = Date.now() - predictionStartedAt;
         routeTimings.prediction_build_ms = routeTimings.inference_ms;
@@ -11891,6 +12299,18 @@ raceRouter.get("/race", async (req, res, next) => {
             refreshMeta?.last_snapshot_updated_at ||
             data?.source?.local_snapshots?.last_snapshot_updated_at ||
             null,
+          venueRuleProfile: raceRuleInsights.venueRuleProfile,
+          indicatorThresholdSummary: raceRuleInsights.indicatorThresholdSummary,
+          laneEvaluationTable: raceRuleInsights.laneEvaluationTable,
+          decisionPatternScores: raceRuleInsights.decisionPatternScores,
+          practicalMemo: raceRuleInsights.practicalMemo,
+          comparisonChecklist: raceRuleInsights.comparisonChecklist,
+          entryAnalysis: raceRuleInsights.entryAnalysis,
+          venueTendencySummary: raceRuleInsights.venueTendencySummary,
+          racerStyleSummary: raceRuleInsights.racerStyleSummary,
+          predictedDevelopmentNotes: raceRuleInsights.predictedDevelopmentNotes,
+          likelyWinningPattern: raceRuleInsights.likelyWinningPattern,
+          hardRaceSixRanking: raceRuleInsights.hardRaceSixRanking,
           ...hardRace1234,
           routeTiming: routeTimings
         });
@@ -11943,6 +12363,15 @@ raceRouter.get("/race", async (req, res, next) => {
             ? data.racers
             : []
       });
+      const raceRuleInsights = buildRaceRuleInsights({
+        race: data?.race || null,
+        racers: styledApiRacers,
+        pureTop6Prediction,
+        prediction,
+        hardRace1234,
+        supportSummary,
+        entryMeta: preEntryMeta
+      });
       const consistentOptionalFormation16 = enforceOptionalFormationConsistency(
         pureTop6Prediction?.optionalFormation16 || prediction?.optionalFormation16 || null,
         supportSummary.recommendedBetMode
@@ -11963,13 +12392,22 @@ raceRouter.get("/race", async (req, res, next) => {
           similarRaceExamples: supportSummary.similarRaceExamples,
           similarRaceSearchExecuted: supportSummary.similarRaceSearchExecuted === true,
           similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
+          similarRaceCurrentKey: supportSummary.similarRaceCurrentKey || null,
+          similarRaceMatchedKeys: Array.isArray(supportSummary.similarRaceMatchedKeys)
+            ? supportSummary.similarRaceMatchedKeys
+            : [],
+          similarRaceExcludedSelf: supportSummary.similarRaceExcludedSelf === true,
           similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
           similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
+          similarRaceHistoryAvailable: supportSummary.similarRaceHistoryAvailable === true,
+          similarRaceSettleEligibleCount: supportSummary.similarRaceSettleEligibleCount ?? 0,
           optionalFormation16: consistentOptionalFormation16,
           buyPolicy: buildModeAwareBuyPolicy(pureTop6Prediction?.buyPolicy || pureTop6Prediction?.venue_scenario_bias?.buyPolicy || null, consistentRecommendedBetMode),
           recommendedBetMode: consistentRecommendedBetMode,
           skipRiskReason: supportSummary.skipRiskReason,
-          formationReason: supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, prediction, consistentOptionalFormation16)
+          formationReason: isOptionalFormationActive(consistentOptionalFormation16)
+            ? supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, prediction, consistentOptionalFormation16)
+            : null
         });
       }
       if (prediction && typeof prediction === "object") {
@@ -11984,16 +12422,25 @@ raceRouter.get("/race", async (req, res, next) => {
           similarRaceExamples: supportSummary.similarRaceExamples,
           similarRaceSearchExecuted: supportSummary.similarRaceSearchExecuted === true,
           similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
+          similarRaceCurrentKey: supportSummary.similarRaceCurrentKey || null,
+          similarRaceMatchedKeys: Array.isArray(supportSummary.similarRaceMatchedKeys)
+            ? supportSummary.similarRaceMatchedKeys
+            : [],
+          similarRaceExcludedSelf: supportSummary.similarRaceExcludedSelf === true,
           similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
           similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
+          similarRaceHistoryAvailable: supportSummary.similarRaceHistoryAvailable === true,
+          similarRaceSettleEligibleCount: supportSummary.similarRaceSettleEligibleCount ?? 0,
           optionalFormation16: consistentOptionalFormation16,
           buyPolicy: buildModeAwareBuyPolicy(prediction?.buyPolicy || pureTop6Prediction?.buyPolicy || prediction?.venue_scenario_bias?.buyPolicy || pureTop6Prediction?.venue_scenario_bias?.buyPolicy || hardRace1234?.buyPolicy || null, consistentRecommendedBetMode),
           recommendedBetMode: consistentRecommendedBetMode,
           skipRiskReason: supportSummary.skipRiskReason,
-          formationReason: supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, prediction, consistentOptionalFormation16)
+          formationReason: isOptionalFormationActive(consistentOptionalFormation16)
+            ? supportSummary.formationReason || resolveFormationReason(pureTop6Prediction, prediction, consistentOptionalFormation16)
+            : null
         });
       }
-      upsertSimilarRaceFeatureSnapshot({
+      const storedSimilarRaceSnapshot = upsertSimilarRaceFeatureSnapshot({
         raceId: data.raceId || data.source?.race_id || null,
         race:
           data?.race
@@ -12013,6 +12460,9 @@ raceRouter.get("/race", async (req, res, next) => {
           hardRace1234
         }
       });
+      const similarRaceStoredNow = !!storedSimilarRaceSnapshot?.race_id;
+      if (pureTop6Prediction && typeof pureTop6Prediction === "object") pureTop6Prediction.similarRaceStoredNow = similarRaceStoredNow;
+      if (prediction && typeof prediction === "object") prediction.similarRaceStoredNow = similarRaceStoredNow;
       console.info("[RACE_API][style_injection:pure_inference]", JSON.stringify({
         route: "/api/race",
         raceId: data.raceId || data.source?.race_id || null,
@@ -12063,14 +12513,24 @@ raceRouter.get("/race", async (req, res, next) => {
         race: data?.race || null
       });
       let finalizedActualResult = resolvedActualResult;
+      let resultFetchAttempted = false;
+      let resultFetchSucceeded = !!finalizedActualResult?.winningTrifecta;
+      let resultSource = finalizedActualResult?.source || null;
+      let resultFetchUrls = [];
+      let resultParserStage = finalizedActualResult?.source ? "stored_result" : null;
+      let resultMatchedSelectorCount = 0;
+      let resultRawSavedPath = null;
+      let settleSkipReason = null;
+      const shouldTryOfficialResultFetch = shouldTryOfficialResultFetchWithContext({
+        race: data?.race || null,
+        source: data?.source || null
+      });
       if (
         !finalizedActualResult?.winningTrifecta &&
-        shouldTryOfficialResultFetchWithContext({
-          race: data?.race || null,
-          source: data?.source || null
-        })
+        shouldTryOfficialResultFetch
       ) {
         try {
+          resultFetchAttempted = true;
           const fetchedActualResult = await raceRouteRuntimeDeps.fetchAndStoreOfficialRaceResult({
             raceId: data.raceId || data.source?.race_id || null,
             date: data?.race?.date,
@@ -12078,11 +12538,19 @@ raceRouter.get("/race", async (req, res, next) => {
             raceNo: data?.race?.raceNo,
             timeoutMs: 5000
           });
+          const resultFetchDebug = fetchedActualResult?.resultFetchDebug || fetchedActualResult || {};
+          resultFetchUrls = Array.isArray(resultFetchDebug.resultFetchUrls)
+            ? resultFetchDebug.resultFetchUrls
+            : [];
+          resultParserStage = resultFetchDebug.resultParserStage || resultParserStage;
+          resultMatchedSelectorCount = resultFetchDebug.resultMatchedSelectorCount ?? resultMatchedSelectorCount;
+          resultRawSavedPath = resultFetchDebug.resultRawSavedPath || resultRawSavedPath;
           const fetchedTop3 = normalizeTop3OrNull(fetchedActualResult?.actualTop3);
           const fetchedWinningTrifecta =
             normalizeCombo(fetchedActualResult?.winningTrifecta) ||
             (fetchedTop3 ? fetchedTop3.join("-") : null);
           if (fetchedTop3 || fetchedWinningTrifecta) {
+            resultFetchSucceeded = true;
             finalizedActualResult = {
               ...fetchedActualResult,
               actualTop3: fetchedTop3,
@@ -12090,6 +12558,7 @@ raceRouter.get("/race", async (req, res, next) => {
               actualResult: fetchedWinningTrifecta || null,
               result: fetchedWinningTrifecta || null
             };
+            resultSource = finalizedActualResult.source || "official_result_fetch";
             updatePredictionLogResultSnapshot({
               raceId: data.raceId || data.source?.race_id || null,
               actualTop3: finalizedActualResult.actualTop3,
@@ -12104,8 +12573,18 @@ raceRouter.get("/race", async (req, res, next) => {
               winningTrifecta: finalizedActualResult.winningTrifecta,
               url: finalizedActualResult.url || null
             }));
+          } else {
+            settleSkipReason = "result_fetch_failed";
           }
         } catch (resultFetchError) {
+          settleSkipReason = "result_fetch_failed";
+          const resultFetchDebug = resultFetchError?.resultFetchDebug || resultFetchError || {};
+          resultFetchUrls = Array.isArray(resultFetchDebug.resultFetchUrls)
+            ? resultFetchDebug.resultFetchUrls
+            : resultFetchUrls;
+          resultParserStage = resultFetchDebug.resultParserStage || "fetch_exception";
+          resultMatchedSelectorCount = resultFetchDebug.resultMatchedSelectorCount ?? resultMatchedSelectorCount;
+          resultRawSavedPath = resultFetchDebug.resultRawSavedPath || resultRawSavedPath;
           console.info("[RACE_API][result_source_fallback_miss]", JSON.stringify({
             route: "/api/race",
             raceId: data.raceId || data.source?.race_id || null,
@@ -12113,11 +12592,59 @@ raceRouter.get("/race", async (req, res, next) => {
           }));
         }
       }
+      if (!resultFetchAttempted && !finalizedActualResult?.winningTrifecta) {
+        settleSkipReason = shouldTryOfficialResultFetch ? "official_result_not_found" : "race_not_finished_or_result_fetch_not_eligible";
+      }
+      if (finalizedActualResult?.winningTrifecta && !resultSource) {
+        resultSource = finalizedActualResult.source || "stored_result";
+      }
       const routeHitFlags = computeRouteHitFlags({
         actualTop3: finalizedActualResult.actualTop3,
         top6: pureTop6Prediction?.top6 || prediction?.top6 || [],
         optionalFormation16: resolvedOptionalFormation16
       });
+      let similarRaceSettledNow = false;
+      if (finalizedActualResult?.winningTrifecta || finalizedActualResult?.actualResult || routeHitFlags.actualCombo) {
+        const settledCombo =
+          normalizeCombo(finalizedActualResult?.winningTrifecta) ||
+          normalizeCombo(finalizedActualResult?.actualResult) ||
+          routeHitFlags.actualCombo;
+        updateSimilarRaceFeatureOutcome({
+          raceId: data.raceId || data.source?.race_id || null,
+          date: data?.race?.date,
+          venueId: data?.race?.venueId,
+          raceNo: data?.race?.raceNo,
+          finalResult: settledCombo,
+          headHit: routeHitFlags.headHit,
+          top6Hit: routeHitFlags.top6Hit,
+          optional16Hit: routeHitFlags.optional16Hit
+        });
+        similarRaceSettledNow = true;
+      } else if (!settleSkipReason) {
+        settleSkipReason = "no_result_available";
+      }
+      const settledSimilarSupport = similarRaceSettledNow
+        ? buildSimilarRaceSupport({
+          race: data?.race || null,
+          pureTop6Prediction,
+          hardRace1234
+        })
+        : null;
+      const responseSimilarSupport = settledSimilarSupport || supportSummary;
+      if (settledSimilarSupport && pureTop6Prediction && typeof pureTop6Prediction === "object") {
+        Object.assign(pureTop6Prediction, {
+          similarRaceSupport: settledSimilarSupport.similarRaceSupport,
+          similarRaceCount: settledSimilarSupport.similarRaceCount,
+          similarRaceHitBias: settledSimilarSupport.similarRaceHitBias,
+          similarRaceExamples: settledSimilarSupport.similarRaceExamples,
+          similarRaceCurrentKey: settledSimilarSupport.similarRaceCurrentKey,
+          similarRaceMatchedKeys: settledSimilarSupport.similarRaceMatchedKeys,
+          similarRaceExcludedSelf: settledSimilarSupport.similarRaceExcludedSelf,
+          similarRaceMatchedCount: settledSimilarSupport.similarRaceMatchedCount,
+          similarRaceHistoryAvailable: settledSimilarSupport.similarRaceHistoryAvailable,
+          similarRaceSettleEligibleCount: settledSimilarSupport.similarRaceSettleEligibleCount
+        });
+      }
       return res.json({
         source: data.source || {},
         race: data.race,
@@ -12128,7 +12655,15 @@ raceRouter.get("/race", async (req, res, next) => {
         winningTrifecta: finalizedActualResult.winningTrifecta,
         actualResult: finalizedActualResult.actualResult,
         result: finalizedActualResult.result,
-        result_source: finalizedActualResult.source,
+        result_source: resultSource,
+        resultFetchAttempted,
+        resultFetchSucceeded,
+        resultSource,
+        resultFetchUrls,
+        resultParserStage,
+        resultMatchedSelectorCount,
+        resultRawSavedPath,
+        settleSkipReason,
         payout_3t: finalizedActualResult.payout3t,
         pureTop6Prediction,
         prediction,
@@ -12181,25 +12716,48 @@ raceRouter.get("/race", async (req, res, next) => {
         confidence_score: supportSummary.confidence_score,
         prediction_stability_score: supportSummary.prediction_stability_score,
         buy_confidence_reason: supportSummary.buy_confidence_reason,
-        similarRaceSupport: supportSummary.similarRaceSupport,
-        similarRaceCount: supportSummary.similarRaceCount,
-        similarRaceHitBias: supportSummary.similarRaceHitBias,
-        similarRaceExamples: supportSummary.similarRaceExamples,
-        similarRaceSearchExecuted: supportSummary.similarRaceSearchExecuted === true,
-        similarRaceQueryKey: supportSummary.similarRaceQueryKey || null,
-        similarRaceStoragePath: supportSummary.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
-        similarRaceMatchedCount: supportSummary.similarRaceMatchedCount ?? supportSummary.similarRaceCount ?? 0,
+        similarRaceSupport: responseSimilarSupport.similarRaceSupport,
+        similarRaceCount: responseSimilarSupport.similarRaceCount,
+        similarRaceHitBias: responseSimilarSupport.similarRaceHitBias,
+        similarRaceExamples: responseSimilarSupport.similarRaceExamples,
+        similarRaceSearchExecuted: responseSimilarSupport.similarRaceSearchExecuted === true,
+        similarRaceQueryKey: responseSimilarSupport.similarRaceQueryKey || null,
+        similarRaceCurrentKey: responseSimilarSupport.similarRaceCurrentKey || null,
+        similarRaceMatchedKeys: Array.isArray(responseSimilarSupport.similarRaceMatchedKeys)
+          ? responseSimilarSupport.similarRaceMatchedKeys
+          : [],
+        similarRaceExcludedSelf: responseSimilarSupport.similarRaceExcludedSelf === true,
+        similarRaceStoragePath: responseSimilarSupport.similarRaceStoragePath || SIMILAR_RACE_STORAGE_PATH,
+        similarRaceMatchedCount: responseSimilarSupport.similarRaceMatchedCount ?? responseSimilarSupport.similarRaceCount ?? 0,
+        similarRaceHistoryAvailable: responseSimilarSupport.similarRaceHistoryAvailable === true,
+        similarRaceStoredNow: pureTop6Prediction?.similarRaceStoredNow === true || prediction?.similarRaceStoredNow === true,
+        similarRaceSettledNow,
+        similarRaceSettleEligibleCount: responseSimilarSupport.similarRaceSettleEligibleCount ?? 0,
+        venueRuleProfile: raceRuleInsights.venueRuleProfile,
+        indicatorThresholdSummary: raceRuleInsights.indicatorThresholdSummary,
+        laneEvaluationTable: raceRuleInsights.laneEvaluationTable,
+        decisionPatternScores: raceRuleInsights.decisionPatternScores,
+        practicalMemo: raceRuleInsights.practicalMemo,
+        comparisonChecklist: raceRuleInsights.comparisonChecklist,
+        entryAnalysis: raceRuleInsights.entryAnalysis,
+        venueTendencySummary: raceRuleInsights.venueTendencySummary,
+        racerStyleSummary: raceRuleInsights.racerStyleSummary,
+        predictedDevelopmentNotes: raceRuleInsights.predictedDevelopmentNotes,
+        likelyWinningPattern: raceRuleInsights.likelyWinningPattern,
+        hardRaceSixRanking: raceRuleInsights.hardRaceSixRanking,
         top6: pureTop6Prediction?.top6 || prediction?.top6 || null,
         top6_coverage: pureTop6Prediction?.top6_coverage ?? prediction?.top6_coverage ?? null,
         chaos_level: pureTop6Prediction?.chaos_level ?? prediction?.chaos_level ?? null,
         optionalFormation16: resolvedOptionalFormation16,
         top6Hit: routeHitFlags.top6Hit,
         optional16Hit: routeHitFlags.optional16Hit,
-        formationReason: supportSummary.formationReason || resolveFormationReason(
-          pureTop6Prediction,
-          prediction,
-          resolvedOptionalFormation16
-        ),
+        formationReason: isOptionalFormationActive(resolvedOptionalFormation16)
+          ? supportSummary.formationReason || resolveFormationReason(
+            pureTop6Prediction,
+            prediction,
+            resolvedOptionalFormation16
+          )
+          : null,
         recommendedBetMode: resolvedRecommendedBetMode,
         skipRiskReason: supportSummary.skipRiskReason,
         refreshed_now: refreshMeta?.refreshed_now === true,
@@ -13545,6 +14103,10 @@ raceRouter.get("/race", async (req, res, next) => {
         boat_2rate: toNullableNum(racer?.boat2Rate),
         exhibition_time: toNullableNum(racer?.exhibitionTime),
         exhibition_st: toNullableNum(racer?.exhibitionSt),
+        ex_time: toNullableNum(racer?.exTime ?? racer?.exhibitionTime),
+        ex_st: toNullableNum(racer?.exST ?? racer?.exhibitionSt),
+        exTime: toNullableNum(racer?.exTime ?? racer?.exhibitionTime),
+        exST: toNullableNum(racer?.exST ?? racer?.exhibitionSt),
         exhibition_st_raw: racer?.exhibitionStRaw || null,
         kyoteibiyori_fetched: toInt(racer?.kyoteiBiyoriFetched, 0),
         kyoteibiyori_lap_time: strictLap.lapTime,
@@ -13554,28 +14116,36 @@ raceRouter.get("/race", async (req, res, next) => {
         kyoteibiyori_lap_ex_stretch: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch),
         kyoteibiyori_lap_exhibition_score: toNullableNum(racer?.kyoteiBiyoriLapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore),
         kyoteibiyori_stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel || null,
+        kyoteibiyori_straight_time: toNullableNum(racer?.kyoteiBiyoriStraightTime ?? racer?.straightTime),
+        kyoteibiyori_straight_time_detail: racer?.kyoteiBiyoriStraightTimeDetail ?? racer?.straightTimeDetail ?? null,
         kyoteibiyori_exhibition_st: toNullableNum(racer?.kyoteiBiyoriExhibitionSt),
+        kyoteibiyori_ex_st: toNullableNum(racer?.kyoteiBiyoriExST ?? racer?.kyoteiBiyoriExhibitionSt),
         kyoteibiyori_exhibition_st_raw: racer?.kyoteiBiyoriExhibitionStRaw ?? racer?.exhibitionStRaw ?? null,
         kyoteibiyori_exhibition_st_flag: racer?.kyoteiBiyoriExhibitionStFlag ?? racer?.exhibitionStFlag ?? null,
         kyoteibiyori_exhibition_st_signed: toNullableNum(racer?.kyoteiBiyoriExhibitionStSignedValue ?? racer?.exhibitionStSignedValue),
         kyoteibiyori_exhibition_st_detail: racer?.kyoteiBiyoriExhibitionSTDetail ?? racer?.exhibitionSTDetail ?? null,
         kyoteibiyori_exhibition_time_detail: racer?.kyoteiBiyoriExhibitionTimeDetail ?? racer?.exhibitionTimeDetail ?? null,
+        kyoteibiyori_exhibition_time: toNullableNum(racer?.kyoteiBiyoriExhibitionTime ?? racer?.exhibitionTime),
+        kyoteibiyori_ex_time: toNullableNum(racer?.kyoteiBiyoriExTime ?? racer?.kyoteiBiyoriExhibitionTime ?? racer?.exhibitionTime),
         kyoteibiyori_turn_foot_detail: racer?.kyoteiBiyoriTurnFootDetail ?? racer?.turnFootDetail ?? null,
-        kyoteibiyori_straight_time_detail: racer?.kyoteiBiyoriStraightTimeDetail ?? racer?.straightTimeDetail ?? null,
         lap_time: strictLap.lapTime,
+        lapTime: strictLap.lapTime,
         lap_raw: strictLap.lapRaw,
         lap_source: strictLap.lapSource,
         lap_time_detail: racer?.lapTimeDetail ?? racer?.kyoteiBiyoriLapTimeDetail ?? null,
         lap_rank: toNullableNum(laneFeatures?.lap_rank ?? laneFeatures?.lap_time_rank),
         lap_gap_from_best: toNullableNum(laneFeatures?.lap_gap_from_best ?? laneFeatures?.lap_time_gap_from_best),
         lap_stretch_foot: toNullableNum(laneFeatures?.lap_stretch_foot ?? laneFeatures?.lap_exhibition_score),
+        straight_time: toNullableNum(racer?.straightTime ?? racer?.kyoteiBiyoriStraightTime ?? laneFeatures?.straight_line_power),
+        straight_line_power: toNullableNum(laneFeatures?.straight_line_power ?? racer?.straightTime ?? racer?.kyoteiBiyoriStraightTime),
+        straight_line_rank: toNullableNum(laneFeatures?.straight_line_rank),
+        straight_line_speed_zscore: toNullableNum(laneFeatures?.straight_line_speed_zscore),
         exhibition_st_raw_detail: racer?.exhibitionStRaw ?? null,
         exhibition_st_flag: racer?.exhibitionStFlag ?? null,
         exhibition_st_signed: toNullableNum(racer?.exhibitionStSignedValue),
         exhibition_st_detail: racer?.exhibitionSTDetail ?? racer?.kyoteiBiyoriExhibitionSTDetail ?? null,
         exhibition_time_detail: racer?.exhibitionTimeDetail ?? racer?.kyoteiBiyoriExhibitionTimeDetail ?? null,
         turn_foot_detail: racer?.turnFootDetail ?? racer?.kyoteiBiyoriTurnFootDetail ?? null,
-        straight_time_detail: racer?.straightTimeDetail ?? racer?.kyoteiBiyoriStraightTimeDetail ?? null,
         entry_course: entryPayload.entryCourse,
         tilt: toNullableNum(racer?.tilt),
         lane1st_score: lane1stVerified ? rawLane1st : null,
@@ -14398,13 +14968,25 @@ raceRouter.get("/race", async (req, res, next) => {
           missing_fields: []
         }
       : null;
+    const raceRuleInsights = buildRaceRuleInsights({
+      race: data?.race || null,
+      racers: styledApiRacers,
+      pureTop6Prediction,
+      prediction: predictionWithEntry,
+      hardRace1234: hardRaceResponseContract,
+      supportSummary: null,
+      entryMeta
+    });
     routeTimings.prediction_build_ms = Date.now() - predictionStartedAt;
     routeTimings.total_response_ms = Date.now() - routeStartedAt;
     const legacyRefreshMeta =
       data?.source?.refresh_meta && typeof data.source.refresh_meta === "object"
         ? data.source.refresh_meta
         : {};
-    const apiRacers = sortRacersByLane(data?.racers || []).map((racer) => {
+    const identityByLane = loadRacerIdentityByLane(data?.raceId || raceId || buildRaceIdFromParts({ date, venueId, raceNo }));
+    const kyoteiIdentityByLane = loadKyoteiBiyoriIdentityByLane(data?.source?.kyotei_biyori || null);
+    const apiRacers = sortRacersByLane(data?.racers || []).map((baseRacer) => {
+      const racer = resolveApiRacerIdentity(baseRacer, identityByLane, kyoteiIdentityByLane);
       const lane = toInt(racer?.lane, null);
       const entryPayload = buildApiEntryPayload({
         lane,
@@ -14412,10 +14994,19 @@ raceRouter.get("/race", async (req, res, next) => {
         fallbackEntryCourse: racer?.entryCourse ?? racer?.entry_course ?? lane
       });
       const strictLap = getStrictLapPayload(racer);
+      const exST = toNullableNum(racer?.exST ?? racer?.exhibitionSt ?? racer?.exhibitionST);
+      const exTime = toNullableNum(racer?.exTime ?? racer?.exhibitionTime);
+      const motor2Rate = toNullableNum(racer?.motor2ren ?? racer?.motor2Rate);
       return {
         ...racer,
         lane,
         lapTime: strictLap.lapTime,
+        exST,
+        exTime,
+        exhibitionSt: exST,
+        exhibitionTime: exTime,
+        motor2Rate,
+        motor2ren: motor2Rate,
         lapRaw: strictLap.lapRaw,
         lapSource: strictLap.lapSource,
         entry: entryPayload.entry,
@@ -14438,8 +15029,50 @@ raceRouter.get("/race", async (req, res, next) => {
         ...routeTimings
       })
     );
+    const quickInputModel = buildQuickInputModel({
+      date,
+      venueId,
+      venue: data?.race?.venueName || data?.race?.venue || String(venueId),
+      raceNo,
+      racers: styledApiRacers
+    });
+    const predictionExplanation = buildPredictionExplanationModel({
+      data: {
+        ...data,
+        participationDecision,
+        raceDecision,
+        raceRisk,
+        confidenceScores,
+        racePattern,
+        likelyWinningPattern: raceRuleInsights.likelyWinningPattern,
+        scenarioSuggestions: safeScenarioSuggestions,
+        hardRaceResponseContract
+      },
+      prediction: predictionWithEntry,
+      pureTop6Prediction
+    });
+    const ticketsModel = buildTicketsModel({
+      data: {
+        ticketOptimization: ticketOptimizationWithStake
+      },
+      prediction: predictionWithEntry,
+      pureTop6Prediction
+    });
+    const playerMasterModel = buildPlayerMasterPersistenceModel(styledApiRacers);
+    const raceLogModel = buildRaceLogPersistenceModel({
+      quickInput: quickInputModel,
+      predictionExplanation,
+      tickets: ticketsModel,
+      skipped: participationDecision?.decision === "skip" || participationDecision?.is_recommended === false
+    });
 
     return res.json({
+      quickInput: quickInputModel,
+      predictionExplanation,
+      tickets: ticketsModel,
+      raceLog: raceLogModel,
+      playerMaster: playerMasterModel,
+      fetchedDataFields: DEFAULT_FETCHED_DATA_FIELDS,
       source: data.source || {},
       race: data.race,
       racers: styledApiRacers,
@@ -14536,6 +15169,19 @@ raceRouter.get("/race", async (req, res, next) => {
       scenarioSuggestions: safeScenarioSuggestions,
       contenderSignals: contenderAdjusted.contenderSignals,
       explainability: raceExplainability,
+      venueRuleProfile: raceRuleInsights.venueRuleProfile,
+      indicatorThresholdSummary: raceRuleInsights.indicatorThresholdSummary,
+      laneEvaluationTable: raceRuleInsights.laneEvaluationTable,
+      decisionPatternScores: raceRuleInsights.decisionPatternScores,
+      practicalMemo: raceRuleInsights.practicalMemo,
+      comparisonChecklist: raceRuleInsights.comparisonChecklist,
+      entryAnalysis: raceRuleInsights.entryAnalysis,
+      entryAnalysisBreakdown: entryAnalysis,
+      venueTendencySummary: raceRuleInsights.venueTendencySummary,
+      racerStyleSummary: raceRuleInsights.racerStyleSummary,
+      predictedDevelopmentNotes: raceRuleInsights.predictedDevelopmentNotes,
+      likelyWinningPattern: raceRuleInsights.likelyWinningPattern,
+      hardRaceSixRanking: raceRuleInsights.hardRaceSixRanking,
       learningWeights,
       learningContext: {
         active_last_run_id: learningState?.active_last_run_id || null,
@@ -14549,7 +15195,7 @@ raceRouter.get("/race", async (req, res, next) => {
       probabilities,
       motorAnalysis,
       motorTrendAnalysis,
-      entryAnalysis,
+      entryAnalysisBreakdown: entryAnalysis,
       preRaceAnalysis,
       exhibitionAI,
       simulation,
@@ -15832,7 +16478,8 @@ raceRouter.post("/race/result", async (req, res, next) => {
       finalResult: top3.join("-"),
       headHit: similarOutcome.headHit,
       betHit: similarOutcome.betHit,
-      top6Hit: similarOutcome.top6Hit
+      top6Hit: similarOutcome.top6Hit,
+      optional16Hit: similarOutcome.optional16Hit
     });
     saveRaceStartDisplayResult({
       raceId,
@@ -15945,7 +16592,8 @@ raceRouter.post("/results/edit", async (req, res, next) => {
       finalResult: confirmedResult,
       headHit: similarOutcome.headHit,
       betHit: similarOutcome.betHit,
-      top6Hit: similarOutcome.top6Hit
+      top6Hit: similarOutcome.top6Hit,
+      optional16Hit: similarOutcome.optional16Hit
     });
     saveRaceStartDisplayResult({
       raceId,
@@ -18273,7 +18921,13 @@ raceRouter.post("/results/verify", async (req, res, next) => {
         ? predictionJson.pure_top6_prediction.top6.some((row) => row?.combo === analysis.confirmed_result_canonical)
         : Array.isArray(predictionJson?.top6)
           ? predictionJson.top6.some((row) => row?.combo === analysis.confirmed_result_canonical)
-          : null
+          : null,
+      optional16Hit:
+        predictionJson?.pure_top6_prediction?.optionalFormation16 && typeof predictionJson.pure_top6_prediction.optionalFormation16 === "object" && Array.isArray(predictionJson.pure_top6_prediction.optionalFormation16.combos)
+          ? predictionJson.pure_top6_prediction.optionalFormation16.combos.some((row) => normalizeCombo(row?.combo) === analysis.confirmed_result_canonical)
+          : predictionJson?.optionalFormation16 && typeof predictionJson.optionalFormation16 === "object" && Array.isArray(predictionJson.optionalFormation16.combos)
+            ? predictionJson.optionalFormation16.combos.some((row) => normalizeCombo(row?.combo) === analysis.confirmed_result_canonical)
+            : null
     });
 
     const continuousLearning = runContinuousLearningIfNeeded();
@@ -18626,6 +19280,7 @@ export const __testHooks = {
   buildEvaluationSummary,
   buildConfidenceCalibration,
   buildOutsideHeadMonitoring,
-  buildBoat1EscapeDiagnostics
+  buildBoat1EscapeDiagnostics,
+  buildSimilarRaceSupport
 };
 

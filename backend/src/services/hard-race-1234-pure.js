@@ -165,6 +165,124 @@ function normalizeComboMatrix(matrix) {
   return normalized;
 }
 
+function isValidEntryOrder(order = []) {
+  return Array.isArray(order) &&
+    order.length === 6 &&
+    order.every((lane) => Number.isInteger(Number(lane)) && Number(lane) >= 1 && Number(lane) <= 6) &&
+    new Set(order).size === 6;
+}
+
+function deriveEntryContext(data = {}) {
+  const predicted = (Array.isArray(data?.racers) ? data.racers : [])
+    .map((row) => toInt(row?.lane, null))
+    .filter((lane) => Number.isInteger(lane))
+    .sort((a, b) => a - b);
+  const officialActual = Array.isArray(data?.source?.actual_entry?.parsed_actual_entry_order)
+    ? data.source.actual_entry.parsed_actual_entry_order.map((lane) => toInt(lane, null)).filter((lane) => Number.isInteger(lane))
+    : [];
+  const racerActual = (Array.isArray(data?.racers) ? data.racers : [])
+    .map((row) => ({
+      lane: toInt(row?.lane, null),
+      entry: toInt(row?.entryCourse ?? row?.entry_course, null)
+    }))
+    .filter((row) => Number.isInteger(row.lane) && Number.isInteger(row.entry))
+    .sort((a, b) => a.entry - b.entry)
+    .map((row) => row.lane);
+  const actual = isValidEntryOrder(officialActual)
+    ? officialActual
+    : isValidEntryOrder(racerActual)
+      ? racerActual
+      : predicted;
+  const actualLaneMap = Object.fromEntries(actual.map((lane, index) => [String(lane), index + 1]));
+  const changedCount = predicted.reduce((sum, lane, index) => sum + (((actual[index] || null) === lane) ? 0 : 1), 0);
+  let entryChangeType = "none";
+  if (changedCount > 0) {
+    if (Number(actualLaneMap["1"] || 1) !== 1) entryChangeType = "lane1_lost_inside";
+    else if (actual.some((lane, index) => lane >= 4 && index <= 2)) entryChangeType = "outer_invasion";
+    else if (changedCount >= 3) entryChangeType = "multi_shift";
+    else entryChangeType = "minor_shift";
+  }
+  return {
+    predicted_entry_order: predicted,
+    actual_entry_order: actual,
+    actual_lane_map: actualLaneMap,
+    entry_confirmed: data?.source?.actual_entry?.validation_ok === true && isValidEntryOrder(officialActual),
+    entry_changed: changedCount > 0,
+    entry_change_type: entryChangeType
+  };
+}
+
+function buildFixedComboBiases({
+  lane2SecondRemain = 0,
+  lane3AttackRemain = 0,
+  lane4DevelopRemain = 0,
+  pair23 = 0,
+  pair24 = 0,
+  pair34 = 0,
+  venueProfile = {}
+} = {}) {
+  const secondTopGap = Math.abs((lane2SecondRemain || 0) - (lane3AttackRemain || 0));
+  const secondClusterTightness = clamp(
+    0,
+    100,
+    50 +
+      Math.max(0, 10 - secondTopGap) * 3.2 +
+      Math.max(0, (lane4DevelopRemain || 0) - 48) * 0.55 +
+      Math.max(0, (pair24 || 0) - 56) * 0.18 +
+      Math.max(0, (pair34 || 0) - 56) * 0.18
+  );
+  const lane4Pressure = clamp(
+    0,
+    100,
+    (lane4DevelopRemain || 0) * 0.54 +
+      (pair24 || 0) * 0.24 +
+      (pair34 || 0) * 0.22
+  );
+  const attack34Support = clamp(
+    0,
+    100,
+    (lane3AttackRemain || 0) * 0.48 +
+      (lane4DevelopRemain || 0) * 0.2 +
+      (pair34 || 0) * 0.32
+  );
+  const rescue124Boost = clamp(
+    0,
+    0.24,
+    Math.max(0, secondClusterTightness - 58) * 0.0018 +
+      Math.max(0, lane4Pressure - 56) * 0.0012 +
+      Math.max(0, toNum(venueProfile?.lane2_second_boost, 0)) * 0.004 +
+      Math.max(0, toNum(venueProfile?.lane4_develop_boost, 0)) * 0.003
+  );
+  const rescue134Boost = clamp(
+    0,
+    0.24,
+    Math.max(0, secondClusterTightness - 58) * 0.0019 +
+      Math.max(0, attack34Support - 58) * 0.0014 +
+      Math.max(0, toNum(venueProfile?.lane3_attack_boost, 0)) * 0.004 +
+      Math.max(0, toNum(venueProfile?.lane4_develop_boost, 0)) * 0.003
+  );
+  const lane4DominantBoost = clamp(
+    0,
+    0.18,
+    Math.max(0, lane4Pressure - Math.max(lane2SecondRemain || 0, lane3AttackRemain || 0)) * 0.0025 +
+      Math.max(0, toNum(venueProfile?.lane4_develop_boost, 0)) * 0.004
+  );
+  return {
+    secondClusterTightness: round(secondClusterTightness, 1),
+    rescue124Boost: round(rescue124Boost, 4),
+    rescue134Boost: round(rescue134Boost, 4),
+    lane4DominantBoost: round(lane4DominantBoost, 4),
+    comboBiases: {
+      "1-2-3": round(1 + Math.max(0, (lane2SecondRemain - lane4DevelopRemain) * 0.0012) + Math.max(0, (pair23 - pair24) * 0.0009), 4),
+      "1-2-4": round(1 + rescue124Boost, 4),
+      "1-3-2": round(1 + Math.max(0, (lane3AttackRemain - lane4DevelopRemain) * 0.0011) + Math.max(0, (pair23 - pair34) * 0.0008), 4),
+      "1-3-4": round(1 + rescue134Boost, 4),
+      "1-4-2": round(1 + lane4DominantBoost * 0.92 + Math.max(0, (pair24 - pair23) * 0.0008), 4),
+      "1-4-3": round(1 + lane4DominantBoost + Math.max(0, (pair34 - pair23) * 0.0009), 4)
+    }
+  };
+}
+
 function asField(value, source, missingReason, options = {}) {
   if (!Number.isFinite(Number(value))) {
     return {
@@ -265,6 +383,7 @@ function predictionValueFromCoverage(meta, fallbackValue = null) {
 function normalizeRaceData({ data }) {
   const venueId = toInt(data?.race?.venueId, null);
   const venueScenario = getVenueScenarioContext(venueId);
+  const entryContext = deriveEntryContext(data);
   const lanes = (Array.isArray(data?.racers) ? data.racers : []).map((racer) => {
     const lane = toInt(racer?.lane, null);
     const snapshot =
@@ -359,6 +478,7 @@ function normalizeRaceData({ data }) {
       escape_fail_total_risk: asField(venueScenario.escape_fail_pattern?.total_risk, "stored_lookup", "snapshot.venue.escape_fail_total_risk"),
       profile: venueScenario
     },
+    entry: entryContext,
     lanes
   };
 }
@@ -473,6 +593,7 @@ function buildMissingFieldDetails(normalized) {
 function computeScores(normalized) {
   const lanes = new Map((normalized?.lanes || []).map((row) => [row.lane, row]));
   const venueProfile = normalized?.venue?.profile || getVenueScenarioContext(normalized?.race?.venue_id);
+  const entryContext = normalized?.entry || {};
   const boat1 = lanes.get(1);
   const lane2 = lanes.get(2);
   const lane3 = lanes.get(3);
@@ -538,7 +659,17 @@ function computeScores(normalized) {
     { value: venueProfile?.one_course_trust, weight: 0.08 },
     { value: clamp(0, 100, 100 - getVenueEscapeFailPressure(venueProfile, 1)), weight: 0.05 },
     { value: clamp(0, 100, 50 + toNum(venueProfile?.venue_escape_bias, 0) * 2 + toNum(venueProfile?.venue_inside_stability, 0) * 1.4), weight: 0.03 },
-    { value: lane1VenueHeadBonus, weight: 0.07 }
+    { value: lane1VenueHeadBonus, weight: 0.07 },
+    {
+      value: clamp(
+        0,
+        100,
+        50 +
+          ((entryContext?.actual_lane_map?.["1"] || 1) === 1 ? 8 : -18) +
+          (entryContext?.entry_changed ? -Math.max(4, toNum(venueProfile?.venue_entry_change_bias, 0) * 1.2) : 0)
+      ),
+      weight: 0.07
+    }
   ]);
 
   const laneRemainScore = (laneRow, role = "generic") => {
@@ -583,6 +714,18 @@ function computeScores(normalized) {
   const lane4DevelopRemain = laneRemainScore(lane4, "develop");
   const lane5Pressure = laneRemainScore(lane5, "outside");
   const lane6Pressure = laneRemainScore(lane6, "outside");
+  const entryShiftPressure = clamp(
+    0,
+    100,
+    50 +
+      (entryContext?.entry_changed ? 12 + toNum(venueProfile?.venue_entry_change_bias, 0) * 2.2 : 0) +
+      (entryContext?.entry_change_type === "lane1_lost_inside" ? 10 : 0)
+  );
+  const lane2Adjusted = clamp(0, 100, lane2SecondRemain + (((entryContext?.actual_lane_map?.["2"] || 2) === 2) ? 3 : 0));
+  const lane3Adjusted = clamp(0, 100, lane3AttackRemain + (((entryContext?.actual_lane_map?.["3"] || 3) <= 3) ? 4 : -2) + (entryContext?.entry_changed ? entryShiftPressure * 0.05 : 0));
+  const lane4Adjusted = clamp(0, 100, lane4DevelopRemain + (((entryContext?.actual_lane_map?.["4"] || 4) <= 4) ? 5 : -1) + (entryContext?.entry_changed ? entryShiftPressure * 0.06 : 0));
+  const lane5Adjusted = clamp(0, 100, lane5Pressure + (((entryContext?.actual_lane_map?.["5"] || 5) <= 5) ? 2 : 0));
+  const lane6Adjusted = clamp(0, 100, lane6Pressure + (((entryContext?.actual_lane_map?.["6"] || 6) <= 5) ? 2 : 0));
   const lane1ScenarioRepro = laneStyleScenarioScore(boat1, normalized);
   const lane2ScenarioRepro = laneStyleScenarioScore(lane2, normalized);
   const lane3ScenarioRepro = laneStyleScenarioScore(lane3, normalized);
@@ -614,21 +757,21 @@ function computeScores(normalized) {
 
   const pair23 = resolveMetricWithFallback({
     field: "pair23_fit",
-    primaryValue: pairFit(lane2SecondRemain, lane3AttackRemain),
+    primaryValue: pairFit(lane2Adjusted, lane3Adjusted),
     fallbackValue: lane2?.features?.lane_course_rate?.value,
     fallbackFormula: "lane2 course rate fallback",
     tracker: fallbackTracker
   });
   const pair24 = resolveMetricWithFallback({
     field: "pair24_fit",
-    primaryValue: pairFit(lane2SecondRemain, lane4DevelopRemain),
+    primaryValue: pairFit(lane2Adjusted, lane4Adjusted),
     fallbackValue: lane4?.features?.lane_course_rate?.value,
     fallbackFormula: "lane4 course rate fallback",
     tracker: fallbackTracker
   });
   const pair34 = resolveMetricWithFallback({
     field: "pair34_fit",
-    primaryValue: pairFit(lane3AttackRemain, lane4DevelopRemain),
+    primaryValue: pairFit(lane3Adjusted, lane4Adjusted),
     fallbackValue: weightedAverage([{ value: lane3?.features?.lane_course_rate?.value, weight: 0.5 }, { value: lane4?.features?.lane_course_rate?.value, weight: 0.5 }]),
     fallbackFormula: "lane3/lane4 course rate fallback",
     tracker: fallbackTracker
@@ -641,9 +784,9 @@ function computeScores(normalized) {
   ]);
   const opponent234Fit = scoreBlend([
     { value: pairSupportFit, weight: 0.38 },
-    { value: lane2SecondRemain, weight: 0.14 },
-    { value: lane3AttackRemain, weight: 0.14 },
-    { value: lane4DevelopRemain, weight: 0.14 },
+    { value: lane2Adjusted, weight: 0.14 },
+    { value: lane3Adjusted, weight: 0.14 },
+    { value: lane4Adjusted, weight: 0.14 },
     { value: venueProfile?.two_course_sashi_remain_rate, weight: 0.06 },
     { value: venueProfile?.three_course_attack_success_rate, weight: 0.07 },
     { value: venueProfile?.four_course_develop_sashi_rate, weight: 0.07 }
@@ -652,8 +795,8 @@ function computeScores(normalized) {
   const killEscapeRisk = resolveMetricWithFallback({
     field: "kill_escape_risk",
     primaryValue: scoreBlend([
-      { value: lane3AttackRemain, weight: 0.36 },
-      { value: lane4DevelopRemain, weight: 0.17 },
+      { value: lane3Adjusted, weight: 0.36 },
+      { value: lane4Adjusted, weight: 0.17 },
       { value: lane3?.features?.makuri_rate?.value, weight: 0.14 },
       { value: lane3?.features?.makurisashi_rate?.value, weight: 0.08 },
       { value: lane4?.features?.breakout_rate?.value, weight: 0.05 },
@@ -668,9 +811,9 @@ function computeScores(normalized) {
   const shapeShuffleRisk = resolveMetricWithFallback({
     field: "shape_shuffle_risk",
     primaryValue: scoreBlend([
-      { value: clamp(0, 100, Math.abs((lane2SecondRemain || 50) - (lane3AttackRemain || 50)) * 1.05), weight: 0.21 },
-      { value: clamp(0, 100, Math.abs((lane2SecondRemain || 50) - (lane4DevelopRemain || 50)) * 1.05), weight: 0.18 },
-      { value: clamp(0, 100, Math.abs((lane3AttackRemain || 50) - (lane4DevelopRemain || 50))), weight: 0.12 },
+      { value: clamp(0, 100, Math.abs((lane2Adjusted || 50) - (lane3Adjusted || 50)) * 1.05), weight: 0.21 },
+      { value: clamp(0, 100, Math.abs((lane2Adjusted || 50) - (lane4Adjusted || 50)) * 1.05), weight: 0.18 },
+      { value: clamp(0, 100, Math.abs((lane3Adjusted || 50) - (lane4Adjusted || 50))), weight: 0.12 },
       { value: lane3?.features?.makurisashi_rate?.value, weight: 0.14 },
       { value: lane4?.features?.breakout_rate?.value, weight: 0.12 },
       { value: lane4?.features?.zentsuke_tendency?.value, weight: 0.08 },
@@ -682,8 +825,8 @@ function computeScores(normalized) {
   }).value;
 
   const outsideHeadRisk = scoreBlend([
-    { value: lane5Pressure, weight: 0.24 },
-    { value: lane6Pressure, weight: 0.24 },
+    { value: lane5Adjusted, weight: 0.24 },
+    { value: lane6Adjusted, weight: 0.24 },
     { value: lane5?.features?.makuri_rate?.value, weight: 0.12 },
     { value: lane6?.features?.makuri_rate?.value, weight: 0.12 },
     { value: lane5ScenarioRepro, weight: 0.09 },
@@ -692,8 +835,8 @@ function computeScores(normalized) {
     { value: clamp(0, 100, 50 + toNum(venueProfile?.venue_outer_3rd_bias, 0) * 1.8 - toNum(venueProfile?.venue_escape_bias, 0) * 0.7 - toNum(venueProfile?.lane56_head_penalty, 0) * 1.8 + toNum(venueProfile?.volatility_boost, 0) * 0.5), weight: 0.06 }
   ]);
   const outside2ndRisk = clamp(0, 1, (scoreBlend([
-    { value: lane5Pressure, weight: 0.3 },
-    { value: lane6Pressure, weight: 0.3 },
+    { value: lane5Adjusted, weight: 0.3 },
+    { value: lane6Adjusted, weight: 0.3 },
     { value: lane5?.features?.outer_entry_tendency?.value, weight: 0.16 },
     { value: lane6?.features?.outer_entry_tendency?.value, weight: 0.16 },
     { value: venueProfile?.outer_renyuu_entry_rate, weight: 0.08 },
@@ -743,28 +886,48 @@ function computeScores(normalized) {
 
   const headProbMap = normalizeProbabilities({
     1: Math.max(0.001, p1Escape),
-    2: Math.max(0.001, (lane2SecondRemain || 1) / 100 * 0.52),
-    3: Math.max(0.001, (lane3AttackRemain || 1) / 100 * (0.62 + Math.max(0, toNum(venueProfile?.lane3_attack_boost, 0)) * 0.01)),
-    4: Math.max(0.001, (lane4DevelopRemain || 1) / 100 * (0.56 + Math.max(0, toNum(venueProfile?.lane4_develop_boost, 0)) * 0.008)),
+    2: Math.max(0.001, (lane2Adjusted || 1) / 100 * 0.52),
+    3: Math.max(0.001, (lane3Adjusted || 1) / 100 * (0.62 + Math.max(0, toNum(venueProfile?.lane3_attack_boost, 0)) * 0.01)),
+    4: Math.max(0.001, (lane4Adjusted || 1) / 100 * (0.56 + Math.max(0, toNum(venueProfile?.lane4_develop_boost, 0)) * 0.008)),
     5: Math.max(0.001, (outsideHeadRisk || 1) / 100 * Math.max(0.08, 0.24 - Math.max(0, toNum(venueProfile?.lane56_head_penalty, 0)) * 0.01)),
     6: Math.max(0.001, (outsideHeadRisk || 1) / 100 * Math.max(0.06, 0.2 - Math.max(0, toNum(venueProfile?.lane56_head_penalty, 0)) * 0.01))
   });
 
   const secondWeights = normalizeWeights({
-    2: Math.max(0.0001, lane2SecondRemain || 0),
-    3: Math.max(0.0001, lane3AttackRemain || 0),
-    4: Math.max(0.0001, lane4DevelopRemain || 0)
+    2: Math.max(0.0001, lane2Adjusted || 0),
+    3: Math.max(0.0001, lane3Adjusted || 0),
+    4: Math.max(0.0001, lane4Adjusted || 0)
   });
   const thirdConditionalWeights = {
     "2": normalizeWeights({ 3: Math.max(0.0001, pair23.value || 0), 4: Math.max(0.0001, pair24.value || 0) }),
     "3": normalizeWeights({ 2: Math.max(0.0001, pair23.value || 0), 4: Math.max(0.0001, pair34.value || 0) }),
     "4": normalizeWeights({ 2: Math.max(0.0001, pair24.value || 0), 3: Math.max(0.0001, pair34.value || 0) })
   };
+  const fixedComboBias = buildFixedComboBiases({
+    lane2SecondRemain: lane2Adjusted,
+    lane3AttackRemain: lane3Adjusted,
+    lane4DevelopRemain: lane4Adjusted,
+    pair23: pair23.value,
+    pair24: pair24.value,
+    pair34: pair34.value,
+    venueProfile
+  });
 
   const fixed1234RawMatrix = {};
   for (const combo of FIXED_COMBOS) {
     const [, second, third] = combo.split("-").map(Number);
-    fixed1234RawMatrix[combo] = round((headProbMap[1] || 0) * (secondWeights[second] || 0) * (thirdConditionalWeights[String(second)]?.[third] || 0), 6);
+    const entryBonus =
+      ((entryContext?.actual_entry_order?.[1] === second) ? 1.08 : 1) *
+      ((entryContext?.actual_entry_order?.[2] === third) ? 1.05 : 1) *
+      ((entryContext?.entry_change_type === "lane1_lost_inside" && second >= 3) ? 1.04 : 1);
+    fixed1234RawMatrix[combo] = round(
+      (headProbMap[1] || 0) *
+      (secondWeights[second] || 0) *
+      (thirdConditionalWeights[String(second)]?.[third] || 0) *
+      (fixedComboBias.comboBiases?.[combo] || 1) *
+      entryBonus,
+      6
+    );
   }
   const fixed1234TotalProbability = round(Object.values(fixed1234RawMatrix).reduce((sum, value) => sum + (value || 0), 0), 4);
   const fixed1234Matrix = normalizeComboMatrix(fixed1234RawMatrix);
@@ -783,6 +946,7 @@ function computeScores(normalized) {
     { value: pairSupportFit, weight: 0.15 },
     { value: opponent234Fit, weight: 0.16 },
     { value: fixed1234TotalProbability * 100, weight: 0.14 },
+    { value: fixedComboBias.secondClusterTightness, weight: 0.04 },
     { value: (1 - outsideBreakRisk) * 100, weight: 0.08 },
     { value: scenarioReproScore, weight: 0.08 },
     { value: venueProfile?.one_course_trust, weight: 0.05 },
@@ -871,6 +1035,11 @@ function computeScores(normalized) {
       head_prob_6: headProbMap[6],
       box_hit_score: round(boxHitScore, 4),
       shape_focus_score: round(shapeFocusScore, 4),
+      second_cluster_tightness: fixedComboBias.secondClusterTightness,
+      fixed1234_bias_124: fixedComboBias.comboBiases["1-2-4"] || 1,
+      fixed1234_bias_134: fixedComboBias.comboBiases["1-3-4"] || 1,
+      fixed1234_bias_142: fixedComboBias.comboBiases["1-4-2"] || 1,
+      fixed1234_bias_143: fixedComboBias.comboBiases["1-4-3"] || 1,
       fixed1234_total_probability: fixed1234TotalProbability,
       top4_fixed1234_probability: top4Fixed1234Probability,
       fixed1234_shape_concentration: fixed1234ShapeConcentration,
@@ -887,11 +1056,13 @@ function computeScores(normalized) {
       scenario_repro_score: round(scenarioReproScore, 1),
       lane_scenario_repro_scores: laneScenarioScores,
       venue_scenario_bias: venueProfile,
+      entry_context: entryContext,
       top4_share_within_fixed1234: round(fixed1234ShapeConcentration, 4),
       conditional_probabilities: {
         p_1st_1: round(headProbMap[1], 4),
         p_2nd_given_1st1: secondWeights,
         p_3rd_given_1st1_2nd: thirdConditionalWeights,
+        fixed1234_biases: fixedComboBias.comboBiases,
         fixed1234_raw_total_probability: fixed1234TotalProbability,
         fixed1234_normalized_matrix: fixed1234Matrix
       },
@@ -1033,6 +1204,7 @@ export async function buildHardRace1234Response({ data, date, venueId, raceNo })
     venueBiasProfile: computed.venueBiasProfile || normalizedData?.venue?.profile?.venueBiasProfile || null,
     buyPolicy: computed.buyPolicy || normalizedData?.venue?.profile?.buyPolicy || null,
     venueAdjustmentReason: computed.venueAdjustmentReason || normalizedData?.venue?.profile?.venueAdjustmentReason || [],
+    entry_context: normalizedData?.entry || null,
     features: {
       ...computed.features,
       source_summary: sourceSummary

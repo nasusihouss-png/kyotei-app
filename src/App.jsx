@@ -1,13 +1,29 @@
 ﻿import { Component, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import {
-  buildRaceApiRequest,
   normalizeVenueIdInput,
   sanitizeRecentRaceSelections
 } from "./lib/race-request.js";
+import {
+  DEFAULT_FETCHED_DATA_FIELDS,
+  buildDashboardAggregationModel,
+  buildPlayerMasterPersistenceModel,
+  buildPredictionExplanationModel,
+  buildQuickInputModel,
+  buildRaceLogPersistenceModel,
+  buildTicketsModel
+} from "./lib/kyotei-models.js";
+import {
+  DEFAULT_SCORING_CONFIG,
+  buildTodayRanking,
+  buildRacePrediction,
+  inspectPreviewExhibitionStatus,
+  screenInsideEscapeCandidates
+} from "./lib/kyotei-openapi-engine.js";
 
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 const API_BASE = API_BASE_URL ? `${API_BASE_URL}/api` : "/api";
+const todayRankingCache = new Map();
 
 function localDateKey(base = new Date()) {
   const yyyy = base.getFullYear();
@@ -40,36 +56,226 @@ async function fetchJsonWithTimeout(url, options = {}) {
   }
 }
 
-function buildApiError({ message, url, status = null, payload = null, step = null, method = "GET" }) {
-  const error = new Error(message || "API request failed");
-  error.apiError = {
-    url,
-    status,
-    method,
-    step,
-    payload
-  };
-  return error;
+function openApiDatePath(date) {
+  const normalized = String(date || "").replace(/-/g, "");
+  if (date === localDateKey()) return "today.json";
+  if (/^\d{8}$/.test(normalized)) return `${normalized.slice(0, 4)}/${normalized}.json`;
+  return "today.json";
 }
 
-function getApiErrorDetails(err) {
-  const details =
-    err?.apiError && typeof err.apiError === "object"
-      ? err.apiError
-      : {};
-  const payload =
-    details?.payload && typeof details.payload === "object"
-      ? details.payload
-      : {};
+async function fetchOpenApiDay(date, kind) {
+  const path = openApiDatePath(date);
+  const url = `https://boatraceopenapi.github.io/${kind}/v2/${path}`;
+  const fetchedAt = new Date().toISOString();
+  const payload = await fetchJsonWithTimeout(url, { timeoutMs: 15000 });
+  return { payload, url, fetchedAt };
+}
+
+async function fetchOriginalExhibitionData({ date, venueId, raceNo }) {
+  const params = new URLSearchParams({
+    date: String(date || ""),
+    venueId: String(venueId || ""),
+    raceNo: String(raceNo || "")
+  });
+  return fetchJsonWithTimeout(`${API_BASE}/race/original-exhibition?${params.toString()}`, { timeoutMs: 5000 });
+}
+
+function getOpenApiRaceRows(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.races)) return payload.races;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (payload && typeof payload === "object") {
+    const found = [];
+    const visit = (value) => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      if (!value || typeof value !== "object") return;
+      if (value.race_stadium_number !== undefined && value.race_number !== undefined) {
+        found.push(value);
+        return;
+      }
+      Object.values(value).forEach(visit);
+    };
+    visit(payload);
+    return found;
+  }
+  return [];
+}
+
+function openApiRaceKey(row = {}) {
+  return `${Number(row.race_stadium_number)}-${Number(row.race_number)}`;
+}
+
+function getOriginalExhibitionByBoat(originalExhibition = null) {
+  const rows = Array.isArray(originalExhibition?.rows) ? originalExhibition.rows : [];
+  return Object.fromEntries(
+    rows
+      .map((row) => [String(Number(row?.boatNumber ?? row?.lane)), row])
+      .filter(([boat]) => /^[1-6]$/.test(boat))
+  );
+}
+
+function mergeOriginalExhibitionIntoProgram(program = {}, originalExhibition = null) {
+  const byBoat = getOriginalExhibitionByBoat(originalExhibition);
+  if (!Object.keys(byBoat).length || !Array.isArray(program?.boats)) return program;
   return {
-    status: Number.isFinite(Number(details?.status)) ? Number(details.status) : null,
-    code: payload?.error || payload?.code || null,
-    where: payload?.where || details?.step || null,
-    route: payload?.route || null,
-    message: err?.message || payload?.message || "Search failed",
-    url: details?.url || null,
-    source: payload?.source && typeof payload.source === "object" ? payload.source : {},
-    missingFields: Array.isArray(payload?.missing_fields) ? payload.missing_fields : []
+    ...program,
+    boats: program.boats.map((boatRow) => {
+      const boat = Number(boatRow?.racer_boat_number ?? boatRow?.boatNumber ?? boatRow?.lane ?? boatRow?.boat);
+      const extra = byBoat[String(boat)] || null;
+      if (!extra) return boatRow;
+      return {
+        ...boatRow,
+        kyoteiBiyoriLapTime: extra.lapTime ?? null,
+        kyoteiBiyoriLapTimeRaw: extra.lapTimeRaw ?? extra.lapTime ?? null,
+        kyoteiBiyoriLapSource: extra.lapSource || null,
+        kyoteiBiyoriStraightTime: extra.straightTime ?? null,
+        kyoteiBiyoriStraightSource: extra.straightSource || null,
+        lapTime: extra.lapTime ?? boatRow?.lapTime ?? null,
+        straightTime: extra.straightTime ?? boatRow?.straightTime ?? null
+      };
+    })
+  };
+}
+
+function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, raceNo, venueName }) {
+  const prediction = openApiModel?.prediction;
+  if (!prediction) return null;
+  const racers = prediction.scoredBoats.map((boat) => ({
+    lane: boat.boat,
+    boatNumber: boat.boat,
+    name: boat.name,
+    racerName: boat.name,
+    registrationNo: boat.racerNumber,
+    class: boat.classNumber,
+    entryCourse: boat.course,
+    averageStartTiming: boat.averageStartTiming,
+    nationalWinRatePoint: boat.nationalWinRatePoint,
+    localWinRatePoint: boat.localWinRatePoint,
+    motor2Rate: boat.motor2Rate,
+    boat2Rate: boat.boat2Rate,
+    lapTime: boat.lapTime,
+    straightTime: boat.straightTime,
+    kyoteiBiyoriStraightTime: boat.straightTime,
+    exhibitionTime: prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] ?? null,
+    exhibitionSt: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
+    exTime: prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] ?? null,
+    exST: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
+    exhibitionST: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
+    fieldSources: {
+      exhibitionSt: "openapi_previews.racer_start_timing",
+      exhibitionTime: "openapi_previews.racer_exhibition_time",
+      lapTime: boat.lapTime == null ? "not_measured_or_not_fetched" : "kyoteibiyori_original_exhibition.lap",
+      straightTime: boat.straightTime == null ? "not_measured_or_not_fetched" : "kyoteibiyori_original_exhibition.straight"
+    }
+  }));
+  const firstRates = prediction.firstPlaceProbabilities.map((row) => ({
+    lane: row.boat,
+    probability: row.probability
+  }));
+  const top6 = prediction.tickets.trifecta.slice(0, 6).map((row, index) => ({
+    combo: row.combo,
+    probability: row.probability,
+    rank: index + 1,
+    tier: index === 0 ? "main" : index < 3 ? "contender" : "cover",
+    reason: prediction.exhibition.status === "exhibition_reflected" ? "OpenAPI v2 展示反映済み" : "OpenAPI v2 出走表のみ"
+  }));
+  const scenarioText = [
+    prediction.scenario.main.text,
+    prediction.scenario.counter.text,
+    prediction.scenario.upset.text
+  ].filter(Boolean).join(" / ");
+  return {
+    sourceType: "openapi_v2_pure",
+    raceId: `${String(date || "").replace(/-/g, "")}_${venueId}_${raceNo}`,
+    source: {
+      fetched_at: openApiModel.fetchedAt?.programs || null,
+      programs_url: openApiModel.urls?.programs || null,
+      previews_url: openApiModel.urls?.previews || null,
+      openapi_v2: true,
+      cache: { hit: false, ttl_ms: 1800 },
+      preview_diagnostics: prediction.exhibition.diagnostics || null,
+      original_exhibition: openApiModel.originalExhibition || null,
+      field_sources: prediction.exhibition.sourceByField || null
+    },
+    race: {
+      date: prediction.race.date || date,
+      venueId: Number(venueId),
+      venueName,
+      raceNo: Number(raceNo),
+      raceName: `${venueName} ${raceNo}R`,
+      closedAt: prediction.race.closedAt
+    },
+    racers,
+    prediction: {
+      ranking: firstRates.map((row) => row.lane),
+      top3: firstRates.slice(0, 3).map((row) => row.lane),
+      recommended_bets: top6,
+      winProbabilities: Object.fromEntries(firstRates.map((row) => [row.lane, row.probability])),
+      pure_top6_prediction: {
+        top6,
+        tickets: top6,
+        main_ticket: top6[0] || null,
+        top6_coverage: top6.reduce((sum, row) => sum + Number(row.probability || 0), 0),
+        confidence: firstRates[0]?.probability ?? null,
+        first_place_candidate_rates: firstRates,
+        top6Scenario: prediction.scenario.main.title,
+        top6ScenarioScore: (firstRates[0]?.probability ?? 0) * 100,
+        scenario_repro_score: (firstRates[0]?.probability ?? 0) * 100,
+        lane_styles: prediction.scoredBoats.map((boat) => ({
+          lane: boat.boat,
+          style: boat.course === 1 ? "nige" : boat.course <= 3 ? "sashi" : "makuri",
+          style_score: boat.score * 100
+        })),
+        optionalFormation16: { active: false, combos: [] },
+        formationReason: null
+      }
+    },
+    pureTop6Prediction: {
+      top6,
+      tickets: top6,
+      main_ticket: top6[0] || null,
+      top6_coverage: top6.reduce((sum, row) => sum + Number(row.probability || 0), 0),
+      confidence: firstRates[0]?.probability ?? null,
+      first_place_candidate_rates: firstRates,
+      top6Scenario: prediction.scenario.main.title,
+      top6ScenarioScore: (firstRates[0]?.probability ?? 0) * 100,
+      scenario_repro_score: (firstRates[0]?.probability ?? 0) * 100,
+      lane_styles: prediction.scoredBoats.map((boat) => ({
+        lane: boat.boat,
+        style: boat.course === 1 ? "nige" : boat.course <= 3 ? "sashi" : "makuri",
+        style_score: boat.score * 100
+      })),
+      optionalFormation16: { active: false, combos: [] },
+      formationReason: null
+    },
+    predictionExplanation: {
+      racePattern: prediction.exhibition.status,
+      top6Scenario: scenarioText,
+      confidence_score: firstRates[0]?.probability ?? null,
+      confidence_band: (firstRates[0]?.probability ?? 0) >= 0.45 ? "high" : (firstRates[0]?.probability ?? 0) >= 0.3 ? "medium" : "low",
+      buyPolicy: "OpenAPI v2 probability order",
+      recommendedBetMode: "probability"
+    },
+    tickets: {
+      top6,
+      optionalFormation16: [],
+      formationReason: null,
+      tiers: ["main", "contender", "cover"]
+    },
+    scenarioSuggestions: {
+      primary_scenario: prediction.scenario.main.text,
+      secondary_scenario: prediction.scenario.counter.text,
+      upset_scenario: prediction.scenario.upset.text,
+      summary: scenarioText,
+      upsetAlert: prediction.upsetAlert || "",
+      upsetReasons: prediction.upsetReasons || [],
+      extraTickets: prediction.extraTickets || []
+    },
+    freshness: prediction.freshness,
+    openApiPrediction: prediction
   };
 }
 
@@ -84,24 +290,6 @@ function getRaceApiErrorLabel(details = {}) {
   if (code === "BROKEN_PIPELINE") return "broken pipeline";
   if (status && status >= 500) return "backend 500";
   return "api error";
-}
-
-function buildRaceApiErrorMessage(details = {}, fallbackMessage = "Failed to fetch race data") {
-  const code = String(details?.code || "").toUpperCase();
-  if (code === "INVALID_VENUE_ID_FRONTEND" || code === "INVALID_RACE_REQUEST_FRONTEND") return "会場IDが不正です。1〜24 の整数を選択してください。";
-  if (code === "LATEST_SOURCE_UNAVAILABLE" || code === "LATEST_REFRESH_FAILED" || code === "LATEST_REFRESH_TIMEOUT") return "source error";
-  if (code === "SNAPSHOT_MISSING" || code === "SNAPSHOT_NOT_FOUND") return "事前データ未生成";
-  if (code === "BROKEN_PIPELINE") return "事前特徴量未生成";
-  if (Number(details?.status) === 504 || /timeout/i.test(String(details?.message || ""))) return "APIタイムアウト";
-  return fallbackMessage;
-}
-
-function buildSnapshotGenerationHints(date, venueId, raceNo) {
-  const base = "Set-Location backend";
-  return [
-    `${base}; npm run snapshot:generate -- --date ${date} --venueId ${venueId} --raceNo ${raceNo}`,
-    `${base}; npm run snapshot:generate -- --date ${date} --venueId ${venueId} --all-races`
-  ];
 }
 
 const VENUES = [
@@ -162,195 +350,50 @@ function createManualLapDraft() {
   return rows;
 }
 
-async function fetchRaceData(date, venueId, raceNo, options = {}) {
-  let requestUrl = null;
-  let normalizedRequest = null;
-  try {
-    const built = buildRaceApiRequest({
-      apiBase: API_BASE,
-      baseOrigin: typeof window !== "undefined" ? window.location.origin : "https://example.invalid",
-      date,
-      venueId,
-      raceNo,
-      options
-    });
-    requestUrl = built.url.toString();
-    normalizedRequest = built.normalized;
-  } catch (validationError) {
-    throw buildApiError({
-      message: validationError?.message || "Race request validation failed",
-      url: requestUrl,
-      step: "frontend.validate:/api/race",
-      payload: {
-        code: validationError?.code || "INVALID_RACE_REQUEST_FRONTEND",
-        venueIdRaw: validationError?.venueIdRaw ?? venueId,
-        raceNoRaw: validationError?.raceNoRaw ?? raceNo,
-        dateRaw: validationError?.dateRaw ?? date
-      }
-    });
-  }
-
-  console.info("[frontend:/api/race][request]", {
-    url: requestUrl,
-    date: normalizedRequest?.date || date,
-    venueId_raw: venueId,
-    venueId_normalized: normalizedRequest?.venueId ?? null,
-    raceNo_raw: raceNo,
-    raceNo_normalized: normalizedRequest?.raceNo ?? null
-  });
-
-  const controller = new AbortController();
-  const timeoutMs = Number(options?.frontendTimeoutMs || (options?.screeningMode === "hard_race" ? 22000 : 18000));
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
-  try {
-    response = await fetch(requestUrl, { signal: controller.signal });
-  } catch (err) {
-    throw buildApiError({
-      message: err?.name === "AbortError" ? "Race API request timeout" : (err?.message || "Network request failed"),
-      url: requestUrl,
-      step: "frontend.fetch:/api/race"
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const rawText = await response.text();
-  let body = {};
-  let parseFailed = false;
-  if (rawText) {
-    try {
-      body = JSON.parse(rawText);
-    } catch {
-      parseFailed = true;
-    }
-  }
-  console.info("[frontend:/api/race]", {
-    url: requestUrl,
-    status: response.status,
-    ok: response.ok,
-    body_preview: rawText.slice(0, 1200)
-  });
-
-  if (parseFailed) {
-    console.error("[frontend:/api/race][parse_failed]", {
-      url: requestUrl,
-      status: response.status,
-      body_preview: rawText.slice(0, 1200)
-    });
-    throw buildApiError({
-      message: `Race API returned invalid JSON (${response.status})`,
-      url: requestUrl,
-      status: response.status,
-      step: "frontend.parse:/api/race",
-      payload: { raw: rawText.slice(0, 1200) }
-    });
-  }
-  if (!response.ok) {
-    console.error("[frontend:/api/race][http_error]", {
-      url: requestUrl,
-      status: response.status,
-      body
-    });
-    throw buildApiError({
-      message: body?.message || `Failed to fetch race data (${response.status})`,
-      url: requestUrl,
-      status: response.status,
-      step: body?.where || "backend:/api/race",
-      payload: body
-    });
-  }
-  if (!body || typeof body !== "object") {
-    console.error("[frontend:/api/race][invalid_body]", {
-      url: requestUrl,
-      status: response.status,
-      body
-    });
-    throw buildApiError({
-      message: "Race API returned an empty response",
-      url: requestUrl,
-      status: response.status,
-      step: "frontend.validate:/api/race",
-      payload: body
-    });
-  }
-  return body;
-}
-
 async function fetchHardRacePredictionData(date, venueId) {
-  const raceNos = Array.from({ length: 12 }, (_, index) => index + 1);
-  const concurrency = 2;
-  const rows = new Array(raceNos.length);
-  let cursor = 0;
-
-  async function fetchOneRace(targetRaceNo) {
-    const attempts = [
-      {
-        screeningMode: "hard_race",
-        getRaceDataTimeoutMs: 12000,
-        dataFetchTimeoutMs: 7500
+  const [programsResult, previewsResult] = await Promise.all([
+    fetchOpenApiDay(date, "programs"),
+    fetchOpenApiDay(date, "previews").catch(() => ({ payload: null }))
+  ]);
+  const programs = getOpenApiRaceRows(programsResult.payload)
+    .filter((row) => Number(row?.race_stadium_number) === Number(venueId));
+  const previewsByRaceKey = Object.fromEntries(
+    getOpenApiRaceRows(previewsResult.payload).map((row) => [openApiRaceKey(row), row])
+  );
+  return screenInsideEscapeCandidates(programs, previewsByRaceKey, {
+    ...DEFAULT_SCORING_CONFIG,
+    insideCandidateThreshold: 0
+  }).map((row) => ({
+    raceNo: row.raceNumber,
+    ok: true,
+    data: {
+      race: {
+        date,
+        venueId: Number(venueId),
+        venueName: VENUES.find((v) => v.id === Number(venueId))?.name || String(venueId),
+        raceNo: row.raceNumber
       },
-      {
-        screeningMode: "hard_race",
-        getRaceDataTimeoutMs: 14000,
-        dataFetchTimeoutMs: 8500,
-        forceRefresh: true
+      pureTop6Prediction: {
+        top6: row.recommended,
+        confidence: row.score / 100,
+        first_place_candidate_rates: row.prediction.firstPlaceProbabilities.map((item) => ({
+          lane: item.boat,
+          probability: item.probability
+        }))
       },
-      {
-        screeningMode: "hard_race",
-        getRaceDataTimeoutMs: 17000,
-        dataFetchTimeoutMs: 10000,
-        forceRefresh: true
-      }
-    ];
-
-    let lastError = null;
-    for (let index = 0; index < attempts.length; index += 1) {
-      try {
-        const data = await fetchRaceData(date, venueId, targetRaceNo, attempts[index]);
-        return {
-          raceNo: targetRaceNo,
-          ok: true,
-          attemptCount: index + 1,
-          data
-        };
-      } catch (error) {
-        lastError = error;
-        console.warn("[HardRace][fetch_retry]", {
-          raceNo: targetRaceNo,
-          attempt: index + 1,
-          message: error?.message || String(error || "unknown_error"),
-          details: getApiErrorDetails(error)
-        });
-        const message = String(error?.message || "");
-        const maybeTimeout =
-          /timeout/i.test(message) ||
-          /timed out/i.test(message) ||
-          /get_race_data_timeout/i.test(String(error?.apiError?.step || ""));
-        if (!maybeTimeout || index === attempts.length - 1) break;
+      hardRace1234: {
+        race_no: row.raceNumber,
+        status: "READY",
+        data_status: "OPENAPI_V2",
+        hard_race_index: row.score,
+        hard_race_rank: row.score >= 70 ? "A" : row.score >= 55 ? "B" : "SKIP",
+        decision: row.score >= 62 ? "BUY-6" : "SKIP",
+        fixed1234_top4: row.recommended.slice(0, 4),
+        fixed1234_total_probability: row.recommended.reduce((sum, ticket) => sum + Number(ticket.probability || 0), 0),
+        source_summary: { source: "openapi_v2_pure" }
       }
     }
-
-    return {
-      raceNo: targetRaceNo,
-      ok: false,
-      attemptCount: attempts.length,
-      error: lastError?.message || "Failed to fetch race data",
-      errorDetails: getApiErrorDetails(lastError),
-      rawResponse: lastError?.apiError?.payload || null
-    };
-  }
-
-  async function worker() {
-    while (cursor < raceNos.length) {
-      const currentIndex = cursor;
-      cursor += 1;
-      rows[currentIndex] = await fetchOneRace(raceNos[currentIndex]);
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, raceNos.length) }, () => worker()));
-  return rows;
+  }));
 }
 
 async function fetchStatsData(filters = {}) {
@@ -3671,10 +3714,13 @@ function getPlayerComparisonRows({ prediction, data }) {
           )
         };
         const liveLapTime = getLapTimeDisplayValue(row);
-        const liveExhibitionSt = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionSt ?? row?.exhibitionSt);
-        const liveExhibitionTime = toFiniteComparisonNumber(row?.kyoteiBiyoriExhibitionTime ?? row?.exhibitionTime);
+        const liveExhibitionSt = toFiniteComparisonNumber(row?.exST ?? row?.exhibitionSt ?? row?.exhibitionST ?? row?.kyoteiBiyoriExST ?? row?.kyoteiBiyoriExhibitionSt);
+        const liveExhibitionTime = toFiniteComparisonNumber(row?.exTime ?? row?.exhibitionTime ?? row?.kyoteiBiyoriExTime ?? row?.kyoteiBiyoriExhibitionTime);
         const liveLapExStretch = toFiniteComparisonNumber(
           row?.kyoteiBiyoriLapExStretch ?? row?.lapExStretch ?? row?.kyoteiBiyoriLapExhibitionScore ?? row?.lapExhibitionScore
+        );
+        const liveStraightTime = toFiniteComparisonNumber(
+          row?.kyoteiBiyoriStraightTime ?? row?.straightTime ?? row?.nobiashi
         );
         const liveMotor2Rate = toFiniteComparisonNumber(row?.motor2ren ?? row?.kyoteiBiyoriMotor2Rate ?? row?.motor2Rate);
         const liveMotor3Rate = firstFiniteValue(
@@ -3726,16 +3772,18 @@ function getPlayerComparisonRows({ prediction, data }) {
           lapSource: row?.lapSource || row?.kyoteiBiyoriLapSource || snapshotRow?.lap_source || snapshotRow?.kyoteibiyori_lap_source || null,
           lapRank: firstFiniteValue(row?.lapRank, snapshotRow?.lap_rank, snapshotRow?.feature_snapshot?.lap_rank, snapshotRow?.feature_snapshot?.lap_time_rank),
           lapGapFromBest: firstFiniteValue(row?.lapGapFromBest, snapshotRow?.lap_gap_from_best, snapshotRow?.feature_snapshot?.lap_gap_from_best, snapshotRow?.feature_snapshot?.lap_time_gap_from_best),
-          exhibitionSt: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_st ?? snapshotRow?.exhibition_st),
+          straightTime: liveStraightTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_straight_time ?? snapshotRow?.straight_time ?? snapshotRow?.feature_snapshot?.straight_line_power),
+          exhibitionSt: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.ex_st ?? snapshotRow?.exhibition_st ?? snapshotRow?.kyoteibiyori_ex_st ?? snapshotRow?.kyoteibiyori_exhibition_st),
+          exST: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.ex_st ?? snapshotRow?.exhibition_st ?? snapshotRow?.kyoteibiyori_ex_st ?? snapshotRow?.kyoteibiyori_exhibition_st),
           exhibitionStRaw: row?.kyoteiBiyoriExhibitionStRaw ?? row?.exhibitionStRaw ?? snapshotRow?.kyoteibiyori_exhibition_st_raw ?? snapshotRow?.exhibition_st_raw_detail ?? null,
           exhibitionStFlag: row?.kyoteiBiyoriExhibitionStFlag ?? row?.exhibitionStFlag ?? snapshotRow?.kyoteibiyori_exhibition_st_flag ?? snapshotRow?.exhibition_st_flag ?? null,
           exhibitionStSignedValue: firstFiniteValue(row?.kyoteiBiyoriExhibitionStSignedValue, row?.exhibitionStSignedValue, snapshotRow?.kyoteibiyori_exhibition_st_signed, snapshotRow?.exhibition_st_signed),
-          exhibitionTime: liveExhibitionTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_exhibition_time ?? snapshotRow?.exhibition_time),
+          exhibitionTime: liveExhibitionTime ?? toFiniteComparisonNumber(snapshotRow?.ex_time ?? snapshotRow?.exhibition_time ?? snapshotRow?.kyoteibiyori_ex_time ?? snapshotRow?.kyoteibiyori_exhibition_time),
+          exTime: liveExhibitionTime ?? toFiniteComparisonNumber(snapshotRow?.ex_time ?? snapshotRow?.exhibition_time ?? snapshotRow?.kyoteibiyori_ex_time ?? snapshotRow?.kyoteibiyori_exhibition_time),
           lapTimeDetail: row?.kyoteiBiyoriLapTimeDetail || row?.lapTimeDetail || snapshotRow?.kyoteibiyori_lap_time_detail || snapshotRow?.lap_time_detail || null,
           exhibitionSTDetail: row?.kyoteiBiyoriExhibitionSTDetail || row?.exhibitionSTDetail || snapshotRow?.kyoteibiyori_exhibition_st_detail || snapshotRow?.exhibition_st_detail || null,
           exhibitionTimeDetail: row?.kyoteiBiyoriExhibitionTimeDetail || row?.exhibitionTimeDetail || snapshotRow?.kyoteibiyori_exhibition_time_detail || snapshotRow?.exhibition_time_detail || null,
           turnFootDetail: row?.kyoteiBiyoriTurnFootDetail || row?.turnFootDetail || snapshotRow?.kyoteibiyori_turn_foot_detail || snapshotRow?.turn_foot_detail || null,
-          straightTimeDetail: row?.kyoteiBiyoriStraightTimeDetail || row?.straightTimeDetail || snapshotRow?.kyoteibiyori_straight_time_detail || snapshotRow?.straight_time_detail || null,
           lapExStretch: liveLapExStretch ?? snapshotLapExStretch,
           lapScore: liveLapExStretch ?? snapshotLapExStretch,
           stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || snapshotRow?.kyoteibiyori_stretch_foot_label || snapshotRow?.stretch_foot_label || null,
@@ -3804,16 +3852,17 @@ function getPlayerComparisonRows({ prediction, data }) {
         lapSource: row?.lap_source || row?.kyoteibiyori_lap_source || null,
         lapRank: firstFiniteValue(row?.lap_rank, row?.feature_snapshot?.lap_rank, row?.feature_snapshot?.lap_time_rank),
         lapGapFromBest: firstFiniteValue(row?.lap_gap_from_best, row?.feature_snapshot?.lap_gap_from_best, row?.feature_snapshot?.lap_time_gap_from_best),
-        exhibitionSt: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_st ?? row?.exhibition_st),
+        exhibitionSt: toFiniteComparisonNumber(row?.ex_st ?? row?.exhibition_st ?? row?.kyoteibiyori_ex_st ?? row?.kyoteibiyori_exhibition_st),
+        exST: toFiniteComparisonNumber(row?.ex_st ?? row?.exhibition_st ?? row?.kyoteibiyori_ex_st ?? row?.kyoteibiyori_exhibition_st),
         exhibitionStRaw: row?.kyoteibiyori_exhibition_st_raw ?? row?.exhibition_st_raw_detail ?? null,
         exhibitionStFlag: row?.kyoteibiyori_exhibition_st_flag ?? row?.exhibition_st_flag ?? null,
         exhibitionStSignedValue: firstFiniteValue(row?.kyoteibiyori_exhibition_st_signed, row?.exhibition_st_signed),
-        exhibitionTime: toFiniteComparisonNumber(row?.kyoteibiyori_exhibition_time ?? row?.exhibition_time),
+        exhibitionTime: toFiniteComparisonNumber(row?.ex_time ?? row?.exhibition_time ?? row?.kyoteibiyori_ex_time ?? row?.kyoteibiyori_exhibition_time),
+        exTime: toFiniteComparisonNumber(row?.ex_time ?? row?.exhibition_time ?? row?.kyoteibiyori_ex_time ?? row?.kyoteibiyori_exhibition_time),
         lapTimeDetail: row?.kyoteibiyori_lap_time_detail || row?.lap_time_detail || null,
         exhibitionSTDetail: row?.kyoteibiyori_exhibition_st_detail || row?.exhibition_st_detail || null,
         exhibitionTimeDetail: row?.kyoteibiyori_exhibition_time_detail || row?.exhibition_time_detail || null,
         turnFootDetail: row?.kyoteibiyori_turn_foot_detail || row?.turn_foot_detail || null,
-        straightTimeDetail: row?.kyoteibiyori_straight_time_detail || row?.straight_time_detail || null,
         lapExStretch: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
         lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
         stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
@@ -4200,7 +4249,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     return params.get("admin") === "1";
   }, []);
-  const [screen, setScreen] = useState("predict");
+  const [screen, setScreen] = useState("prediction");
   const [date, setDate] = useState(() => localDateKey());
   const [venueId, setVenueId] = useState(1);
   const [raceNo, setRaceNo] = useState(1);
@@ -4208,6 +4257,14 @@ export default function App() {
   const [error, setError] = useState("");
   const [errorDetails, setErrorDetails] = useState(null);
   const [data, setData] = useState(null);
+  const [openApiLoading, setOpenApiLoading] = useState(false);
+  const [openApiError, setOpenApiError] = useState("");
+  const [openApiModel, setOpenApiModel] = useState(null);
+  const [todayRankingLoading, setTodayRankingLoading] = useState(false);
+  const [todayRankingError, setTodayRankingError] = useState("");
+  const [todayRankingRows, setTodayRankingRows] = useState([]);
+  const [todayRankingProgress, setTodayRankingProgress] = useState({ done: 0, total: 0 });
+  const [todayRankingUpdatedAt, setTodayRankingUpdatedAt] = useState("");
   const [rankingsLoading, setRankingsLoading] = useState(false);
   const [rankingsError, setRankingsError] = useState("");
   const [rankingsData, setRankingsData] = useState([]);
@@ -4345,7 +4402,7 @@ export default function App() {
 
   const race = data?.race || {};
   const sourceMeta = data?.source || {};
-  const snapshotGenerationHints = buildSnapshotGenerationHints(date, venueId, raceNo);
+  const showPredictionError = !!error;
   const startDisplay = data?.startDisplay || null;
   const entryPipelineDebug = useMemo(() => getCanonicalEntryDebug(data, startDisplay), [data, startDisplay]);
   const prediction = data?.prediction || {};
@@ -4379,6 +4436,31 @@ export default function App() {
       : prediction?.pure_top6_prediction && typeof prediction.pure_top6_prediction === "object"
         ? prediction.pure_top6_prediction
         : {};
+  const quickInputModel = data?.quickInput && typeof data.quickInput === "object"
+    ? data.quickInput
+    : buildQuickInputModel({
+      date,
+      venueId,
+      venue: VENUES.find((v) => v.id === Number(venueId))?.name || String(venueId),
+      raceNo,
+      racers
+    });
+  const predictionExplanationModel = data?.predictionExplanation && typeof data.predictionExplanation === "object"
+    ? data.predictionExplanation
+    : buildPredictionExplanationModel({ data: data || {}, prediction, pureTop6Prediction });
+  const ticketsModel = data?.tickets && typeof data.tickets === "object"
+    ? data.tickets
+    : buildTicketsModel({ data: data || {}, prediction, pureTop6Prediction });
+  const playerMasterModel = data?.playerMaster && Array.isArray(data.playerMaster)
+    ? data.playerMaster
+    : buildPlayerMasterPersistenceModel(racers);
+  const raceLogModel = data?.raceLog && typeof data.raceLog === "object"
+    ? data.raceLog
+    : buildRaceLogPersistenceModel({
+      quickInput: quickInputModel,
+      predictionExplanation: predictionExplanationModel,
+      tickets: ticketsModel
+    });
   const oddsData = data?.oddsData || {};
   const trifectaOddsList = Array.isArray(oddsData?.trifecta) ? oddsData.trifecta : [];
   const exactaOddsList = Array.isArray(oddsData?.exacta) ? oddsData.exacta : [];
@@ -4412,6 +4494,14 @@ export default function App() {
         ? prediction.scenarioSuggestions
         : {};
   const explainability = data?.explainability || {};
+  const venueRuleProfile = data?.venueRuleProfile && typeof data.venueRuleProfile === "object" ? data.venueRuleProfile : {};
+  const indicatorThresholdSummary = Array.isArray(data?.indicatorThresholdSummary) ? data.indicatorThresholdSummary : [];
+  const laneEvaluationTable = Array.isArray(data?.laneEvaluationTable) ? data.laneEvaluationTable : [];
+  const decisionPatternScores = Array.isArray(data?.decisionPatternScores) ? data.decisionPatternScores : [];
+  const comparisonChecklist = Array.isArray(data?.comparisonChecklist) ? data.comparisonChecklist : [];
+  const predictedDevelopmentNotes = Array.isArray(data?.predictedDevelopmentNotes) ? data.predictedDevelopmentNotes : [];
+  const practicalMemo = typeof data?.practicalMemo === "string" ? data.practicalMemo : "";
+  const hardRaceSixRanking = Array.isArray(data?.hardRaceSixRanking) ? data.hardRaceSixRanking : [];
   const manualLapEvaluation = data?.manualLapEvaluation || null;
   const bankrollPlan = data?.bankrollPlan || ticketOptimization?.bankrollPlan || {};
   const raceDecision = data?.raceDecision || {};
@@ -4475,11 +4565,11 @@ export default function App() {
       ? pureTop6Prediction.wide_formation_suggestion
     : {};
   const pureFormationReason =
-    typeof pureTop6Prediction?.formationReason === "string" && pureTop6Prediction.formationReason.trim()
+    pureWideFormation?.active === true && Array.isArray(pureWideFormation?.combos) && pureWideFormation.combos.length > 0 && typeof pureTop6Prediction?.formationReason === "string" && pureTop6Prediction.formationReason.trim()
       ? pureTop6Prediction.formationReason
-      : typeof pureWideFormation?.reason === "string" && pureWideFormation.reason.trim()
+      : pureWideFormation?.active === true && Array.isArray(pureWideFormation?.combos) && pureWideFormation.combos.length > 0 && typeof pureWideFormation?.reason === "string" && pureWideFormation.reason.trim()
         ? pureWideFormation.reason
-        : Array.isArray(pureWideFormation?.reasons) && pureWideFormation.reasons.length > 0
+        : pureWideFormation?.active === true && Array.isArray(pureWideFormation?.combos) && pureWideFormation.combos.length > 0 && Array.isArray(pureWideFormation?.reasons) && pureWideFormation.reasons.length > 0
           ? pureWideFormation.reasons.join("; ")
           : "--";
   const predictionConfidenceState = getPredictionConfidenceState(sourceMeta);
@@ -4811,6 +4901,7 @@ export default function App() {
   const entrySupplementalDebug = useMemo(() => {
     const fieldChecks = [
       ["lap_time", (row) => Number.isFinite(Number(row?.lapTime))],
+      ["straight_time", (row) => Number.isFinite(Number(row?.straightTime))],
       ["exhibition_st", (row) => Number.isFinite(Number(row?.exhibitionSt))],
       ["exhibition_time", (row) => Number.isFinite(Number(row?.exhibitionTime))],
       ["motor2ren", (row) => Number.isFinite(Number(row?.motor2ren ?? row?.motor2Rate))],
@@ -4822,6 +4913,7 @@ export default function App() {
   }, [playerComparisonRows]);
   const playerMetricLeaders = useMemo(() => ({
     lapTime: buildTopMetricLaneSet(playerComparisonRows, "lapTime", "asc"),
+    straightTime: buildTopMetricLaneSet(playerComparisonRows, "straightTime", "asc"),
     exhibitionSt: buildTopMetricLaneSet(playerComparisonRows, "exhibitionSt", "asc"),
     exhibitionTime: buildTopMetricLaneSet(playerComparisonRows, "exhibitionTime", "asc"),
     lapScore: buildTopMetricLaneSet(playerComparisonRows, "lapScore", "desc"),
@@ -5190,7 +5282,7 @@ export default function App() {
   }, [screen]);
 
   useEffect(() => {
-    if (screen === "predict" && data && history.length === 0) {
+    if ((screen === "quickInput" || screen === "prediction") && data && history.length === 0) {
       fetchHistoryData({ includeInvalidated: adminMode })
         .then((historyData) => setHistory(Array.isArray(historyData?.items) ? historyData.items : []))
         .catch(() => {});
@@ -5208,6 +5300,12 @@ export default function App() {
       loadRankings();
     }
   }, [screen, date, venueId]);
+
+  useEffect(() => {
+    if (screen === "todayRanking" && todayRankingRows.length === 0 && !todayRankingLoading) {
+      loadTodayRanking();
+    }
+  }, [screen]);
 
   useEffect(() => {
     if (!verificationNotice) return;
@@ -5228,13 +5326,13 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e) => {
-      if (screen !== "predict") return;
+      if (screen !== "quickInput" && screen !== "prediction") return;
       if (!(e.altKey && !e.ctrlKey && !e.metaKey)) return;
       const k = String(e.key || "").toLowerCase();
       if (k === "enter") {
         e.preventDefault();
-        if (!loading) {
-          onFetch();
+        if (!openApiLoading) {
+          onFetchOpenApiPrediction();
         }
       } else if (k === "arrowright") {
         e.preventDefault();
@@ -5246,38 +5344,220 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [screen, loading, date, venueId, raceNo]);
+  }, [screen, openApiLoading, date, venueId, raceNo]);
 
   const onFetch = async () => {
-    setLoading(true);
-    setError("");
-    setErrorDetails(null);
+    await onFetchOpenApiPrediction();
+  };
+
+  const loadTodayRanking = async ({ force = false } = {}) => {
+    const targetDate = localDateKey();
+    const cached = !force ? todayRankingCache.get(targetDate) : null;
+    if (cached) {
+      setTodayRankingRows(cached.rows);
+      setTodayRankingUpdatedAt(cached.updatedAt);
+      setTodayRankingProgress({ done: cached.total, total: cached.total });
+      setTodayRankingError("");
+      return;
+    }
+
+    setTodayRankingLoading(true);
+    setTodayRankingError("");
+    setTodayRankingProgress({ done: 0, total: 288 });
     try {
-      const result = await fetchRaceData(date, venueId, raceNo);
-      setData(result);
-      const savedScores = result?.manualLapEvaluation?.scores_by_lane;
-      setManualLapScores(savedScores && typeof savedScores === "object" ? savedScores : createManualLapDraft());
-      setManualLapMemo(result?.manualLapEvaluation?.race_memo || "");
-      setManualLapNotice("");
-      setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
+      const [programsResult, previewsResult] = await Promise.all([
+        fetchOpenApiDay(targetDate, "programs"),
+        fetchOpenApiDay(targetDate, "previews").catch((err) => ({
+          payload: null,
+          error: err?.message || "previews fetch failed"
+        }))
+      ]);
+      const programs = getOpenApiRaceRows(programsResult.payload)
+        .filter((row) =>
+          Number.isInteger(Number(row?.race_stadium_number)) &&
+          Number.isInteger(Number(row?.race_number)) &&
+          Number(row.race_stadium_number) >= 1 &&
+          Number(row.race_stadium_number) <= 24 &&
+          Number(row.race_number) >= 1 &&
+          Number(row.race_number) <= 12
+        );
+      const previewsByRaceKey = Object.fromEntries(
+        getOpenApiRaceRows(previewsResult.payload).map((row) => [openApiRaceKey(row), row])
+      );
+      const total = Math.max(programs.length, 1);
+      const analyzed = [];
+      const chunkSize = 8;
+      for (let index = 0; index < programs.length; index += chunkSize) {
+        const chunk = programs.slice(index, index + chunkSize);
+        analyzed.push(...buildTodayRanking(chunk, previewsByRaceKey, { limit: chunk.length }));
+        setTodayRankingProgress({ done: Math.min(index + chunk.length, total), total });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      const rows = analyzed
+        .sort((a, b) => b.confidenceScore - a.confidenceScore || Number(a.stadiumNumber || 99) - Number(b.stadiumNumber || 99) || Number(a.raceNumber || 99) - Number(b.raceNumber || 99))
+        .slice(0, 20)
+        .map((row, index) => ({ ...row, rank: index + 1 }));
+      const updatedAt = new Date().toISOString();
+      todayRankingCache.set(targetDate, {
+        rows,
+        updatedAt,
+        total
+      });
+      setTodayRankingRows(rows);
+      setTodayRankingUpdatedAt(updatedAt);
+      setTodayRankingProgress({ done: total, total });
+      if (previewsResult.error) {
+        setTodayRankingError(`previews取得失敗: ${previewsResult.error}。出走表のみでランキングしました。`);
+      }
+    } catch (e) {
+      setTodayRankingRows([]);
+      setTodayRankingError(e?.message || "Today Ranking の取得に失敗しました");
+    } finally {
+      setTodayRankingLoading(false);
+    }
+  };
+
+  const onFetchOpenApiPrediction = async (target = {}) => {
+    const targetDate = target.date || date;
+    const targetVenueId = Number(target.venueId ?? venueId);
+    const targetRaceNo = Number(target.raceNo ?? raceNo);
+    setOpenApiLoading(true);
+    setOpenApiError("");
+    try {
+      const [programsResult, previewsResult] = await Promise.all([
+        fetchOpenApiDay(targetDate, "programs"),
+        fetchOpenApiDay(targetDate, "previews").catch((err) => ({
+          payload: null,
+          url: null,
+          fetchedAt: new Date().toISOString(),
+          error: err?.message || "previews fetch failed"
+        }))
+      ]);
+      const programs = getOpenApiRaceRows(programsResult.payload);
+      const previews = getOpenApiRaceRows(previewsResult.payload);
+      const selectedProgram = programs.find((row) =>
+        Number(row?.race_stadium_number) === Number(targetVenueId) &&
+        Number(row?.race_number) === Number(targetRaceNo)
+      );
+      if (!selectedProgram) {
+        throw new Error("Open API programs に選択レースが見つかりませんでした。日付・場・Rを確認してください。");
+      }
+      const previewsByRaceKey = Object.fromEntries(previews.map((row) => [openApiRaceKey(row), row]));
+      const selectedPreview = previewsByRaceKey[openApiRaceKey(selectedProgram)] || null;
+      const selectedVenuePrograms = programs.filter((row) => Number(row?.race_stadium_number) === Number(targetVenueId));
+      const originalExhibition = await fetchOriginalExhibitionData({
+        date: targetDate,
+        venueId: targetVenueId,
+        raceNo: targetRaceNo
+      }).catch((err) => ({
+        ok: false,
+        optional: true,
+        error: err?.message || "original exhibition fetch failed",
+        rows: []
+      }));
+      const selectedProgramWithOriginal = mergeOriginalExhibitionIntoProgram(selectedProgram, originalExhibition);
+      const selectedVenueProgramsWithOriginal = selectedVenuePrograms.map((row) =>
+        openApiRaceKey(row) === openApiRaceKey(selectedProgram)
+          ? selectedProgramWithOriginal
+          : row
+      );
+      const prediction = buildRacePrediction(selectedProgramWithOriginal, selectedPreview);
+      const previewBoats = selectedPreview?.boats && typeof selectedPreview.boats === "object" ? selectedPreview.boats : {};
+      const previewExhibitionStatus = inspectPreviewExhibitionStatus(selectedPreview || {});
+      const originalByBoat = getOriginalExhibitionByBoat(originalExhibition);
+      console.info("[OpenAPI v2 preview source check]", {
+        raceKey: openApiRaceKey(selectedProgram),
+        previewsFetched: previews.length,
+        previewBoatsShape: Array.isArray(selectedPreview?.boats) ? "array" : selectedPreview?.boats && typeof selectedPreview.boats === "object" ? "object_by_boat_number" : "missing",
+        exhibitionStatus: prediction.exhibition.status,
+        exhibitionNotRun: previewExhibitionStatus.exhibitionNotRun,
+        exhibitionNotRunCheck: {
+          allExhibitionTimeZeroOrNull: previewExhibitionStatus.allExhibitionTimeZeroOrNull,
+          allCourseNull: previewExhibitionStatus.allCourseNull
+        },
+        usedFields: prediction.exhibition.usedFields,
+        diagnostics: prediction.exhibition.diagnostics,
+        fieldSources: {
+          exST: "previews.boats[boatNo].racer_start_timing",
+          exTime: "previews.boats[boatNo].racer_exhibition_time",
+          lapTime: "kyoteibiyori_original_exhibition.lap optional",
+          straight: "kyoteibiyori_original_exhibition.straight optional"
+        },
+        rawPreviewByBoat: Object.fromEntries(
+          [1, 2, 3, 4, 5, 6].map((boat) => {
+            const row = Array.isArray(selectedPreview?.boats)
+              ? selectedPreview.boats.find((item) => Number(item?.racer_boat_number) === boat)
+              : previewBoats[String(boat)];
+            return [String(boat), {
+              racer_start_timing: row?.racer_start_timing ?? null,
+              racer_exhibition_time: row?.racer_exhibition_time ?? null,
+              racer_course_number: row?.racer_course_number ?? null
+            }];
+          })
+        ),
+        originalExhibitionByBoat: Object.fromEntries(
+          [1, 2, 3, 4, 5, 6].map((boat) => {
+            const row = originalByBoat[String(boat)] || {};
+            return [String(boat), {
+              lapTime: row?.lapTime ?? null,
+              lapSource: row?.lapSource ?? null,
+              straightTime: row?.straightTime ?? null,
+              straightSource: row?.straightSource ?? null,
+              measured: row?.measured === true
+            }];
+          })
+        )
+      });
+      const screening = screenInsideEscapeCandidates(selectedVenueProgramsWithOriginal, previewsByRaceKey);
+      const nextOpenApiModel = {
+        prediction,
+        screening,
+        originalExhibition,
+        urls: {
+          programs: programsResult.url,
+          previews: previewsResult.url,
+          originalExhibition: originalExhibition?.source?.url || null
+        },
+        fetchedAt: {
+          programs: programsResult.fetchedAt,
+          previews: previewsResult.fetchedAt,
+          originalExhibition: originalExhibition?.fetchedAt || null
+        },
+        previewError: previewsResult.error || null,
+        originalExhibitionError: originalExhibition?.ok === false ? originalExhibition?.error || null : null,
+        counts: {
+          programs: programs.length,
+          previews: previews.length,
+          originalExhibitionMeasured: Number(originalExhibition?.measuredCount || 0)
+        }
+      };
+      setOpenApiModel(nextOpenApiModel);
+      setData(buildLegacyDataFromOpenApiPrediction(nextOpenApiModel, {
+        date: targetDate,
+        venueId: targetVenueId,
+        raceNo: targetRaceNo,
+        venueName: VENUES.find((v) => v.id === Number(targetVenueId))?.name || String(targetVenueId)
+      }));
       setRecentRaceSelections((prev) => {
         const next = [
           {
-            date,
-            venueId: Number(venueId),
-            venueName: VENUES.find((v) => v.id === Number(venueId))?.name || String(venueId),
-            raceNo: Number(raceNo)
+            date: targetDate,
+            venueId: Number(targetVenueId),
+            venueName: VENUES.find((v) => v.id === Number(targetVenueId))?.name || String(targetVenueId),
+            raceNo: Number(targetRaceNo)
           },
-          ...prev.filter((row) => !(String(row?.date) === String(date) && Number(row?.venueId) === Number(venueId) && Number(row?.raceNo) === Number(raceNo)))
+          ...prev.filter((row) => !(String(row?.date) === String(targetDate) && Number(row?.venueId) === Number(targetVenueId) && Number(row?.raceNo) === Number(targetRaceNo)))
         ];
         return sanitizeRecentRaceSelections(next).slice(0, 8);
       });
+      setError("");
+      setErrorDetails(null);
     } catch (e) {
-      const details = getApiErrorDetails(e);
-      setError(buildRaceApiErrorMessage(details, e.message || "Failed to fetch race data"));
-      setErrorDetails(details);
+      setOpenApiError(e?.message || "Open API prediction failed");
+      setOpenApiModel(null);
+      setData(null);
     } finally {
-      setLoading(false);
+      setOpenApiLoading(false);
     }
   };
 
@@ -5548,25 +5828,10 @@ export default function App() {
 
     if (!applyVenueIdSelection(nextVenueId, "選択したレースの会場IDが不正です。Recent データを確認してください。")) return;
     setRaceNo(nextRaceNo);
-    setScreen("predict");
-    setLoading(true);
+    setScreen("prediction");
     setError("");
     setErrorDetails(null);
-    try {
-      const result = await fetchRaceData(date, nextVenueId, nextRaceNo);
-      setData(result);
-      const savedScores = result?.manualLapEvaluation?.scores_by_lane;
-      setManualLapScores(savedScores && typeof savedScores === "object" ? savedScores : createManualLapDraft());
-      setManualLapMemo(result?.manualLapEvaluation?.race_memo || "");
-      setManualLapNotice("");
-      setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
-    } catch (e) {
-      const details = getApiErrorDetails(e);
-      setError(buildRaceApiErrorMessage(details, e.message || "Failed to fetch race data"));
-      setErrorDetails(details);
-    } finally {
-      setLoading(false);
-    }
+    await onFetchOpenApiPrediction({ date, venueId: nextVenueId, raceNo: nextRaceNo });
   };
 
   const onSubmitResult = async () => {
@@ -5645,13 +5910,7 @@ export default function App() {
     setError("");
     try {
       await saveManualLapEvaluationApi(payload);
-      const result = await fetchRaceData(date, venueId, raceNo);
-      setData(result);
-      const savedScores = result?.manualLapEvaluation?.scores_by_lane;
-      setManualLapScores(savedScores && typeof savedScores === "object" ? savedScores : createManualLapDraft());
-      setManualLapMemo(result?.manualLapEvaluation?.race_memo || "");
-      setManualLapNotice("手動周回展示評価を保存し、予想へ反映しました。");
-      setResultForm((prev) => ({ ...prev, raceId: result?.raceId || prev.raceId }));
+      setManualLapNotice("手動周回展示評価を保存しました。OpenAPI v2予想は取得済みデータから再取得してください。");
     } catch (e) {
       setError(e.message || "Failed to save manual lap evaluation");
     } finally {
@@ -6346,6 +6605,20 @@ export default function App() {
       { total_bet_amount: 0, total_payout: 0, total_profit_loss: 0, hit_count: 0, miss_count: 0 }
     );
   }, [placedBets]);
+  const dashboardModel = useMemo(() => {
+    const betLogs = placedBets.map((bet) => ({
+      venue: bet.venue_name || bet.venue_id || bet.venue_code || "unknown",
+      raceNo: bet.race_no,
+      actualResult: bet.result_combo || bet.confirmed_result || "",
+      hit: bet.status === "hit" ? true : bet.status === "miss" ? false : null,
+      payout: Number(bet.payout || 0),
+      skipped: false
+    }));
+    return buildDashboardAggregationModel([
+      ...(data ? [raceLogModel] : []),
+      ...betLogs
+    ]);
+  }, [placedBets, data, raceLogModel]);
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -6389,23 +6662,25 @@ export default function App() {
         <section className="topbar card">
           <div>
             <h1>ボートレース予想ダッシュボード</h1>
-            <p>予想・投票記録・精算を1画面で管理</p>
+            <p>QuickInputから予想・チケット・検証まで管理</p>
           </div>
           <div className="screen-tabs">
-            <button className={screen === "predict" ? "tab on" : "tab"} onClick={() => setScreen("predict")}>予想</button>
-            <button className={screen === "hardRace" ? "tab on" : "tab"} onClick={() => setScreen("hardRace")}>Hard Race Prediction</button>
-            <button className={screen === "results" ? "tab on" : "tab"} onClick={() => setScreen("results")}>結果</button>
+            <button className={screen === "prediction" ? "tab on" : "tab"} onClick={() => setScreen("prediction")}>Prediction</button>
+            <button className={screen === "todayRanking" ? "tab on" : "tab"} onClick={() => setScreen("todayRanking")}>Today Ranking</button>
+            <button className={screen === "tickets" ? "tab on" : "tab"} onClick={() => setScreen("tickets")}>Tickets</button>
+            <button className={screen === "raceLog" ? "tab on" : "tab"} onClick={() => setScreen("raceLog")}>RaceLog</button>
+            <button className={screen === "settings" ? "tab on" : "tab"} onClick={() => setScreen("settings")}>Settings</button>
           </div>
         </section>
 
-        {screen === "predict" && (
+        {screen === "prediction" && (
           <>
             <section className="card">
               <div className="controls-grid">
                 <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
                 <label><span>場</span><select value={venueId} onChange={(e) => applyVenueIdSelection(e.target.value)}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
                 <label><span>レース</span><select value={raceNo} onChange={(e) => setRaceNo(Number(e.target.value))}>{Array.from({ length: 12 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}R</option>)}</select></label>
-                <button className="fetch-btn" onClick={onFetch} disabled={loading}>{loading ? "取得中..." : "予想を取得"}</button>
+                <button className="fetch-btn" onClick={onFetchOpenApiPrediction} disabled={openApiLoading}>{openApiLoading ? "取得中..." : "予想を取得"}</button>
               </div>
               <div className="predict-quickbar">
                 <div className="quick-chip-group">
@@ -6440,7 +6715,145 @@ export default function App() {
               </div>
             </section>
 
-            {error && (
+            <section className="card">
+              <div className="section-head">
+                <h2>Open API v2 単一パイプライン</h2>
+                <p className="muted">
+                  日付単位で programs/previews を取得し、場とRは取得済みJSONからフィルタします。展示0/nullは未確定として予想へ渡しません。
+                </p>
+              </div>
+              <div className="controls-grid">
+                <button className="fetch-btn secondary" onClick={onFetchOpenApiPrediction} disabled={openApiLoading}>
+                  {openApiLoading ? "Open API 取得中..." : "Open API予想を取得"}
+                </button>
+                {openApiModel?.prediction ? (
+                  <>
+                    <div className="metric-item">
+                      <span>展示ステータス</span>
+                      <strong>{openApiModel.prediction.exhibition.status === "exhibition_reflected" ? "展示反映済み" : "展示前（出走表のみ）"}</strong>
+                    </div>
+                    <div className="metric-item">
+                      <span>取得時刻</span>
+                      <strong>{openApiModel.fetchedAt.programs}</strong>
+                    </div>
+                    <div className="metric-item">
+                      <span>stats</span>
+                      <strong>未集計（P3で生成）</strong>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              {openApiError ? <div className="error-banner" style={{ marginTop: 10 }}>{openApiError}</div> : null}
+              {openApiModel?.previewError ? <div className="notice-banner" style={{ marginTop: 10 }}>previews取得失敗: {openApiModel.previewError}。出走表のみで予想します。</div> : null}
+              {openApiModel?.originalExhibitionError ? <div className="notice-banner" style={{ marginTop: 10 }}>周回・直線は未測定または取得失敗: {openApiModel.originalExhibitionError}</div> : null}
+              {openApiModel?.prediction ? (
+                <div className="quick-sheet-grid" style={{ marginTop: 12 }}>
+                  <div className="quick-sheet-panel">
+                    <strong>1着確率</strong>
+                    <div className="ticket-stack compact-list">
+                      {openApiModel.prediction.firstPlaceProbabilities.map((row) => (
+                        <div className="premium-ticket-row" key={`openapi-head-${row.boat}`}>
+                          <div className="ticket-mainline"><strong>{row.boat}号艇</strong></div>
+                          <div className="ticket-meta">
+                            <span>{formatPercentDisplay(row.probability)}</span>
+                            <span>進入 {row.course || row.boat}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="quick-sheet-panel">
+                    <strong>直前展示データ</strong>
+                    <div className="ticket-stack compact-list">
+                      {openApiModel.prediction.scoredBoats.map((boat) => (
+                        <div className="premium-ticket-row" key={`openapi-before-${boat.boat}`}>
+                          <div className="ticket-mainline"><strong>{boat.boat}号艇</strong></div>
+                          <div className="ticket-meta">
+                            <span>Ex ST {openApiModel.prediction.exhibition.exhibitionStartByBoat?.[boat.boat] == null ? "--" : formatMaybeNumber(openApiModel.prediction.exhibition.exhibitionStartByBoat?.[boat.boat], 2)}</span>
+                            <span>Ex Time {openApiModel.prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] == null ? "--" : formatMaybeNumber(openApiModel.prediction.exhibition.exhibitionTimeByBoat?.[boat.boat], 2)}</span>
+                            <span>Lap {boat.lapTime == null ? "未測定" : formatMaybeNumber(boat.lapTime, 2)}</span>
+                            <span>直線 {boat.straightTime == null ? "未測定" : formatMaybeNumber(boat.straightTime, 2)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="muted strategy-line">Ex ST/Ex Time は OpenAPI previews 由来。Lap/直線は取得できた場合のみ使用します。</p>
+                  </div>
+                  <div className="quick-sheet-panel">
+                    <strong>基本買い目6点</strong>
+                    <div className="ticket-stack compact-list">
+                      {openApiModel.prediction.tickets.trifecta.slice(0, 6).map((row) => (
+                        <div className="premium-ticket-row" key={`openapi-ticket-${row.combo}`}>
+                          <div className="ticket-mainline"><strong>{row.combo}</strong></div>
+                          <div className="ticket-meta">
+                            <span>3連単</span>
+                            <span>{formatPercentDisplay(row.probability)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="quick-sheet-panel">
+                    <strong>展開穴アラート</strong>
+                    {openApiModel.prediction.extraTickets?.length > 0 ? (
+                      <>
+                        <p className="muted strategy-line">{openApiModel.prediction.upsetAlert || "隊形が崩れる展開に注意。"}</p>
+                        <div className="quick-field-list">
+                          {(openApiModel.prediction.upsetReasons || []).map((reason) => (
+                            <span className="chip chip-scenario" key={`upset-reason-${reason}`}>{reason}</span>
+                          ))}
+                        </div>
+                        <div className="kv-list" style={{ marginTop: 10 }}>
+                          <div className="kv-row">
+                            <span>展開穴追加候補</span>
+                            <strong>{openApiModel.prediction.extraTickets.slice(0, 6).map((ticket) => ticket.combo).join(" / ")}</strong>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="muted">本線6点で収まりやすい見立てです。</p>
+                    )}
+                  </div>
+                  <div className="quick-sheet-panel">
+                    <strong>第一ターンマーク</strong>
+                    {[openApiModel.prediction.scenario.main, openApiModel.prediction.scenario.counter, openApiModel.prediction.scenario.upset].map((scenario) => (
+                      <div className="kv-list" key={`openapi-scenario-${scenario.title}`} style={{ marginBottom: 8 }}>
+                        <div className="kv-row"><span>{scenario.title}</span><strong>{scenario.tickets.join(" / ") || "-"}</strong></div>
+                        <p className="muted strategy-line">{scenario.text}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="quick-sheet-panel">
+                    <strong>本日のイン逃げ候補</strong>
+                    {openApiModel.screening.length === 0 ? (
+                      <p className="muted">本日は強い候補なし</p>
+                    ) : (
+                      <div className="ticket-stack compact-list">
+                        {openApiModel.screening.slice(0, 6).map((row) => (
+                          <button
+                            type="button"
+                            className="premium-ticket-row"
+                            key={`inside-screen-${row.raceNumber}`}
+                            onClick={() => setRaceNo(Number(row.raceNumber || 1))}
+                          >
+                            <div className="ticket-mainline"><strong>{row.raceNumber}R / {formatMaybeNumber(row.score, 1)}</strong></div>
+                            <div className="ticket-meta">
+                              <span>相手 {row.opponents.join(",") || "-"}</span>
+                              <span>{row.recommended.map((ticket) => ticket.combo).join(" / ")}</span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+              <p className="muted strategy-line" style={{ marginTop: 10 }}>
+                非公式Open APIを利用。約30分更新のため締切直前は古い可能性があります。参考情報であり的中・利益を保証しません。20歳以上・予算内で利用してください。
+              </p>
+            </section>
+
+            {showPredictionError && (
               <div className="error-banner">
                 <div>{error}</div>
                 {errorDetails ? (
@@ -6451,15 +6864,6 @@ export default function App() {
                     <div className="kv-row"><span>where</span><strong>{errorDetails.where || "-"}</strong></div>
                     <div className="kv-row"><span>route</span><strong>{errorDetails.route || "-"}</strong></div>
                     <div className="kv-row"><span>url</span><strong>{errorDetails.url || "-"}</strong></div>
-                  </div>
-                ) : null}
-                {String(errorDetails?.code || "").toUpperCase() === "SNAPSHOT_MISSING" ? (
-                  <div className="kv-list" style={{ marginTop: 10 }}>
-                    <div className="kv-row"><span>案内</span><strong>事前データ未生成</strong></div>
-                    <div className="kv-row"><span>missing</span><strong>{Array.isArray(errorDetails?.missingFields) && errorDetails.missingFields.length > 0 ? errorDetails.missingFields.join(", ") : "snapshot.race"}</strong></div>
-                    <div className="kv-row"><span>snapshot key</span><strong>{errorDetails?.source?.snapshot_lookup?.raceId || "-"}</strong></div>
-                    <div className="kv-row"><span>このレース</span><strong>{snapshotGenerationHints[0]}</strong></div>
-                    <div className="kv-row"><span>この場の全レース</span><strong>{snapshotGenerationHints[1]}</strong></div>
                   </div>
                 ) : null}
               </div>
@@ -6483,27 +6887,102 @@ export default function App() {
                   </div>
                 </section>
 
+                <section className="card quick-sheet-card">
+                  <div className="section-head">
+                    <h2>Prediction Explanation</h2>
+                    <p className="muted">
+                      Manual: date / venue / raceNo / 6 racers. Auto: performance, lane, technique, motor, boat, exhibition, weather, entry and scenario fields.
+                    </p>
+                  </div>
+                  <div className="metric-grid compact">
+                    <div className="metric-item">
+                      <span>confidence_score</span>
+                      <strong>{predictionExplanationModel.confidence_score == null ? "--" : formatPercentDisplay(predictionExplanationModel.confidence_score)}</strong>
+                    </div>
+                    <div className="metric-item">
+                      <span>confidence_band</span>
+                      <strong>{predictionExplanationModel.confidence_band || "--"}</strong>
+                    </div>
+                    <div className="metric-item">
+                      <span>buyPolicy</span>
+                      <strong>{predictionExplanationModel.buyPolicy || "--"}</strong>
+                    </div>
+                    <div className="metric-item">
+                      <span>recommendedBetMode</span>
+                      <strong>{predictionExplanationModel.recommendedBetMode || "--"}</strong>
+                    </div>
+                    <div className="metric-item">
+                      <span>top6Scenario</span>
+                      <strong>{predictionExplanationModel.top6Scenario || "--"}</strong>
+                    </div>
+                    <div className="metric-item">
+                      <span>boat1_second_keep_score</span>
+                      <strong>{predictionExplanationModel.boat1_second_keep_score == null ? "--" : formatMaybeNumber(predictionExplanationModel.boat1_second_keep_score, 1)}</strong>
+                    </div>
+                  </div>
+                  {predictionExplanationModel.skipRiskReason ? (
+                    <div className="error-banner" style={{ marginTop: 10 }}>
+                      skipRiskReason: {predictionExplanationModel.skipRiskReason}
+                    </div>
+                  ) : null}
+                  <div className="quick-sheet-grid">
+                    <div className="quick-sheet-panel">
+                      <strong>6 Racers</strong>
+                      <div className="ticket-stack compact-list">
+                        {quickInputModel.racers.map((row) => (
+                          <div className="premium-ticket-row" key={`quick-racer-${row.lane}`}>
+                            <div className="ticket-mainline"><strong>{row.lane}号艇</strong></div>
+                            <div className="ticket-meta">
+                              <span>{row.racerName || racers.find((r) => Number(r.lane) === Number(row.lane))?.name || "--"}</span>
+                              <span>{row.racerId || racers.find((r) => Number(r.lane) === Number(row.lane))?.registrationNo || "--"}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="quick-sheet-panel">
+                      <strong>Natural Reason</strong>
+                      <div className="kv-list">
+                        <div className="kv-row"><span>racePattern</span><strong>{predictionExplanationModel.racePattern || "--"} {predictionExplanationModel.racePatternScore == null ? "" : `(${formatMaybeNumber(predictionExplanationModel.racePatternScore, 1)})`}</strong></div>
+                        <div className="kv-row"><span>hardScenario</span><strong>{predictionExplanationModel.hardScenario || "--"} {predictionExplanationModel.hardScenarioScore == null ? "" : `(${formatMaybeNumber(predictionExplanationModel.hardScenarioScore, 1)})`}</strong></div>
+                        <div className="kv-row"><span>style</span><strong>{predictionExplanationModel.style || "--"} {predictionExplanationModel.style_score == null ? "" : `(${formatMaybeNumber(predictionExplanationModel.style_score, 1)})`}</strong></div>
+                        <div className="kv-row"><span>scenario_repro_score</span><strong>{predictionExplanationModel.scenario_repro_score == null ? "--" : formatMaybeNumber(predictionExplanationModel.scenario_repro_score, 2)}</strong></div>
+                        <div className="kv-row"><span>2nd given head</span><strong>{Object.entries(predictionExplanationModel.second_given_head_probabilities || {}).map(([lane, prob]) => `${lane}:${formatMaybeNumber(Number(prob) * 100, 1)}%`).join("  ") || "--"}</strong></div>
+                      </div>
+                    </div>
+                    <div className="quick-sheet-panel">
+                      <strong>Fetched Data Fields</strong>
+                      <div className="quick-field-list">
+                        {(data?.fetchedDataFields || DEFAULT_FETCHED_DATA_FIELDS).map((field) => (
+                          <span className="chip" key={`fetch-field-${field}`}>{field}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
                 {safeArray(playerComparisonRows).length > 0 ? (
                   <RenderGuard>
                   <section className="card summary-card premium-player-panel">
                     <div className="premium-card-head">
                       <div>
                         <p className="eyebrow">Step 1</p>
-                        <h2>Player / Boat Data List</h2>
+                        <h2>選手・艇データ一覧</h2>
                       </div>
                     </div>
                     <div className="table-wrap premium-player-table-wrap">
                       <table className="premium-player-table">
                         <thead>
                           <tr>
-                            <th>Boat</th>
-                            <th>Entry</th>
-                            <th>Player</th>
+                            <th>艇番</th>
+                            <th>進入</th>
+                            <th>選手名</th>
                             <th>F</th>
-                            <th>Lap Time</th>
-                            <th>Ex ST</th>
-                            <th>Ex Time</th>
-                            <th>Motor 2-ren</th>
+                            <th>ST</th>
+                            <th>展示</th>
+                            <th>周回</th>
+                            <th>直線</th>
+                            <th>モーター2連率</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -6538,10 +7017,11 @@ export default function App() {
                               <td>
                                 <span className={`f-count-badge ${Number(row?.fCount) > 0 ? "has-f" : ""}`}>F{row?.fCount ?? "--"}</span>
                               </td>
+                              <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exST ?? row?.exhibitionSt, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exTime ?? row?.exhibitionTime, 2)}</td>
                               <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.lane) ? "metric-hot" : ""}>{formatLapTimeCoverageValue(row, data?.source?.coverage_report)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionSt, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exhibitionTime, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.straightTime, row?.lane) ? "metric-hot" : ""}>{row?.straightTime == null ? "未測定" : formatComparisonValue(row?.straightTime, 2)}</td>
+                              <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren ?? row?.motor2Rate, 2)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -6933,6 +7413,135 @@ export default function App() {
                       </div>
                     </div>
                   </div>
+                  {(Object.keys(venueRuleProfile).length > 0 || indicatorThresholdSummary.length > 0 || laneEvaluationTable.length > 0 || decisionPatternScores.length > 0 || hardRaceSixRanking.length > 0) ? (
+                    <details className="card" style={{ marginTop: 16 }}>
+                      <summary>場別比較軸 / 展開メモ</summary>
+                      <div className="kv-list" style={{ marginTop: 12 }}>
+                        <div className="kv-row"><span>場別タイプ</span><strong>{venueRuleProfile?.type || "--"}</strong></div>
+                        <div className="kv-row"><span>予想の軸</span><strong>{venueRuleProfile?.predictionAxis || "--"}</strong></div>
+                        <div className="kv-row"><span>基本姿勢</span><strong>{venueRuleProfile?.baseStance || "--"}</strong></div>
+                        <div className="kv-row"><span>比較順</span><strong>{Array.isArray(venueRuleProfile?.comparisonOrder) && venueRuleProfile.comparisonOrder.length > 0 ? venueRuleProfile.comparisonOrder.join(" -> ") : "--"}</strong></div>
+                        <div className="kv-row"><span>今回の実戦メモ</span><strong>{practicalMemo || "--"}</strong></div>
+                      </div>
+                      {Array.isArray(venueRuleProfile?.focusSummary) && venueRuleProfile.focusSummary.length > 0 ? (
+                        <div className="ticket-stack compact-list" style={{ marginTop: 12 }}>
+                          {venueRuleProfile.focusSummary.map((row, idx) => (
+                            <div className="premium-ticket-row" key={`venue-focus-${idx}`}>
+                              <div className="ticket-mainline"><strong>{`重視 ${idx + 1}`}</strong></div>
+                              <div className="ticket-meta"><span>{row}</span></div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {comparisonChecklist.length > 0 ? (
+                        <div style={{ marginTop: 12 }}>
+                          <strong>comparisonChecklist</strong>
+                          <div className="ticket-stack compact-list" style={{ marginTop: 8 }}>
+                            {comparisonChecklist.map((row) => (
+                              <div className="premium-ticket-row" key={`check-${row?.step}-${row?.key}`}>
+                                <div className="ticket-mainline">
+                                  <strong>{`${row?.step}. ${row?.label}`}</strong>
+                                </div>
+                                <div className="ticket-meta">
+                                  <span>{row?.benchmark || "--"}</span>
+                                  <span>{row?.currentSummary || "--"}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {indicatorThresholdSummary.length > 0 ? (
+                        <div style={{ marginTop: 12 }}>
+                          <strong>indicatorThresholdSummary</strong>
+                          <div className="ticket-stack compact-list" style={{ marginTop: 8 }}>
+                            {indicatorThresholdSummary.map((row) => (
+                              <div className="premium-ticket-row" key={`threshold-${row?.key}`}>
+                                <div className="ticket-mainline">
+                                  <strong>{row?.label || row?.key}</strong>
+                                </div>
+                                <div className="ticket-meta">
+                                  <span>{row?.value == null ? "--" : `${row.value}${row?.unit || ""}`}</span>
+                                  <span>{row?.band || "--"}</span>
+                                  <span>{row?.summary || "--"}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {laneEvaluationTable.length > 0 ? (
+                        <div style={{ marginTop: 12 }}>
+                          <strong>laneEvaluationTable</strong>
+                          <div className="ticket-stack compact-list" style={{ marginTop: 8 }}>
+                            {laneEvaluationTable.map((row) => (
+                              <div className="premium-ticket-row" key={`lane-eval-${row?.lane}`}>
+                                <div className="ticket-mainline">
+                                  <strong>{`${row?.lane}号艇 ${row?.name || "-"}`}</strong>
+                                </div>
+                                <div className="ticket-meta">
+                                  <span>{`score ${formatMaybeNumber(row?.weightedScore, 1)}`}</span>
+                                  <span>{Array.isArray(row?.mainWinPaths) ? row.mainWinPaths.join(" / ") : "--"}</span>
+                                  <span>{Array.isArray(row?.dangerSigns) ? row.dangerSigns.slice(0, 2).join(" / ") : "--"}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {decisionPatternScores.length > 0 ? (
+                        <div style={{ marginTop: 12 }}>
+                          <strong>decisionPatternScores</strong>
+                          <div className="ticket-stack compact-list" style={{ marginTop: 8 }}>
+                            {decisionPatternScores.slice(0, 5).map((row) => (
+                              <div className="premium-ticket-row" key={`pattern-${row?.code}`}>
+                                <div className="ticket-mainline">
+                                  <strong>{row?.label || row?.code}</strong>
+                                </div>
+                                <div className="ticket-meta">
+                                  <span>{`score ${formatMaybeNumber(row?.score, 1)}`}</span>
+                                  <span>{row?.emphasis || "--"}</span>
+                                  <span>{row?.practicalMemo || "--"}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {predictedDevelopmentNotes.length > 0 ? (
+                        <div style={{ marginTop: 12 }}>
+                          <strong>predictedDevelopmentNotes</strong>
+                          <div className="ticket-stack compact-list" style={{ marginTop: 8 }}>
+                            {predictedDevelopmentNotes.map((note, idx) => (
+                              <div className="premium-ticket-row" key={`dev-note-${idx}`}>
+                                <div className="ticket-mainline"><strong>{`note ${idx + 1}`}</strong></div>
+                                <div className="ticket-meta"><span>{note}</span></div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {hardRaceSixRanking.length > 0 ? (
+                        <div style={{ marginTop: 12 }}>
+                          <strong>Hard Race 6点順位</strong>
+                          <div className="ticket-stack compact-list" style={{ marginTop: 8 }}>
+                            {hardRaceSixRanking.map((row) => (
+                              <div className="premium-ticket-row" key={`hard-six-${row?.combo}`}>
+                                <div className="ticket-mainline">
+                                  <strong>{`#${row?.rank} ${row?.combo}`}</strong>
+                                </div>
+                                <div className="ticket-meta">
+                                  <span>{`score ${formatMaybeNumber(row?.score, 1)}`}</span>
+                                  <span>{row?.probability == null ? "--" : `prob ${formatMaybeNumber(row?.probability, 1)}%`}</span>
+                                  <span>{Array.isArray(row?.reasons) ? row.reasons.join(" / ") : "--"}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </details>
+                  ) : null}
                 </article>
                 </RenderGuard>
 
@@ -8235,6 +8844,312 @@ export default function App() {
               </>
             )}
           </>
+        )}
+
+        {screen === "todayRanking" && (
+          <section className="card">
+            <div className="section-head">
+              <div>
+                <h2>Today Ranking</h2>
+                <p className="muted">本日開催の全場・全レースから、信頼度スコア上位20件を表示します。</p>
+              </div>
+              <div className="row-actions">
+                <span className="muted">
+                  {todayRankingLoading
+                    ? `全レース取得中: ${todayRankingProgress.done} / ${todayRankingProgress.total || 288}`
+                    : todayRankingUpdatedAt
+                      ? `最終更新 ${todayRankingUpdatedAt}`
+                      : "未取得"}
+                </span>
+                <button className="fetch-btn secondary" onClick={() => loadTodayRanking({ force: true })} disabled={todayRankingLoading}>
+                  {todayRankingLoading ? "取得中..." : "再取得"}
+                </button>
+              </div>
+            </div>
+            {todayRankingError ? <div className="notice-banner" style={{ marginBottom: 12 }}>{todayRankingError}</div> : null}
+            {todayRankingLoading ? (
+              <div className="metric-grid compact">
+                <div className="metric-item">
+                  <span>progress</span>
+                  <strong>{todayRankingProgress.done} / {todayRankingProgress.total || 288}</strong>
+                </div>
+                <div className="metric-item">
+                  <span>source</span>
+                  <strong>OpenAPI v2 programs / previews</strong>
+                </div>
+              </div>
+            ) : todayRankingRows.length === 0 ? (
+              <p className="muted">ランキング未取得です。再取得を押してください。</p>
+            ) : (
+              <div className="ticket-stack">
+                {todayRankingRows.map((row) => {
+                  const venue = VENUES.find((v) => Number(v.id) === Number(row.stadiumNumber));
+                  const scenarioText = row.scenario?.main?.text || "-";
+                  const attention = Array.isArray(row.attention) && row.attention.length > 0
+                    ? row.attention.join(" / ")
+                    : "大きな注意点なし";
+                  const extraTickets = Array.isArray(row.extraTickets) ? row.extraTickets.slice(0, 6) : [];
+                  return (
+                    <article className="recommend-card hardrace-card" key={`today-ranking-${row.stadiumNumber}-${row.raceNumber}`}>
+                      <div className="recommend-head">
+                        <div>
+                          <strong>{row.rank}位 {venue?.name || row.stadiumNumber} {row.raceNumber}R</strong>
+                          <p className="muted strategy-line">
+                            {row.closedAt ? `締切 ${row.closedAt}` : "締切時刻なし"} / {row.exhibitionStatus === "exhibition_reflected" ? "展示反映済み" : "展示前（出走表のみ）"}
+                          </p>
+                        </div>
+                        <span className="status-pill status-hit">信頼度 {row.confidenceScore}</span>
+                      </div>
+                      <div className="metric-grid compact" style={{ marginTop: 10 }}>
+                        <div className="metric-item">
+                          <span>本命</span>
+                          <strong>{row.mainHead?.boat ?? "-"}号艇</strong>
+                          <small>{row.mainHead?.probability == null ? "-" : formatPercentDisplay(row.mainHead.probability)}</small>
+                        </div>
+                        <div className="metric-item">
+                          <span>対抗</span>
+                          <strong>{row.counterHead?.boat ?? "-"}号艇</strong>
+                          <small>{row.counterHead?.probability == null ? "-" : formatPercentDisplay(row.counterHead.probability)}</small>
+                        </div>
+                        <div className="metric-item">
+                          <span>イン逃げ候補</span>
+                          <strong>{row.insideCandidate ? "あり" : "なし"}</strong>
+                          <small>{row.insideCandidate ? `相手 ${row.insideCandidate.opponents.join(",")}` : "-"}</small>
+                        </div>
+                      </div>
+                      <div className="kv-list" style={{ marginTop: 10 }}>
+                        <div className="kv-row">
+                          <span>買い目6点</span>
+                          <strong>{row.tickets.slice(0, 6).map((ticket) => ticket.combo).join(" / ")}</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>展開</span>
+                          <strong>{scenarioText}</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>注意</span>
+                          <strong>{attention}</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>展開穴アラート</span>
+                          <strong>{row.upsetAlert || (extraTickets.length > 0 ? "隊形が崩れる展開に注意" : "なし")}</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>展開穴追加候補</span>
+                          <strong>{extraTickets.length > 0 ? extraTickets.map((ticket) => ticket.combo).join(" / ") : "なし"}</strong>
+                        </div>
+                        {Array.isArray(row.upsetReasons) && row.upsetReasons.length > 0 ? (
+                          <div className="kv-row">
+                            <span>穴理由</span>
+                            <strong>{row.upsetReasons.join(" / ")}</strong>
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="row-actions" style={{ marginTop: 10 }}>
+                        <button
+                          className="fetch-btn secondary"
+                          type="button"
+                          onClick={() => {
+                            applyVenueIdSelection(row.stadiumNumber);
+                            setRaceNo(Number(row.raceNumber || 1));
+                            setScreen("prediction");
+                            onFetchOpenApiPrediction({ date: localDateKey(), venueId: row.stadiumNumber, raceNo: row.raceNumber });
+                          }}
+                        >
+                          詳細予想へ
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
+        {screen === "tickets" && (
+          <>
+            <section className="card">
+              <div className="section-head">
+                <h2>Tickets</h2>
+                <p className="muted">Top6 is the required first layer. optionalFormation16 is the wider cover layer when the scenario needs it.</p>
+              </div>
+              {!data ? (
+                <p className="muted">QuickInputでレースを取得するとチケットを表示します。</p>
+              ) : (
+                <div className="quick-sheet-grid">
+                  <div className="quick-sheet-panel">
+                    <strong>top6</strong>
+                    <div className="ticket-stack compact-list">
+                      {safeArray(ticketsModel.top6).map((row, idx) => (
+                        <div className="premium-ticket-row" key={`ticket-top6-${row.combo || idx}`}>
+                          <div className="ticket-mainline">
+                            <span className="rank-pill">#{row.rank || idx + 1}</span>
+                            <strong><ComboBadge combo={row.combo || "--"} /></strong>
+                          </div>
+                          <div className="ticket-meta">
+                            <span>{row.tier || "contender"}</span>
+                            <span>{row.probability == null ? "--" : formatPercentDisplay(row.probability)}</span>
+                            <span>{row.reason || ""}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="quick-sheet-panel">
+                    <strong>optionalFormation16</strong>
+                    <div className="kv-list">
+                      <div className="kv-row"><span>active</span><strong>{ticketsModel.optionalFormation16?.active ? "yes" : "no"}</strong></div>
+                      <div className="kv-row"><span>formation</span><strong>{ticketsModel.optionalFormation16?.formation || "--"}</strong></div>
+                      <div className="kv-row"><span>formationReason</span><strong>{ticketsModel.formationReason || "--"}</strong></div>
+                    </div>
+                    <div className="ticket-stack compact-list" style={{ marginTop: 10 }}>
+                      {safeArray(ticketsModel.optionalFormation16?.combos).slice(0, 16).map((row, idx) => (
+                        <div className="premium-ticket-row" key={`ticket-form-${row.combo || idx}`}>
+                          <div className="ticket-mainline"><strong><ComboBadge combo={row.combo || "--"} /></strong></div>
+                          <div className="ticket-meta"><span>{row.tier || "cover"}</span><span>{row.probability == null ? "--" : formatPercentDisplay(row.probability)}</span></div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {screen === "raceLog" && (
+          <section className="card">
+            <div className="section-head">
+              <h2>RaceLog</h2>
+              <p className="muted">Prediction timestamp, tickets, confidence, buy policy, actual result, hit/miss, payout, skip and scenario snapshot are stored together.</p>
+            </div>
+            {!data ? (
+              <p className="muted">QuickInputでレースを取得すると保存対象のRaceLogモデルを表示します。</p>
+            ) : (
+              <div className="quick-sheet-grid">
+                <div className="quick-sheet-panel">
+                  <strong>Current RaceLog Snapshot</strong>
+                  <div className="kv-list">
+                    <div className="kv-row"><span>timestamp</span><strong>{raceLogModel.predictionTimestamp || "--"}</strong></div>
+                    <div className="kv-row"><span>venue / raceNo</span><strong>{raceLogModel.venue || "--"} / {raceLogModel.raceNo || "--"}R</strong></div>
+                    <div className="kv-row"><span>confidence</span><strong>{raceLogModel.confidence == null ? "--" : formatPercentDisplay(raceLogModel.confidence)}</strong></div>
+                    <div className="kv-row"><span>buyPolicy</span><strong>{raceLogModel.buyPolicy || "--"}</strong></div>
+                    <div className="kv-row"><span>skipped</span><strong>{raceLogModel.skipped ? "yes" : "no"}</strong></div>
+                  </div>
+                </div>
+                <div className="quick-sheet-panel">
+                  <strong>Scenario Snapshot</strong>
+                  <div className="kv-list">
+                    <div className="kv-row"><span>top6</span><strong>{safeArray(raceLogModel.top6).join(" / ") || "--"}</strong></div>
+                    <div className="kv-row"><span>optionalFormation16</span><strong>{safeArray(raceLogModel.optionalFormation16).slice(0, 16).join(" / ") || "--"}</strong></div>
+                    <div className="kv-row"><span>actual result</span><strong>{raceLogModel.actualResult || "pending"}</strong></div>
+                    <div className="kv-row"><span>hit / miss</span><strong>{raceLogModel.hit === null ? "pending" : raceLogModel.hit ? "hit" : "miss"}</strong></div>
+                    <div className="kv-row"><span>payout</span><strong>{raceLogModel.payout ?? 0}</strong></div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {screen === "dashboard" && (
+          <section className="card">
+            <div className="section-head">
+              <h2>Dashboard</h2>
+              <p className="muted">Venue-wise hit rate / ROI, top6, optionalFormation16, hard race, skip accuracy, miss tendency and venue bias review suggestions.</p>
+            </div>
+            <div className="metric-grid compact">
+              <div className="metric-item"><span>raceCount</span><strong>{dashboardModel.raceCount}</strong></div>
+              <div className="metric-item"><span>top6 hit rate</span><strong>{formatPercentDisplay(dashboardModel.top6HitRate)}</strong></div>
+              <div className="metric-item"><span>optionalFormation16 hit rate</span><strong>{formatPercentDisplay(dashboardModel.optionalFormation16HitRate)}</strong></div>
+              <div className="metric-item"><span>hard race hit rate</span><strong>{formatPercentDisplay(dashboardModel.hardRaceHitRate)}</strong></div>
+              <div className="metric-item"><span>skip accuracy</span><strong>{formatPercentDisplay(dashboardModel.skipAccuracy)}</strong></div>
+              <div className="metric-item"><span>ROI</span><strong>{formatPercentDisplay(dashboardModel.roi)}</strong></div>
+            </div>
+            <div className="quick-sheet-grid" style={{ marginTop: 12 }}>
+              <div className="quick-sheet-panel">
+                <strong>Venue-wise</strong>
+                <div className="ticket-stack compact-list">
+                  {safeArray(dashboardModel.venueWise).map((row) => (
+                    <div className="premium-ticket-row" key={`venue-dash-${row.venue}`}>
+                      <div className="ticket-mainline"><strong>{row.venue}</strong></div>
+                      <div className="ticket-meta"><span>hit {formatPercentDisplay(row.hitRate)}</span><span>ROI {formatPercentDisplay(row.roi)}</span><span>{row.races} races</span></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="quick-sheet-panel">
+                <strong>Miss Tendency</strong>
+                <div className="ticket-stack compact-list">
+                  {safeArray(dashboardModel.missTendency).slice(0, 8).map((row) => (
+                    <div className="premium-ticket-row" key={`miss-${row.combo}`}>
+                      <div className="ticket-mainline"><strong>{row.combo}</strong></div>
+                      <div className="ticket-meta"><span>{row.count}</span></div>
+                    </div>
+                  ))}
+                </div>
+                <div className="quick-field-list" style={{ marginTop: 10 }}>
+                  {safeArray(dashboardModel.venueBiasReviewSuggestions).map((row) => <span className="chip" key={row}>{row}</span>)}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {screen === "playerMaster" && (
+          <section className="card">
+            <div className="section-head">
+              <h2>PlayerMaster</h2>
+              <p className="muted">Racer style, preferred course, technique, venue, lane adjustments and keep-position adjustments.</p>
+            </div>
+            {!data ? (
+              <p className="muted">QuickInputでレースを取得すると選手マスター候補を表示します。</p>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>racer name</th>
+                      <th>racer id</th>
+                      <th>style</th>
+                      <th>preferred course</th>
+                      <th>preferred technique</th>
+                      <th>base adjustment</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {safeArray(playerMasterModel).map((row, idx) => (
+                      <tr key={`master-${row.racerId || idx}`}>
+                        <td>{row.racerName || "--"}</td>
+                        <td>{row.racerId || "--"}</td>
+                        <td>{row.style || "--"}</td>
+                        <td>{row.preferredCourse ?? "--"}</td>
+                        <td>{row.preferredWinningTechnique || "--"}</td>
+                        <td>{row.baseAdjustment ?? 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {screen === "settings" && (
+          <section className="card">
+            <div className="section-head">
+              <h2>Settings</h2>
+              <p className="muted">API and production settings reference.</p>
+            </div>
+            <div className="kv-list">
+              <div className="kv-row"><span>API base</span><strong>{API_BASE}</strong></div>
+              <div className="kv-row"><span>minimal QuickInput</span><strong>date / venue / raceNo / 6 racers</strong></div>
+              <div className="kv-row"><span>production build</span><strong>npm run build</strong></div>
+              <div className="kv-row"><span>backend start</span><strong>Set-Location backend; npm start</strong></div>
+              <div className="kv-row"><span>snapshot refresh</span><strong>Set-Location backend; npm run snapshot:generate -- --date {date} --venueId {venueId} --raceNo {raceNo}</strong></div>
+            </div>
+          </section>
         )}
 
         {screen === "hardRace" && (

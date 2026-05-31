@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import express from "express";
 import { raceRouter, resetRaceRouteRuntimeDepsForTests, setRaceRouteRuntimeDepsForTests } from "../src/routes/race.js";
+import db from "../db.js";
 
 function makeRacer(lane) {
   return {
@@ -221,6 +222,12 @@ async function withServer(run) {
     assert.equal(typeof body.decision_reason, "string");
     assert.ok(body.hardRace1234 && typeof body.hardRace1234 === "object");
     assert.equal(typeof body.hardRace1234.buyPolicy?.code, "string");
+    assert.equal(typeof body.entryAnalysis, "object");
+    assert.ok(Array.isArray(body.entryAnalysis?.entry));
+    assert.equal(typeof body.venueTendencySummary, "object");
+    assert.equal(typeof body.racerStyleSummary, "object");
+    assert.equal(typeof body.likelyWinningPattern, "object");
+    assert.ok(Array.isArray(body.hardRaceSixRanking));
   });
 }
 
@@ -256,6 +263,94 @@ async function withServer(run) {
     assert.equal(body.routeTiming.kyoteibiyori_fetch_ms, 555);
     assert.equal(body.routeTiming.parsing_ms, 666);
   });
+}
+
+{
+  const raceKey = "20260324_24_1";
+  db.prepare("DELETE FROM similar_race_features WHERE race_id = ?").run(raceKey);
+  db.prepare("DELETE FROM results WHERE race_id = ?").run(raceKey);
+  db.prepare("DELETE FROM race_start_displays WHERE race_id = ?").run(raceKey);
+  let resultFetchCalled = 0;
+  setRaceRouteRuntimeDepsForTests({
+    refreshLatestRaceData: async () => {
+      const routeData = buildRouteData(
+        {
+          refreshed_now: true,
+          freshness_status: "refreshed",
+          primary_source_ok: true,
+          secondary_source_ok: true,
+          fallback_used: false,
+          last_snapshot_updated_at: "2026-03-24T12:00:00.000Z"
+        },
+        {
+          official_base_fetch_ms: 101,
+          kyoteibiyori_fetch_ms: 202,
+          parsing_ms: 303
+        }
+      );
+      routeData.raceId = raceKey;
+      routeData.race = { date: "2026-03-24", venueId: 24, venueName: "Omura", raceNo: 1 };
+      return { data: routeData };
+    },
+    fetchAndStoreOfficialRaceResult: async ({ date, venueId, raceNo }) => {
+      resultFetchCalled += 1;
+      assert.equal(date, "2026-03-24");
+      assert.equal(Number(venueId), 24);
+      assert.equal(Number(raceNo), 1);
+      return {
+        raceId: raceKey,
+        actualTop3: [1, 2, 3],
+        winningTrifecta: "1-2-3",
+        actualResult: "1-2-3",
+        result: "1-2-3",
+        payout3t: 1200,
+        source: "test_official_result",
+        resultFetchDebug: {
+          resultFetchUrls: [
+            "https://www.boatrace.jp/owpc/pc/race/raceresult?rno=1&jcd=24&hd=20260324"
+          ],
+          resultParserStage: "fixture_trifecta_label_row",
+          resultMatchedSelectorCount: 1,
+          resultRawSavedPath: "backend/debug/result-parser/fixture.html"
+        }
+      };
+    }
+  });
+
+  await withServer(async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/race?date=2026-03-24&venueId=24&raceNo=1`);
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(resultFetchCalled, 1);
+    assert.equal(body.similarRaceStoredNow, true);
+    assert.equal(body.resultFetchAttempted, true);
+    assert.equal(body.resultFetchSucceeded, true);
+    assert.equal(body.resultSource, "test_official_result");
+    assert.deepEqual(body.resultFetchUrls, [
+      "https://www.boatrace.jp/owpc/pc/race/raceresult?rno=1&jcd=24&hd=20260324"
+    ]);
+    assert.equal(body.resultParserStage, "fixture_trifecta_label_row");
+    assert.equal(body.resultMatchedSelectorCount, 1);
+    assert.equal(body.resultRawSavedPath, "backend/debug/result-parser/fixture.html");
+    assert.equal(body.similarRaceSettledNow, true);
+    assert.equal(body.settleSkipReason, null);
+    assert.ok(body.similarRaceSettleEligibleCount > 0);
+    assert.equal(body.similarRaceCurrentKey, raceKey);
+    assert.equal(body.similarRaceExcludedSelf, true);
+    assert.ok(Array.isArray(body.similarRaceMatchedKeys));
+    assert.equal(body.similarRaceMatchedKeys.includes(raceKey), false);
+    assert.equal(body.similarRaceMatchedCount, 0);
+    assert.equal(body.similarRaceHistoryAvailable, false);
+    assert.equal(body.similarRaceSupport?.basis, "heuristic_no_history");
+
+    const stored = db.prepare("SELECT final_result, settled, top6_hit, optional16_hit FROM similar_race_features WHERE race_id = ?").get(raceKey);
+    assert.equal(stored.final_result, "1-2-3");
+    assert.equal(stored.settled, 1);
+    assert.ok(stored.top6_hit === 0 || stored.top6_hit === 1);
+  });
+  db.prepare("DELETE FROM similar_race_features WHERE race_id = ?").run(raceKey);
+  db.prepare("DELETE FROM results WHERE race_id = ?").run(raceKey);
+  db.prepare("DELETE FROM race_start_displays WHERE race_id = ?").run(raceKey);
 }
 
 {

@@ -93,6 +93,7 @@ export function buildFeatures(racer) {
     lapTime: getPredictionFieldMeta(racer, "lapTime"),
     exhibitionST: getPredictionFieldMeta(racer, "exhibitionST"),
     exhibitionTime: getPredictionFieldMeta(racer, "exhibitionTime"),
+    straightTime: getPredictionFieldMeta(racer, "straightTime"),
     lapExStretch: getPredictionFieldMeta(racer, "lapExStretch"),
     motor2ren: getPredictionFieldMeta(racer, "motor2ren"),
     motor3ren: getPredictionFieldMeta(racer, "motor3ren"),
@@ -110,6 +111,7 @@ export function buildFeatures(racer) {
     getUsablePredictionValue(racer, "lapTime", racer?.lapRaw ?? racer?.kyoteiBiyoriLapTimeRaw ?? null)
   );
   const lap_exhibition_score = getUsablePredictionValue(racer, "lapExStretch", null);
+  const straight_line_time = getUsablePredictionValue(racer, "straightTime", null);
   const lap_source = racer?.lapSource ?? racer?.kyoteiBiyoriLapSource ?? prediction_field_meta.lapTime?.source ?? null;
   const lap_raw = toNullableNumber(racer?.lapRaw ?? racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapTimeRaw);
   const entry_course_raw = racer?.entryCourse;
@@ -226,7 +228,8 @@ export function buildFeatures(racer) {
     lap_exhibition_score,
     stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel ?? racer?.stretchFootLabel ?? null,
     turning_ability: toNullableNumber(racer?.kyoteiBiyoriMawariashi ?? racer?.mawariashi),
-    straight_line_power: toNullableNumber(racer?.kyoteiBiyoriNobiashi ?? racer?.nobiashi),
+    straight_line_power: straight_line_time,
+    straight_time: straight_line_time,
     entry_course,
     tilt,
     wind_speed,
@@ -294,6 +297,10 @@ export function buildFeatures(racer) {
     lap_time_rank: null,
     lap_attack_flag: 0,
     lap_attack_strength: 0,
+    straight_line_rank: null,
+    straight_line_speed_zscore: null,
+    straight_line_attack_flag: 0,
+    straight_line_attack_strength: 0,
     f_hold_count,
     f_hold_bias_applied: 0,
     expected_actual_st_adjustment: 0,
@@ -306,6 +313,7 @@ export function buildFeatures(racer) {
     lap_gap_from_best: 0,
     lap_source,
     lap_raw,
+    straight_line_source: prediction_field_meta.straightTime?.source ?? null,
     lap_stretch_foot: lap_exhibition_score,
     motor_true: 0,
     motor_form: {
@@ -391,6 +399,19 @@ export function buildRaceFeatures(racers, raceContext = {}) {
       .filter((v) => Number.isFinite(v)),
     Number.POSITIVE_INFINITY
   );
+  const straightLineRanks = buildAscendingRanks(
+    base.map((x) => ({ lane: toNumber(x.features.actual_lane, x.features.lane), value: x.features.straight_line_power }))
+  );
+  const straightValues = base
+    .map((x) => x.features.straight_line_power)
+    .filter((v) => Number.isFinite(v));
+  const straightMean = straightValues.length
+    ? straightValues.reduce((sum, value) => sum + value, 0) / straightValues.length
+    : null;
+  const straightSd = straightValues.length >= 2
+    ? Math.sqrt(straightValues.reduce((sum, value) => sum + (value - straightMean) ** 2, 0) / straightValues.length) || 1
+    : null;
+  const bestStraightTime = straightValues.length ? Math.min(...straightValues) : null;
   const expectedActualStByLaneMap = new Map(expectedActualStByLane.map((row) => [row.lane, row]));
   const byLane = new Map(
     base.map((item) => [toNumber(item.features.actual_lane, item.features.lane), item])
@@ -467,6 +488,18 @@ export function buildRaceFeatures(racers, raceContext = {}) {
       )
         ? 1
         : 0;
+    const straightLineSpeedZ =
+      Number.isFinite(f.straight_line_power) && Number.isFinite(straightMean) && Number.isFinite(straightSd)
+        ? Number(((straightMean - f.straight_line_power) / straightSd).toFixed(3))
+        : null;
+    const straightLineAttackStrength =
+      Number.isFinite(straightLineSpeedZ) && actualLane >= 3
+        ? Number(Math.max(0, straightLineSpeedZ * 4).toFixed(2))
+        : 0;
+    const straightLineAttackFlag =
+      Number.isFinite(straightLineSpeedZ) && actualLane >= 3 && straightLineSpeedZ >= 0.5
+        ? 1
+        : 0;
     return {
       ...item,
       features: {
@@ -500,6 +533,14 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         lap_rank: lapTimeRanks.get(actualLane) ?? null,
         lap_attack_flag: lapAttackFlag,
         lap_attack_strength: lapAttackStrength,
+        straight_line_rank: straightLineRanks.get(actualLane) ?? null,
+        straight_line_speed_zscore: straightLineSpeedZ,
+        straight_line_attack_flag: straightLineAttackFlag,
+        straight_line_attack_strength: straightLineAttackStrength,
+        straight_line_gap_from_best:
+          Number.isFinite(bestStraightTime) && Number.isFinite(f.straight_line_power)
+            ? Number((f.straight_line_power - bestStraightTime).toFixed(3))
+            : null,
         lap_time_gap_from_best:
           Number.isFinite(bestLapTime) && Number.isFinite(f.lap_time)
             ? Number((f.lap_time - bestLapTime).toFixed(3))
@@ -535,7 +576,8 @@ export function buildRaceFeatures(racers, raceContext = {}) {
         motor_form: {
           lapTime: Number.isFinite(f.lap_time) ? f.lap_time : null,
           lapExStretch: Number.isFinite(f.lap_exhibition_score) ? f.lap_exhibition_score : null,
-          exhibitionTime: Number.isFinite(f.exhibition_time) ? f.exhibition_time : null
+          exhibitionTime: Number.isFinite(f.exhibition_time) ? f.exhibition_time : null,
+          straightTime: Number.isFinite(f.straight_line_power) ? f.straight_line_power : null
         },
         laneFirstRate: Number.isFinite(reassignedLaneContext.laneFirstRate) ? reassignedLaneContext.laneFirstRate : f.laneFirstRate,
         lane2RenRate: Number.isFinite(reassignedLaneContext.lane2RenRate) ? reassignedLaneContext.lane2RenRate : f.lane2RenRate,

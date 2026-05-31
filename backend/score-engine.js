@@ -34,6 +34,17 @@ function buildFetchedSignalScoreBreakdown(f) {
         (f.slit_alert_flag ? 2.5 : 0)
     ).toFixed(2)
   );
+  const straightLineContribution = Number(
+    clamp(
+      0,
+      10,
+      isUsableField(f, "straightTime")
+        ? Math.max(0, f.straight_line_speed_zscore || 0) * 3.2 +
+          Math.max(0, 7 - (f.straight_line_rank ?? 6)) * 0.85 +
+          Math.max(0, f.straight_line_attack_strength || 0) * 0.45
+        : 0
+    ).toFixed(2)
+  );
   const motor2renContribution = Number(
     clamp(0, 20, (isUsableField(f, "motor2ren") ? (f.motor2_rate || 0) * 0.24 : 0) + Math.max(0, 7 - (f.exhibition_rank ?? 6)) * 0.8).toFixed(2)
   );
@@ -43,11 +54,13 @@ function buildFetchedSignalScoreBreakdown(f) {
   return {
     lap_time_contribution: lapTimeContribution,
     exhibition_st_contribution: startExhibitionContribution,
+    straight_line_contribution: straightLineContribution,
     motor_2ren_contribution: motor2renContribution,
     motor_3ren_contribution: motor3renContribution,
     total:
       lapTimeContribution +
       startExhibitionContribution +
+      straightLineContribution +
       motor2renContribution +
       motor3renContribution
   };

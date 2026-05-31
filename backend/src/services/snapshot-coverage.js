@@ -35,6 +35,7 @@ export const REQUIRED_COVERAGE_FIELDS = Object.freeze([
 
 export const OPTIONAL_COVERAGE_FIELDS = Object.freeze([
   "lapTime",
+  "straightTime",
   "exhibition_st",
   "exhibition_time",
   "motor_3ren",
@@ -323,6 +324,20 @@ function buildLaneCoverage({ racer = {}, features = {}, raceSource = {} }) {
       predictionMeta: predictionMeta?.lapTime || {},
       kyoteiFetchOk
     }),
+    straightTime: buildCoverageEntry({
+      value: predictionMeta?.straightTime?.is_usable
+        ? predictionMeta?.straightTime?.normalized_numeric_value ?? racer?.kyoteiBiyoriStraightTime ?? racer?.straightTime
+        : null,
+      source: predictionMeta?.straightTime?.source || racer?.kyoteiBiyoriStraightSource || null,
+      sourcePriority: predictionMeta?.straightTime?.source ? "secondary" : null,
+      expectedFrom: ["kyoteibiyori.com original exhibition"],
+      brokenIfMissing: false,
+      missingStatus: derivePredictionMetaMissingStatus(predictionMeta?.straightTime, kyoteiFetchOk),
+      required: isRequiredCoverageField("straightTime"),
+      raw: predictionMeta?.straightTime?.raw_cell_text ?? racer?.kyoteiBiyoriStraightTime ?? racer?.straightTime ?? null,
+      normalized: predictionMeta?.straightTime?.normalized_numeric_value ?? racer?.kyoteiBiyoriStraightTime ?? racer?.straightTime ?? null,
+      reason: predictionMeta?.straightTime?.reason || null
+    }),
     national_win_rate: buildCoverageEntry({
       value: racer?.nationwideWinRate,
       source: "boatrace_racelist",
@@ -350,8 +365,8 @@ function buildLaneCoverage({ racer = {}, features = {}, raceSource = {} }) {
     exhibition_st: buildCoverageEntry({
       value: predictionMeta?.exhibitionST?.is_usable ? racer?.exhibitionSt : null,
       source: predictionMeta?.exhibitionST?.source || null,
-      sourcePriority: predictionMeta?.exhibitionST?.source ? "secondary" : null,
-      expectedFrom: ["kyoteibiyori.com pre-race metrics"],
+      sourcePriority: predictionMeta?.exhibitionST?.source ? "primary" : null,
+      expectedFrom: ["openapi_previews.racer_start_timing"],
       brokenIfMissing: false,
       missingStatus: derivePredictionMetaMissingStatus(predictionMeta?.exhibitionST, kyoteiFetchOk),
       required: isRequiredCoverageField("exhibition_st"),
@@ -364,8 +379,8 @@ function buildLaneCoverage({ racer = {}, features = {}, raceSource = {} }) {
         predictionMeta?.exhibitionTime?.is_usable ? racer?.exhibitionTime : predictionMeta?.exhibitionTime?.normalized_numeric_value
       ),
       source: predictionMeta?.exhibitionTime?.source || null,
-      sourcePriority: predictionMeta?.exhibitionTime?.source ? "secondary" : null,
-      expectedFrom: ["kyoteibiyori.com pre-race metrics"],
+      sourcePriority: predictionMeta?.exhibitionTime?.source ? "primary" : null,
+      expectedFrom: ["openapi_previews.racer_exhibition_time"],
       brokenIfMissing: false,
       missingStatus: derivePredictionMetaMissingStatus(predictionMeta?.exhibitionTime, kyoteiFetchOk),
       required: isRequiredCoverageField("exhibition_time"),

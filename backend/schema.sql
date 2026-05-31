@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS similar_race_features (
   second_given_head_json TEXT,
   near_tie_second_json TEXT,
   top6_json TEXT,
+  optional16_json TEXT,
   optional_active INTEGER NOT NULL DEFAULT 0,
   optional_size INTEGER,
   formation_reason TEXT,
@@ -121,6 +122,8 @@ CREATE TABLE IF NOT EXISTS similar_race_features (
   head_hit INTEGER,
   bet_hit INTEGER,
   top6_hit INTEGER,
+  optional16_hit INTEGER,
+  settled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

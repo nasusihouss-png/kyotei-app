@@ -32,6 +32,26 @@ const result = await buildHardRace1234Response({
   venueId: 5,
   raceNo: 1
 });
+const resultWithConfirmedEntry = await buildHardRace1234Response({
+  data: {
+    ...baseData,
+    source: {
+      ...baseData.source,
+      actual_entry: {
+        validation_ok: true,
+        parsed_actual_entry_order: [1, 3, 2, 4, 5, 6],
+        actual_lane_map: { "1": 1, "2": 3, "3": 2, "4": 4, "5": 5, "6": 6 }
+      }
+    },
+    racers: baseData.racers.map((row) => ({
+      ...row,
+      entryCourse: ({ 1: 1, 2: 3, 3: 2, 4: 4, 5: 5, 6: 6 })[row.lane]
+    }))
+  },
+  date: "2026-03-21",
+  venueId: 5,
+  raceNo: 1
+});
 const strongInsideVenueResult = await buildHardRace1234Response({
   data: {
     ...baseData,
@@ -123,6 +143,9 @@ assert.equal(typeof result.venue_scenario_bias?.three_course_attack_success_rate
 assert.equal(typeof result.venue_scenario_bias?.four_course_develop_sashi_rate, "number");
 assert.equal(typeof result.venue_scenario_bias?.lane56_renyuu_intrusion_rate, "number");
 assert.equal(typeof result.venue_scenario_bias?.escape_fail_pattern?.total_risk, "number");
+assert.equal(resultWithConfirmedEntry.entry_context?.entry_confirmed, true);
+assert.deepEqual(resultWithConfirmedEntry.entry_context?.actual_entry_order, [1, 3, 2, 4, 5, 6]);
+assert.notDeepEqual(resultWithConfirmedEntry.fixed1234_matrix, result.fixed1234_matrix);
 assert.deepEqual(HARD_RACE_API_RESPONSE_KEYS, [
   "boat1_head_pre",
   "boat1_escape_trust",

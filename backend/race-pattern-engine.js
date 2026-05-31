@@ -53,6 +53,11 @@ export function analyzeRacePattern(ranking) {
   const st2 = l2.features.st_inv || 0;
   const st3 = l3.features.st_inv || 0;
   const st4 = l4.features.st_inv || 0;
+  const straight3 = Number(l3.features.straight_line_speed_zscore || 0);
+  const straight4 = Number(l4.features.straight_line_speed_zscore || 0);
+  const straight5 = Number(l5.features.straight_line_speed_zscore || 0);
+  const straight6 = Number(l6.features.straight_line_speed_zscore || 0);
+  const outerStraightAttack = Math.max(0, straight3, straight4, straight5, straight6);
   const wind = Number(l1.features.wind_speed || l2.features.wind_speed || 0);
 
   // 1) Escape: lane1 strength minus lane2/3 pressure.
@@ -75,7 +80,8 @@ export function analyzeRacePattern(ranking) {
     (s3 - Math.max(s1, s2)) * 0.08 +
     (st3 - Math.max(st1, st2)) * 0.6 +
     (l3.features.exhibition_rank === 1 ? 0.4 : 0) +
-    (l3.features.st_rank === 1 ? 0.4 : 0);
+    (l3.features.st_rank === 1 ? 0.4 : 0) +
+    Math.max(0, straight3) * 0.22;
   const makuri_index = toIndex(makuriRaw);
 
   // 4) Makurizashi: balanced attack from lane3/lane4 pair.
@@ -85,7 +91,8 @@ export function analyzeRacePattern(ranking) {
     (midScore - s1) * 0.07 +
     (midSt - st1) * 0.5 +
     (((l3.features.st_rank || 99) <= 3 ? 1 : 0) + ((l4.features.st_rank || 99) <= 3 ? 1 : 0)) *
-      0.2;
+      0.2 +
+    Math.max(0, straight3, straight4) * 0.18;
   const makurizashi_index = toIndex(makurizashiRaw);
 
   // 5) Chaos: lane1 weak, outside strong, or score spread tight.
@@ -98,7 +105,7 @@ export function analyzeRacePattern(ranking) {
   const tightRaceFactor = clamp01((12 - topGap) / 12);
   const lowSpreadFactor = clamp01((8 - spread) / 8);
   const windOutsideChaos = wind >= 6 ? 0.2 : 0;
-  const chaosRaw = l1Weakness + outsidePressure * 0.05 + tightRaceFactor * 0.8 + lowSpreadFactor * 0.8 + windOutsideChaos;
+  const chaosRaw = l1Weakness + outsidePressure * 0.05 + tightRaceFactor * 0.8 + lowSpreadFactor * 0.8 + windOutsideChaos + outerStraightAttack * 0.12;
   const chaos_index = toIndex(chaosRaw, 22, 35);
 
   const indexes = {
@@ -106,7 +113,8 @@ export function analyzeRacePattern(ranking) {
     sashi_index,
     makuri_index,
     makurizashi_index,
-    chaos_index
+    chaos_index,
+    outer_straight_attack: Number(outerStraightAttack.toFixed(3))
   };
 
   const patternScores = [

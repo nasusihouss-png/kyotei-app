@@ -2344,6 +2344,37 @@
   font-size: 0.95rem;
 }
 
+.quick-sheet-card {
+  display: grid;
+  gap: 12px;
+}
+
+.quick-sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.quick-sheet-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(122, 162, 207, 0.18);
+  border-radius: 12px;
+  background: rgba(9, 17, 28, 0.62);
+}
+
+.quick-sheet-panel > strong {
+  color: var(--text-strong);
+}
+
+.quick-field-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
 .section-head {
   display: grid;
   gap: 8px;
@@ -2434,6 +2465,7 @@ th {
   .hardrace-kpi-grid,
   .hardrace-meta-grid,
   .hardrace-section-grid,
+  .quick-sheet-grid,
   .hardrace-head-top3 {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
@@ -2487,6 +2519,7 @@ th {
   .hardrace-kpi-grid,
   .hardrace-meta-grid,
   .hardrace-section-grid,
+  .quick-sheet-grid,
   .hardrace-head-top3,
   .hardrace-danger-grid,
   .hardrace-open-grid,

@@ -1,0 +1,32 @@
+{
+  "shrinkK": 24,
+  "baseWeights": {
+    "laneBias": 0.28,
+    "class": 0.2,
+    "nationalWinRatePoint": 0.34,
+    "localWinRatePoint": 0.16,
+    "motor2Rate": 0.13,
+    "boat2Rate": 0.05,
+    "averageStartTiming": 0.16,
+    "flyingPenalty": 0.08,
+    "latePenalty": 0.04
+  },
+  "exhibitionWeights": {
+    "exhibitionTimeZ": 0.18,
+    "exhibitionStartTiming": 0.08,
+    "entryCourse": 0.16,
+    "windBias": 0.04,
+    "makuriAlert": 0.1
+  },
+  "screeningWeights": {
+    "boat1Strength": 0.26,
+    "startTrust": 0.16,
+    "courseEscape": 0.18,
+    "localFit": 0.1,
+    "venueInsideAdvantage": 0.14,
+    "weakWall": 0.12,
+    "wind": 0.04
+  },
+  "makuriAlertSeconds": 0.07,
+  "insideCandidateThreshold": 62
+}

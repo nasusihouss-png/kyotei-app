@@ -1830,7 +1830,11 @@ export function buildFormationSuggestion(sortedCombos = [], finishProbabilities 
     !venueAllowsOptional ||
     !ashiyaStrictGate ||
     !tokuyamaStrictGate;
+  const catastrophicSpread = extremelyLowCoverage && lowCoverageWithChaos && chaosLevel >= 0.9;
+  const ashiyaVenueBoost = isAshiya && chaosLevel >= 0.3 && top6Coverage <= 0.46;
   const shouldSuggest =
+    catastrophicSpread ||
+    ashiyaVenueBoost ||
     !shouldSuppressOptional &&
     (
       extremelyLowCoverage ||
@@ -1851,7 +1855,12 @@ export function buildFormationSuggestion(sortedCombos = [], finishProbabilities 
   if (outerInvolvementElevated) reasons.push("outer lanes have increased involvement risk");
   if (highChaos) reasons.push("chaos level is high");
   if (elevatedOutsideBreakRisk || mediumOutsideRisk) reasons.push("outside break risk is elevated");
-  if (diagnostics?.close_combo_preserved) reasons.push("1-2-4 / 1-3-4 preservation is active");
+  if (diagnostics?.close_combo_preserved) {
+    reasons.push("1-2-4 and 1-3-4 are close");
+    reasons.push("close second-place combo preserved into top6");
+    reasons.push("1-2-4 / 1-3-4 preservation is active");
+  }
+  if (diagnostics?.top_two_tied || diagnostics?.second_third_tied || strongNearTieSecond234) reasons.push("2nd-place candidates 2/3/4 are tightly clustered");
   if (diagnostics?.venue_fit_reason) reasons.push(diagnostics.venue_fit_reason);
   if (enoughCoverage) suppressionReasons.push("top6 coverage is already sufficient");
   if (hardInsideShape) suppressionReasons.push("inside-favored venue still points to a strong lane 1 remain shape");
@@ -1915,8 +1924,8 @@ export function buildFormationSuggestion(sortedCombos = [], finishProbabilities 
       second_candidates: [...new Set(secondCandidates)].slice(0, secondCandidateLimit + 1),
       third_candidates: [...new Set(thirdCandidates)].slice(0, thirdCandidateLimit + 1),
       formation_string: null,
-      reason: suppressionReasons[0] || "top6 is sufficient",
-      reasons: suppressionReasons,
+      reason: null,
+      reasons: [],
       trigger_flags: {
         low_top6_coverage: lowCoverage,
         extremely_low_top6_coverage: extremelyLowCoverage,
@@ -2290,9 +2299,11 @@ export function buildTop6Prediction({ ranking = [], race = null } = {}) {
     main_ticket: top6[0] || null,
     optionalFormation16: formationSuggestion,
     formationReason:
-      Array.isArray(formationSuggestion?.reasons) && formationSuggestion.reasons.length > 0
-        ? formationSuggestion.reasons.join("; ")
-        : formationSuggestion?.reason || null,
+      formationSuggestion?.active === true && Array.isArray(formationSuggestion?.combos) && formationSuggestion.combos.length > 0
+        ? Array.isArray(formationSuggestion?.reasons) && formationSuggestion.reasons.length > 0
+          ? formationSuggestion.reasons.join("; ")
+          : formationSuggestion?.reason || null
+        : null,
     recommendedBetMode: preliminaryBetMode.recommendedBetMode,
     skipRiskReason: preliminaryBetMode.skipRiskReason,
     wide_formation_suggestion: formationSuggestion,

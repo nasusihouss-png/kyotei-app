@@ -575,5 +575,43 @@ assert.equal(unverifiedNumericCoverage.fields["lane1.lapTime"]?.source, null);
 assert.equal(unverifiedNumericCoverage.fields["lane1.lapTime"]?.raw, null);
 assert.equal(unverifiedNumericCoverage.fields["lane1.lapTime"]?.normalized, null);
 
+const japaneseHeaderPreRaceHtml = `
+  <table>
+    <tr><th>艇番</th><th>選手名</th><th>ST</th><th>展示</th><th>周回</th><th>直線</th><th>モーター2連率</th></tr>
+    <tr><td>1</td><td>山田 太郎</td><td>.15</td><td>6.76</td><td>36.89</td><td>6.89</td><td>28.00%</td></tr>
+    <tr><td>2</td><td>佐藤 花子</td><td>F.01</td><td>-</td><td></td><td>6.75秒</td><td>31.5%</td></tr>
+  </table>
+`;
+const japaneseHeaderParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(japaneseHeaderPreRaceHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+);
+assert.equal(japaneseHeaderParsed.byLane.get(1)?.playerName, "山田 太郎");
+assert.equal(japaneseHeaderParsed.byLane.get(1)?.exhibitionSt, 0.15);
+assert.equal(japaneseHeaderParsed.byLane.get(1)?.exhibitionTime, 6.76);
+assert.equal(japaneseHeaderParsed.byLane.get(1)?.lapTime, 36.89);
+assert.equal(japaneseHeaderParsed.byLane.get(1)?.straightTime, 6.89);
+assert.equal(japaneseHeaderParsed.byLane.get(1)?.motor2Rate, 28);
+assert.equal(japaneseHeaderParsed.byLane.get(2)?.exhibitionSt, 0.01);
+assert.equal(japaneseHeaderParsed.byLane.get(2)?.exhibitionStFlag, "F");
+assert.equal(japaneseHeaderParsed.byLane.get(2)?.exhibitionStSignedValue, -0.01);
+assert.equal(japaneseHeaderParsed.byLane.get(2)?.exhibitionTime, null);
+assert.equal(japaneseHeaderParsed.byLane.get(2)?.straightTime, 6.75);
+
+const shuffledJapaneseHeaderPreRaceHtml = `
+  <table>
+    <tr><th>選手名</th><th>直線タイム</th><th>モーター2連率</th><th>艇番</th><th>周回タイム</th><th>展示ST</th><th>展示タイム</th></tr>
+    <tr><td>鈴木 一郎</td><td>6.91</td><td>44.4%</td><td>3号艇</td><td>36.77</td><td>0.09</td><td>6.70</td></tr>
+  </table>
+`;
+const shuffledJapaneseHeaderParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(shuffledJapaneseHeaderPreRaceHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+);
+assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.playerName, "鈴木 一郎");
+assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.exhibitionSt, 0.09);
+assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.exhibitionTime, 6.7);
+assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.lapTime, 36.77);
+assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.straightTime, 6.91);
+assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.motor2Rate, 44.4);
+
 console.log("kyoteibiyori-adapter tests passed");
 

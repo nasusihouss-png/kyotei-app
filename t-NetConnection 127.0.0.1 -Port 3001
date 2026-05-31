@@ -1,0 +1,17 @@
+warning: in the working copy of 'backend/src/config/venue-bias-profiles.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/routes/race.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/services/boatrace.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/services/hard-race-1234-pure.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/services/kyoteibiyori.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/hard-race-1234.test.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/race-route-api.integration.test.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/App.jsx', LF will be replaced by CRLF the next time Git touches it
+backend/boatrace.sqlite
+backend/src/config/venue-bias-profiles.js
+backend/src/routes/race.js
+backend/src/services/boatrace.js
+backend/src/services/hard-race-1234-pure.js
+backend/src/services/kyoteibiyori.js
+backend/tests/hard-race-1234.test.mjs
+backend/tests/race-route-api.integration.test.mjs
+src/App.jsx
