@@ -83,6 +83,14 @@ export default function KyoteibiyoriDebugPanel({
         <pre className="json-preview">{safePrettyJson(debug.predictionInputPreview)}</pre>
       </div>
       <div style={{ marginTop: 10 }}>
+        <div className="muted">feature score preview</div>
+        <pre className="json-preview">{safePrettyJson(debug.featureScorePreview)}</pre>
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <div className="muted">scenario score preview</div>
+        <pre className="json-preview">{safePrettyJson(debug.scenarioScorePreview)}</pre>
+      </div>
+      <div style={{ marginTop: 10 }}>
         <div className="muted">received originalExhibition response</div>
         <pre className="json-preview">{safePrettyJson(originalExhibition || null)}</pre>
       </div>

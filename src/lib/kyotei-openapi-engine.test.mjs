@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildExhibitionFeatures,
+  buildConfidenceScore,
   buildTodayRanking,
   buildRacePrediction,
   DEFAULT_SCORING_CONFIG,
@@ -223,5 +224,90 @@ assert.ok(upsetPrediction.upsetReasons.some((reason) => String(reason).includes(
 
 const tendencyRanking = buildTodayRanking([upsetProgram], { "24-1": preview({ complete: true, fastBoat: 4 }) }, { limit: 1 });
 assert.ok(tendencyRanking[0].attention.some((row) => String(row).includes("出遅れ率") || String(row).includes("穴候補")));
+
+function originalMetricProgram(metricOverrides = {}) {
+  const defaults = {
+    1: { exST: 0.11, exTime: 6.72, lapTime: 18.25, straightTime: 7.48, turnTime: 4.45, racer_assigned_motor_top_2_percent: 42 },
+    2: { exST: 0.13, exTime: 6.78, lapTime: 18.38, straightTime: 7.55, turnTime: 4.5, racer_assigned_motor_top_2_percent: 35 },
+    3: { exST: 0.14, exTime: 6.8, lapTime: 18.46, straightTime: 7.58, turnTime: 4.55, racer_assigned_motor_top_2_percent: 33 },
+    4: { exST: 0.15, exTime: 6.82, lapTime: 18.5, straightTime: 7.61, turnTime: 4.6, racer_assigned_motor_top_2_percent: 32 },
+    5: { exST: 0.16, exTime: 6.84, lapTime: 18.56, straightTime: 7.64, turnTime: 4.66, racer_assigned_motor_top_2_percent: 30 },
+    6: { exST: 0.17, exTime: 6.86, lapTime: 18.6, straightTime: 7.68, turnTime: 4.7, racer_assigned_motor_top_2_percent: 28 }
+  };
+  return program({
+    boatOverrides: Object.fromEntries(
+      [1, 2, 3, 4, 5, 6].map((boat) => [boat, { ...defaults[boat], ...(metricOverrides[boat] || {}) }])
+    )
+  });
+}
+
+const boat1StrongOriginal = buildRacePrediction(originalMetricProgram({
+  1: { lapTime: 18.1, turnTime: 4.3 },
+  2: { lapTime: 18.55, turnTime: 4.68 },
+  3: { lapTime: 18.58, turnTime: 4.72 }
+}), null);
+const boat1WeakOriginal = buildRacePrediction(originalMetricProgram({
+  1: { lapTime: 18.75, turnTime: 4.82 },
+  2: { lapTime: 18.2, turnTime: 4.35 },
+  3: { lapTime: 18.25, turnTime: 4.38 }
+}), null);
+assert.ok(
+  boat1StrongOriginal.scoredBoats.find((row) => row.boat === 1).scoreParts.roleFeatureBoost >
+    boat1WeakOriginal.scoredBoats.find((row) => row.boat === 1).scoreParts.roleFeatureBoost,
+  "lapTime/turnTime should lift boat 1 inside-keep scoring"
+);
+assert.ok(
+  boat1StrongOriginal.developmentScenarios.find((row) => row.attacker === 1).probabilityScore >
+    boat1WeakOriginal.developmentScenarios.find((row) => row.attacker === 1).probabilityScore,
+  "lapTime/turnTime should affect 1残し scenario evaluation"
+);
+
+const boat3StraightStrong = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.06, straightTime: 7.25, turnTime: 4.42 },
+  1: { exST: 0.15, straightTime: 7.58 },
+  2: { exST: 0.16, straightTime: 7.6 }
+}), null);
+const boat3StraightWeak = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.18, straightTime: 7.8, turnTime: 4.7 }
+}), null);
+assert.ok(
+  boat3StraightStrong.developmentScenarios.find((row) => row.scenarioName === "3号艇まくりシナリオ").upsetScore >
+    boat3StraightWeak.developmentScenarios.find((row) => row.scenarioName === "3号艇まくりシナリオ").upsetScore,
+  "straightTime + exST should lift 3/4 attack scenario scoring"
+);
+assert.ok(
+  boat3StraightStrong.extraTickets.some((ticket) => ticket.combo.startsWith("3-1-") || ticket.combo.startsWith("3-4-")),
+  "strong 3 straight/exST should create 3-head upset candidates"
+);
+
+const boat2TurnStrong = buildRacePrediction(originalMetricProgram({
+  2: { turnTime: 4.2, lapTime: 18.18, exST: 0.08 },
+  1: { turnTime: 4.72, lapTime: 18.62 }
+}), null);
+const boat2TurnWeak = buildRacePrediction(originalMetricProgram({
+  2: { turnTime: 4.82, lapTime: 18.7, exST: 0.16 }
+}), null);
+assert.ok(
+  boat2TurnStrong.developmentScenarios.find((row) => row.scenarioName === "2号艇差しシナリオ").upsetScore >
+    boat2TurnWeak.developmentScenarios.find((row) => row.scenarioName === "2号艇差しシナリオ").upsetScore,
+  "turnTime should lift sashi scenario scoring"
+);
+
+const boat4TurnStrong = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.07, straightTime: 7.28 },
+  4: { straightTime: 7.26, turnTime: 4.22, exST: 0.09 }
+}), null);
+assert.ok(
+  boat4TurnStrong.developmentScenarios.find((row) => row.scenarioName === "4号艇まくり差しシナリオ").reasons.some((reason) => String(reason).includes("まわり足")),
+  "turnTime should appear in makuri-sashi scenario reasons"
+);
+
+const missingOriginalPrediction = buildRacePrediction(program(), null);
+assert.equal(missingOriginalPrediction.scoredBoats.length, 6);
+assert.equal(missingOriginalPrediction.featureScores.allOriginalExhibitionTimesComplete, false);
+assert.ok(
+  buildConfidenceScore(missingOriginalPrediction).warnings.some((warning) => warning === "周回・直線・まわり足データ未取得のため、展示ST・展示タイム・モーター中心で予想"),
+  "missing original exhibition values should not crash and should warn"
+);
 
 console.log("kyotei-openapi-engine ok");

@@ -18,6 +18,10 @@
     windBias: 0.04,
     makuriAlert: 0.1
   },
+  originalExhibitionWeights: {
+    roleFeatureBoost: 0.26,
+    outsideFirstPlaceDampening: 0.42
+  },
   screeningWeights: {
     boat1Strength: 0.26,
     startTrust: 0.16,
@@ -291,6 +295,8 @@ function normalizeProgramBoats(program = {}) {
         motor2Rate: finiteNumber(row.racer_assigned_motor_top_2_percent ?? row.motor2Rate ?? row.motor_2rate, null),
         boat2Rate: finiteNumber(row.racer_assigned_boat_top_2_percent, null),
         averageStartTiming: finiteNumber(row.racer_average_start_timing, null),
+        exST: finiteNumber(row.racer_start_timing ?? row.exST ?? row.exhibitionSt ?? row.exhibitionST, null),
+        exTime: finiteNumber(row.racer_exhibition_time ?? row.exTime ?? row.exhibitionTime, null),
         lapTime: finiteNumber(row.racer_lap_time ?? row.lapTime ?? row.lap_time ?? row.kyoteiBiyoriLapTime ?? row.kyoteibiyori_lap_time, null),
         straightTime: finiteNumber(row.racer_straight_time ?? row.straightTime ?? row.straight_time ?? row.kyoteiBiyoriStraightTime ?? row.kyoteibiyori_straight_time, null),
         turnTime: finiteNumber(row.racer_turn_time ?? row.turnTime ?? row.turn_time ?? row.kyoteiBiyoriTurnTime ?? row.kyoteibiyori_turn_time, null),
@@ -322,6 +328,155 @@ function zScores(valuesByBoat) {
   const variance = entries.reduce((sum, [, value]) => sum + ((value - mean) ** 2), 0) / Math.max(1, entries.length);
   const sd = Math.sqrt(variance) || 1;
   return Object.fromEntries(entries.map(([boat, value]) => [boat, (value - mean) / sd]));
+}
+
+function lowerTimeFeatureScores(valuesByBoat = {}) {
+  const entries = Object.entries(valuesByBoat)
+    .map(([boat, value]) => [String(boat), finiteNumber(value, null)])
+    .filter(([, value]) => value !== null);
+  if (entries.length === 0) return { scores: {}, ranks: {}, count: 0 };
+  const sorted = [...entries].sort((a, b) => a[1] - b[1]);
+  const min = sorted[0][1];
+  const max = sorted[sorted.length - 1][1];
+  const spread = max - min;
+  return {
+    scores: Object.fromEntries(entries.map(([boat, value]) => [
+      boat,
+      spread === 0 ? 0.5 : clamp((max - value) / spread, 0, 1)
+    ])),
+    ranks: Object.fromEntries(sorted.map(([boat], index) => [boat, index + 1])),
+    count: entries.length
+  };
+}
+
+function highValueFeatureScores(valuesByBoat = {}) {
+  const entries = Object.entries(valuesByBoat)
+    .map(([boat, value]) => [String(boat), finiteNumber(value, null)])
+    .filter(([, value]) => value !== null);
+  if (entries.length === 0) return { scores: {}, ranks: {}, count: 0 };
+  const sorted = [...entries].sort((a, b) => b[1] - a[1]);
+  const min = Math.min(...entries.map(([, value]) => value));
+  const max = Math.max(...entries.map(([, value]) => value));
+  const spread = max - min;
+  return {
+    scores: Object.fromEntries(entries.map(([boat, value]) => [
+      boat,
+      spread === 0 ? 0.5 : clamp((value - min) / spread, 0, 1)
+    ])),
+    ranks: Object.fromEntries(sorted.map(([boat], index) => [boat, index + 1])),
+    count: entries.length
+  };
+}
+
+function weightedFeatureAverage(parts = {}, weights = {}) {
+  let weighted = 0;
+  let weightTotal = 0;
+  const used = {};
+  for (const [field, weight] of Object.entries(weights)) {
+    const value = parts[field];
+    if (value === null || value === undefined) continue;
+    weighted += Number(value) * Number(weight || 0);
+    weightTotal += Number(weight || 0);
+    used[field] = value;
+  }
+  return {
+    score: weightTotal > 0 ? clamp(weighted / weightTotal, 0, 1) : null,
+    used
+  };
+}
+
+function roleFeatureWeights(boat) {
+  if (boat === 1) return { exST: 0.18, exTime: 0.16, lapTime: 0.24, turnTime: 0.24, motor2Rate: 0.18 };
+  if (boat === 2) return { exST: 0.24, turnTime: 0.3, lapTime: 0.2, motor2Rate: 0.26 };
+  if (boat === 3) return { exST: 0.28, straightTime: 0.3, exTime: 0.18, turnTime: 0.24 };
+  if (boat === 4) return { exST: 0.24, straightTime: 0.28, turnTime: 0.28, motor2Rate: 0.2 };
+  return { straightTime: 0.3, lapTime: 0.25, turnTime: 0.25, motor2Rate: 0.2 };
+}
+
+function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}) {
+  const values = {
+    exST: Object.fromEntries(boats.map((boat) => [boat.boat, exhibition.exhibitionStartByBoat?.[boat.boat] ?? boat.exST ?? null])),
+    exTime: Object.fromEntries(boats.map((boat) => [boat.boat, exhibition.exhibitionTimeByBoat?.[boat.boat] ?? boat.exTime ?? null])),
+    lapTime: Object.fromEntries(boats.map((boat) => [boat.boat, boat.lapTime ?? null])),
+    straightTime: Object.fromEntries(boats.map((boat) => [boat.boat, boat.straightTime ?? null])),
+    turnTime: Object.fromEntries(boats.map((boat) => [boat.boat, boat.turnTime ?? null])),
+    motor2Rate: Object.fromEntries(boats.map((boat) => [boat.boat, boat.motor2Rate ?? null]))
+  };
+  const fieldScores = {
+    exST: lowerTimeFeatureScores(values.exST),
+    exTime: lowerTimeFeatureScores(values.exTime),
+    lapTime: lowerTimeFeatureScores(values.lapTime),
+    straightTime: lowerTimeFeatureScores(values.straightTime),
+    turnTime: lowerTimeFeatureScores(values.turnTime),
+    motor2Rate: highValueFeatureScores(values.motor2Rate)
+  };
+  const byBoat = {};
+  for (const boat of boats) {
+    const key = String(boat.boat);
+    const parts = {
+      exST: Object.prototype.hasOwnProperty.call(fieldScores.exST.scores, key) ? fieldScores.exST.scores[key] : null,
+      exTime: Object.prototype.hasOwnProperty.call(fieldScores.exTime.scores, key) ? fieldScores.exTime.scores[key] : null,
+      lapTime: Object.prototype.hasOwnProperty.call(fieldScores.lapTime.scores, key) ? fieldScores.lapTime.scores[key] : null,
+      straightTime: Object.prototype.hasOwnProperty.call(fieldScores.straightTime.scores, key) ? fieldScores.straightTime.scores[key] : null,
+      turnTime: Object.prototype.hasOwnProperty.call(fieldScores.turnTime.scores, key) ? fieldScores.turnTime.scores[key] : null,
+      motor2Rate: Object.prototype.hasOwnProperty.call(fieldScores.motor2Rate.scores, key) ? fieldScores.motor2Rate.scores[key] : null
+    };
+    const role = weightedFeatureAverage(parts, roleFeatureWeights(boat.boat));
+    byBoat[key] = {
+      boat: boat.boat,
+      values: Object.fromEntries(Object.keys(parts).map((field) => [field, values[field]?.[boat.boat] ?? null])),
+      ranks: Object.fromEntries(Object.keys(parts).map((field) => [field, fieldScores[field]?.ranks?.[key] ?? null])),
+      scores: parts,
+      roleScore: role.score,
+      roleUsedFields: Object.keys(role.used)
+    };
+  }
+  const originalCounts = {
+    lapTime: fieldScores.lapTime.count,
+    straightTime: fieldScores.straightTime.count,
+    turnTime: fieldScores.turnTime.count
+  };
+  return {
+    byBoat,
+    fieldCounts: Object.fromEntries(Object.entries(fieldScores).map(([field, model]) => [field, model.count])),
+    originalCounts,
+    allOriginalExhibitionTimesComplete: originalCounts.lapTime >= 6 && originalCounts.straightTime >= 6 && originalCounts.turnTime >= 6,
+    preview: BOATS.map((boat) => byBoat[String(boat)]).filter(Boolean).map((row) => ({
+      boat: row.boat,
+      exST: row.values.exST,
+      exSTScore: row.scores.exST,
+      exTime: row.values.exTime,
+      exTimeScore: row.scores.exTime,
+      lapTime: row.values.lapTime,
+      lapTimeScore: row.scores.lapTime,
+      straightTime: row.values.straightTime,
+      straightTimeScore: row.scores.straightTime,
+      turnTime: row.values.turnTime,
+      turnTimeScore: row.scores.turnTime,
+      motor2Rate: row.values.motor2Rate,
+      motor2RateScore: row.scores.motor2Rate,
+      roleScore: row.roleScore,
+      roleUsedFields: row.roleUsedFields
+    }))
+  };
+}
+
+function enrichExhibitionFeaturesFromBoats(exhibition = {}, boats = []) {
+  const next = { ...(exhibition || {}) };
+  const exTimePairs = boats.map((boat) => [boat.boat, exhibition?.exhibitionTimeByBoat?.[boat.boat] ?? boat.exTime ?? null]);
+  const exStPairs = boats.map((boat) => [boat.boat, exhibition?.exhibitionStartByBoat?.[boat.boat] ?? boat.exST ?? null]);
+  if (exTimePairs.some(([, value]) => finiteNumber(value, null) !== null)) {
+    next.exhibitionTimeByBoat = Object.fromEntries(exTimePairs.map(([boat, value]) => [boat, finiteNumber(value, null)]));
+    next.usedFields = [...new Set([...(next.usedFields || []), "exhibition_time"])];
+    next.sourceByField = { ...(next.sourceByField || {}), exhibition_time: "canonicalRaceData.entries.exTime" };
+  }
+  if (exStPairs.some(([, value]) => finiteNumber(value, null) !== null)) {
+    next.exhibitionStartByBoat = Object.fromEntries(exStPairs.map(([boat, value]) => [boat, finiteNumber(value, null)]));
+    next.usedFields = [...new Set([...(next.usedFields || []), "exhibition_st"])];
+    next.sourceByField = { ...(next.sourceByField || {}), exhibition_st: "canonicalRaceData.entries.exST" };
+  }
+  if ((next.usedFields || []).length > 0) next.status = "exhibition_reflected";
+  return next;
 }
 
 function optionalRate01(value) {
@@ -384,7 +539,7 @@ function positiveRateLift(value, threshold = 0.5) {
   return n === null ? 0 : Math.max(0, n - threshold);
 }
 
-function buildScores(boats, exhibition, config) {
+function buildScores(boats, exhibition, config, featureScores = buildOriginalExhibitionFeatureScores(boats, exhibition)) {
   const timeZ = exhibition.exhibitionTimeByBoat ? zScores(exhibition.exhibitionTimeByBoat) : {};
   const lapValues = Object.fromEntries(boats.filter((boat) => boat.lapTime !== null).map((boat) => [boat.boat, boat.lapTime]));
   const lapZ = Object.keys(lapValues).length >= 2 ? zScores(lapValues) : {};
@@ -425,6 +580,14 @@ function buildScores(boats, exhibition, config) {
     const turnBoost = Object.prototype.hasOwnProperty.call(turnZ, String(boat.boat))
       ? clamp(-Number(turnZ[String(boat.boat)] || 0) / 2, -0.4, 0.4) * ([2, 3, 4, 5].includes(course) ? 0.1 : 0.05)
       : 0;
+    const featureRow = featureScores.byBoat[String(boat.boat)] || {};
+    const roleScore = finiteNumber(featureRow.roleScore, null);
+    const firstPlaceDampening = boat.boat >= 5
+      ? finiteNumber(config.originalExhibitionWeights?.outsideFirstPlaceDampening, 0.42)
+      : 1;
+    const roleFeatureBoost = roleScore === null
+      ? 0
+      : (roleScore - 0.5) * finiteNumber(config.originalExhibitionWeights?.roleFeatureBoost, 0.26) * firstPlaceDampening;
     const base =
       config.baseWeights.laneBias * laneBias01(course) +
       config.baseWeights.class * (CLASS_SCORE[boat.classNumber] ?? 0.48) +
@@ -450,8 +613,9 @@ function buildScores(boats, exhibition, config) {
     return {
       ...boat,
       course,
-      score: base + exhibitionTimeBoost + exhibitionStBoost + entryBoost + makuriBoost + lapBoost + straightBoost + turnBoost + techniqueBoost + startTendencyBoost + venueBiasBoost - lateRatePenalty,
-      scoreParts: { base, exhibitionTimeBoost, exhibitionStBoost, entryBoost, makuriBoost, lapBoost, straightBoost, turnBoost, techniqueBoost, startTendencyBoost, lateRatePenalty, venueBiasBoost }
+      featureScores: featureRow,
+      score: base + exhibitionTimeBoost + exhibitionStBoost + entryBoost + makuriBoost + lapBoost + straightBoost + turnBoost + roleFeatureBoost + techniqueBoost + startTendencyBoost + venueBiasBoost - lateRatePenalty,
+      scoreParts: { base, exhibitionTimeBoost, exhibitionStBoost, entryBoost, makuriBoost, lapBoost, straightBoost, turnBoost, roleFeatureBoost, techniqueBoost, startTendencyBoost, lateRatePenalty, venueBiasBoost }
     };
   });
 }
@@ -525,21 +689,32 @@ export function buildTurnScenario(prediction) {
   const head = prediction.firstPlaceProbabilities[0];
   const hasExhibition = prediction.exhibition.status === "exhibition_reflected";
   const boat1 = prediction.scoredBoats.find((boat) => boat.boat === 1);
+  const featureByBoat = prediction.featureScores?.byBoat || {};
+  const scoreOf = (boat, field) => finiteNumber(featureByBoat[String(boat)]?.scores?.[field], null);
+  const boat1FootText = scoreOf(1, "lapTime") !== null && scoreOf(1, "turnTime") !== null && scoreOf(1, "lapTime") >= 0.68 && scoreOf(1, "turnTime") >= 0.68
+    ? "1号艇は周回とまわり足が上位で、イン残し評価を上げます。"
+    : "";
+  const boat3AttackText = scoreOf(3, "exST") !== null && scoreOf(3, "straightTime") !== null && scoreOf(3, "exST") >= 0.68 && scoreOf(3, "straightTime") >= 0.68
+    ? "3号艇はSTと直線が良く、センター攻めの可能性があります。"
+    : "";
+  const boat4TurnText = scoreOf(4, "turnTime") !== null && scoreOf(4, "turnTime") >= 0.68
+    ? "4号艇はまわり足が良く、3が攻めた後のまくり差し展開に注意。"
+    : "";
   const outsideAlert = prediction.scoredBoats
-    .filter((boat) => boat.boat >= 3 && boat.scoreParts.makuriBoost > 0)
-    .sort((a, b) => b.scoreParts.makuriBoost - a.scoreParts.makuriBoost)[0];
+    .filter((boat) => boat.boat >= 3 && (boat.scoreParts.makuriBoost > 0 || boat.scoreParts.roleFeatureBoost > 0.02))
+    .sort((a, b) => (b.scoreParts.makuriBoost + b.scoreParts.roleFeatureBoost) - (a.scoreParts.makuriBoost + a.scoreParts.roleFeatureBoost))[0];
   const mainMethod = head?.boat === 1 ? "逃げ" : head?.course <= 2 ? "差し" : "まくり差し";
   const counterMethod = outsideAlert ? "まくり/まくり差し" : "差し残し";
   return {
     main: {
       title: "本線シナリオ",
-      text: `${head?.boat ?? "-"}号艇の${mainMethod}が中心。${hasExhibition ? "展示反映済みの隊形" : "枠なり前提"}で、1Mは${top[0]?.combo ?? "-"}を軸に見る。`,
+      text: `${head?.boat ?? "-"}号艇の${mainMethod}が中心。${hasExhibition ? "展示反映済みの隊形" : "枠なり前提"}で、1Mは${top[0]?.combo ?? "-"}を軸に見る。${boat1FootText}`,
       tickets: top.slice(0, 2).map((row) => row.combo)
     },
     counter: {
       title: "対抗シナリオ",
       text: outsideAlert
-        ? `${outsideAlert.boat}号艇の展示気配が内側より強く、${counterMethod}の一撃を警戒。`
+        ? `${outsideAlert.boat}号艇の展示気配が内側より強く、${counterMethod}の一撃を警戒。${boat3AttackText || boat4TurnText}`
         : `${boat1?.averageStartTiming == null ? "平均ST不明の艇があり" : "内側のST差次第で"}2・3着争いが入れ替わる可能性。`,
       tickets: top.slice(2, 5).map((row) => row.combo)
     },
@@ -620,6 +795,17 @@ export function buildDevelopmentScenarios(prediction = {}) {
   const straightZ = Object.keys(straightValues).length >= 2 ? zScores(straightValues) : {};
   const turnValues = Object.fromEntries(prediction.scoredBoats.filter((boat) => boat.turnTime !== null).map((boat) => [boat.boat, boat.turnTime]));
   const turnZ = Object.keys(turnValues).length >= 2 ? zScores(turnValues) : {};
+  const featureByBoat = prediction.featureScores?.byBoat || {};
+  const fs = (boat, field, fallback = 0.5) => {
+    const value = featureByBoat[String(boat)]?.scores?.[field];
+    return value === null || value === undefined ? fallback : Number(value);
+  };
+  const roleFs = (boat, fallback = 0.5) => {
+    const value = featureByBoat[String(boat)]?.roleScore;
+    return value === null || value === undefined ? fallback : Number(value);
+  };
+  const good = (boat, field, threshold = 0.68) => fs(boat, field, 0.5) >= threshold;
+  const weak = (boat, field, threshold = 0.32) => fs(boat, field, 0.5) <= threshold;
   const t1 = boat1.playerTendency || {};
   const t2 = boat2.playerTendency || {};
   const t3 = boat3.playerTendency || {};
@@ -629,9 +815,16 @@ export function buildDevelopmentScenarios(prediction = {}) {
   const boat2SashiUpset = (optionalRate01(t2.nigashiRate) !== null && optionalRate01(t2.nigashiRate) < 0.42) && (optionalRate01(t2.sashiRate) !== null && optionalRate01(t2.sashiRate) > 0.55);
   const boat3AttackReady =
     (positiveRateLift(t3.makuriRate, 0.56) > 0 || positiveRateLift(t3.makuriSashiRate, 0.56) > 0) &&
-    (startTimingScore(exSt[3], 0.5) > 0.62 || Number(straightZ["3"] || 0) < -0.45);
-  const boat4DevelopSashiReady = boat3AttackReady && positiveRateLift(t4.makuriSashiRate, 0.54) > 0;
-  const boat1TrustLow = p(1) < 0.34 || boat1EscapeWeak || boat1LateRisk || (prediction.exhibition?.exhibitionStartByBoat && startTimingScore(exSt[1], 0.5) < 0.45) || Number(timeZ["1"] || 0) > 0.6 || Number(lapZ["1"] || 0) > 0.6;
+    (startTimingScore(exSt[3], 0.5) > 0.62 || Number(straightZ["3"] || 0) < -0.45 || (good(3, "exST") && good(3, "straightTime")));
+  const boat4DevelopSashiReady = boat3AttackReady && (positiveRateLift(t4.makuriSashiRate, 0.54) > 0 || (good(4, "straightTime") && good(4, "turnTime")));
+  const boat1LapTurnWeak = weak(1, "lapTime") || weak(1, "turnTime");
+  const boat1LapTurnStrong = good(1, "lapTime") && good(1, "turnTime");
+  const boat1TrustLow = p(1) < 0.34 || boat1EscapeWeak || boat1LateRisk || boat1LapTurnWeak || (prediction.exhibition?.exhibitionStartByBoat && startTimingScore(exSt[1], 0.5) < 0.45) || Number(timeZ["1"] || 0) > 0.6 || Number(lapZ["1"] || 0) > 0.6;
+  const boat3StraightStStrong = good(3, "exST") && good(3, "straightTime");
+  const boat3TurnStrong = good(3, "turnTime");
+  const boat4StraightTurnStrong = good(4, "straightTime") && good(4, "turnTime");
+  const boat5SecondThirdStrong = good(5, "lapTime") && (good(5, "straightTime") || good(5, "turnTime"));
+  const boat6SecondThirdStrong = good(6, "lapTime") && (good(6, "straightTime") || good(6, "turnTime"));
   const sortedByScore = [...prediction.scoredBoats].sort((a, b) => b.score - a.score);
   const scoreGapSmall = Math.abs((sortedByScore[0]?.score ?? 0) - (sortedByScore[2]?.score ?? 0)) < 0.12;
   const scenarios = [
@@ -639,81 +832,81 @@ export function buildDevelopmentScenarios(prediction = {}) {
       prediction,
       scenarioName: "イン逃げ成功シナリオ",
       attacker: 1,
-      baseScore: p(1) + positiveRateLift(t1.escapeRate, 0.5) * 0.35 + (t1.avgStartTiming !== null && t1.avgStartTiming !== undefined ? (startTimingScore(t1.avgStartTiming, 0.5) - 0.5) * 0.18 : 0) - (boat1LateRisk ? 0.12 : 0),
+      baseScore: p(1) + positiveRateLift(t1.escapeRate, 0.5) * 0.35 + (roleFs(1) - 0.5) * 0.22 + (boat1LapTurnStrong ? 0.08 : 0) + (t1.avgStartTiming !== null && t1.avgStartTiming !== undefined ? (startTimingScore(t1.avgStartTiming, 0.5) - 0.5) * 0.18 : 0) - (boat1LateRisk ? 0.12 : 0) - (boat1LapTurnWeak ? 0.1 : 0),
       upsetScore: boat1TrustLow ? 0.2 : 0.05,
       description: "1号艇が先マイして内有利を保つ本線展開。",
       patterns: [[1, 2, "flow"], [1, 3, "flow"]],
-      reasons: [positiveRateLift(t1.escapeRate, 0.5) > 0 ? "1号艇の逃げ率が高い" : null, boat1LateRisk ? "1号艇の出遅れ率が高い" : null]
+      reasons: [positiveRateLift(t1.escapeRate, 0.5) > 0 ? "1号艇の逃げ率が高い" : null, boat1LapTurnStrong ? "1号艇は周回とまわり足が上位で、イン残し評価を上げます。" : null, boat1LapTurnWeak ? "1号艇の周回またはまわり足が弱く、逃げ信頼度を下げます。" : null, boat1LateRisk ? "1号艇の出遅れ率が高い" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "2号艇差しシナリオ",
       attacker: 2,
-      baseScore: p(2) + positiveRateLift(t2.sashiRate, 0.5) * 0.42 + (Number(turnZ["2"] || 0) < -0.45 ? 0.1 : 0) + (boat1TrustLow ? 0.12 : 0),
-      upsetScore: (boat1TrustLow ? 0.35 : 0.12) + (boat2SashiUpset ? 0.24 : 0),
+      baseScore: p(2) + positiveRateLift(t2.sashiRate, 0.5) * 0.42 + (roleFs(2) - 0.5) * 0.18 + (Number(turnZ["2"] || 0) < -0.45 || good(2, "turnTime") ? 0.12 : 0) + (boat1TrustLow ? 0.12 : 0),
+      upsetScore: (boat1TrustLow ? 0.35 : 0.12) + (boat2SashiUpset ? 0.24 : 0) + (good(2, "turnTime") ? 0.12 : 0),
       description: "1号艇の踏み込みが甘い場合、2号艇の差し抜けや1残しを警戒。",
       patterns: [[2, 1, "flow"], [2, 3, "flow"], [2, 4, "flow"]],
-      reasons: [boat1TrustLow ? "1号艇の信頼度が低め" : null, boat2SashiUpset ? "2号艇の逃がし率が低く差し率が高い" : null, Number(turnZ["2"] || 0) < -0.45 ? "2号艇のまわり足が良い" : null]
+      reasons: [boat1TrustLow ? "1号艇の信頼度が低め" : null, boat2SashiUpset ? "2号艇の逃がし率が低く差し率が高い" : null, good(2, "turnTime") || Number(turnZ["2"] || 0) < -0.45 ? "2号艇のまわり足が良く、差しと2着残りを上げます。" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "3号艇まくりシナリオ",
       attacker: 3,
-      baseScore: p(3) + positiveRateLift(t3.makuriRate, 0.5) * 0.4 + (startTimingScore(exSt[3], 0.5) > 0.65 ? 0.12 : 0) + (Number(straightZ["3"] || 0) < -0.5 ? 0.12 : 0),
-      upsetScore: (boat1TrustLow ? 0.25 : 0.12) + (boat3AttackReady ? 0.26 : 0) + (scoreGapSmall ? 0.12 : 0),
+      baseScore: p(3) + positiveRateLift(t3.makuriRate, 0.5) * 0.4 + (boat3StraightStStrong ? 0.18 : startTimingScore(exSt[3], 0.5) > 0.65 ? 0.12 : 0) + (good(3, "straightTime") || Number(straightZ["3"] || 0) < -0.5 ? 0.14 : 0),
+      upsetScore: (boat1TrustLow ? 0.25 : 0.12) + (boat3AttackReady ? 0.3 : 0) + (boat3StraightStStrong ? 0.12 : 0) + (scoreGapSmall ? 0.12 : 0),
       description: "3号艇が先に握ると内が抵抗して隊形が崩れる可能性。直線が良ければまくり切りも警戒。",
       patterns: [[3, 1, "flow"], [3, 4, "flow"], [3, 5, "flow"]],
-      reasons: [positiveRateLift(t3.makuriRate, 0.56) > 0 ? "3号艇のまくり率が高い" : null, startTimingScore(exSt[3], 0.5) > 0.65 ? "3号艇の展示STが早い" : null, Number(straightZ["3"] || 0) < -0.5 ? "3号艇の直線が速い" : null, scoreGapSmall ? "上位評価の差が小さい" : null]
+      reasons: [positiveRateLift(t3.makuriRate, 0.56) > 0 ? "3号艇のまくり率が高い" : null, boat3StraightStStrong ? "3号艇はSTと直線が良く、センター攻めの可能性があります。" : null, Number(straightZ["3"] || 0) < -0.5 ? "3号艇の直線が速い" : null, scoreGapSmall ? "上位評価の差が小さい" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "3号艇まくり差しシナリオ",
       attacker: 3,
-      baseScore: p(3) + positiveRateLift(t3.makuriSashiRate, 0.5) * 0.44 + (Number(timeZ["3"] || 0) < -0.5 ? 0.1 : 0) + (Number(turnZ["3"] || 0) < -0.45 ? 0.1 : 0),
-      upsetScore: (boat1TrustLow ? 0.22 : 0.1) + (Number(timeZ["3"] || 0) < -0.5 ? 0.2 : 0),
+      baseScore: p(3) + positiveRateLift(t3.makuriSashiRate, 0.5) * 0.44 + (Number(timeZ["3"] || 0) < -0.5 ? 0.1 : 0) + (boat3TurnStrong || Number(turnZ["3"] || 0) < -0.45 ? 0.14 : 0),
+      upsetScore: (boat1TrustLow ? 0.22 : 0.1) + (Number(timeZ["3"] || 0) < -0.5 ? 0.2 : 0) + (boat3TurnStrong ? 0.14 : 0),
       description: "3号艇が握りながら差し場を拾う展開。1残しと4連動を重視。",
       patterns: [[3, 1, "flow"], [3, 4, "flow"], [1, 3, "flow"]],
-      reasons: [positiveRateLift(t3.makuriSashiRate, 0.56) > 0 ? "3号艇のまくり差し率が高い" : null, Number(timeZ["3"] || 0) < -0.5 ? "3号艇の展示タイムが良い" : null, Number(turnZ["3"] || 0) < -0.45 ? "3号艇のまわり足が良い" : null]
+      reasons: [positiveRateLift(t3.makuriSashiRate, 0.56) > 0 ? "3号艇のまくり差し率が高い" : null, Number(timeZ["3"] || 0) < -0.5 ? "3号艇の展示タイムが良い" : null, boat3TurnStrong || Number(turnZ["3"] || 0) < -0.45 ? "3号艇のまわり足が良く、まくり差しと2・3着残りを上げます。" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "4号艇まくりシナリオ",
       attacker: 4,
-      baseScore: p(4) + rateScore(boat4.techniqueStats?.makuriRate, 0.5) * 0.2 + (startTimingScore(exSt[4], 0.5) > 0.65 ? 0.12 : 0),
-      upsetScore: (startTimingScore(exSt[4], 0.5) > 0.65 ? 0.22 : 0.1) + (boat1TrustLow ? 0.2 : 0),
+      baseScore: p(4) + rateScore(boat4.techniqueStats?.makuriRate, 0.5) * 0.2 + (good(4, "straightTime") ? 0.12 : 0) + (startTimingScore(exSt[4], 0.5) > 0.65 ? 0.12 : 0),
+      upsetScore: (startTimingScore(exSt[4], 0.5) > 0.65 ? 0.22 : 0.1) + (good(4, "straightTime") ? 0.12 : 0) + (boat1TrustLow ? 0.2 : 0),
       description: "4号艇のカド攻めで内が流れる展開。",
       patterns: [[4, 1, "flow"], [4, 3, "flow"], [4, 5, "flow"]],
-      reasons: [startTimingScore(exSt[4], 0.5) > 0.65 ? "4号艇の展示STが早い" : null]
+      reasons: [startTimingScore(exSt[4], 0.5) > 0.65 ? "4号艇の展示STが早い" : null, good(4, "straightTime") ? "4号艇の直線が良く、カド攻めを上げます。" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "4号艇まくり差しシナリオ",
       attacker: 4,
-      baseScore: p(4) + positiveRateLift(t4.makuriSashiRate, 0.5) * 0.48 + (Number(timeZ["4"] || 0) < -0.45 ? 0.1 : 0) + (Number(straightZ["4"] || 0) < -0.5 ? 0.1 : 0),
-      upsetScore: (boat1TrustLow ? 0.24 : 0.12) + (boat4DevelopSashiReady ? 0.22 : p(3) > p(2) ? 0.1 : 0) + (scoreGapSmall ? 0.1 : 0) + (Number(straightZ["4"] || 0) < -0.5 ? 0.16 : 0),
+      baseScore: p(4) + positiveRateLift(t4.makuriSashiRate, 0.5) * 0.48 + (Number(timeZ["4"] || 0) < -0.45 ? 0.1 : 0) + (boat4StraightTurnStrong ? 0.18 : Number(straightZ["4"] || 0) < -0.5 ? 0.1 : 0),
+      upsetScore: (boat1TrustLow ? 0.24 : 0.12) + (boat4DevelopSashiReady ? 0.26 : p(3) > p(2) ? 0.1 : 0) + (scoreGapSmall ? 0.1 : 0) + (boat4StraightTurnStrong ? 0.18 : Number(straightZ["4"] || 0) < -0.5 ? 0.16 : 0),
       description: "3号艇が攻めて内を動かし、4号艇が差し場を突く形に注意。直線が良い外艇は抜け出しもある。",
       patterns: [[4, 3, "flow"], [4, 1, "flow"], [3, 4, "flow"]],
-      reasons: [boat4DevelopSashiReady ? "3号艇攻めから4号艇まくり差し率が生きる" : p(3) > p(2) ? "3号艇攻めから4号艇差しの形があり得る" : null, Number(straightZ["4"] || 0) < -0.5 ? "4号艇の直線が速い" : null, scoreGapSmall ? "1着候補が割れている" : null]
+      reasons: [boat4DevelopSashiReady ? "3号艇攻めから4号艇まくり差し率が生きる" : p(3) > p(2) ? "3号艇攻めから4号艇差しの形があり得る" : null, boat4StraightTurnStrong ? "4号艇はまわり足が良く、3が攻めた後のまくり差し展開に注意。" : null, Number(straightZ["4"] || 0) < -0.5 ? "4号艇の直線が速い" : null, scoreGapSmall ? "1着候補が割れている" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "5号艇展開突きシナリオ",
       attacker: 5,
-      baseScore: p(5) + percent01(boat5.motor2Rate, 0.4) * 0.15 + (Number(lapZ["5"] || 0) < -0.6 ? 0.12 : 0) + (Number(straightZ["5"] || 0) < -0.6 ? 0.12 : 0),
-      upsetScore: (Number(lapZ["5"] || 0) < -0.6 ? 0.25 : 0.1) + (Number(straightZ["5"] || 0) < -0.6 ? 0.2 : 0) + (percent01(boat5.motor2Rate, 0.4) > 0.45 ? 0.12 : 0),
+      baseScore: p(5) + percent01(boat5.motor2Rate, 0.4) * 0.12 + (boat5SecondThirdStrong ? 0.16 : Number(lapZ["5"] || 0) < -0.6 ? 0.1 : 0),
+      upsetScore: (Number(lapZ["5"] || 0) < -0.6 || good(5, "lapTime") ? 0.25 : 0.1) + (Number(straightZ["5"] || 0) < -0.6 || good(5, "straightTime") ? 0.2 : 0) + (good(5, "turnTime") ? 0.12 : 0) + (percent01(boat5.motor2Rate, 0.4) > 0.45 ? 0.12 : 0),
       description: "内の攻め合いが長引くと5号艇が展開を突いて連に絡む筋。",
       patterns: [[1, 5, "flow"], [3, 5, "flow"], [4, 5, "flow"]],
-      reasons: [Number(lapZ["5"] || 0) < -0.6 ? "5号艇のLap Timeが良い" : null, Number(straightZ["5"] || 0) < -0.6 ? "5号艇の直線が速い" : null, percent01(boat5.motor2Rate, 0.4) > 0.45 ? "5号艇のモーター2連率が高い" : null]
+      reasons: [boat5SecondThirdStrong ? "5号艇は周回と伸びが良く、2・3着穴で評価。" : null, Number(lapZ["5"] || 0) < -0.6 ? "5号艇のLap Timeが良い" : null, Number(straightZ["5"] || 0) < -0.6 ? "5号艇の直線が速い" : null, percent01(boat5.motor2Rate, 0.4) > 0.45 ? "5号艇のモーター2連率が高い" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "6号艇展開突きシナリオ",
       attacker: 6,
-      baseScore: p(6) + percent01(boat6.motor2Rate, 0.4) * 0.15 + rateScore(boat6.techniqueStats?.course6TrifectaRate, 0.45) * 0.12 + (Number(straightZ["6"] || 0) < -0.6 ? 0.1 : 0),
-      upsetScore: (Number(lapZ["6"] || 0) < -0.6 ? 0.22 : 0.08) + (Number(straightZ["6"] || 0) < -0.6 ? 0.18 : 0) + (percent01(boat6.motor2Rate, 0.4) > 0.45 ? 0.12 : 0),
+      baseScore: p(6) + percent01(boat6.motor2Rate, 0.4) * 0.1 + rateScore(boat6.techniqueStats?.course6TrifectaRate, 0.45) * 0.12 + (boat6SecondThirdStrong ? 0.14 : Number(straightZ["6"] || 0) < -0.6 ? 0.08 : 0),
+      upsetScore: (Number(lapZ["6"] || 0) < -0.6 || good(6, "lapTime") ? 0.22 : 0.08) + (Number(straightZ["6"] || 0) < -0.6 || good(6, "straightTime") ? 0.18 : 0) + (good(6, "turnTime") ? 0.1 : 0) + (percent01(boat6.motor2Rate, 0.4) > 0.45 ? 0.12 : 0),
       description: "外枠でも機力や残り足が上位なら、崩れた展開で3着穴まで。",
       patterns: [[1, 6, "flow"], [3, 6, "flow"], [4, 6, "flow"]],
-      reasons: [Number(lapZ["6"] || 0) < -0.6 ? "6号艇のLap Timeが良い" : null, Number(straightZ["6"] || 0) < -0.6 ? "6号艇の直線が速い" : null, percent01(boat6.motor2Rate, 0.4) > 0.45 ? "6号艇のモーター2連率が高い" : null]
+      reasons: [boat6SecondThirdStrong ? "6号艇は周回と伸びが良く、頭より2・3着穴で評価。" : null, Number(lapZ["6"] || 0) < -0.6 ? "6号艇のLap Timeが良い" : null, Number(straightZ["6"] || 0) < -0.6 ? "6号艇の直線が速い" : null, percent01(boat6.motor2Rate, 0.4) > 0.45 ? "6号艇のモーター2連率が高い" : null]
     })
   ];
   const upsetScenarios = scenarios
@@ -721,6 +914,13 @@ export function buildDevelopmentScenarios(prediction = {}) {
     .sort((a, b) => b.upsetScore - a.upsetScore || b.probabilityScore - a.probabilityScore);
   const extraTickets = [];
   const seen = new Set();
+  for (const scenario of upsetScenarios) {
+    const ticket = scenario.recommendedExtraTickets.find((row) => !seen.has(row.combo));
+    if (!ticket) continue;
+    seen.add(ticket.combo);
+    extraTickets.push({ ...ticket, scenarioName: scenario.scenarioName, upsetScore: scenario.upsetScore });
+    if (extraTickets.length >= 6) break;
+  }
   for (const scenario of upsetScenarios) {
     for (const ticket of scenario.recommendedExtraTickets) {
       if (seen.has(ticket.combo)) continue;
@@ -744,12 +944,14 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     ...config,
     baseWeights: { ...DEFAULT_SCORING_CONFIG.baseWeights, ...(config?.baseWeights || {}) },
     exhibitionWeights: { ...DEFAULT_SCORING_CONFIG.exhibitionWeights, ...(config?.exhibitionWeights || {}) },
+    originalExhibitionWeights: { ...DEFAULT_SCORING_CONFIG.originalExhibitionWeights, ...(config?.originalExhibitionWeights || {}) },
     screeningWeights: { ...DEFAULT_SCORING_CONFIG.screeningWeights, ...(config?.screeningWeights || {}) },
     stadiumNumber: finiteNumber(program.race_stadium_number, null)
   };
   const boats = normalizeProgramBoats(program);
-  const exhibition = preview ? buildExhibitionFeatures(preview) : buildExhibitionFeatures(null);
-  const scoredBoats = buildScores(boats, exhibition, scoringConfig).sort((a, b) => a.boat - b.boat);
+  const exhibition = enrichExhibitionFeaturesFromBoats(preview ? buildExhibitionFeatures(preview) : buildExhibitionFeatures(null), boats);
+  const featureScores = buildOriginalExhibitionFeatureScores(boats, exhibition);
+  const scoredBoats = buildScores(boats, exhibition, scoringConfig, featureScores).sort((a, b) => a.boat - b.boat);
   const firstPlaceProbabilities = softmax(scoredBoats)
     .map((row) => ({ boat: row.boat, course: row.course, probability: row.probability }))
     .sort((a, b) => b.probability - a.probability);
@@ -763,6 +965,8 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
       closedAt: program.race_closed_at ?? null
     },
     exhibition,
+    featureScores,
+    featureScorePreview: featureScores.preview,
     scoredBoats,
     firstPlaceProbabilities,
     tickets,
@@ -775,10 +979,18 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
   };
   const scenario = buildTurnScenario(prediction);
   const development = buildDevelopmentScenarios({ ...prediction, scenario });
+  const scenarioScorePreview = development.scenarios.map((row) => ({
+    scenarioName: row.scenarioName,
+    attacker: row.attacker,
+    probabilityScore: row.probabilityScore,
+    upsetScore: row.upsetScore,
+    reasons: row.reasons
+  }));
   return {
     ...prediction,
     scenario,
     developmentScenarios: development.scenarios,
+    scenarioScorePreview,
     upsetScenarios: development.upsetScenarios,
     upsetAlert: development.upsetAlert,
     upsetReasons: development.upsetReasons,
@@ -829,6 +1041,8 @@ export function buildConfidenceScore(prediction = {}) {
   const boat1ExhibitionTimeScore = prediction.exhibition?.exhibitionTimeByBoat
     ? clamp(0.5 + (-Number(timeZ["1"] || 0) * 0.18), 0, 1)
     : 0.5;
+  const originalFeatureComplete = prediction.featureScores?.allOriginalExhibitionTimesComplete === true;
+  const originalFeatureQualityAdjustment = originalFeatureComplete ? 6 : -3;
   const motorScore = percent01(boat1.motor2Rate, 0.45);
   const score =
     (boat1First * 38) +
@@ -844,7 +1058,8 @@ export function buildConfidenceScore(prediction = {}) {
     developmentPenalty +
     boat1EscapeSupport -
     boat1LateRatePenalty -
-    tooManyUpsetsPenalty;
+    tooManyUpsetsPenalty +
+    originalFeatureQualityAdjustment;
   const warnings = [];
   if (entryUnconfirmed) warnings.push("進入未確定のため直前展示で再確認");
   if (outsideHead >= 0.18) warnings.push("5・6号艇の頭浮上余地あり");
@@ -854,6 +1069,11 @@ export function buildConfidenceScore(prediction = {}) {
   if (boat1LateRatePenalty > 0) warnings.push("1号艇の出遅れ率が高い");
   if (clearAttackBoat) warnings.push("攻め艇が明確で穴候補あり");
   if (tooManyUpsetsPenalty > 0) warnings.push("穴候補が多く本線信頼度を抑制");
+  if (originalFeatureComplete) {
+    warnings.push("周回・直線・まわり足データを6艇分反映");
+  } else {
+    warnings.push("周回・直線・まわり足データ未取得のため、展示ST・展示タイム・モーター中心で予想");
+  }
   if (prediction.exhibition?.status !== "exhibition_reflected") warnings.push("展示前の出走表ベース予想");
   return {
     score: Math.round(clamp(score, 0, 100)),
@@ -874,7 +1094,9 @@ export function buildConfidenceScore(prediction = {}) {
       boat1LateRatePenalty,
       clearAttackBoat,
       extraTicketCount,
-      tooManyUpsetsPenalty
+      tooManyUpsetsPenalty,
+      originalFeatureComplete,
+      originalFeatureQualityAdjustment
     }
   };
 }

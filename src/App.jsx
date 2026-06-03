@@ -163,8 +163,9 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
     entry?.turnTime !== null && entry?.turnTime !== undefined
   ).length;
   const originalMetricsIncomplete = originalMetricRows < Math.min(6, Math.max(1, displayEntries.length || 6));
+  const originalMetricsComplete = !originalMetricsIncomplete && originalMetricRows >= 6;
   const originalMetricsWarning = originalMetricsIncomplete
-    ? "周回・直線データ未取得のため、展示ST・展示タイム・モーター中心で予想"
+    ? "周回・直線・まわり足データ未取得のため、展示ST・展示タイム・モーター中心で予想"
     : "";
   const racers = prediction.scoredBoats.map((boat) => ({
     ...(() => {
@@ -216,7 +217,7 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
   const baseConfidence = firstRates[0]?.probability ?? null;
   const adjustedConfidence = baseConfidence == null
     ? null
-    : Math.max(0, baseConfidence - (originalMetricsIncomplete ? 0.03 : 0));
+    : Math.max(0, Math.min(1, baseConfidence + (originalMetricsComplete ? 0.02 : 0) - (originalMetricsIncomplete ? 0.03 : 0)));
   const top6 = prediction.tickets.trifecta.slice(0, 6).map((row, index) => ({
     combo: row.combo,
     probability: row.probability,
@@ -5137,6 +5138,8 @@ export default function App() {
     const canonicalPreview = buildTableDisplayPreview(canonicalRaceData?.entries || renderedMergedRows);
     const tablePreview = buildTableDisplayPreview(displayRows);
     const predictionInputPreview = canonicalRaceData?.debug?.predictionInputPreview || canonicalPreview;
+    const featureScorePreview = openApiModel?.prediction?.featureScorePreview || [];
+    const scenarioScorePreview = openApiModel?.prediction?.scenarioScorePreview || [];
     const playwrightDebug = originalExhibitionDebug.playwright_render_debug || kyoteiBiyoriFrontendDebug.playwright_render_debug || {};
     const selectedRaceKey = `${date}|${Number(venueId)}|${Number(raceNo)}`;
     const originalExhibitionSource =
@@ -5205,9 +5208,11 @@ export default function App() {
       canonicalPreview,
       tablePreview,
       predictionInputPreview,
+      featureScorePreview,
+      scenarioScorePreview,
       displayPreview
     };
-  }, [canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.entries, currentOriginalExhibition, date, displayRows, kyoteiBiyoriFrontendDebug, openApiLoading, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceNo, venueId]);
+  }, [canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.entries, currentOriginalExhibition, date, displayRows, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.scenarioScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceNo, venueId]);
   const originalExhibitionFetchError =
     originalExhibitionError ||
     currentOriginalExhibition?.error ||
@@ -7138,7 +7143,7 @@ export default function App() {
               ) : null}
               {openApiModel?.prediction && originalExhibitionMetricsUnavailable ? (
                 <div className="notice-banner" style={{ marginTop: 10 }}>
-                  周回・直線データ未取得のため、展示ST・展示タイム・モーター中心で予想
+                  周回・直線・まわり足データ未取得のため、展示ST・展示タイム・モーター中心で予想
                 </div>
               ) : null}
               {openApiModel?.prediction ? (
