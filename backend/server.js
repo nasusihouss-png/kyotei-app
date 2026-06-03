@@ -29,8 +29,29 @@ function toPositiveInt(value, fallback = null) {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
+const originalExhibitionCache = new Map();
+const originalExhibitionPendingRaceKeys = new Set();
+const ORIGINAL_EXHIBITION_CACHE_LIMIT = 200;
+
+function buildOriginalExhibitionRaceKey({ date, venueId, raceNo }) {
+  return `${String(date || "")}|${Number(venueId)}|${Number(raceNo)}`;
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function setOriginalExhibitionCache(raceKey, payload) {
+  originalExhibitionCache.set(raceKey, cloneJson(payload));
+  while (originalExhibitionCache.size > ORIGINAL_EXHIBITION_CACHE_LIMIT) {
+    const oldestKey = originalExhibitionCache.keys().next().value;
+    originalExhibitionCache.delete(oldestKey);
+  }
+}
+
 function buildEmptyOriginalExhibitionRows() {
   return Array.from({ length: 6 }, (_, index) => ({
+    boat: index + 1,
     lane: index + 1,
     boatNumber: index + 1,
     lapTime: null,
@@ -38,6 +59,8 @@ function buildEmptyOriginalExhibitionRows() {
     lapSource: null,
     straightTime: null,
     straightSource: null,
+    turnTime: null,
+    turnSource: null,
     measured: false
   }));
 }
@@ -51,6 +74,7 @@ function buildOriginalExhibitionRows(kyoteiBiyori = null) {
     const lapTime = toNullableNumber(row?.lapTime);
     const lapTimeRaw = toNullableNumber(row?.lapTimeRaw ?? row?.lapRaw ?? row?.lapTime);
     const straightTime = toNullableNumber(row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi);
+    const turnTime = toNullableNumber(row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi);
     const lapSource = row?.lapSource || row?.lapTimeDetail?.source || laneSources?.lapTime || laneSources?.lapTimeRaw || null;
     const straightSource =
       row?.straightTimeDetail?.source ||
@@ -59,6 +83,13 @@ function buildOriginalExhibitionRows(kyoteiBiyori = null) {
       laneSources?.nobiashi ||
       laneSources?.__nobiashi ||
       null;
+    const turnSource =
+      row?.turnTimeDetail?.source ||
+      row?.mawariashiDetail?.source ||
+      laneSources?.turnTime ||
+      laneSources?.mawariashi ||
+      laneSources?.__mawariashi ||
+      null;
     return {
       ...base,
       lapTime,
@@ -66,92 +97,227 @@ function buildOriginalExhibitionRows(kyoteiBiyori = null) {
       lapSource,
       straightTime,
       straightSource,
-      measured: lapTime !== null || straightTime !== null,
+      turnTime,
+      turnSource,
+      measured: lapTime !== null || straightTime !== null || turnTime !== null,
       lapStatus: lapTime !== null ? "ok" : "not_measured",
-      straightStatus: straightTime !== null ? "ok" : "not_measured"
+      straightStatus: straightTime !== null ? "ok" : "not_measured",
+      turnStatus: turnTime !== null ? "ok" : "not_measured"
     };
   });
 }
 
-app.get("/api/race/original-exhibition", async (req, res) => {
+async function handleRaceExhibitionRequest(req, res) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   const date = String(req.query?.date || "");
   const venueId = toPositiveInt(req.query?.venueId, null);
   const raceNo = toPositiveInt(req.query?.raceNo, null);
-  const timeoutMs = Math.max(1200, Math.min(toPositiveInt(req.query?.timeoutMs, 3500), 6000));
+  const timeoutMs = Math.max(1200, Math.min(toPositiveInt(req.query?.timeoutMs, 45000), 45000));
+  const forceRaw = String(req.query?.force || req.query?.forceExhibition || req.query?.forceRefresh || "").toLowerCase();
+  const forceExhibition = forceRaw === "1" || forceRaw === "true";
   if (!date || !venueId || !raceNo) {
+    const debug = {
+      date,
+      venueId,
+      raceNo,
+      forceExhibition,
+      validation: "date, venueId, and raceNo are required"
+    };
     return res.status(400).json({
       ok: false,
+      backendConnected: true,
+      exhibitionFetchRoute: "none",
+      playwrightStarted: false,
+      playwrightFinished: false,
+      playwrightError: null,
       error: "missing_required_query_params",
       message: "date, venueId, and raceNo are required",
-      rows: buildEmptyOriginalExhibitionRows()
+      rows: buildEmptyOriginalExhibitionRows(),
+      debug,
+      diagnostics: debug
     });
   }
 
-  try {
-    const kyoteiBiyori = await fetchKyoteiBiyoriRaceData({
+  const raceKey = buildOriginalExhibitionRaceKey({ date, venueId, raceNo });
+  if (!forceExhibition) {
+    const cachedPayload = originalExhibitionCache.get(raceKey);
+    if (cachedPayload) {
+      const payload = cloneJson(cachedPayload);
+      const debug = {
+        ...(payload.debug || payload.diagnostics || {}),
+        raceKey,
+        cacheHit: true,
+        source: "cache",
+        exhibitionFetchRoute: "cache"
+      };
+      payload.fetchedAt = new Date().toISOString();
+      payload.exhibitionFetchRoute = "cache";
+      payload.source = {
+        ...(payload.source || {}),
+        source: "cache",
+        cache: true,
+        forceExhibition: false
+      };
+      payload.debug = debug;
+      payload.diagnostics = debug;
+      return res.json(payload);
+    }
+  }
+
+  if (originalExhibitionPendingRaceKeys.has(raceKey)) {
+    const debug = {
       date,
       venueId,
       raceNo,
-      timeoutMs
-    });
-    const rows = buildOriginalExhibitionRows(kyoteiBiyori);
-    const measuredCount = rows.filter((row) => row.measured).length;
-    console.info("[ORIGINAL_EXHIBITION_FETCH]", JSON.stringify({
-      date,
-      venueId,
-      raceNo,
-      ok: !!kyoteiBiyori?.ok,
-      measuredCount,
-      source: "kyoteibiyori_original_exhibition",
-      actual_fetch_paths: kyoteiBiyori?.diagnostics?.actual_fetch_paths || []
-    }));
-    res.json({
-      ok: !!kyoteiBiyori?.ok,
-      optional: true,
-      measuredCount,
-      fetchedAt: new Date().toISOString(),
-      rows,
-      source: {
-        kind: "kyoteibiyori_original_exhibition",
-        url: kyoteiBiyori?.url || null,
-        triedUrls: Array.isArray(kyoteiBiyori?.triedUrls) ? kyoteiBiyori.triedUrls : [],
-        actualFetchPaths: kyoteiBiyori?.diagnostics?.actual_fetch_paths || [],
-        requestOritenOk: kyoteiBiyori?.diagnostics?.fetch_results?.request_oriten_kaiseki_custom?.ok === true
-      },
-      diagnostics: {
-        fieldSources: kyoteiBiyori?.fieldSources || {},
-        fieldDiagnostics: kyoteiBiyori?.fieldDiagnostics || null,
-        fetch: kyoteiBiyori?.diagnostics?.fetch_results || null,
-        parse: kyoteiBiyori?.diagnostics?.parse_results || null
-      },
-      error: kyoteiBiyori?.ok ? null : kyoteiBiyori?.error || kyoteiBiyori?.fallbackReason || "not_measured_or_not_fetched"
-    });
-  } catch (err) {
-    console.info("[ORIGINAL_EXHIBITION_FETCH]", JSON.stringify({
-      date,
-      venueId,
-      raceNo,
-      ok: false,
-      source: "kyoteibiyori_original_exhibition",
-      error: String(err?.message || err)
-    }));
-    res.json({
+      raceKey,
+      forceExhibition,
+      exhibitionFetchRoute: "pending",
+      playwrightStarted: false,
+      playwrightFinished: false,
+      playwrightError: null,
+      error: "Exhibition fetch already running. Please wait."
+    };
+    return res.json({
       ok: false,
       optional: true,
+      backendConnected: true,
+      exhibitionFetchRoute: "pending",
+      playwrightStarted: false,
+      playwrightFinished: false,
+      playwrightError: null,
       measuredCount: 0,
       fetchedAt: new Date().toISOString(),
       rows: buildEmptyOriginalExhibitionRows(),
       source: {
         kind: "kyoteibiyori_original_exhibition",
+        source: "pending",
+        cache: false,
+        forceExhibition
+      },
+      debug,
+      diagnostics: debug,
+      error: "Exhibition fetch already running. Please wait."
+    });
+  }
+
+  originalExhibitionPendingRaceKeys.add(raceKey);
+  try {
+    const kyoteiBiyori = await fetchKyoteiBiyoriRaceData({
+      date,
+      venueId,
+      raceNo,
+      timeoutMs,
+      forceExhibition
+    });
+    const requestDiagnostics = kyoteiBiyori?.diagnostics || {};
+    const rows = buildOriginalExhibitionRows(kyoteiBiyori);
+    const measuredCount = rows.filter((row) => row.measured).length;
+    const debug = {
+      ...(requestDiagnostics || {}),
+      raceKey,
+      exhibitionFetchRoute: requestDiagnostics?.exhibitionFetchRoute || "none",
+      playwrightStarted: requestDiagnostics?.playwrightStarted === true,
+      playwrightFinished: requestDiagnostics?.playwrightFinished === true,
+      playwrightError: requestDiagnostics?.playwrightError || null,
+      fieldSources: kyoteiBiyori?.fieldSources || {},
+      fieldDiagnostics: kyoteiBiyori?.fieldDiagnostics || null,
+      fetch: kyoteiBiyori?.diagnostics?.fetch_results || null,
+      parse: kyoteiBiyori?.diagnostics?.parse_results || null
+    };
+    console.info("[ORIGINAL_EXHIBITION_FETCH]", JSON.stringify({
+      date,
+      venueId,
+      raceNo,
+      ok: !!kyoteiBiyori?.ok,
+      measuredCount,
+      forceExhibition,
+      exhibitionFetchRoute: requestDiagnostics?.exhibitionFetchRoute || "none",
+      playwrightStarted: requestDiagnostics?.playwrightStarted === true,
+      playwrightFinished: requestDiagnostics?.playwrightFinished === true,
+      playwrightError: requestDiagnostics?.playwrightError || null,
+      source: "kyoteibiyori_original_exhibition",
+      actual_fetch_paths: kyoteiBiyori?.diagnostics?.actual_fetch_paths || []
+    }));
+    const payload = {
+      ok: !!kyoteiBiyori?.ok,
+      optional: true,
+      backendConnected: true,
+      exhibitionFetchRoute: debug.exhibitionFetchRoute,
+      playwrightStarted: debug.playwrightStarted,
+      playwrightFinished: debug.playwrightFinished,
+      playwrightError: debug.playwrightError,
+      measuredCount,
+      fetchedAt: new Date().toISOString(),
+      rows,
+      source: {
+        kind: "kyoteibiyori_original_exhibition",
+        source: "network",
+        cache: false,
+        url: kyoteiBiyori?.url || null,
+        triedUrls: Array.isArray(kyoteiBiyori?.triedUrls) ? kyoteiBiyori.triedUrls : [],
+        actualFetchPaths: kyoteiBiyori?.diagnostics?.actual_fetch_paths || [],
+        requestOritenOk: kyoteiBiyori?.diagnostics?.fetch_results?.request_oriten_kaiseki_custom?.ok === true,
+        forceExhibition
+      },
+      debug,
+      diagnostics: debug,
+      error: kyoteiBiyori?.ok ? null : kyoteiBiyori?.error || kyoteiBiyori?.fallbackReason || "not_measured_or_not_fetched"
+    };
+    if (payload.ok && measuredCount > 0) {
+      setOriginalExhibitionCache(raceKey, payload);
+    }
+    res.json(payload);
+  } catch (err) {
+    const debug = {
+      date,
+      venueId,
+      raceNo,
+      raceKey,
+      forceExhibition,
+      exhibitionFetchRoute: "none",
+      playwrightStarted: false,
+      playwrightFinished: false,
+      playwrightError: String(err?.message || err),
+      error: String(err?.message || err)
+    };
+    console.info("[ORIGINAL_EXHIBITION_FETCH]", JSON.stringify({
+      date,
+      venueId,
+      raceNo,
+      ok: false,
+      source: "kyoteibiyori_original_exhibition",
+      error: String(err?.message || err)
+    }));
+    res.json({
+      ok: false,
+      optional: true,
+      backendConnected: true,
+      exhibitionFetchRoute: debug.exhibitionFetchRoute,
+      playwrightStarted: debug.playwrightStarted,
+      playwrightFinished: debug.playwrightFinished,
+      playwrightError: debug.playwrightError,
+      measuredCount: 0,
+      fetchedAt: new Date().toISOString(),
+      rows: buildEmptyOriginalExhibitionRows(),
+      source: {
+        kind: "kyoteibiyori_original_exhibition",
+        source: "error",
+        cache: false,
         url: null,
         triedUrls: [],
         actualFetchPaths: []
       },
-      diagnostics: null,
+      debug,
+      diagnostics: debug,
       error: String(err?.message || err)
     });
+  } finally {
+    originalExhibitionPendingRaceKeys.delete(raceKey);
   }
-});
+}
+
+app.get("/api/race/exhibition", handleRaceExhibitionRequest);
+app.get("/api/race/original-exhibition", handleRaceExhibitionRequest);
 
 app.use("/api", raceRouter);
 
@@ -208,5 +374,6 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(port, host, () => {
+  console.log(`Backend API running on http://localhost:${port}`);
   console.log(`Backend listening on http://${host}:${port}`);
 });

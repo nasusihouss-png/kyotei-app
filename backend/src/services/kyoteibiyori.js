@@ -1,8 +1,12 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const KYOTEI_BIYORI_BASE = "https://kyoteibiyori.com";
 const ORITEN_ENDPOINT = `${KYOTEI_BIYORI_BASE}/request/request_oriten_kaiseki_custom.php`;
+const KYOTEI_BIYORI_DEBUG_ROOT = path.resolve(fileURLToPath(new URL("../../debug/race-parser", import.meta.url)));
 const EXPECTED_FIELDS = [
   "playerName",
   "fCount",
@@ -11,6 +15,7 @@ const EXPECTED_FIELDS = [
   "lapExhibitionScore",
   "stretchFootLabel",
   "straightTime",
+  "turnTime",
   "exhibitionSt",
   "exhibitionTime",
   "motor2Rate",
@@ -25,6 +30,7 @@ const PREDICTION_FIELD_META_CONFIG = {
   exhibitionST: { key: "exhibitionST", minConfidence: 0.6, required: true },
   exhibitionTime: { key: "exhibitionTime", minConfidence: 0.6, required: true },
   straightTime: { key: "straightTime", minConfidence: 0.6, required: false },
+  turnTime: { key: "turnTime", minConfidence: 0.6, required: false },
   lapExStretch: { key: "lapExStretch", minConfidence: 0.6, required: true },
   motor2ren: { key: "motor2ren", minConfidence: 0.6, required: true },
   motor3ren: { key: "motor3ren", minConfidence: 0.5, required: false },
@@ -62,7 +68,7 @@ function isPublishedLapTimeRawValue(rawValue) {
   if (rawValue === null || rawValue === undefined || rawValue === "") return false;
   const numeric = Number(rawValue);
   if (Number.isFinite(numeric)) {
-    return numeric > 30 && numeric < 50;
+    return numeric >= 0 && numeric < 60;
   }
   return isPublishedRawValue(rawValue);
 }
@@ -252,6 +258,15 @@ function buildPredictionFieldMetaForLane({ lane, extra, racer, fieldSources, fie
         laneSources.__nobiashi ||
         (normalizeExhibitionTimeForMeta(racer?.straightTime ?? racer?.nobiashi) !== null ? "kyoteibiyori_original_exhibition.straight" : null),
       debugEntry: laneDebug?.straightTime || null
+    }),
+    turnTime: getFieldMeta("turnTime", {
+      value: normalizeExhibitionTimeForMeta(extra?.turnTime ?? extra?.mawariashi ?? racer?.turnTime ?? racer?.mawariashi ?? null),
+      source:
+        laneSources.turnTime ||
+        laneSources.mawariashi ||
+        laneSources.__mawariashi ||
+        (normalizeExhibitionTimeForMeta(racer?.turnTime ?? racer?.mawariashi) !== null ? "kyoteibiyori_original_exhibition.turn" : null),
+      debugEntry: laneDebug?.turnTime || null
     }),
     lapExStretch: getFieldMeta("lapExStretch", {
       value: normalizeExhibitionTimeForMeta(extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExStretch ?? racer?.lapExhibitionScore ?? null),
@@ -588,6 +603,8 @@ function buildRequiredFieldParseStatus(byLane) {
     lapTime: hasValue("lapTime") || hasValue("lapTimeRaw"),
     exhibitionST: hasValue("exhibitionSt"),
     exhibitionTime: hasValue("exhibitionTime"),
+    straightTime: hasValue("straightTime") || hasValue("nobiashi") || hasValue("__nobiashi"),
+    turnTime: hasValue("turnTime") || hasValue("mawariashi") || hasValue("__mawariashi"),
     lapExStretch: hasValue("lapExStretch") || hasValue("lapExhibitionScore"),
     motor2ren: hasValue("motor2ren") || hasValue("motor2Rate"),
     motor3ren: hasValue("motor3ren") || hasValue("motor3Rate")
@@ -604,6 +621,713 @@ function buildFallbackSliderUrl({ date, venueId, raceNo, slider }) {
   const hiduke = String(date || "").replace(/-/g, "");
   const placeNo = String(venueId || "").padStart(2, "0");
   return `${KYOTEI_BIYORI_BASE}/race_shusso.php?place_no=${placeNo}&race_no=${Number(raceNo)}&hiduke=${hiduke}&slider=${slider}`;
+}
+
+const HTML_DEBUG_KEYWORDS = [
+  "ST",
+  "\u5c55\u793a",
+  "\u5468\u56de",
+  "\u4e00\u5468",
+  "\u5468\u56de\u30bf\u30a4\u30e0",
+  "\u4e00\u5468\u30bf\u30a4\u30e0",
+  "\u5468\u8db3",
+  "\u307e\u308f\u308a\u8db3",
+  "\u56de\u308a\u8db3",
+  "\u56de\u8db3",
+  "\u76f4\u7dda",
+  "\u76f4\u7dda\u30bf\u30a4\u30e0",
+  "\u30e2\u30fc\u30bf\u30fc2\u9023\u7387"
+];
+
+function buildKyoteiBiyoriDebugFileBase({ date, venueId, raceNo }) {
+  const hiduke = String(date || "").replace(/-/g, "");
+  const placeNo = String(venueId || "").padStart(2, "0");
+  return `kyoteibiyori-${hiduke}-${placeNo}-${Number(raceNo)}`;
+}
+
+function addNamedHtmlArtifact(artifactCollector, fileName, html) {
+  if (!artifactCollector || typeof artifactCollector !== "object") return;
+  if (!html) return;
+  artifactCollector.named_raw_files = {
+    ...(artifactCollector.named_raw_files || {}),
+    [fileName]: String(html)
+  };
+}
+
+function addNamedBinaryArtifact(artifactCollector, fileName, body) {
+  if (!artifactCollector || typeof artifactCollector !== "object") return;
+  if (!body) return;
+  artifactCollector.named_binary_files = {
+    ...(artifactCollector.named_binary_files || {}),
+    [fileName]: body
+  };
+}
+
+function sanitizeDebugFilePart(value) {
+  const text = String(value || "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 120);
+  return text || "response";
+}
+
+function saveRaceParserDebugFile(relativePath, body, { binary = false } = {}) {
+  if (!body) return null;
+  const safeRelativePath = String(relativePath || "")
+    .replace(/^[\\/]+/g, "")
+    .replace(/\.\.(?:[\\/]|$)/g, "");
+  if (!safeRelativePath) return null;
+  const targetPath = path.resolve(KYOTEI_BIYORI_DEBUG_ROOT, safeRelativePath);
+  if (!targetPath.startsWith(KYOTEI_BIYORI_DEBUG_ROOT)) return null;
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, binary ? (Buffer.isBuffer(body) ? body : Buffer.from(body)) : String(body), binary ? undefined : "utf8");
+  return targetPath;
+}
+
+function inspectHtmlKeywordPresence(html) {
+  const text = String(html || "");
+  return Object.fromEntries(HTML_DEBUG_KEYWORDS.map((keyword) => [keyword, text.includes(keyword)]));
+}
+
+function logHtmlKeywordPresence(stage, html) {
+  const presence = inspectHtmlKeywordPresence(html);
+  const summary = HTML_DEBUG_KEYWORDS.map((keyword) => `${keyword}=${presence[keyword] ? "true" : "false"}`).join(" ");
+  console.info(`[kyoteibiyori] ${stage} contains ${summary}`);
+  return presence;
+}
+
+function logRenderedContainsForDebug(presence = {}) {
+  const labels = ["周回", "一周", "直線", "まわり足", "回り足", "回足", "周足"];
+  const lines = labels.map((label) => `${label}=${presence?.[label] === true ? "true" : "false"}`);
+  console.log(`[kyoteibiyori] rendered contains:\n${lines.join("\n")}`);
+}
+
+function buildOriginalExhibitionLaneRows(byLane) {
+  return [...(byLane instanceof Map ? byLane.entries() : [])]
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([lane, row]) => ({
+      boat: Number(lane),
+      lapTime: firstFiniteValue(row?.lapTime, row?.lapTimeRaw),
+      straightTime: firstFiniteValue(row?.straightTime, row?.nobiashi, row?.__nobiashi),
+      turnTime: firstFiniteValue(row?.turnTime, row?.mawariashi, row?.__mawariashi)
+    }));
+}
+
+function buildMergedEntryDebugRows(byLane) {
+  return [...(byLane instanceof Map ? byLane.entries() : [])]
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([lane, row]) => ({
+      boat: Number(lane),
+      exST: firstFiniteValue(row?.exST, row?.exhibitionSt, row?.exhibitionST),
+      exTime: firstFiniteValue(row?.exTime, row?.exhibitionTime),
+      motor2Rate: firstFiniteValue(row?.motor2Rate, row?.motor2ren),
+      lapTime: firstFiniteValue(row?.lapTime, row?.lapTimeRaw),
+      straightTime: firstFiniteValue(row?.straightTime, row?.nobiashi, row?.__nobiashi),
+      turnTime: firstFiniteValue(row?.turnTime, row?.mawariashi, row?.__mawariashi)
+    }));
+}
+
+function countDebugRowsWithField(rows, field) {
+  return (Array.isArray(rows) ? rows : []).filter((row) => Number.isFinite(Number(row?.[field]))).length;
+}
+
+function pickLaneStatsDebugRows(parseResults = {}) {
+  const laneStatsRows = Array.isArray(parseResults?.lane_stats_tab?.original_exhibition_rows)
+    ? parseResults.lane_stats_tab.original_exhibition_rows
+    : [];
+  const renderedRows = Array.isArray(parseResults?.rendered_dom?.original_exhibition_rows)
+    ? parseResults.rendered_dom.original_exhibition_rows
+    : [];
+  const laneStatsValueCount =
+    countDebugRowsWithField(laneStatsRows, "lapTime") +
+    countDebugRowsWithField(laneStatsRows, "straightTime") +
+    countDebugRowsWithField(laneStatsRows, "turnTime");
+  const renderedValueCount =
+    countDebugRowsWithField(renderedRows, "lapTime") +
+    countDebugRowsWithField(renderedRows, "straightTime") +
+    countDebugRowsWithField(renderedRows, "turnTime");
+  return renderedValueCount > laneStatsValueCount ? renderedRows : laneStatsRows;
+}
+
+function logOriginalExhibitionPipelineDebug(diagnostics = {}) {
+  const renderedPresence = diagnostics?.html_contains?.rendered || {};
+  const laneStatsRows = pickLaneStatsDebugRows(diagnostics?.parse_results || {});
+  const mergedRows = Array.isArray(diagnostics?.merge_results?.entries) ? diagnostics.merge_results.entries : [];
+  const renderedLines = ["周回", "一周", "直線", "まわり足", "回り足", "周足"]
+    .map((label) => `rendered contains ${label}: ${renderedPresence?.[label] === true ? "true" : "false"}`);
+  console.log(`[kyoteibiyori] original exhibition debug:\n${renderedLines.join("\n")}`);
+  console.log(
+    "[kyoteibiyori] parsed counts:",
+    {
+      laneStats: laneStatsRows.length,
+      lapTime: countDebugRowsWithField(laneStatsRows, "lapTime"),
+      straightTime: countDebugRowsWithField(laneStatsRows, "straightTime"),
+      turnTime: countDebugRowsWithField(laneStatsRows, "turnTime")
+    }
+  );
+  console.log(
+    "[kyoteibiyori] merged counts:",
+    {
+      lapTime: countDebugRowsWithField(mergedRows, "lapTime"),
+      straightTime: countDebugRowsWithField(mergedRows, "straightTime"),
+      turnTime: countDebugRowsWithField(mergedRows, "turnTime")
+    }
+  );
+  console.log("[kyoteibiyori] laneStats preview:", laneStatsRows.slice(0, 6));
+  console.log("[kyoteibiyori] merged preview:", mergedRows.slice(0, 6));
+}
+
+function hasStaticLapStraightTurnLabels(html) {
+  const presence = inspectHtmlKeywordPresence(html);
+  const hasLap = !!(presence["\u5468\u56de"] || presence["\u4e00\u5468"] || presence["\u5468\u56de\u30bf\u30a4\u30e0"] || presence["\u4e00\u5468\u30bf\u30a4\u30e0"]);
+  const hasStraight = !!(presence["\u76f4\u7dda"] || presence["\u76f4\u7dda\u30bf\u30a4\u30e0"]);
+  const hasTurn = !!(presence["\u307e\u308f\u308a\u8db3"] || presence["\u56de\u308a\u8db3"] || presence["\u56de\u8db3"] || presence["\u5468\u8db3"]);
+  return hasLap && hasStraight && hasTurn;
+}
+
+function countOriginalExhibitionFields(byLane) {
+  const rows = [...(byLane instanceof Map ? byLane.values() : [])];
+  const count = (predicate) => rows.filter((row) => predicate(row || {})).length;
+  return {
+    exST: count((row) => Number.isFinite(Number(row?.exhibitionSt))),
+    exTime: count((row) => Number.isFinite(Number(row?.exhibitionTime))),
+    lapTime: count((row) => Number.isFinite(Number(row?.lapTime ?? row?.lapTimeRaw))),
+    straightTime: count((row) => Number.isFinite(Number(row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi))),
+    turnTime: count((row) => Number.isFinite(Number(row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi))),
+    motor2Rate: count((row) => Number.isFinite(Number(row?.motor2Rate ?? row?.motor2ren)))
+  };
+}
+
+function originalExhibitionCoverageScore(counts = {}) {
+  return (
+    Number(counts.exST || 0) +
+    Number(counts.exTime || 0) +
+    Number(counts.lapTime || 0) +
+    Number(counts.straightTime || 0) +
+    Number(counts.turnTime || 0) +
+    Number(counts.motor2Rate || 0)
+  );
+}
+
+function shouldAttemptRenderedFallback({ html = "", byLane = new Map() } = {}) {
+  const counts = countOriginalExhibitionFields(byLane);
+  return (
+    !hasStaticLapStraightTurnLabels(html) ||
+    Number(counts.lapTime || 0) < 6 ||
+    Number(counts.straightTime || 0) < 6 ||
+    Number(counts.turnTime || 0) < 6
+  );
+}
+
+const PLAYWRIGHT_ORIGINAL_EXHIBITION_KEYWORDS = [
+  "\u30aa\u30ea\u5c55",
+  "\u30aa\u30ea\u30b8\u30ca\u30eb\u5c55\u793a",
+  "\u5c55\u793a",
+  "\u76f4\u524d",
+  "\u76f4\u7dda",
+  "\u5468\u56de",
+  "\u4e00\u5468",
+  "\u307e\u308f\u308a\u8db3",
+  "\u56de\u308a\u8db3",
+  "\u56de\u8db3",
+  "\u5468\u8db3"
+];
+
+const NETWORK_ORIGINAL_EXHIBITION_KEYWORDS = [
+  "\u5468\u56de",
+  "\u4e00\u5468",
+  "\u76f4\u7dda",
+  "\u307e\u308f\u308a\u8db3",
+  "\u56de\u308a\u8db3",
+  "\u56de\u8db3",
+  "\u5468\u8db3",
+  "lap",
+  "straight",
+  "turn",
+  "shukai",
+  "chokusen",
+  "mawari"
+];
+
+function inspectKeywordPresence(text, keywords = []) {
+  const source = String(text || "").toLowerCase();
+  return Object.fromEntries(keywords.map((keyword) => {
+    const key = String(keyword);
+    return [key, source.includes(key.toLowerCase())];
+  }));
+}
+
+function hasAnyKeywordPresence(presence = {}) {
+  return Object.values(presence || {}).some((value) => value === true);
+}
+
+async function collectPlaywrightClickableDebug(page) {
+  return page.evaluate((keywords) => {
+    const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const isVisible = (el) => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const selectors = [
+      "button",
+      "a",
+      "[role='button']",
+      "[role='tab']",
+      "input[type='button']",
+      "input[type='submit']",
+      "[onclick]",
+      "[class*='btn']",
+      "[class*='tab']"
+    ].join(",");
+    const elements = Array.from(document.querySelectorAll(selectors));
+    const rows = elements.map((el, index) => {
+      const tag = String(el.tagName || "").toLowerCase();
+      const text = normalize(el.innerText || el.textContent || el.value || el.getAttribute("aria-label") || el.getAttribute("title") || "");
+      const className = normalize(el.getAttribute("class") || "");
+      const id = normalize(el.getAttribute("id") || "");
+      const role = normalize(el.getAttribute("role") || "");
+      const href = normalize(el.getAttribute("href") || "");
+      return {
+        index,
+        tag,
+        role,
+        id,
+        className: className.slice(0, 120),
+        text: text.slice(0, 200),
+        href: href.slice(0, 200),
+        visible: isVisible(el)
+      };
+    }).filter((row) => row.text || row.id || row.href || row.role);
+    const keywordElements = {};
+    const keywordPresence = {};
+    for (const keyword of keywords) {
+      const matched = rows.filter((row) =>
+        row.text.includes(keyword) ||
+        row.id.includes(keyword) ||
+        row.className.includes(keyword) ||
+        row.href.includes(keyword)
+      );
+      keywordPresence[keyword] = matched.length > 0;
+      keywordElements[keyword] = matched.slice(0, 10);
+    }
+    return {
+      all: rows.slice(0, 150),
+      keyword_presence: keywordPresence,
+      keyword_elements: keywordElements
+    };
+  }, PLAYWRIGHT_ORIGINAL_EXHIBITION_KEYWORDS).catch((error) => ({
+    all: [],
+    keyword_presence: {},
+    keyword_elements: {},
+    error: String(error?.message || error)
+  }));
+}
+
+async function pageHasOriginalExhibitionText(page) {
+  return page.evaluate((keywords) => {
+    const text = document.body ? document.body.innerText || document.body.textContent || "" : "";
+    return keywords.some((keyword) => text.includes(keyword));
+  }, ["\u5468\u56de", "\u4e00\u5468", "\u76f4\u7dda", "\u307e\u308f\u308a\u8db3", "\u56de\u308a\u8db3", "\u56de\u8db3", "\u5468\u8db3"]).catch(() => false);
+}
+
+async function waitAfterPlaywrightClick(page, timeoutMs) {
+  const cappedTimeout = Math.max(1000, Number(timeoutMs) || 3000);
+  await page.waitForLoadState("networkidle", { timeout: Math.min(5000, cappedTimeout) }).catch(() => null);
+  await page.waitForTimeout(Math.min(3000, Math.max(1000, Math.floor(cappedTimeout / 3)))).catch(() => null);
+  await page.waitForFunction(
+    () => {
+      const text = document.body ? document.body.innerText || document.body.textContent || "" : "";
+      return /周回|一周|直線|まわり足|回り足|回足|周足/.test(text);
+    },
+    { timeout: Math.min(3000, cappedTimeout) }
+  ).catch(() => null);
+}
+
+async function tryPlaywrightClick({ page, debug, label, locator, timeoutMs }) {
+  const attempt = {
+    label,
+    count: 0,
+    clicked: false,
+    url_before: page.url(),
+    url_after: null,
+    error: null
+  };
+  try {
+    const count = await locator.count().catch(() => 0);
+    attempt.count = count;
+    if (count > 0) {
+      const target = locator.first();
+      await target.scrollIntoViewIfNeeded({ timeout: Math.min(1500, timeoutMs) }).catch(() => null);
+      await target.click({ timeout: Math.min(2500, timeoutMs) }).catch(async (error) => {
+        attempt.error = String(error?.message || error);
+        await target.click({ timeout: Math.min(2500, timeoutMs), force: true });
+      });
+      attempt.clicked = true;
+      await waitAfterPlaywrightClick(page, timeoutMs);
+    }
+  } catch (error) {
+    attempt.error = String(error?.message || error);
+  }
+  attempt.url_after = page.url();
+  debug.click_attempts.push(attempt);
+  return attempt.clicked && await pageHasOriginalExhibitionText(page);
+}
+
+async function tryPlaywrightEvaluateClick({ page, debug, label, keywords, timeoutMs }) {
+  const attempt = {
+    label,
+    count: 0,
+    clicked: false,
+    url_before: page.url(),
+    url_after: null,
+    error: null
+  };
+  try {
+    const result = await page.evaluate((targetKeywords) => {
+      const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const selectors = [
+        "button",
+        "a",
+        "[role='button']",
+        "[role='tab']",
+        "input[type='button']",
+        "input[type='submit']",
+        "[onclick]",
+        "[class*='btn']",
+        "[class*='tab']",
+        "div",
+        "span"
+      ].join(",");
+      const candidates = Array.from(document.querySelectorAll(selectors)).filter((el) => {
+        if (!isVisible(el)) return false;
+        const text = normalize(el.innerText || el.textContent || el.value || el.getAttribute("aria-label") || el.getAttribute("title") || "");
+        if (!targetKeywords.some((keyword) => text.includes(keyword))) return false;
+        const hasClickSurface =
+          typeof el.onclick === "function" ||
+          el.getAttribute("onclick") ||
+          ["button", "a"].includes(String(el.tagName || "").toLowerCase()) ||
+          el.getAttribute("role") === "button" ||
+          el.getAttribute("role") === "tab" ||
+          /btn|button|tab|nav|menu/i.test(String(el.getAttribute("class") || ""));
+        return !!hasClickSurface;
+      });
+      const target = candidates[0] || null;
+      if (target) target.click();
+      return {
+        count: candidates.length,
+        clicked: !!target,
+        target_text: target ? normalize(target.innerText || target.textContent || target.value || "") : null,
+        target_tag: target ? String(target.tagName || "").toLowerCase() : null,
+        target_id: target ? String(target.getAttribute("id") || "") : null,
+        target_class: target ? String(target.getAttribute("class") || "").slice(0, 120) : null
+      };
+    }, keywords);
+    attempt.count = result?.count || 0;
+    attempt.clicked = !!result?.clicked;
+    attempt.target = result || null;
+    if (attempt.clicked) await waitAfterPlaywrightClick(page, timeoutMs);
+  } catch (error) {
+    attempt.error = String(error?.message || error);
+  }
+  attempt.url_after = page.url();
+  debug.click_attempts.push(attempt);
+  return attempt.clicked && await pageHasOriginalExhibitionText(page);
+}
+
+async function fetchRenderedPageWithPlaywright(url, timeoutMs = 45000, options = {}) {
+  let browser = null;
+  const debugFileBase = options?.debugFileBase || "kyoteibiyori";
+  const debug = {
+    requested_url: url,
+    page_url_before_click: null,
+    page_url_after_click: null,
+    page_title_before_click: null,
+    page_title_after_click: null,
+    rendered_html_length: 0,
+    clickable_before: { all: [], keyword_presence: {}, keyword_elements: {} },
+    clickable_after: { all: [], keyword_presence: {}, keyword_elements: {} },
+    click_attempts: [],
+    network_responses: [],
+    network_summary_path: null,
+    screenshot_path: null,
+    latest_screenshot_path: null
+  };
+  const networkResponseTasks = [];
+  const networkBodies = [];
+  let networkCaptureIndex = 0;
+  let interactionPhase = "before_click";
+
+  try {
+    const playwright = await import("playwright");
+    const chromium = playwright?.chromium;
+    if (!chromium) throw new Error("playwright_chromium_unavailable");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({
+      locale: "ja-JP",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    });
+    const cappedTimeout = Math.max(3000, Math.min(Number(timeoutMs) || 45000, 45000));
+
+    await page.route("**/*", (route) => {
+      const resourceType = route.request().resourceType();
+      if (["image", "font", "media"].includes(resourceType)) {
+        return route.abort().catch(() => null);
+      }
+      return route.continue().catch(() => null);
+    });
+
+    page.on("response", (response) => {
+      const task = (async () => {
+        const request = response.request();
+        const resourceType = request.resourceType();
+        const responseUrl = response.url();
+        const contentType = response.headers()?.["content-type"] || "";
+        const lowerUrl = responseUrl.toLowerCase();
+        const shouldCapture =
+          ["fetch", "xhr", "document"].includes(resourceType) ||
+          /json|html|text|javascript|xml/i.test(contentType) ||
+          /api|ajax|request|oriten|kaiseki|tenji|shukai|chokusen|mawari/i.test(lowerUrl);
+        if (!shouldCapture) return;
+        const entry = {
+          index: networkCaptureIndex++,
+          phase: interactionPhase,
+          url: responseUrl,
+          method: request.method(),
+          status: response.status(),
+          resource_type: resourceType,
+          content_type: contentType,
+          body_length: null,
+          contains: {},
+          saved_path: null,
+          error: null
+        };
+        try {
+          const body = await response.text();
+          entry.body_length = body.length;
+          entry.contains = inspectKeywordPresence(body, NETWORK_ORIGINAL_EXHIBITION_KEYWORDS);
+          const parsedUrl = new URL(responseUrl);
+          const ext = /json/i.test(contentType) ? "json" : /html/i.test(contentType) ? "html" : "txt";
+          const filePart = sanitizeDebugFilePart(`${parsedUrl.hostname}_${parsedUrl.pathname.split("/").filter(Boolean).pop() || "response"}`);
+          entry.saved_path = saveRaceParserDebugFile(
+            `network/${debugFileBase}-${String(entry.index).padStart(2, "0")}-${resourceType}-${filePart}.${ext}`,
+            body
+          );
+          if (body.length <= 2_000_000) {
+            networkBodies.push({ ...entry, body });
+          }
+        } catch (error) {
+          entry.error = String(error?.message || error);
+        }
+        debug.network_responses.push(entry);
+      })();
+      networkResponseTasks.push(task);
+    });
+
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: cappedTimeout });
+    await page.waitForLoadState("networkidle", { timeout: Math.min(5000, cappedTimeout) }).catch(() => null);
+    await page.waitForSelector("table, .raceNaiyou, .chokuzen, .tenji, [class*='race'], [class*='tenji'], body", {
+      timeout: Math.min(3000, cappedTimeout)
+    }).catch(() => null);
+
+    debug.page_url_before_click = page.url();
+    debug.page_title_before_click = await page.title().catch(() => null);
+    debug.clickable_before = await collectPlaywrightClickableDebug(page);
+
+    interactionPhase = "after_click";
+    const clickKeywords = [
+      "\u30aa\u30ea\u5c55",
+      "\u30aa\u30ea\u30b8\u30ca\u30eb\u5c55\u793a",
+      "\u5c55\u793a",
+      "\u76f4\u524d"
+    ];
+    const clickPlan = [
+      ["selector:#btnOritenKaiseki", () => page.locator("#btnOritenKaiseki")],
+      ["text:oriten", () => page.getByText("\u30aa\u30ea\u5c55", { exact: false })],
+      ["text:original-tenji", () => page.getByText("\u30aa\u30ea\u30b8\u30ca\u30eb\u5c55\u793a", { exact: false })],
+      ["role=button:oriten", () => page.getByRole("button", { name: /\u30aa\u30ea\u5c55/ })],
+      ["role=tab:oriten", () => page.getByRole("tab", { name: /\u30aa\u30ea\u5c55/ })],
+      ["a:oriten", () => page.locator("a").filter({ hasText: "\u30aa\u30ea\u5c55" })],
+      ["button-or-tab:tenji", () => page.locator("button,[role='button'],[role='tab']").filter({ hasText: "\u5c55\u793a" })],
+      ["a:tenji", () => page.locator("a").filter({ hasText: "\u5c55\u793a" })],
+      ["text:chokuzen", () => page.getByText("\u76f4\u524d", { exact: false })]
+    ];
+    for (const [label, locatorFactory] of clickPlan) {
+      const found = await tryPlaywrightClick({
+        page,
+        debug,
+        label,
+        locator: locatorFactory(),
+        timeoutMs: cappedTimeout
+      });
+      if (found) break;
+    }
+    if (!(await pageHasOriginalExhibitionText(page))) {
+      await tryPlaywrightEvaluateClick({
+        page,
+        debug,
+        label: "evaluate:button-a-tab-div-keyword-click",
+        keywords: clickKeywords,
+        timeoutMs: cappedTimeout
+      });
+    }
+
+    debug.page_url_after_click = page.url();
+    debug.page_title_after_click = await page.title().catch(() => null);
+    debug.clickable_after = await collectPlaywrightClickableDebug(page);
+    await Promise.allSettled(networkResponseTasks);
+
+    const html = await page.content();
+    debug.rendered_html_length = html.length;
+    const screenshot = await page.screenshot({ fullPage: true, type: "png" }).catch(() => null);
+    if (screenshot) {
+      debug.screenshot_path = saveRaceParserDebugFile(`${debugFileBase}.rendered.png`, screenshot, { binary: true });
+      debug.latest_screenshot_path = saveRaceParserDebugFile("latest-rendered.png", screenshot, { binary: true });
+    }
+    debug.network_summary_path = saveRaceParserDebugFile(
+      `network/${debugFileBase}-network-summary.json`,
+      JSON.stringify(debug.network_responses, null, 2)
+    );
+    console.log("[kyoteibiyori] playwright rendered page:", {
+      url: debug.page_url_after_click,
+      title: debug.page_title_after_click,
+      renderedHtmlLength: debug.rendered_html_length,
+      screenshotPath: debug.screenshot_path,
+      latestScreenshotPath: debug.latest_screenshot_path
+    });
+    console.log("[kyoteibiyori] playwright clickable before:", debug.clickable_before);
+    console.log("[kyoteibiyori] playwright clickable after:", debug.clickable_after);
+    console.log("[kyoteibiyori] playwright click attempts:", debug.click_attempts);
+    console.log("[kyoteibiyori] playwright network responses:", debug.network_responses);
+    return { html, screenshot, debug, networkBodies };
+  } finally {
+    if (browser) await browser.close().catch(() => null);
+  }
+}
+
+async function fetchRenderedPageWithPlaywrightLegacy(url, timeoutMs = 45000, options = {}) {
+  let browser = null;
+  try {
+    const playwright = await import("playwright");
+    const chromium = playwright?.chromium;
+    if (!chromium) throw new Error("playwright_chromium_unavailable");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({
+      locale: "ja-JP",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    });
+    const cappedTimeout = Math.max(3000, Math.min(Number(timeoutMs) || 45000, 45000));
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: cappedTimeout });
+    await page.waitForLoadState("networkidle", { timeout: Math.min(5000, cappedTimeout) }).catch(() => null);
+    await page.waitForSelector("table, .raceNaiyou, .chokuzen, .tenji, [class*='race'], [class*='tenji'], body", {
+      timeout: Math.min(3000, cappedTimeout)
+    }).catch(() => null);
+    await page.waitForFunction(
+      () => {
+        const text = document.body ? document.body.innerText || "" : "";
+        return /直前情報|直前展示|展示|ST|周回|一周|直線|まわり足|回り足|周足/.test(text);
+      },
+      { timeout: Math.min(4000, cappedTimeout) }
+    ).catch(() => null);
+    const oritenButton = page.locator("#btnOritenKaiseki").first();
+    if (await oritenButton.count().catch(() => 0)) {
+      await oritenButton.click({ timeout: Math.min(2500, cappedTimeout) }).catch(async () => {
+        await page.evaluate(() => document.querySelector("#btnOritenKaiseki")?.click()).catch(() => null);
+      });
+      await page.waitForLoadState("networkidle", { timeout: Math.min(5000, cappedTimeout) }).catch(() => null);
+      await page.waitForFunction(
+        () => {
+          const text = document.body ? document.body.innerText || "" : "";
+          return /展示情報/.test(text) && /周回/.test(text) && /直線/.test(text);
+        },
+        { timeout: Math.min(5000, cappedTimeout) }
+      ).catch(() => null);
+    }
+    const html = await page.content();
+    const screenshot = await page.screenshot({ fullPage: true, type: "png" }).catch(() => null);
+    return { html, screenshot };
+  } finally {
+    if (browser) await browser.close().catch(() => null);
+  }
+}
+
+async function fetchRenderedHtmlWithPlaywright(url, timeoutMs = 45000) {
+  const page = await fetchRenderedPageWithPlaywright(url, timeoutMs);
+  return page.html;
+}
+
+function parseNetworkOriginalExhibitionResponses(responses = []) {
+  const byLane = new Map();
+  const fieldSources = {};
+  const fieldDebugs = {};
+  const tableDiagnostics = [];
+  const responseDiagnostics = [];
+
+  for (const response of Array.isArray(responses) ? responses : []) {
+    const body = String(response?.body || "");
+    if (!body) continue;
+    const contains = inspectKeywordPresence(body, NETWORK_ORIGINAL_EXHIBITION_KEYWORDS);
+    const url = String(response?.url || "");
+    const shouldParse =
+      hasAnyKeywordPresence(contains) ||
+      /oriten|kaiseki|tenji|shukai|chokusen|mawari|ajax|api|request/i.test(url);
+    if (!shouldParse) continue;
+
+    const sourceLabel = `kyoteibiyori-network:${response?.index ?? "x"}`;
+    const responseResult = {
+      index: response?.index ?? null,
+      url,
+      contains,
+      parsed_lanes_before: byLane.size,
+      parsed_lanes_after: null,
+      json_parse_ok: false,
+      html_parse_ok: false,
+      error: null
+    };
+
+    try {
+      if (/json/i.test(String(response?.content_type || "")) || /^\s*[\[{]/.test(body)) {
+        const json = JSON.parse(body);
+        const parsedJson = parseKyoteiBiyoriAjaxData(json);
+        mergeLaneMaps(byLane, parsedJson.byLane, fieldSources, sourceLabel);
+        responseResult.json_parse_ok = parsedJson.byLane.size > 0;
+      }
+    } catch (error) {
+      responseResult.error = responseResult.error || String(error?.message || error);
+    }
+
+    try {
+      const parsedHtml = normalizeKyoteiBiyoriPreRaceFields(
+        parseKyoteiBiyoriPreRaceData(body, {
+          mode: "pre_race",
+          sourceLabel
+        })
+      );
+      mergeLaneMaps(byLane, parsedHtml.byLane, fieldSources, sourceLabel);
+      mergeFieldDebugMaps(fieldDebugs, parsedHtml.fieldDebugs || {});
+      tableDiagnostics.push(...(parsedHtml.tableDiagnostics || []));
+      responseResult.html_parse_ok = parsedHtml.byLane.size > 0;
+    } catch (error) {
+      responseResult.error = responseResult.error || String(error?.message || error);
+    }
+
+    responseResult.parsed_lanes_after = byLane.size;
+    responseDiagnostics.push(responseResult);
+  }
+
+  return {
+    byLane,
+    fieldSources,
+    fieldDebugs,
+    tableDiagnostics,
+    responseDiagnostics,
+    fieldDiagnostics: buildFieldDiagnostics(byLane, fieldSources)
+  };
 }
 
 async function fetchText(url, timeoutMs = 12000) {
@@ -728,7 +1452,9 @@ const FIELD_DEBUG_NAME_MAP = {
   lapTimeRaw: "lapTime",
   exhibitionSt: "exhibitionST",
   exhibitionTime: "exhibitionTime",
+  mawariashi: "turnTime",
   straightTime: "straightTime",
+  nobiashi: "straightTime",
   motor2Rate: "motor2ren",
   motor3Rate: "motor3ren",
   lapExStretch: "lapExStretch"
@@ -740,7 +1466,7 @@ const JAPANESE_LABELS = {
   motorSection: "\u30e2\u30fc\u30bf\u30fc",
   motor2: "\u30e2\u30fc\u30bf\u30fc2\u9023\u7387",
   motor3: "\u30e2\u30fc\u30bf\u30fc3\u9023\u7387",
-  mawariashi: "\u5468\u308a\u8db3",
+  mawariashi: "\u307e\u308f\u308a\u8db3",
   nobiashi: "\u76f4\u7dda",
   lapTime: "\u5468\u56de",
   exhibition: "\u5c55\u793a",
@@ -760,12 +1486,12 @@ const JAPANESE_LABELS = {
 const LABEL_ALIASES = {
   laneStatsSection: ["\u8b6b\uf8f0\u86fb\uff65\u870d\u6649\u7d2b"],
   preRaceSection: ["\u9016\uff74\u8711\u80b4\u30e5\u8763\uff71"],
-  motor2: ["\u7e5d\uff62\u7e5d\uff7c\u7e67\uff7f\u7e5d\uff7c2\u9a3e\uff63\u9087\u30fb"],
+  motor2: ["\u30e2\u30fc\u30bf\u30fc2\u9023\u7387", "\u30e2\u30fc\u30bf\u30fc2\u7387", "\u30e2\u30fc\u30bf\u30fc", "\u7e5d\uff62\u7e5d\uff7c\u7e67\uff7f\u7e5d\uff7c2\u9a3e\uff63\u9087\u30fb"],
   motor3: ["\u7e5d\uff62\u7e5d\uff7c\u7e67\uff7f\u7e5d\uff7c3\u9a3e\uff63\u9087\u30fb"],
-  mawariashi: ["\u873b\uff68\u7e67\u9858\uff76\uff73"],
-  nobiashi: ["\u83a8\uff78\u7e3a\uff73\u96dc\uff73"],
-  lapTime: ["\u873b\uff68\u8757\u30fb"],
-  exhibition: ["\u87bb\u6155\uff64\uff7a"],
+  mawariashi: ["\u307e\u308f\u308a\u8db3", "\u56de\u308a\u8db3", "\u56de\u8db3", "\u5468\u308a\u8db3", "\u5468\u8db3", "\u307e\u308f\u308a\u8db3\u30bf\u30a4\u30e0", "\u873b\uff68\u7e67\u9858\uff76\uff73"],
+  nobiashi: ["\u76f4\u7dda", "\u76f4\u7dda\u30bf\u30a4\u30e0", "\u4f38\u3073\u8db3", "\u83a8\uff78\u7e3a\uff73\u96dc\uff73"],
+  lapTime: ["\u5468\u56de", "\u5468\u56de\u30bf\u30a4\u30e0", "\u4e00\u5468", "\u4e00\u5468\u30bf\u30a4\u30e0", "\u5468\u56de\u5c55\u793a", "\u873b\uff68\u8757\u30fb"],
+  exhibition: ["\u5c55\u793a", "\u5c55\u793a\u30bf\u30a4\u30e0", "\u87bb\u6155\uff64\uff7a"],
   lane1st: ["1\u9039\u0080\u9087\u30fb"],
   lane2ren: ["2\u9a3e\uff63\u9087\u30fb"],
   lane3ren: ["3\u9a3e\uff63\u9087\u30fb"],
@@ -964,8 +1690,8 @@ function canonicalizeExplicitSectionLabel(value) {
   if (!text) return null;
   if (matchesLabel(text, JAPANESE_LABELS.laneStatsSection, LABEL_ALIASES.laneStatsSection)) return JAPANESE_LABELS.laneStatsSection;
   if (matchesLabel(text, JAPANESE_LABELS.preRaceSection, LABEL_ALIASES.preRaceSection)) return JAPANESE_LABELS.preRaceSection;
-  if (matchesLabel(text, JAPANESE_LABELS.motor2, LABEL_ALIASES.motor2)) return JAPANESE_LABELS.motor2;
   if (matchesLabel(text, JAPANESE_LABELS.motor3, LABEL_ALIASES.motor3)) return JAPANESE_LABELS.motor3;
+  if (matchesLabel(text, JAPANESE_LABELS.motor2, LABEL_ALIASES.motor2)) return JAPANESE_LABELS.motor2;
   if (matchesLabel(text, JAPANESE_LABELS.motorSection)) return JAPANESE_LABELS.motorSection;
   return null;
 }
@@ -978,8 +1704,8 @@ function canonicalizeExplicitMetricLabel(value) {
   if (matchesLabel(text, JAPANESE_LABELS.exhibition, LABEL_ALIASES.exhibition)) return JAPANESE_LABELS.exhibition;
   if (matchesLabel(text, JAPANESE_LABELS.mawariashi, LABEL_ALIASES.mawariashi)) return JAPANESE_LABELS.mawariashi;
   if (matchesLabel(text, JAPANESE_LABELS.nobiashi, LABEL_ALIASES.nobiashi)) return JAPANESE_LABELS.nobiashi;
-  if (matchesLabel(text, JAPANESE_LABELS.motor2, LABEL_ALIASES.motor2) || (matchesLabel(text, JAPANESE_LABELS.motorSection) && text.includes("2"))) return JAPANESE_LABELS.motor2;
   if (matchesLabel(text, JAPANESE_LABELS.motor3, LABEL_ALIASES.motor3) || (matchesLabel(text, JAPANESE_LABELS.motorSection) && text.includes("3"))) return JAPANESE_LABELS.motor3;
+  if (matchesLabel(text, JAPANESE_LABELS.motor2, LABEL_ALIASES.motor2) || (matchesLabel(text, JAPANESE_LABELS.motorSection) && text.includes("2"))) return JAPANESE_LABELS.motor2;
   if (matchesLabel(text, JAPANESE_LABELS.lane1st, LABEL_ALIASES.lane1st)) return JAPANESE_LABELS.lane1st;
   if (matchesLabel(text, JAPANESE_LABELS.lane2ren, LABEL_ALIASES.lane2ren)) return JAPANESE_LABELS.lane2ren;
   if (matchesLabel(text, JAPANESE_LABELS.lane3ren, LABEL_ALIASES.lane3ren)) return JAPANESE_LABELS.lane3ren;
@@ -1311,7 +2037,7 @@ function parseExplicitTargetCell(field, rawText) {
   if (field === "mawariashi") {
     const value = parseDecimal(rawText);
     return {
-      fields: { __mawariashi: value },
+      fields: { turnTime: value, mawariashi: value, __mawariashi: value },
       value
     };
   }
@@ -1611,6 +2337,21 @@ function findHeaderIndexByLabels(headers, labels) {
   return null;
 }
 
+function findMotor2HeaderIndexByLabels(headers) {
+  const specificIndex = findHeaderIndexByLabels(headers, [
+    "モーター2連率",
+    "モーター2率",
+    "モーター2連対率",
+    "モーター2連"
+  ]);
+  if (specificIndex !== null) return specificIndex;
+
+  const motorOnly = normalizeJapaneseColumnHeader("モーター");
+  const normalizedHeaders = headers.map((header) => normalizeJapaneseColumnHeader(header));
+  const exactMotorIndex = normalizedHeaders.findIndex((header) => header === motorOnly);
+  return exactMotorIndex >= 0 ? exactMotorIndex : null;
+}
+
 function setParsedHeaderField({ row, laneFieldSources, fieldDebugs, lane, sourceLabel, field, rawText, parser, debugName, rowLabel }) {
   if (rawText === null || rawText === undefined || rawText === "") return;
   const parsed = parser(rawText);
@@ -1654,13 +2395,14 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
       playerName: findHeaderIndexByLabels(headers, ["選手名", "選手", "名前"]),
       exhibitionSt: findHeaderIndexByLabels(headers, ["ST", "展示ST"]),
       exhibitionTime: findHeaderIndexByLabels(headers, ["展示", "展示タイム"]),
-      lapTime: findHeaderIndexByLabels(headers, ["周回", "周回タイム", "周回展示"]),
+      lapTime: findHeaderIndexByLabels(headers, ["周回", "周回タイム", "一周", "一周タイム", "周回展示"]),
+      turnTime: findHeaderIndexByLabels(headers, ["まわり足", "回り足", "回足", "周り足", "周足", "まわり足タイム"]),
       straightTime: findHeaderIndexByLabels(headers, ["直線", "直線タイム"]),
-      motor2Rate: findHeaderIndexByLabels(headers, ["モーター2連率", "モーター2連対率", "モーター2連"])
+      motor2Rate: findMotor2HeaderIndexByLabels(headers)
     };
     const hasPreRaceColumns =
       indexes.lane !== null &&
-      [indexes.exhibitionSt, indexes.exhibitionTime, indexes.lapTime, indexes.straightTime, indexes.motor2Rate].some((idx) => idx !== null);
+      [indexes.exhibitionSt, indexes.exhibitionTime, indexes.lapTime, indexes.turnTime, indexes.straightTime, indexes.motor2Rate].some((idx) => idx !== null);
     if (!hasPreRaceColumns) continue;
 
     let parsedCount = 0;
@@ -1709,6 +2451,28 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
               exhibitionStSignedValue: parsed.signedValue
             },
             value: parsed.numeric
+          };
+        }
+      });
+      setParsedHeaderField({
+        row: current,
+        laneFieldSources,
+        fieldDebugs,
+        lane,
+        sourceLabel,
+        field: "mawariashi",
+        rawText: indexes.turnTime !== null ? values[indexes.turnTime] : null,
+        rowLabel: "まわり足",
+        debugName: "turnTime",
+        parser: (rawText) => {
+          const turnTime = parseDecimal(rawText);
+          return {
+            fields: {
+              turnTime,
+              mawariashi: turnTime,
+              __mawariashi: turnTime
+            },
+            value: turnTime
           };
         }
       });
@@ -1793,6 +2557,342 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
   return { byLane, fieldSources, fieldDebugs, tableDiagnostics };
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function detectLaneMarkersInBlock(text) {
+  const normalized = normalizeDigits(normalizeSpace(text));
+  const lanes = new Set();
+  const patterns = [
+    /(?:艇番|枠番|コース|course|lane)\s*[:：]?\s*([1-6])(?:\s*(?:号艇|号|艇|コース|枠))?/gi,
+    /(?:^|[^0-9])([1-6])\s*(?:号艇|号|艇|コース|枠)(?=$|[^0-9])/g
+  ];
+  for (const pattern of patterns) {
+    let match = null;
+    while ((match = pattern.exec(normalized)) !== null) {
+      const lane = Number(match[1]);
+      if (Number.isInteger(lane) && lane >= 1 && lane <= 6) lanes.add(lane);
+    }
+  }
+  return [...lanes];
+}
+
+function parseBlockMetricValue(text, labelPattern, parser) {
+  const normalized = normalizeSpace(text);
+  const valuePattern = "(F\\.?\\d+(?:\\.\\d+)?|L\\.?\\d+(?:\\.\\d+)?|[+-]?(?:\\d+\\.\\d+|\\d+|\\.\\d+)%?)";
+  const re = new RegExp(`(?:${labelPattern})\\s*(?:[:：=／/\\-])?\\s*${valuePattern}`, "i");
+  const match = normalized.match(re);
+  if (!match) return { raw: null, parsed: null };
+  const raw = match[1] || null;
+  return { raw, parsed: parser(raw) };
+}
+
+function getBlockMetricConfigs() {
+  return [
+    {
+      field: "exhibitionSt",
+      debugName: "exhibitionST",
+      rowLabel: "ST",
+      labelPattern: "(?:展示\\s*ST|ST)",
+      parser: (raw) => {
+        const parsed = parseStartTimingRaw(raw);
+        return {
+          fields: {
+            exhibitionSt: parsed.numeric,
+            exhibitionStRaw: parsed.raw,
+            exhibitionStFlag: parsed.flag,
+            exhibitionStSignedValue: parsed.signedValue
+          },
+          value: parsed.numeric
+        };
+      }
+    },
+    {
+      field: "exhibitionTime",
+      debugName: "exhibitionTime",
+      rowLabel: "展示",
+      labelPattern: "(?:展示\\s*タイム|(?<!周回)展示(?!\\s*ST))",
+      parser: (raw) => ({ fields: { exhibitionTime: parseDecimal(raw) }, value: parseDecimal(raw) })
+    },
+    {
+      field: "lapTimeRaw",
+      debugName: "lapTime",
+      rowLabel: "周回",
+      labelPattern: "(?:周回\\s*(?:タイム|展示)?|一周\\s*(?:タイム)?)",
+      parser: (raw) => {
+        const lapTimeRaw = parseDecimal(raw);
+        return { fields: { lapTimeRaw, lapTime: lapTimeRaw }, value: lapTimeRaw };
+      }
+    },
+    {
+      field: "mawariashi",
+      debugName: "turnTime",
+      rowLabel: "まわり足",
+      labelPattern: "(?:まわり足\\s*(?:タイム)?|回り足|回足|周り足|周足)",
+      parser: (raw) => {
+        const turnTime = parseDecimal(raw);
+        return { fields: { turnTime, mawariashi: turnTime, __mawariashi: turnTime }, value: turnTime };
+      }
+    },
+    {
+      field: "straightTime",
+      debugName: "straightTime",
+      rowLabel: "直線",
+      labelPattern: "(?:直線\\s*(?:タイム)?|伸び足)",
+      parser: (raw) => {
+        const straightTime = parseDecimal(raw);
+        return { fields: { straightTime, nobiashi: straightTime, __nobiashi: straightTime }, value: straightTime };
+      }
+    },
+    {
+      field: "motor2Rate",
+      debugName: "motor2ren",
+      rowLabel: "モーター2連率",
+      labelPattern: "(?:モーター\\s*2\\s*(?:連対率|連率|率|連)?|モーター(?!\\s*3\\s*(?:連対率|連率|率|連)?))",
+      parser: (raw) => ({ fields: { motor2Rate: parsePercent(raw) }, value: parsePercent(raw) })
+    }
+  ];
+}
+
+function parseBlockMetrics(text) {
+  const configs = getBlockMetricConfigs();
+  const fields = {};
+  const debugEntries = {};
+  for (const config of configs) {
+    const { raw, parsed } = parseBlockMetricValue(text, config.labelPattern, config.parser);
+    if (!parsed) continue;
+    Object.assign(fields, parsed.fields || {});
+    debugEntries[config.debugName] = {
+      section: JAPANESE_LABELS.preRaceSection,
+      metric: config.rowLabel,
+      row: config.rowLabel,
+      sourceLabel: "kyoteibiyori_block",
+      column: config.rowLabel,
+      boatColumn: null,
+      raw: raw ?? null,
+      value: parsed.value,
+      exact_match_verified: true
+    };
+  }
+  return { fields, debugEntries };
+}
+
+function getParsedMetricEntries(parsed) {
+  return Object.entries(parsed?.fields || {}).filter(([, value]) => value !== null && value !== undefined && value !== "");
+}
+
+function applyParsedBlockToLane({ byLane, fieldSources, fieldDebugs, cellMatches, lane, parsed, sourceLabel, parserName, rawText }) {
+  const parsedEntries = getParsedMetricEntries(parsed);
+  if (!parsedEntries.length) return false;
+
+  const current = byLane.get(lane) || {};
+  const laneFieldSources = fieldSources[lane] || {};
+  for (const [field, value] of parsedEntries) {
+    current[field] = value;
+    laneFieldSources[field] = sourceLabel;
+    cellMatches.push({
+      lane,
+      field,
+      parser: parserName,
+      raw_block_text: rawText,
+      normalized_value: value
+    });
+  }
+  byLane.set(lane, current);
+  fieldSources[lane] = laneFieldSources;
+
+  for (const [debugName, debugEntry] of Object.entries(parsed?.debugEntries || {})) {
+    setLaneFieldDebug(fieldDebugs, lane, debugName, {
+      ...debugEntry,
+      sourceLabel,
+      boatColumn: `${lane}号艇`
+    });
+  }
+  return true;
+}
+
+function splitTextIntoLaneSegments(text) {
+  const normalized = normalizeDigits(normalizeSpace(text));
+  if (!normalized) return [];
+  const markerPattern = /(?:艇番|枠番|コース|course|lane)\s*[:：]?\s*([1-6])(?:\s*(?:号艇|号|艇|コース|枠))?|([1-6])\s*(?:号艇|号|艇|コース|枠)/gi;
+  const markers = [];
+  let match = null;
+  while ((match = markerPattern.exec(normalized)) !== null) {
+    const lane = Number(match[1] || match[2]);
+    if (Number.isInteger(lane) && lane >= 1 && lane <= 6) {
+      markers.push({ lane, index: match.index });
+    }
+  }
+  if (markers.length < 2) return [];
+  return markers
+    .map((marker, index) => {
+      const next = markers[index + 1] || null;
+      const segment = normalizeSpace(normalized.slice(marker.index, next ? next.index : undefined));
+      return { lane: marker.lane, text: segment };
+    })
+    .filter((entry) => entry.text.length >= 12);
+}
+
+function extractMetricValueTokens(text) {
+  const tokens = String(text || "").match(/F\.?\d+(?:\.\d+)?|L\.?\d+(?:\.\d+)?|[+-]?(?:\d+\.\d+|\.\d+|\d+)%?/gi);
+  return Array.isArray(tokens) ? tokens : [];
+}
+
+function parseLabelRowsFromText(text, sourceLabel) {
+  const byLane = new Map();
+  const fieldSources = {};
+  const fieldDebugs = {};
+  const cellMatches = [];
+  const $ = cheerio.load(text || "");
+  $("table,script,style,noscript").remove();
+  const hasMarkup = /<[a-z][\s\S]*>/i.test(String(text || ""));
+  const bodyText = normalizeSpace($("body").text()) || (hasMarkup ? "" : normalizeSpace(text));
+  const normalized = normalizeSpace(bodyText);
+  if (!normalized) return { byLane, fieldSources, fieldDebugs, tableDiagnostics: [] };
+
+  const configs = getBlockMetricConfigs();
+  const matches = [];
+  for (const config of configs) {
+    const re = new RegExp(config.labelPattern, "gi");
+    let match = null;
+    while ((match = re.exec(normalized)) !== null) {
+      if (config.field === "exhibitionTime") {
+        const prefix = normalized.slice(Math.max(0, match.index - 2), match.index);
+        if (/周回$/.test(prefix)) continue;
+      }
+      matches.push({
+        config,
+        index: match.index,
+        end: match.index + match[0].length,
+        label: match[0]
+      });
+    }
+  }
+  matches.sort((a, b) => a.index - b.index || b.end - a.end);
+  if (!matches.length) return { byLane, fieldSources, fieldDebugs, tableDiagnostics: [] };
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const currentMatch = matches[index];
+    const nextMatch = matches.slice(index + 1).find((candidate) => candidate.index > currentMatch.end) || null;
+    const slice = normalized.slice(currentMatch.end, nextMatch ? nextMatch.index : undefined);
+    const tokens = extractMetricValueTokens(slice);
+    if (tokens.length < 6) continue;
+
+    for (let lane = 1; lane <= 6; lane += 1) {
+      const raw = tokens[lane - 1];
+      const parsed = currentMatch.config.parser(raw);
+      if (!parsed) continue;
+      const parsedWithDebug = {
+        fields: parsed.fields || {},
+        debugEntries: {
+          [currentMatch.config.debugName]: {
+            section: JAPANESE_LABELS.preRaceSection,
+            metric: currentMatch.config.rowLabel,
+            row: currentMatch.config.rowLabel,
+            sourceLabel,
+            column: currentMatch.config.rowLabel,
+            boatColumn: `${lane}号艇`,
+            raw,
+            value: parsed.value,
+            exact_match_verified: true
+          }
+        }
+      };
+      applyParsedBlockToLane({
+        byLane,
+        fieldSources,
+        fieldDebugs,
+        cellMatches,
+        lane,
+        parsed: parsedWithDebug,
+        sourceLabel,
+        parserName: "label_row_six_values",
+        rawText: `${currentMatch.label} ${slice}`.trim()
+      });
+    }
+  }
+
+  return {
+    byLane,
+    fieldSources,
+    fieldDebugs,
+    tableDiagnostics: cellMatches.length > 0
+      ? [{
+          parser: "label_row_six_values",
+          parsedCount: byLane.size,
+          cell_matches: cellMatches
+        }]
+      : []
+  };
+}
+
+function parseHtmlSupplementByBlocks(html, options = {}) {
+  const byLane = new Map();
+  const fieldSources = {};
+  const fieldDebugs = {};
+  const tableDiagnostics = [];
+  const $ = cheerio.load(html || "");
+  const sourceLabel = options?.sourceLabel || "race_shusso_html";
+  const cellMatches = [];
+
+  $("div,li,section,article,dl,dd,p").each((_, el) => {
+    const text = normalizeSpace($(el).text());
+    if (!text || text.length > 1200) return;
+    const lanes = detectLaneMarkersInBlock(text);
+    if (lanes.length !== 1) return;
+    const lane = lanes[0];
+    const parsed = parseBlockMetrics(text);
+    applyParsedBlockToLane({
+      byLane,
+      fieldSources,
+      fieldDebugs,
+      cellMatches,
+      lane,
+      parsed,
+      sourceLabel,
+      parserName: "label_near_number_block",
+      rawText: text
+    });
+  });
+
+  const segmentCandidateTexts = [];
+  $("body,main,section,article,div,ul,ol").each((_, el) => {
+    const text = normalizeSpace($(el).text());
+    if (!text || text.length < 80 || text.length > 8000) return;
+    if (!/(?:周回|一周|直線|まわり足|回り足|周足|展示|ST)/.test(text)) return;
+    if (detectLaneMarkersInBlock(text).length < 2) return;
+    segmentCandidateTexts.push(text);
+  });
+  for (const text of segmentCandidateTexts.slice(0, 40)) {
+    for (const segment of splitTextIntoLaneSegments(text)) {
+      const parsed = parseBlockMetrics(segment.text);
+      applyParsedBlockToLane({
+        byLane,
+        fieldSources,
+        fieldDebugs,
+        cellMatches,
+        lane: segment.lane,
+        parsed,
+        sourceLabel,
+        parserName: "lane_segment_block",
+        rawText: segment.text
+      });
+    }
+  }
+
+  if (cellMatches.length > 0) {
+    tableDiagnostics.push({
+      mode: options?.mode || "all",
+      parser: "label_near_number_blocks",
+      parsedCount: byLane.size,
+      cell_matches: cellMatches
+    });
+  }
+
+  return { byLane, fieldSources, fieldDebugs, tableDiagnostics };
+}
+
 function detectBoatHeaderLane(text) {
   const normalized = normalizeDigits(normalizeSpace(text)).replace(/\s+/g, "");
   const exact = normalized.match(/^([1-6])号艇$/);
@@ -1828,7 +2928,7 @@ function canonicalizeSupplementRowLabel(text) {
   if (/^周回(?:タイム)?$/.test(normalized)) return "周回";
   if (/^(?:展示)?ST$/.test(normalized)) return "ST";
   if (/^展示(?:タイム)?$/.test(normalized)) return "展示";
-  if (/^(?:周り足|回り足)$/.test(normalized)) return "周り足";
+  if (/^(?:周り足|回り足|回足|まわり足|周足)$/.test(normalized)) return "周り足";
   if (/^直線$/.test(normalized)) return "直線";
   if (/^モーター?2(?:連率|連対率|連)$/.test(normalized)) return "モーター2連率";
   if (/^モーター?3(?:連率|連対率|連)$/.test(normalized)) return "モーター3連率";
@@ -2446,6 +3546,35 @@ function mergeLaneMaps(target, source, fieldSources, sourceLabel) {
   }
 }
 
+function mergeOriginalExhibitionFields(target, source, fieldSources, sourceLabel) {
+  const fields = [
+    "lapTime",
+    "lapTimeRaw",
+    "straightTime",
+    "nobiashi",
+    "__nobiashi",
+    "turnTime",
+    "mawariashi",
+    "__mawariashi"
+  ];
+  let mergedFieldCount = 0;
+  for (const [lane, row] of source.entries()) {
+    const current = target.get(lane) || {};
+    const laneFieldSources = fieldSources[lane] || {};
+    for (const field of fields) {
+      const value = row?.[field];
+      if (value === null || value === undefined || value === "") continue;
+      if (current[field] !== null && current[field] !== undefined && current[field] !== "") continue;
+      current[field] = value;
+      laneFieldSources[field] = laneFieldSources[field] || sourceLabel;
+      mergedFieldCount += 1;
+    }
+    target.set(lane, current);
+    fieldSources[lane] = laneFieldSources;
+  }
+  return mergedFieldCount;
+}
+
 function mergeFieldDebugMaps(target, source) {
   for (const [lane, row] of Object.entries(source || {})) {
     target[lane] = {
@@ -2458,6 +3587,8 @@ function mergeFieldDebugMaps(target, source) {
 export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
   const baseSupplement = parseHtmlSupplement(html);
   const headerSupplement = parseHtmlSupplementByJapaneseHeaders(html, options);
+  const labelRowSupplement = parseLabelRowsFromText(html, options?.sourceLabel || "race_shusso_html");
+  const blockSupplement = parseHtmlSupplementByBlocks(html, options);
   const supplement = parseHtmlSupplementExplicit(html, options);
   const targetFields = new Set([
     "laneFirstRate",
@@ -2470,10 +3601,12 @@ export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
     "lapExhibitionScore",
     "stretchFootLabel",
     "straightTime",
+    "turnTime",
     "exhibitionSt",
     "motor2Rate",
     "motor3Rate",
     "__mawariashi",
+    "mawariashi",
     "__nobiashi",
     "nobiashi"
   ]);
@@ -2489,6 +3622,10 @@ export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
   }
   mergeLaneMaps(byLane, headerSupplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
   mergeFieldDebugMaps(fieldDebugs, headerSupplement.fieldDebugs);
+  mergeLaneMaps(byLane, labelRowSupplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
+  mergeFieldDebugMaps(fieldDebugs, labelRowSupplement.fieldDebugs);
+  mergeLaneMaps(byLane, blockSupplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
+  mergeFieldDebugMaps(fieldDebugs, blockSupplement.fieldDebugs);
   mergeLaneMaps(byLane, supplement.byLane, fieldSources, options?.sourceLabel || "race_shusso_html");
   mergeFieldDebugMaps(fieldDebugs, supplement.fieldDebugs);
 
@@ -2496,7 +3633,7 @@ export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
     byLane,
     fieldSources,
     fieldDebugs,
-    tableDiagnostics: [...(baseSupplement.tableDiagnostics || []), ...(headerSupplement.tableDiagnostics || []), ...(supplement.tableDiagnostics || [])],
+    tableDiagnostics: [...(baseSupplement.tableDiagnostics || []), ...(headerSupplement.tableDiagnostics || []), ...(labelRowSupplement.tableDiagnostics || []), ...(blockSupplement.tableDiagnostics || []), ...(supplement.tableDiagnostics || [])],
     fieldDiagnostics: buildFieldDiagnostics(byLane, fieldSources)
   };
 }
@@ -2516,6 +3653,7 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       lapExStretch: toFiniteNumberOrNull(row?.lapExStretch ?? row?.lapExhibitionScore),
       lapExhibitionScore: toFiniteNumberOrNull(row?.lapExhibitionScore),
       stretchFootLabel: row?.stretchFootLabel || null,
+      turnTime: toFiniteNumberOrNull(row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi),
       exhibitionSt: toFiniteNumberOrNull(row?.exhibitionSt),
       exhibitionTime: toFiniteNumberOrNull(row?.exhibitionTime),
       motor2ren: toFiniteNumberOrNull(row?.motor2ren ?? row?.motor2Rate),
@@ -2568,7 +3706,7 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       lane2renDebug: row?.lane2renDebug,
       lane3renDebug: row?.lane3renDebug
     });
-    const mawariashi = toFiniteNumberOrNull(row?.mawariashi ?? row?.__mawariashi);
+    const mawariashi = toFiniteNumberOrNull(row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi);
     const nobiashi = toFiniteNumberOrNull(row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi);
     normalizedRow.motor2Rate = normalizedRow.motor2ren;
     normalizedRow.motor3Rate = normalizedRow.motor3ren;
@@ -2582,6 +3720,7 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
     normalizedRow.lane2renScore = normalizedRow.lane2renScore ?? normalizedRow.lane2RenRate;
     normalizedRow.lane3renScore = normalizedRow.lane3renScore ?? normalizedRow.lane3RenRate;
     normalizedRow.mawariashi = mawariashi;
+    normalizedRow.turnTime = mawariashi;
     normalizedRow.nobiashi = nobiashi;
     normalizedRow.straightTime = nobiashi;
     normalizedRow.stretchFootLabel =
@@ -2611,8 +3750,8 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
       status: normalizedRow.exhibitionTime !== null ? "ok" : laneDebug?.exhibitionTime?.raw ? "broken_pipeline" : "not_published"
     });
     normalizedRow.turnFootDetail = buildFieldSourceDetail({
-      source: laneFieldSources?.__mawariashi || laneFieldSources?.mawariashi || null,
-      rowLabel: "周り足",
+      source: laneFieldSources?.turnTime || laneFieldSources?.__mawariashi || laneFieldSources?.mawariashi || laneDebug?.turnTime?.sourceLabel || null,
+      rowLabel: laneDebug?.turnTime?.metric || laneDebug?.turnTime?.row || "まわり足",
       raw: mawariashi,
       normalized: mawariashi,
       status: mawariashi !== null ? "ok" : "not_published"
@@ -2651,6 +3790,45 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
     tableDiagnostics: parsed?.tableDiagnostics || [],
     fieldDiagnostics: parsed?.fieldDiagnostics || buildFieldDiagnostics(normalizedByLane, fieldSources),
     diagnostics: parsed?.diagnostics || {}
+  };
+}
+
+export function parseKyoteiBiyoriPreRaceDataWithRenderedFallback({
+  staticHtml = "",
+  renderedHtml = "",
+  mode = "pre_race",
+  staticSourceLabel = "kyoteibiyori-static",
+  renderedSourceLabel = "kyoteibiyori-rendered"
+} = {}) {
+  const staticParsed = normalizeKyoteiBiyoriPreRaceFields(
+    parseKyoteiBiyoriPreRaceData(staticHtml, { mode, sourceLabel: staticSourceLabel })
+  );
+  const staticCounts = countOriginalExhibitionFields(staticParsed.byLane);
+  const renderedParsed = renderedHtml
+    ? normalizeKyoteiBiyoriPreRaceFields(
+        parseKyoteiBiyoriPreRaceData(renderedHtml, { mode, sourceLabel: renderedSourceLabel })
+      )
+    : null;
+  const renderedCounts = renderedParsed ? countOriginalExhibitionFields(renderedParsed.byLane) : null;
+  const useRendered =
+    renderedParsed &&
+    originalExhibitionCoverageScore(renderedCounts) > originalExhibitionCoverageScore(staticCounts);
+  return {
+    source: useRendered
+      ? renderedSourceLabel
+      : originalExhibitionCoverageScore(staticCounts) > 0
+        ? staticSourceLabel
+        : "none",
+    byLane: useRendered ? renderedParsed.byLane : staticParsed.byLane,
+    fieldSources: useRendered ? renderedParsed.fieldSources : staticParsed.fieldSources,
+    fieldDebugs: useRendered ? renderedParsed.fieldDebugs : staticParsed.fieldDebugs,
+    tableDiagnostics: useRendered ? renderedParsed.tableDiagnostics : staticParsed.tableDiagnostics,
+    fieldDiagnostics: useRendered ? renderedParsed.fieldDiagnostics : staticParsed.fieldDiagnostics,
+    diagnostics: {
+      static_counts: staticCounts,
+      rendered_counts: renderedCounts,
+      rendered_used: !!useRendered
+    }
   };
 }
 
@@ -2702,6 +3880,35 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         "lapTime",
         extra?.lapTime
       );
+      const displayLapTime = firstFiniteValue(
+        extra?.lapTime,
+        extra?.lapTimeRaw,
+        racer?.lapTime,
+        racer?.lapTimeRaw
+      );
+      const trustedTurnTime = getVerifiedValue(
+        "turnTime",
+        extra?.turnTime,
+        extra?.mawariashi,
+        extra?.__mawariashi,
+        racer?.turnTime,
+        racer?.mawariashi
+      );
+      const displayTurnTime = firstFiniteValue(
+        trustedTurnTime,
+        extra?.turnTime,
+        extra?.mawariashi,
+        extra?.__mawariashi,
+        racer?.turnTime,
+        racer?.mawariashi
+      );
+      const displayStraightTime = firstFiniteValue(
+        extra?.straightTime,
+        extra?.nobiashi,
+        extra?.__nobiashi,
+        racer?.straightTime,
+        racer?.nobiashi
+      );
       const resolvedName = pickPreferredIdentityName({
         playerName: extra?.playerName,
         name: extra?.name,
@@ -2750,16 +3957,17 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         playerClass: resolvedClass,
         fHoldCount: extra?.fCount ?? racer?.fHoldCount ?? null,
         kyoteiBiyoriFetched: byLane.has(lane) ? 1 : 0,
-        kyoteiBiyoriLapTime: trustedLapTime,
+        kyoteiBiyoriLapTime: displayLapTime,
         kyoteiBiyoriLapTimeRaw: extra?.lapTimeRaw ?? null,
         kyoteiBiyoriLapSource: extra?.lapSource ?? null,
         kyoteiBiyoriLapTimeDetail: extra?.lapTimeDetail ?? null,
         kyoteiBiyoriLapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriLapExStretch: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? null,
         kyoteiBiyoriStretchFootLabel: extra?.stretchFootLabel ?? null,
-        kyoteiBiyoriMawariashi: extra?.mawariashi ?? null,
-        kyoteiBiyoriNobiashi: extra?.nobiashi ?? null,
-        kyoteiBiyoriStraightTime: extra?.straightTime ?? extra?.nobiashi ?? null,
+        kyoteiBiyoriMawariashi: displayTurnTime,
+        kyoteiBiyoriTurnTime: displayTurnTime,
+        kyoteiBiyoriNobiashi: displayStraightTime,
+        kyoteiBiyoriStraightTime: displayStraightTime,
         kyoteiBiyoriExhibitionSt: extra?.exhibitionSt ?? null,
         kyoteiBiyoriExST: extra?.exhibitionSt ?? null,
         kyoteiBiyoriExhibitionStRaw: extra?.exhibitionStRaw ?? null,
@@ -2774,11 +3982,12 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         kyoteiBiyoriMotor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? null,
         kyoteiBiyoriMotor3Rate: extra?.motor3ren ?? extra?.motor3Rate ?? null,
         lapExStretch: extra?.lapExStretch ?? racer?.lapExStretch ?? null,
-        mawariashi: extra?.mawariashi ?? racer?.mawariashi ?? null,
-        nobiashi: extra?.nobiashi ?? racer?.nobiashi ?? null,
-        straightTime: extra?.straightTime ?? extra?.nobiashi ?? racer?.straightTime ?? null,
-        exST: racer?.exST ?? racer?.exhibitionSt ?? null,
-        exTime: racer?.exTime ?? racer?.exhibitionTime ?? null,
+        mawariashi: displayTurnTime,
+        turnTime: displayTurnTime,
+        nobiashi: displayStraightTime,
+        straightTime: displayStraightTime,
+        exST: racer?.exST ?? racer?.exhibitionSt ?? extra?.exhibitionSt ?? null,
+        exTime: racer?.exTime ?? racer?.exhibitionTime ?? extra?.exhibitionTime ?? null,
         motor2ren: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2ren ?? racer?.motor2Rate ?? null,
         motor3ren: extra?.motor3ren ?? extra?.motor3Rate ?? racer?.motor3ren ?? racer?.motor3Rate ?? null,
         lane1stScoreRawParsed: firstFiniteValue(extra?.lane1stScore, extra?.lane1stAvg, extra?.laneFirstRate),
@@ -2790,20 +3999,20 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         lane1stAvg: trustedLane1st,
         lane2renAvg: trustedLane2ren,
         lane3renAvg: trustedLane3ren,
-        lapTime: trustedLapTime,
+        lapTime: displayLapTime,
         lapTimeRaw: extra?.lapTimeRaw ?? null,
         lapRaw: extra?.lapRaw ?? extra?.lapTimeRaw ?? null,
         lapSource: extra?.lapSource ?? null,
         lapTimeDetail: extra?.lapTimeDetail ?? null,
         lapExhibitionScore: extra?.lapExStretch ?? extra?.lapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
         stretchFootLabel: extra?.stretchFootLabel ?? racer?.stretchFootLabel ?? null,
-        exhibitionSt: racer?.exhibitionSt ?? racer?.exST ?? null,
-        exhibitionStRaw: racer?.exhibitionStRaw ?? null,
-        exhibitionStFlag: racer?.exhibitionStFlag ?? null,
-        exhibitionStSignedValue: racer?.exhibitionStSignedValue ?? null,
-        exhibitionSTDetail: racer?.exhibitionSTDetail ?? null,
-        exhibitionTime: racer?.exhibitionTime ?? racer?.exTime ?? null,
-        exhibitionTimeDetail: racer?.exhibitionTimeDetail ?? null,
+        exhibitionSt: racer?.exhibitionSt ?? racer?.exST ?? extra?.exhibitionSt ?? null,
+        exhibitionStRaw: racer?.exhibitionStRaw ?? extra?.exhibitionStRaw ?? null,
+        exhibitionStFlag: racer?.exhibitionStFlag ?? extra?.exhibitionStFlag ?? null,
+        exhibitionStSignedValue: racer?.exhibitionStSignedValue ?? extra?.exhibitionStSignedValue ?? null,
+        exhibitionSTDetail: racer?.exhibitionSTDetail ?? extra?.exhibitionSTDetail ?? null,
+        exhibitionTime: racer?.exhibitionTime ?? racer?.exTime ?? extra?.exhibitionTime ?? null,
+        exhibitionTimeDetail: racer?.exhibitionTimeDetail ?? extra?.exhibitionTimeDetail ?? null,
         turnFootDetail: extra?.turnFootDetail ?? null,
         straightTimeDetail: extra?.straightTimeDetail ?? null,
         motor2Rate: extra?.motor2ren ?? extra?.motor2Rate ?? racer?.motor2Rate ?? null,
@@ -2860,9 +4069,11 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
         kyoteiBiyoriStretchFootLabel: null,
         kyoteiBiyoriExhibitionSt: null,
         kyoteiBiyoriExhibitionTime: null,
+        kyoteiBiyoriTurnTime: null,
         kyoteiBiyoriMotor2Rate: null,
         kyoteiBiyoriMotor3Rate: null,
         lapExStretch: null,
+        turnTime: null,
         motor2ren: null,
         motor3ren: null,
         lane1stScore: null,
@@ -2883,10 +4094,10 @@ export function mergeKyoteiBiyoriDataIntoRaceContext({ racers, kyoteiBiyori }) {
   });
 }
 
-export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeoutMs = 12000, artifactCollector = null }) {
+export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeoutMs = 45000, artifactCollector = null, forceExhibition = false } = {}) {
   try {
     const startedAt = nowMs();
-    const hardTimeoutMs = Math.max(250, Math.min(Number(timeoutMs) || 12000, 4000));
+    const hardTimeoutMs = Math.max(250, Math.min(Number(timeoutMs) || 45000, 45000));
     const deadlineAt = startedAt + hardTimeoutMs;
     const getRemainingTimeoutMs = (capMs = hardTimeoutMs) => {
       const remaining = deadlineAt - nowMs();
@@ -2905,6 +4116,8 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
         lane_stats_parse_ms: null,
         pre_race_fetch_ms: null,
         pre_race_parse_ms: null,
+        rendered_fetch_ms: null,
+        rendered_parse_ms: null,
         total_ms: null
       },
       race_list_url: indexUrl,
@@ -2932,18 +4145,27 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
           referer: null,
           ok: false,
           error: null
+        },
+        rendered_dom: {
+          url: null,
+          ok: false,
+          error: null
         }
       },
       parse_results: {
         request_oriten_kaiseki_custom: {
           ok: false,
           parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
           required_fields: buildRequiredFieldParseStatus(new Map()),
           diagnostics: {}
         },
         lane_stats_tab: {
           ok: false,
           parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
           populated_fields: [],
           failed_fields: EXPECTED_FIELDS,
           required_fields: buildRequiredFieldParseStatus(new Map()),
@@ -2952,17 +4174,56 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
         pre_race_tab: {
           ok: false,
           parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
           populated_fields: [],
           failed_fields: EXPECTED_FIELDS,
           required_fields: buildRequiredFieldParseStatus(new Map()),
           table_diagnostics: []
+        },
+        rendered_dom: {
+          ok: false,
+          parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
+          populated_fields: [],
+          failed_fields: EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          table_diagnostics: []
+        },
+        rendered_network: {
+          ok: false,
+          parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
+          populated_fields: [],
+          failed_fields: EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          table_diagnostics: [],
+          responses: []
         }
       },
       merge_results: {
-        merged_lanes: 0
+        merged_lanes: 0,
+        entries: []
       },
+      playwright_render_debug: null,
+      exhibitionFetchRoute: "none",
+      playwrightStarted: false,
+      playwrightFinished: false,
+      playwrightError: null,
       field_sources: {},
       field_diagnostics: buildFieldDiagnostics(new Map(), {}),
+      html_contains: {},
+      original_exhibition_source: "none",
+      original_exhibition_counts: {
+        exST: 0,
+        exTime: 0,
+        lapTime: 0,
+        straightTime: 0,
+        turnTime: 0,
+        motor2Rate: 0
+      },
       fallback_reason: null,
       kyoteibiyori_fetch_success: false
     };
@@ -2973,11 +4234,15 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
     const tableDiagnostics = [];
     let lastError = null;
     let indexHtml = "";
+    let staticPreRaceHtml = "";
+    let staticLaneStatsHtml = "";
+    const debugFileBase = buildKyoteiBiyoriDebugFileBase({ date, venueId, raceNo });
 
     try {
       const indexStartedAt = nowMs();
       indexHtml = await fetchText(indexUrl, getRemainingTimeoutMs(1800));
       diagnostics.timings.index_fetch_ms = elapsedMs(indexStartedAt);
+      diagnostics.html_contains.index_raw = logHtmlKeywordPresence("index raw", indexHtml);
       if (artifactCollector && typeof artifactCollector === "object") {
         artifactCollector.raw = {
           ...(artifactCollector.raw || {}),
@@ -3053,6 +4318,8 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
           diagnostics.parse_results.request_oriten_kaiseki_custom = {
             ok: parsedAjax.byLane.size > 0,
             parsed_lanes: parsedAjax.byLane.size,
+            original_exhibition_counts: countOriginalExhibitionFields(parsedAjax.byLane),
+            original_exhibition_rows: buildOriginalExhibitionLaneRows(parsedAjax.byLane),
             required_fields: buildRequiredFieldParseStatus(parsedAjax.byLane),
             diagnostics: parsedAjax.diagnostics
           };
@@ -3077,6 +4344,16 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
             const fetchStartedAt = nowMs();
             const html = await fetchText(url, tabTimeoutMs);
             const fetchDurationMs = elapsedMs(fetchStartedAt);
+            if (label === "pre_race_tab") {
+              staticPreRaceHtml = html;
+              diagnostics.html_contains.pre_race = logHtmlKeywordPresence("pre_race", html);
+              diagnostics.html_contains.raw = diagnostics.html_contains.pre_race;
+              addNamedHtmlArtifact(artifactCollector, `${debugFileBase}.raw.html`, html);
+            } else if (label === "lane_stats_tab") {
+              staticLaneStatsHtml = html;
+              diagnostics.html_contains.lane_stats = logHtmlKeywordPresence("lane_stats", html);
+              diagnostics.html_contains.lane_stats_raw = diagnostics.html_contains.lane_stats;
+            }
             if (artifactCollector && typeof artifactCollector === "object") {
               artifactCollector.raw = {
                 ...(artifactCollector.raw || {}),
@@ -3086,11 +4363,24 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
             if (label === "lane_stats_tab") diagnostics.timings.lane_stats_fetch_ms = fetchDurationMs;
             else diagnostics.timings.pre_race_fetch_ms = fetchDurationMs;
             const parseStartedAt = nowMs();
+            const parsedRaw = parseKyoteiBiyoriPreRaceData(html, {
+              mode: label === "lane_stats_tab" ? "lane_stats" : "pre_race",
+              sourceLabel: label
+            });
+            if (label === "lane_stats_tab") {
+              const preRaceSupplement = parseKyoteiBiyoriPreRaceData(html, {
+                mode: "pre_race",
+                sourceLabel: "lane_stats_tab"
+              });
+              mergeLaneMaps(parsedRaw.byLane, preRaceSupplement.byLane, parsedRaw.fieldSources, "lane_stats_tab");
+              mergeFieldDebugMaps(parsedRaw.fieldDebugs, preRaceSupplement.fieldDebugs);
+              parsedRaw.tableDiagnostics = [
+                ...(parsedRaw.tableDiagnostics || []),
+                ...(preRaceSupplement.tableDiagnostics || [])
+              ];
+            }
             const parsed = normalizeKyoteiBiyoriPreRaceFields(
-              parseKyoteiBiyoriPreRaceData(html, {
-                mode: label === "lane_stats_tab" ? "lane_stats" : "pre_race",
-                sourceLabel: label
-              })
+              parsedRaw
             );
             const parseDurationMs = elapsedMs(parseStartedAt);
             if (label === "lane_stats_tab") diagnostics.timings.lane_stats_parse_ms = parseDurationMs;
@@ -3108,12 +4398,17 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
             diagnostics.parse_results[label] = {
               ok: parsed.byLane.size > 0,
               parsed_lanes: parsed.byLane.size,
+              original_exhibition_counts: countOriginalExhibitionFields(parsed.byLane),
+              original_exhibition_rows: buildOriginalExhibitionLaneRows(parsed.byLane),
               populated_fields: parsed.fieldDiagnostics?.populated_fields || [],
               failed_fields: parsed.fieldDiagnostics?.failed_fields || EXPECTED_FIELDS,
               required_fields: buildRequiredFieldParseStatus(parsed.byLane),
               table_diagnostics: parsed.tableDiagnostics || [],
               field_debugs: parsed.fieldDebugs || {}
             };
+            if (label === "lane_stats_tab") {
+              console.log("[kyoteibiyori] parsed laneStats:", diagnostics.parse_results[label].original_exhibition_rows);
+            }
           })().catch((error) => {
             lastError = error;
             diagnostics.fetch_results[label] = {
@@ -3137,9 +4432,167 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
 
     await Promise.all(supplementalTasks);
 
+    const staticDebugHtml = staticPreRaceHtml || staticLaneStatsHtml || indexHtml;
+    if (staticDebugHtml) {
+      diagnostics.html_contains.static = logHtmlKeywordPresence("static", staticDebugHtml);
+      addNamedHtmlArtifact(artifactCollector, `${debugFileBase}.raw.html`, staticDebugHtml);
+    }
+
+    let renderedDomUsed = false;
+    const staticOriginalCounts = countOriginalExhibitionFields(mergedByLane);
+    const shouldRender = shouldAttemptRenderedFallback({
+      html: staticPreRaceHtml || staticLaneStatsHtml || indexHtml,
+      byLane: mergedByLane
+    }) || forceExhibition === true;
+    diagnostics.original_exhibition_static_counts = staticOriginalCounts;
+    diagnostics.rendered_fallback_attempted = false;
+    diagnostics.rendered_fallback_reason = shouldRender
+      ? "static_missing_lap_straight_or_turn_coverage"
+      : null;
+    if (shouldRender) {
+      diagnostics.rendered_fallback_attempted = true;
+      diagnostics.exhibitionFetchRoute = "kyoteibiyori-playwright";
+      diagnostics.playwrightStarted = true;
+      diagnostics.fetch_results.rendered_dom.url = preRaceUrl;
+      console.log(`[kyoteibiyori] playwright start venue=${String(venueId).padStart(2, "0")} race=${Number(raceNo)}`);
+      try {
+        const renderedFetchStartedAt = nowMs();
+        const renderedAttemptErrors = [];
+        let renderedPage = null;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          const renderedTimeoutMs = getRemainingTimeoutMs(45000);
+          diagnostics.playwrightAttempts = attempt;
+          try {
+            renderedPage = await fetchRenderedPageWithPlaywright(preRaceUrl, renderedTimeoutMs, { debugFileBase });
+            break;
+          } catch (attemptError) {
+            const message = String(attemptError?.message || attemptError);
+            renderedAttemptErrors.push({ attempt, error: message });
+            diagnostics.playwrightAttemptErrors = renderedAttemptErrors;
+            diagnostics.fetch_results.rendered_dom.error = message;
+            if (attempt >= 2 || deadlineAt - nowMs() <= 1000) {
+              throw attemptError;
+            }
+          }
+        }
+        const renderedHtml = renderedPage?.html || "";
+        diagnostics.timings.rendered_fetch_ms = elapsedMs(renderedFetchStartedAt);
+        diagnostics.playwright_render_debug = renderedPage?.debug || null;
+        diagnostics.playwrightFinished = true;
+        diagnostics.playwrightError = null;
+        console.log(`[kyoteibiyori] playwright url=${renderedPage?.debug?.page_url_after_click || renderedPage?.debug?.page_url_before_click || ""}`);
+        console.log(`[kyoteibiyori] playwright title=${renderedPage?.debug?.page_title_after_click || renderedPage?.debug?.page_title_before_click || ""}`);
+        console.log(`[kyoteibiyori] playwright html length=${renderedHtml.length}`);
+        diagnostics.html_contains.rendered = logHtmlKeywordPresence("rendered", renderedHtml);
+        logRenderedContainsForDebug(diagnostics.html_contains.rendered);
+        addNamedHtmlArtifact(artifactCollector, `${debugFileBase}.rendered.html`, renderedHtml);
+        addNamedBinaryArtifact(artifactCollector, `${debugFileBase}.rendered.png`, renderedPage?.screenshot || null);
+        if (artifactCollector && typeof artifactCollector === "object") {
+          artifactCollector.raw = {
+            ...(artifactCollector.raw || {}),
+            kyoteibiyori_rendered: renderedHtml
+          };
+        }
+        const renderedParseStartedAt = nowMs();
+        const renderedParsed = normalizeKyoteiBiyoriPreRaceFields(
+          parseKyoteiBiyoriPreRaceData(renderedHtml, {
+            mode: "pre_race",
+            sourceLabel: "kyoteibiyori-rendered"
+          })
+        );
+        diagnostics.timings.rendered_parse_ms = elapsedMs(renderedParseStartedAt);
+        const renderedCounts = countOriginalExhibitionFields(renderedParsed.byLane);
+        diagnostics.original_exhibition_rendered_counts = renderedCounts;
+        diagnostics.fetch_results.rendered_dom.ok = true;
+        diagnostics.fetch_results.rendered_dom.screenshot_captured = !!renderedPage?.screenshot;
+        diagnostics.parse_results.rendered_dom = {
+          ok: renderedParsed.byLane.size > 0,
+          parsed_lanes: renderedParsed.byLane.size,
+          original_exhibition_counts: renderedCounts,
+          original_exhibition_rows: buildOriginalExhibitionLaneRows(renderedParsed.byLane),
+          populated_fields: renderedParsed.fieldDiagnostics?.populated_fields || [],
+          failed_fields: renderedParsed.fieldDiagnostics?.failed_fields || EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(renderedParsed.byLane),
+          table_diagnostics: renderedParsed.tableDiagnostics || [],
+          field_debugs: renderedParsed.fieldDebugs || {}
+        };
+        console.log("[kyoteibiyori] parsed laneStats:", diagnostics.parse_results.rendered_dom.original_exhibition_rows);
+        const networkParsed = parseNetworkOriginalExhibitionResponses(renderedPage?.networkBodies || []);
+        const networkCounts = countOriginalExhibitionFields(networkParsed.byLane);
+        diagnostics.parse_results.rendered_network = {
+          ok: networkParsed.byLane.size > 0,
+          parsed_lanes: networkParsed.byLane.size,
+          original_exhibition_counts: networkCounts,
+          original_exhibition_rows: buildOriginalExhibitionLaneRows(networkParsed.byLane),
+          populated_fields: networkParsed.fieldDiagnostics?.populated_fields || [],
+          failed_fields: networkParsed.fieldDiagnostics?.failed_fields || EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(networkParsed.byLane),
+          table_diagnostics: networkParsed.tableDiagnostics || [],
+          field_debugs: networkParsed.fieldDebugs || {},
+          responses: networkParsed.responseDiagnostics || []
+        };
+        if (originalExhibitionCoverageScore(networkCounts) > 0) {
+          const mergedNetworkFieldCount = mergeOriginalExhibitionFields(
+            mergedByLane,
+            networkParsed.byLane,
+            fieldSources,
+            "kyoteibiyori-network"
+          );
+          if (mergedNetworkFieldCount > 0) {
+            tableDiagnostics.push(...(networkParsed.tableDiagnostics || []));
+            diagnostics.actual_fetch_paths.push("kyoteibiyori_network_response_original_exhibition");
+            diagnostics.merge_results.network_original_exhibition_fields_merged = mergedNetworkFieldCount;
+            renderedDomUsed = true;
+          }
+        }
+        if (originalExhibitionCoverageScore(renderedCounts) > originalExhibitionCoverageScore(staticOriginalCounts)) {
+          mergeLaneMaps(mergedByLane, renderedParsed.byLane, fieldSources, "kyoteibiyori-rendered");
+          mergeIdentityLaneMaps(identityByLane, renderedParsed.byLane);
+          tableDiagnostics.push(...(renderedParsed.tableDiagnostics || []));
+          diagnostics.actual_fetch_paths.push("kyoteibiyori_rendered_dom");
+          renderedDomUsed = true;
+        } else {
+          const mergedOriginalFieldCount = mergeOriginalExhibitionFields(
+            mergedByLane,
+            renderedParsed.byLane,
+            fieldSources,
+            "kyoteibiyori-rendered"
+          );
+          if (mergedOriginalFieldCount > 0) {
+            mergeIdentityLaneMaps(identityByLane, renderedParsed.byLane);
+            tableDiagnostics.push(...(renderedParsed.tableDiagnostics || []));
+            diagnostics.actual_fetch_paths.push("kyoteibiyori_rendered_dom_partial_original_exhibition");
+            diagnostics.merge_results.rendered_original_exhibition_fields_merged = mergedOriginalFieldCount;
+            renderedDomUsed = true;
+          }
+        }
+      } catch (error) {
+        lastError = error;
+        diagnostics.playwrightFinished = false;
+        diagnostics.playwrightError = String(error?.message || error);
+        console.log(`[kyoteibiyori] playwright error=${diagnostics.playwrightError}`);
+        diagnostics.fetch_results.rendered_dom.error = String(error?.message || error);
+      }
+    }
+
     const fieldDiagnostics = buildFieldDiagnostics(mergedByLane, fieldSources);
     const laneStatsReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("laneFirstRate"));
     const lapTimeReady = fieldDiagnostics.per_lane.some((row) => row.populated_fields.includes("lapTimeRaw"));
+    const originalExhibitionCounts = countOriginalExhibitionFields(mergedByLane);
+    const originalExhibitionSource =
+      renderedDomUsed
+        ? "kyoteibiyori-rendered"
+        : originalExhibitionCoverageScore(originalExhibitionCounts) > 0
+          ? "kyoteibiyori-static"
+          : "none";
+    if (diagnostics.exhibitionFetchRoute !== "kyoteibiyori-playwright") {
+      diagnostics.exhibitionFetchRoute =
+        originalExhibitionCoverageScore(originalExhibitionCounts) > 0
+          ? "kyoteibiyori-static"
+          : ok
+            ? "fallback"
+            : "none";
+    }
     const requiredFieldStatus = buildRequiredFieldParseStatus(mergedByLane);
     const criticalFieldsReady = Object.entries(requiredFieldStatus)
       .filter(([field]) => field !== "motor3ren")
@@ -3152,10 +4605,21 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
           ? String(lastError.message || lastError)
           : "kyoteibiyori returned no usable prediction-critical lane-stat or pre-race fields";
     diagnostics.merge_results.merged_lanes = mergedByLane.size;
+    diagnostics.merge_results.original_exhibition_counts = originalExhibitionCounts;
+    diagnostics.merge_results.parsed_counts = {
+      lapTime: originalExhibitionCounts.lapTime,
+      straightTime: originalExhibitionCounts.straightTime,
+      turnTime: originalExhibitionCounts.turnTime
+    };
+    diagnostics.merge_results.entries = buildMergedEntryDebugRows(mergedByLane);
+    console.log("[kyoteibiyori] merged entries:", diagnostics.merge_results.entries);
+    logOriginalExhibitionPipelineDebug(diagnostics);
     diagnostics.field_sources = fieldSources;
     diagnostics.field_diagnostics = fieldDiagnostics;
     diagnostics.required_field_status = requiredFieldStatus;
     diagnostics.critical_fields_ready = criticalFieldsReady.map(([field]) => field);
+    diagnostics.original_exhibition_source = originalExhibitionSource;
+    diagnostics.original_exhibition_counts = originalExhibitionCounts;
     diagnostics.partial_prediction_data_available = mergedByLane.size > 0 && criticalFieldsReady.length > 0;
     diagnostics.lane_stats_ready = laneStatsReady;
     diagnostics.lap_time_ready = lapTimeReady;
@@ -3179,7 +4643,8 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       byLane: mergedByLane,
       fieldDebugs: {
         lane_stats_tab: diagnostics.parse_results?.lane_stats_tab?.field_debugs || {},
-        pre_race_tab: diagnostics.parse_results?.pre_race_tab?.field_debugs || {}
+        pre_race_tab: diagnostics.parse_results?.pre_race_tab?.field_debugs || {},
+        rendered_dom: diagnostics.parse_results?.rendered_dom?.field_debugs || {}
       },
       tableDiagnostics,
       fieldDiagnostics,
@@ -3193,7 +4658,7 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
       error: ok ? null : fallbackReason
     };
   } catch (error) {
-    const hardTimeoutMs = Math.max(250, Math.min(Number(timeoutMs) || 12000, 4000));
+    const hardTimeoutMs = Math.max(250, Math.min(Number(timeoutMs) || 45000, 45000));
     const emptyDiagnostics = {
       timings: {
         total_budget_ms: hardTimeoutMs,
@@ -3204,6 +4669,8 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
         lane_stats_parse_ms: null,
         pre_race_fetch_ms: null,
         pre_race_parse_ms: null,
+        rendered_fetch_ms: null,
+        rendered_parse_ms: null,
         total_ms: null
       },
       race_list_url: null,
@@ -3231,18 +4698,27 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
           referer: null,
           ok: false,
           error: null
+        },
+        rendered_dom: {
+          url: null,
+          ok: false,
+          error: null
         }
       },
       parse_results: {
         request_oriten_kaiseki_custom: {
           ok: false,
           parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
           required_fields: buildRequiredFieldParseStatus(new Map()),
           diagnostics: {}
         },
         lane_stats_tab: {
           ok: false,
           parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
           populated_fields: [],
           failed_fields: EXPECTED_FIELDS,
           required_fields: buildRequiredFieldParseStatus(new Map()),
@@ -3251,17 +4727,56 @@ export async function fetchKyoteiBiyoriRaceData({ date, venueId, raceNo, timeout
         pre_race_tab: {
           ok: false,
           parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
           populated_fields: [],
           failed_fields: EXPECTED_FIELDS,
           required_fields: buildRequiredFieldParseStatus(new Map()),
           table_diagnostics: []
+        },
+        rendered_dom: {
+          ok: false,
+          parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
+          populated_fields: [],
+          failed_fields: EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          table_diagnostics: []
+        },
+        rendered_network: {
+          ok: false,
+          parsed_lanes: 0,
+          original_exhibition_counts: countOriginalExhibitionFields(new Map()),
+          original_exhibition_rows: [],
+          populated_fields: [],
+          failed_fields: EXPECTED_FIELDS,
+          required_fields: buildRequiredFieldParseStatus(new Map()),
+          table_diagnostics: [],
+          responses: []
         }
       },
       merge_results: {
-        merged_lanes: 0
+        merged_lanes: 0,
+        entries: []
       },
+      playwright_render_debug: null,
+      exhibitionFetchRoute: "none",
+      playwrightStarted: false,
+      playwrightFinished: false,
+      playwrightError: null,
       field_sources: {},
       field_diagnostics: buildFieldDiagnostics(new Map(), {}),
+      html_contains: {},
+      original_exhibition_source: "none",
+      original_exhibition_counts: {
+        exST: 0,
+        exTime: 0,
+        lapTime: 0,
+        straightTime: 0,
+        turnTime: 0,
+        motor2Rate: 0
+      },
       fallback_reason: String(error?.message || error),
       kyoteibiyori_fetch_success: false
     };

@@ -12,6 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const BOATRACE_BASE = "https://www.boatrace.jp";
 const BOATRACE_CACHE_TTL_MS = Number(process.env.BOATRACE_CACHE_TTL_MS || 45000);
+const DEBUG_PUBLIC_ROOT = path.resolve(__dirname, "../../debug");
 const DEBUG_ROOT = path.resolve(__dirname, "../../debug/race-parser");
 const raceDataCache = new Map();
 const VENUE_NAME_MAP = {
@@ -377,6 +378,8 @@ function buildKyoteiBiyoriFieldDebugMaps(fieldDebugSources = {}) {
     lane3renRate: {},
     lapExStretch: {},
     lapTime: {},
+    straightTime: {},
+    turnTime: {},
     exhibitionST: {},
     exhibitionTime: {},
     motor2ren: {},
@@ -407,6 +410,8 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
           lane2renRate_raw: racer?.lane2renRate_raw ?? toKyoteiDebugValue(racer?.lane2RenRate),
           lane3renRate_raw: racer?.lane3renRate_raw ?? toKyoteiDebugValue(racer?.lane3RenRate),
           lapTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriLapTimeRaw ?? racer?.kyoteiBiyoriLapTime ?? racer?.lapTime),
+          straightTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriStraightTime ?? racer?.straightTime ?? racer?.nobiashi),
+          turnTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriTurnTime ?? racer?.turnTime ?? racer?.mawariashi),
           exhibitionST_raw: toNullableDebugNumber(racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt),
           exhibitionTime_raw: toNullableDebugNumber(racer?.kyoteiBiyoriExhibitionTime ?? racer?.exhibitionTime),
           motor2ren_raw: toNullableDebugNumber(racer?.motor2ren ?? racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate),
@@ -421,6 +426,8 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
           lane2renRate_debug: fieldDebugMaps.lane2renRate[String(racer?.lane)] || null,
           lane3renRate_debug: fieldDebugMaps.lane3renRate[String(racer?.lane)] || null,
           lapTime_debug: fieldDebugMaps.lapTime[String(racer?.lane)] || null,
+          straightTime_debug: fieldDebugMaps.straightTime[String(racer?.lane)] || null,
+          turnTime_debug: fieldDebugMaps.turnTime[String(racer?.lane)] || null,
           exhibitionST_debug: fieldDebugMaps.exhibitionST[String(racer?.lane)] || null,
           exhibitionTime_debug: fieldDebugMaps.exhibitionTime[String(racer?.lane)] || null,
           motor2ren_debug: fieldDebugMaps.motor2ren[String(racer?.lane)] || null,
@@ -446,6 +453,8 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     lane3renRate_raw: byField("lane3renRate_raw"),
     lapExStretch_raw: byField("lapExStretch"),
     lapTime_raw: byField("lapTime_raw"),
+    straightTime_raw: byField("straightTime_raw"),
+    turnTime_raw: byField("turnTime_raw"),
     exhibitionST_raw: byField("exhibitionST_raw"),
     exhibitionTime_raw: byField("exhibitionTime_raw"),
     motor2ren_raw: byField("motor2ren_raw"),
@@ -473,6 +482,8 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
         .map((row) => [String(row.lane), { ...(row?.lane3renRate_debug || {}), score: row?.lane3renScore ?? null }])
     ),
     lapTime: fieldDebugMaps.lapTime,
+    straightTime: fieldDebugMaps.straightTime,
+    turnTime: fieldDebugMaps.turnTime,
     exhibitionST: fieldDebugMaps.exhibitionST,
     exhibitionTime: fieldDebugMaps.exhibitionTime,
     motor2ren: fieldDebugMaps.motor2ren,
@@ -486,6 +497,9 @@ function buildKyoteiBiyoriDebugPayload({ racers, kyoteiBiyori }) {
     fallback_reason: kyoteiBiyori?.fallbackReason || kyoteiBiyori?.error || null,
     extracted_hrefs: kyoteiBiyori?.diagnostics?.extracted_hrefs || {},
     actual_fetch_paths: Array.isArray(kyoteiBiyori?.diagnostics?.actual_fetch_paths) ? kyoteiBiyori.diagnostics.actual_fetch_paths : [],
+    html_contains: kyoteiBiyori?.diagnostics?.html_contains || {},
+    original_exhibition_static_counts: kyoteiBiyori?.diagnostics?.original_exhibition_static_counts || null,
+    original_exhibition_rendered_counts: kyoteiBiyori?.diagnostics?.original_exhibition_rendered_counts || null,
     populated_fields: Array.isArray(kyoteiBiyori?.fieldDiagnostics?.populated_fields) ? kyoteiBiyori.fieldDiagnostics.populated_fields : [],
     failed_fields: Array.isArray(kyoteiBiyori?.fieldDiagnostics?.failed_fields) ? kyoteiBiyori.fieldDiagnostics.failed_fields : [],
     kyoteibiyori_fetch_success: !!kyoteiBiyori?.ok,
@@ -716,16 +730,41 @@ function writeArtifact(filePath, body) {
   return filePath;
 }
 
+function writeBinaryArtifact(filePath, body) {
+  ensureDir(path.dirname(filePath));
+  fs.writeFileSync(filePath, body);
+  return filePath;
+}
+
 function persistRawArtifacts({ artifactCollector, date, venueId, raceNo }) {
   if (!artifactCollector || typeof artifactCollector !== "object") return null;
   const raw = artifactCollector.raw && typeof artifactCollector.raw === "object" ? artifactCollector.raw : {};
+  const namedRawFiles = artifactCollector.named_raw_files && typeof artifactCollector.named_raw_files === "object"
+    ? artifactCollector.named_raw_files
+    : {};
+  const namedBinaryFiles = artifactCollector.named_binary_files && typeof artifactCollector.named_binary_files === "object"
+    ? artifactCollector.named_binary_files
+    : {};
   const fetchedUrls = artifactCollector.fetched_urls && typeof artifactCollector.fetched_urls === "object"
     ? artifactCollector.fetched_urls
     : {};
-  if (!Object.keys(raw).length && !Object.keys(fetchedUrls).length) return artifactCollector.raw_html_saved_path || null;
+  if (!Object.keys(raw).length && !Object.keys(namedRawFiles).length && !Object.keys(namedBinaryFiles).length && !Object.keys(fetchedUrls).length) return artifactCollector.raw_html_saved_path || null;
 
   const dir = buildDebugArtifactDir({ date, venueId, raceNo });
   const savedPaths = {};
+  for (const [fileName, value] of Object.entries(namedRawFiles)) {
+    if (value === null || value === undefined || value === "") continue;
+    const safeName = path.basename(String(fileName));
+    savedPaths[safeName] = writeArtifact(path.resolve(dir, safeName), String(value));
+    savedPaths[`debug_root:${safeName}`] = writeArtifact(path.resolve(DEBUG_PUBLIC_ROOT, safeName), String(value));
+  }
+  for (const [fileName, value] of Object.entries(namedBinaryFiles)) {
+    if (!value) continue;
+    const safeName = path.basename(String(fileName));
+    const body = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    savedPaths[safeName] = writeBinaryArtifact(path.resolve(dir, safeName), body);
+    savedPaths[`debug_root:${safeName}`] = writeBinaryArtifact(path.resolve(DEBUG_PUBLIC_ROOT, safeName), body);
+  }
   for (const [key, value] of Object.entries(raw)) {
     if (value === null || value === undefined || value === "") continue;
     const ext = typeof value === "string" && /^\s*</.test(String(value)) ? "html" : "json";
@@ -1139,8 +1178,28 @@ export async function getRaceData({
     });
     return {
       ...cached,
+      kyoteibiyori_debug: {
+        ...(cached.kyoteibiyori_debug || {}),
+        exhibitionFetchRoute: "cache",
+        cache_hit: true
+      },
       source: {
         ...(cached.source || {}),
+        kyotei_biyori: cached.source?.kyotei_biyori
+          ? {
+              ...(cached.source.kyotei_biyori || {}),
+              request_diagnostics: {
+                ...(cached.source.kyotei_biyori.request_diagnostics || {}),
+                exhibitionFetchRoute: "cache",
+                cache_hit: true
+              },
+              kyoteibiyori_debug: {
+                ...(cached.source.kyotei_biyori.kyoteibiyori_debug || {}),
+                exhibitionFetchRoute: "cache",
+                cache_hit: true
+              }
+            }
+          : cached.source?.kyotei_biyori,
         timings: {
           ...(cached.source?.timings || {}),
           total_response_ms: Date.now() - totalStartedAt
@@ -1292,8 +1351,8 @@ export async function getRaceData({
   const parseMs = Date.now() - parseStartedAt;
 
   const kyoteiTimeoutMs = screeningProfile
-    ? Math.min(Number(timeoutMs) || 15000, 4000)
-    : Math.min(Number(timeoutMs) || 15000, 2200);
+    ? Math.min(Number(timeoutMs) || 15000, 8000)
+    : Math.min(Number(timeoutMs) || 15000, 12000);
   const kyoteiFetchStartedAt = Date.now();
   let kyoteiBiyori = {
     ok: false,
@@ -1465,6 +1524,11 @@ export async function getRaceData({
         tried_urls: Array.isArray(kyoteiBiyori?.triedUrls) ? kyoteiBiyori.triedUrls : [],
         fallback_used: !!kyoteiBiyori?.fallbackUsed,
         fallback_reason: kyoteiBiyori?.fallbackReason || null,
+        original_exhibition_source: kyoteiBiyori?.diagnostics?.original_exhibition_source || "none",
+        original_exhibition_counts: kyoteiBiyori?.diagnostics?.original_exhibition_counts || null,
+        original_exhibition_static_counts: kyoteiBiyori?.diagnostics?.original_exhibition_static_counts || null,
+        original_exhibition_rendered_counts: kyoteiBiyori?.diagnostics?.original_exhibition_rendered_counts || null,
+        html_contains: kyoteiBiyori?.diagnostics?.html_contains || {},
         table_diagnostics: kyoteiBiyori?.tableDiagnostics || [],
         request_diagnostics: kyoteiBiyori?.diagnostics || {},
         kyoteibiyori_debug: kyoteiBiyoriDebug,

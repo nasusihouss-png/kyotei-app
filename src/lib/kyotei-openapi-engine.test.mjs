@@ -179,18 +179,34 @@ const upsetProgram = program({
     1: {
       racer_national_top_1_percent: 4.2,
       racer_average_start_timing: 0.24,
-      racer_assigned_motor_top_2_percent: 20
+      racer_assigned_motor_top_2_percent: 20,
+      playerTendency: {
+        escapeRate: 31,
+        avgStartTiming: 0.24,
+        lateStartRate: 24
+      }
+    },
+    2: {
+      playerTendency: {
+        nigashiRate: 32,
+        sashiRate: 67
+      }
     },
     3: {
       racer_national_top_1_percent: 6.8,
       racer_average_start_timing: 0.12,
-      makuriRate: 68,
-      makuriSashiRate: 62
+      straightTime: 6.72,
+      playerTendency: {
+        makuriRate: 68,
+        makuriSashiRate: 62
+      }
     },
     4: {
       racer_national_top_1_percent: 6.4,
       racer_average_start_timing: 0.12,
-      makuriSashiRate: 70
+      playerTendency: {
+        makuriSashiRate: 70
+      }
     }
   }
 });
@@ -200,5 +216,12 @@ assert.ok(Array.isArray(upsetPrediction.developmentScenarios));
 assert.equal(upsetPrediction.developmentScenarios.length, 8);
 assert.ok(upsetPrediction.extraTickets.length <= 6);
 assert.ok(upsetPrediction.upsetScenarios.every((row) => Array.isArray(row.recommendedExtraTickets)));
+assert.equal(upsetPrediction.scoredBoats.find((row) => row.boat === 1)?.playerTendency?.escapeRate, 31);
+assert.equal(upsetPrediction.scoredBoats.find((row) => row.boat === 2)?.racerCourseStats?.sashiRate, 67);
+assert.ok(upsetPrediction.upsetReasons.some((reason) => String(reason).includes("2号艇の逃がし率")));
+assert.ok(upsetPrediction.upsetReasons.some((reason) => String(reason).includes("3号艇")));
+
+const tendencyRanking = buildTodayRanking([upsetProgram], { "24-1": preview({ complete: true, fastBoat: 4 }) }, { limit: 1 });
+assert.ok(tendencyRanking[0].attention.some((row) => String(row).includes("出遅れ率") || String(row).includes("穴候補")));
 
 console.log("kyotei-openapi-engine ok");

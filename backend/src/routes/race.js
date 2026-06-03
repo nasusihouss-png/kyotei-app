@@ -12021,7 +12021,8 @@ raceRouter.get("/race", async (req, res, next) => {
       venueId_raw: req.query?.venueId ?? null,
       raceNo_raw: req.query?.raceNo ?? null
     }));
-    const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, true);
+    const forceExhibition = parseBooleanFlag(req.query?.forceExhibition, false);
+    const forceRefresh = parseBooleanFlag(req.query?.forceRefresh, true) || forceExhibition;
     const screeningMode = String(req.query?.screening || "").toLowerCase();
     const isHardRaceScreening = screeningMode === "hard_race";
     const latestRefreshTimeoutMs = Math.max(
@@ -12040,6 +12041,8 @@ raceRouter.get("/race", async (req, res, next) => {
       venueId: toInt(venueId, null),
       raceNo: toInt(raceNo, null),
       screening: screeningMode || null,
+      force_exhibition: forceExhibition,
+      force_refresh: forceRefresh,
       pure_inference: true
     };
 
@@ -12205,6 +12208,7 @@ raceRouter.get("/race", async (req, res, next) => {
         const strictLap = getStrictLapPayload(racer);
         const exST = toNullableNum(racer?.exST ?? racer?.exhibitionSt ?? racer?.exhibitionST);
         const exTime = toNullableNum(racer?.exTime ?? racer?.exhibitionTime);
+        const turnTime = toNullableNum(racer?.turnTime ?? racer?.kyoteiBiyoriTurnTime ?? racer?.mawariashi);
         const motor2Rate = toNullableNum(racer?.motor2ren ?? racer?.motor2Rate);
         return {
           ...racer,
@@ -12212,6 +12216,7 @@ raceRouter.get("/race", async (req, res, next) => {
           lapTime: strictLap.lapTime,
           exST,
           exTime,
+          turnTime,
           exhibitionSt: exST,
           exhibitionTime: exTime,
           motor2Rate,
@@ -14118,6 +14123,7 @@ raceRouter.get("/race", async (req, res, next) => {
         kyoteibiyori_stretch_foot_label: racer?.kyoteiBiyoriStretchFootLabel || null,
         kyoteibiyori_straight_time: toNullableNum(racer?.kyoteiBiyoriStraightTime ?? racer?.straightTime),
         kyoteibiyori_straight_time_detail: racer?.kyoteiBiyoriStraightTimeDetail ?? racer?.straightTimeDetail ?? null,
+        kyoteibiyori_turn_time: toNullableNum(racer?.kyoteiBiyoriTurnTime ?? racer?.turnTime ?? racer?.mawariashi),
         kyoteibiyori_exhibition_st: toNullableNum(racer?.kyoteiBiyoriExhibitionSt),
         kyoteibiyori_ex_st: toNullableNum(racer?.kyoteiBiyoriExST ?? racer?.kyoteiBiyoriExhibitionSt),
         kyoteibiyori_exhibition_st_raw: racer?.kyoteiBiyoriExhibitionStRaw ?? racer?.exhibitionStRaw ?? null,
@@ -14130,6 +14136,8 @@ raceRouter.get("/race", async (req, res, next) => {
         kyoteibiyori_turn_foot_detail: racer?.kyoteiBiyoriTurnFootDetail ?? racer?.turnFootDetail ?? null,
         lap_time: strictLap.lapTime,
         lapTime: strictLap.lapTime,
+        turn_time: toNullableNum(racer?.turnTime ?? racer?.kyoteiBiyoriTurnTime ?? racer?.mawariashi),
+        turnTime: toNullableNum(racer?.turnTime ?? racer?.kyoteiBiyoriTurnTime ?? racer?.mawariashi),
         lap_raw: strictLap.lapRaw,
         lap_source: strictLap.lapSource,
         lap_time_detail: racer?.lapTimeDetail ?? racer?.kyoteiBiyoriLapTimeDetail ?? null,
@@ -14996,6 +15004,7 @@ raceRouter.get("/race", async (req, res, next) => {
       const strictLap = getStrictLapPayload(racer);
       const exST = toNullableNum(racer?.exST ?? racer?.exhibitionSt ?? racer?.exhibitionST);
       const exTime = toNullableNum(racer?.exTime ?? racer?.exhibitionTime);
+      const turnTime = toNullableNum(racer?.turnTime ?? racer?.kyoteiBiyoriTurnTime ?? racer?.mawariashi);
       const motor2Rate = toNullableNum(racer?.motor2ren ?? racer?.motor2Rate);
       return {
         ...racer,
@@ -15003,6 +15012,7 @@ raceRouter.get("/race", async (req, res, next) => {
         lapTime: strictLap.lapTime,
         exST,
         exTime,
+        turnTime,
         exhibitionSt: exST,
         exhibitionTime: exTime,
         motor2Rate,

@@ -1,5 +1,6 @@
 ﻿import { Component, useEffect, useMemo, useState } from "react";
 import "./App.css";
+import { useRef } from "react";
 import {
   normalizeVenueIdInput,
   sanitizeRecentRaceSelections
@@ -20,6 +21,15 @@ import {
   inspectPreviewExhibitionStatus,
   screenInsideEscapeCandidates
 } from "./lib/kyotei-openapi-engine.js";
+import {
+  buildCanonicalRaceData,
+  buildDisplayEntriesFromProgram,
+  buildTableDisplayPreview,
+  getOriginalExhibitionByBoat,
+  mergeDisplayEntriesIntoRows
+} from "./lib/race-data-merge.js";
+import PlayerBoatTable from "./components/PlayerBoatTable.jsx";
+import KyoteibiyoriDebugPanel from "./components/KyoteibiyoriDebugPanel.jsx";
 
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 const API_BASE = API_BASE_URL ? `${API_BASE_URL}/api` : "/api";
@@ -34,11 +44,23 @@ function localDateKey(base = new Date()) {
 
 async function fetchJsonWithTimeout(url, options = {}) {
   const timeoutMs = Number(options?.timeoutMs || 25000);
+  const externalSignal = options?.signal;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal?.aborted) {
+    clearTimeout(timer);
+    throw new Error("Request aborted.");
+  }
+  externalSignal?.addEventListener?.("abort", onExternalAbort, { once: true });
+  const { timeoutMs: _timeoutMs, signal: _signal, ...fetchOptions } = options;
   try {
     const response = await fetch(url, {
-      ...options,
+      ...fetchOptions,
       signal: controller.signal
     });
     const body = await response.json().catch(() => ({}));
@@ -48,11 +70,12 @@ async function fetchJsonWithTimeout(url, options = {}) {
     return body;
   } catch (err) {
     if (err?.name === "AbortError") {
-      throw new Error("Request timeout. Please retry.");
+      throw new Error(timedOut ? "Request timeout. Please retry." : "Request aborted.");
     }
     throw err;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener?.("abort", onExternalAbort);
   }
 }
 
@@ -63,21 +86,36 @@ function openApiDatePath(date) {
   return "today.json";
 }
 
-async function fetchOpenApiDay(date, kind) {
+async function fetchOpenApiDay(date, kind, options = {}) {
   const path = openApiDatePath(date);
   const url = `https://boatraceopenapi.github.io/${kind}/v2/${path}`;
   const fetchedAt = new Date().toISOString();
-  const payload = await fetchJsonWithTimeout(url, { timeoutMs: 15000 });
+  const payload = await fetchJsonWithTimeout(url, { timeoutMs: 15000, signal: options?.signal });
   return { payload, url, fetchedAt };
 }
 
-async function fetchOriginalExhibitionData({ date, venueId, raceNo }) {
+async function fetchOriginalExhibitionData({ date, venueId, raceNo, force = false, signal = null }) {
   const params = new URLSearchParams({
     date: String(date || ""),
     venueId: String(venueId || ""),
     raceNo: String(raceNo || "")
   });
-  return fetchJsonWithTimeout(`${API_BASE}/race/original-exhibition?${params.toString()}`, { timeoutMs: 5000 });
+  if (force) params.set("force", "1");
+  const payload = await fetchJsonWithTimeout(`/api/race/exhibition?${params.toString()}`, {
+    timeoutMs: 60000,
+    cache: "no-store",
+    signal
+  });
+  const rows =
+    Array.isArray(payload?.rows) ? payload.rows :
+      Array.isArray(payload?.data?.rows) ? payload.data.rows :
+        Array.isArray(payload?.originalExhibition?.rows) ? payload.originalExhibition.rows :
+          [];
+  return {
+    ...payload,
+    rows,
+    backendConnected: payload?.backendConnected === true || payload?.ok === true || rows.length > 0
+  };
 }
 
 function getOpenApiRaceRows(payload) {
@@ -108,73 +146,77 @@ function openApiRaceKey(row = {}) {
   return `${Number(row.race_stadium_number)}-${Number(row.race_number)}`;
 }
 
-function getOriginalExhibitionByBoat(originalExhibition = null) {
-  const rows = Array.isArray(originalExhibition?.rows) ? originalExhibition.rows : [];
-  return Object.fromEntries(
-    rows
-      .map((row) => [String(Number(row?.boatNumber ?? row?.lane)), row])
-      .filter(([boat]) => /^[1-6]$/.test(boat))
-  );
-}
-
-function mergeOriginalExhibitionIntoProgram(program = {}, originalExhibition = null) {
-  const byBoat = getOriginalExhibitionByBoat(originalExhibition);
-  if (!Object.keys(byBoat).length || !Array.isArray(program?.boats)) return program;
-  return {
-    ...program,
-    boats: program.boats.map((boatRow) => {
-      const boat = Number(boatRow?.racer_boat_number ?? boatRow?.boatNumber ?? boatRow?.lane ?? boatRow?.boat);
-      const extra = byBoat[String(boat)] || null;
-      if (!extra) return boatRow;
-      return {
-        ...boatRow,
-        kyoteiBiyoriLapTime: extra.lapTime ?? null,
-        kyoteiBiyoriLapTimeRaw: extra.lapTimeRaw ?? extra.lapTime ?? null,
-        kyoteiBiyoriLapSource: extra.lapSource || null,
-        kyoteiBiyoriStraightTime: extra.straightTime ?? null,
-        kyoteiBiyoriStraightSource: extra.straightSource || null,
-        lapTime: extra.lapTime ?? boatRow?.lapTime ?? null,
-        straightTime: extra.straightTime ?? boatRow?.straightTime ?? null
-      };
-    })
-  };
-}
-
 function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, raceNo, venueName }) {
   const prediction = openApiModel?.prediction;
   if (!prediction) return null;
+  const displayEntries = Array.isArray(openApiModel?.displayEntries)
+    ? openApiModel.displayEntries
+    : buildDisplayEntriesFromProgram(openApiModel?.displayProgram || openApiModel?.predictionInputProgram || {});
+  const displayEntryByBoat = new Map(
+    displayEntries
+      .map((entry) => [Number(entry?.boat ?? entry?.lane), entry])
+      .filter(([boat]) => Number.isInteger(boat) && boat >= 1 && boat <= 6)
+  );
+  const originalMetricRows = displayEntries.filter((entry) =>
+    entry?.lapTime !== null && entry?.lapTime !== undefined &&
+    entry?.straightTime !== null && entry?.straightTime !== undefined &&
+    entry?.turnTime !== null && entry?.turnTime !== undefined
+  ).length;
+  const originalMetricsIncomplete = originalMetricRows < Math.min(6, Math.max(1, displayEntries.length || 6));
+  const originalMetricsWarning = originalMetricsIncomplete
+    ? "周回・直線データ未取得のため、展示ST・展示タイム・モーター中心で予想"
+    : "";
   const racers = prediction.scoredBoats.map((boat) => ({
-    lane: boat.boat,
-    boatNumber: boat.boat,
-    name: boat.name,
-    racerName: boat.name,
-    registrationNo: boat.racerNumber,
-    class: boat.classNumber,
-    entryCourse: boat.course,
-    averageStartTiming: boat.averageStartTiming,
-    nationalWinRatePoint: boat.nationalWinRatePoint,
-    localWinRatePoint: boat.localWinRatePoint,
-    motor2Rate: boat.motor2Rate,
-    boat2Rate: boat.boat2Rate,
-    lapTime: boat.lapTime,
-    straightTime: boat.straightTime,
-    kyoteiBiyoriStraightTime: boat.straightTime,
-    exhibitionTime: prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] ?? null,
-    exhibitionSt: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
-    exTime: prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] ?? null,
-    exST: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
-    exhibitionST: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
-    fieldSources: {
-      exhibitionSt: "openapi_previews.racer_start_timing",
-      exhibitionTime: "openapi_previews.racer_exhibition_time",
-      lapTime: boat.lapTime == null ? "not_measured_or_not_fetched" : "kyoteibiyori_original_exhibition.lap",
-      straightTime: boat.straightTime == null ? "not_measured_or_not_fetched" : "kyoteibiyori_original_exhibition.straight"
-    }
+    ...(() => {
+      const displayEntry = displayEntryByBoat.get(Number(boat.boat)) || {};
+      const lapTime = firstFiniteValue(displayEntry?.lapTime, boat.lapTime);
+      const straightTime = firstFiniteValue(displayEntry?.straightTime, boat.straightTime);
+      const turnTime = firstFiniteValue(displayEntry?.turnTime, boat.turnTime);
+      return {
+        lane: boat.boat,
+        boatNumber: boat.boat,
+        boat: boat.boat,
+        name: boat.name,
+        racerName: boat.name,
+        registrationNo: boat.racerNumber,
+        class: boat.classNumber,
+        entryCourse: boat.course,
+        averageStartTiming: boat.averageStartTiming,
+        nationalWinRatePoint: boat.nationalWinRatePoint,
+        localWinRatePoint: boat.localWinRatePoint,
+        motor2Rate: boat.motor2Rate,
+        boat2Rate: boat.boat2Rate,
+        lapTime,
+        straightTime,
+        turnTime,
+        playerTendency: boat.playerTendency || boat.racerCourseStats || null,
+        racerCourseStats: boat.racerCourseStats || boat.playerTendency || null,
+        kyoteiBiyoriLapTime: lapTime,
+        kyoteiBiyoriStraightTime: straightTime,
+        kyoteiBiyoriTurnTime: turnTime,
+        exhibitionTime: prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] ?? null,
+        exhibitionSt: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
+        exTime: prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] ?? null,
+        exST: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
+        exhibitionST: prediction.exhibition.exhibitionStartByBoat?.[boat.boat] ?? null,
+        fieldSources: {
+          exhibitionSt: "openapi_previews.racer_start_timing",
+          exhibitionTime: "openapi_previews.racer_exhibition_time",
+          lapTime: lapTime == null ? "not_measured_or_not_fetched" : "kyoteibiyori_original_exhibition.lap",
+          straightTime: straightTime == null ? "not_measured_or_not_fetched" : "kyoteibiyori_original_exhibition.straight",
+          turnTime: turnTime == null ? "not_measured_or_not_fetched" : "kyoteibiyori_original_exhibition.turn"
+        }
+      };
+    })()
   }));
   const firstRates = prediction.firstPlaceProbabilities.map((row) => ({
     lane: row.boat,
     probability: row.probability
   }));
+  const baseConfidence = firstRates[0]?.probability ?? null;
+  const adjustedConfidence = baseConfidence == null
+    ? null
+    : Math.max(0, baseConfidence - (originalMetricsIncomplete ? 0.03 : 0));
   const top6 = prediction.tickets.trifecta.slice(0, 6).map((row, index) => ({
     combo: row.combo,
     probability: row.probability,
@@ -189,6 +231,7 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
   ].filter(Boolean).join(" / ");
   return {
     sourceType: "openapi_v2_pure",
+    canonicalRaceData: openApiModel.canonicalRaceData || null,
     raceId: `${String(date || "").replace(/-/g, "")}_${venueId}_${raceNo}`,
     source: {
       fetched_at: openApiModel.fetchedAt?.programs || null,
@@ -198,6 +241,8 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
       cache: { hit: false, ttl_ms: 1800 },
       preview_diagnostics: prediction.exhibition.diagnostics || null,
       original_exhibition: openApiModel.originalExhibition || null,
+      original_exhibition_warning: originalMetricsWarning || null,
+      display_entries: displayEntries,
       field_sources: prediction.exhibition.sourceByField || null
     },
     race: {
@@ -208,6 +253,7 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
       raceName: `${venueName} ${raceNo}R`,
       closedAt: prediction.race.closedAt
     },
+    displayEntries,
     racers,
     prediction: {
       ranking: firstRates.map((row) => row.lane),
@@ -219,11 +265,11 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
         tickets: top6,
         main_ticket: top6[0] || null,
         top6_coverage: top6.reduce((sum, row) => sum + Number(row.probability || 0), 0),
-        confidence: firstRates[0]?.probability ?? null,
+        confidence: adjustedConfidence,
         first_place_candidate_rates: firstRates,
         top6Scenario: prediction.scenario.main.title,
-        top6ScenarioScore: (firstRates[0]?.probability ?? 0) * 100,
-        scenario_repro_score: (firstRates[0]?.probability ?? 0) * 100,
+        top6ScenarioScore: (adjustedConfidence ?? 0) * 100,
+        scenario_repro_score: (adjustedConfidence ?? 0) * 100,
         lane_styles: prediction.scoredBoats.map((boat) => ({
           lane: boat.boat,
           style: boat.course === 1 ? "nige" : boat.course <= 3 ? "sashi" : "makuri",
@@ -238,11 +284,11 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
       tickets: top6,
       main_ticket: top6[0] || null,
       top6_coverage: top6.reduce((sum, row) => sum + Number(row.probability || 0), 0),
-      confidence: firstRates[0]?.probability ?? null,
+      confidence: adjustedConfidence,
       first_place_candidate_rates: firstRates,
       top6Scenario: prediction.scenario.main.title,
-      top6ScenarioScore: (firstRates[0]?.probability ?? 0) * 100,
-      scenario_repro_score: (firstRates[0]?.probability ?? 0) * 100,
+      top6ScenarioScore: (adjustedConfidence ?? 0) * 100,
+      scenario_repro_score: (adjustedConfidence ?? 0) * 100,
       lane_styles: prediction.scoredBoats.map((boat) => ({
         lane: boat.boat,
         style: boat.course === 1 ? "nige" : boat.course <= 3 ? "sashi" : "makuri",
@@ -254,8 +300,9 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
     predictionExplanation: {
       racePattern: prediction.exhibition.status,
       top6Scenario: scenarioText,
-      confidence_score: firstRates[0]?.probability ?? null,
-      confidence_band: (firstRates[0]?.probability ?? 0) >= 0.45 ? "high" : (firstRates[0]?.probability ?? 0) >= 0.3 ? "medium" : "low",
+      confidence_score: adjustedConfidence,
+      confidence_band: (adjustedConfidence ?? 0) >= 0.45 ? "high" : (adjustedConfidence ?? 0) >= 0.3 ? "medium" : "low",
+      warning: originalMetricsWarning || null,
       buyPolicy: "OpenAPI v2 probability order",
       recommendedBetMode: "probability"
     },
@@ -685,9 +732,9 @@ function formatMaybeNumber(value, digits = 2) {
 }
 
 function formatComparisonValue(value, digits = 2) {
-  if (value === null || value === undefined || value === "") return "--";
+  if (value === null || value === undefined || value === "") return "-";
   const num = Number(value);
-  if (!Number.isFinite(num)) return "--";
+  if (!Number.isFinite(num)) return "-";
   return num.toFixed(digits);
 }
 
@@ -789,6 +836,18 @@ function formatDebugRawValue(value) {
   return value === undefined ? "undefined" : JSON.stringify(value);
 }
 
+function getHtmlContainsStage(htmlContains = {}, stage = "static") {
+  if (!htmlContains || typeof htmlContains !== "object") return {};
+  if (stage === "static") {
+    return htmlContains.static || htmlContains.raw || htmlContains.pre_race_raw || htmlContains.index_raw || {};
+  }
+  return htmlContains[stage] || {};
+}
+
+function htmlContainsAny(presence = {}, labels = []) {
+  return labels.some((label) => presence?.[label] === true);
+}
+
 function formatLaneRawDebugValue(entry) {
   if (!entry || typeof entry !== "object") return "--";
   const value = toFiniteComparisonNumber(entry?.value);
@@ -838,6 +897,14 @@ function firstMeaningfulFiniteValue(...values) {
 }
 
 function getLapTimeDisplayValue(source = {}) {
+  const directValue = firstFiniteValue(
+    source?.lapTime,
+    source?.lap_time,
+    source?.kyoteiBiyoriLapTime,
+    source?.kyoteibiyori_lap_time,
+    source?.lapTimeNormalized
+  );
+  if (directValue !== null) return directValue;
   const lapSource =
     source?.lapSource ||
     source?.lap_source ||
@@ -879,9 +946,6 @@ function formatLapTimeCoverageValue(row = {}, coverageReport = {}) {
   const coverage = getCoverageFieldMeta(coverageReport, lane, "lapTime");
   if (!coverage) return "-";
   if (coverage.status === "ok" && Number.isFinite(Number(coverage.normalized))) return formatComparisonValue(coverage.normalized, 2);
-  if (coverage.status === "not_published") return "not published";
-  if (coverage.status === "broken_pipeline") return "broken_pipeline";
-  if (coverage.status === "fallback") return "not published";
   return "-";
 }
 
@@ -951,10 +1015,21 @@ function hasRenderableKyoteiBiyoriData(rows = [], data = {}) {
 }
 
 function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
+  const originalExhibition = data?.source?.original_exhibition && typeof data.source.original_exhibition === "object"
+    ? data.source.original_exhibition
+    : {};
+  const originalExhibitionRows = Array.isArray(data?.source?.original_exhibition?.rows)
+    ? data.source.original_exhibition.rows
+    : [];
+  const originalExhibitionBackendConnected =
+    originalExhibition?.backendConnected === true ||
+    originalExhibition?.ok === true ||
+    originalExhibitionRows.length > 0;
   const debug =
     data?.kyoteibiyori_debug ||
     data?.source?.kyotei_biyori?.kyoteibiyori_debug ||
     data?.source?.kyotei_biyori?.request_diagnostics ||
+    data?.source?.original_exhibition?.diagnostics ||
     {};
   const fieldDiagnostics =
     debug?.field_diagnostics ||
@@ -963,15 +1038,89 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
       failed_fields: [],
       per_lane: []
     };
+  const backendParseResults = debug?.parse_results || {};
+  const laneStatsOriginalRows = Array.isArray(backendParseResults?.lane_stats_tab?.original_exhibition_rows)
+    ? backendParseResults.lane_stats_tab.original_exhibition_rows
+    : [];
+  const renderedOriginalRows = Array.isArray(backendParseResults?.rendered_dom?.original_exhibition_rows)
+    ? backendParseResults.rendered_dom.original_exhibition_rows
+    : [];
+  const networkOriginalRows = Array.isArray(backendParseResults?.rendered_network?.original_exhibition_rows)
+    ? backendParseResults.rendered_network.original_exhibition_rows
+    : [];
+  const countOriginalRowValues = (rows) => safeArray(rows).reduce((sum, row) => (
+    sum +
+    (Number.isFinite(Number(row?.lapTime)) ? 1 : 0) +
+    (Number.isFinite(Number(row?.straightTime)) ? 1 : 0) +
+    (Number.isFinite(Number(row?.turnTime)) ? 1 : 0)
+  ), 0);
+  const parsedLaneStatsRows = [
+    laneStatsOriginalRows,
+    renderedOriginalRows,
+    networkOriginalRows
+  ].sort((a, b) => countOriginalRowValues(b) - countOriginalRowValues(a))[0] || [];
   return {
-    fetch_success: debug?.fetch_success ?? debug?.kyoteibiyori_fetch_success ?? data?.source?.kyotei_biyori?.ok ?? false,
+    backendConnected:
+      originalExhibitionBackendConnected ||
+      data?.source?.kyotei_biyori?.ok === true ||
+      debug?.backendConnected === true,
+    fetch_success:
+      debug?.fetch_success ??
+      debug?.kyoteibiyori_fetch_success ??
+      data?.source?.kyotei_biyori?.ok ??
+      data?.source?.original_exhibition?.ok ??
+      false,
+    original_exhibition_source:
+      debug?.original_exhibition_source ||
+      data?.source?.kyotei_biyori?.original_exhibition_source ||
+      data?.source?.original_exhibition?.diagnostics?.original_exhibition_source ||
+      data?.source?.original_exhibition?.source?.kind ||
+      "none",
+    original_exhibition_counts:
+      debug?.original_exhibition_counts ||
+      data?.source?.kyotei_biyori?.original_exhibition_counts ||
+      data?.source?.original_exhibition?.diagnostics?.original_exhibition_counts ||
+      null,
+    original_exhibition_rows_count: originalExhibitionRows.length,
     extracted_hrefs: debug?.extracted_hrefs || {},
     actual_fetch_paths: Array.isArray(debug?.actual_fetch_paths) ? debug.actual_fetch_paths : [],
-    fallback_reason: debug?.fallback_reason || data?.source?.kyotei_biyori?.fallback_reason || null,
+    fallback_reason:
+      debug?.fallback_reason ||
+      data?.source?.kyotei_biyori?.fallback_reason ||
+      data?.source?.original_exhibition?.error ||
+      null,
     populated_fields: Array.isArray(fieldDiagnostics?.populated_fields) ? fieldDiagnostics.populated_fields : [],
     failed_fields: Array.isArray(fieldDiagnostics?.failed_fields) ? fieldDiagnostics.failed_fields : [],
     backend_fetch_results: debug?.fetch_results || {},
-    backend_parse_results: debug?.parse_results || {},
+    backend_parse_results: backendParseResults,
+    backend_merge_results: debug?.merge_results || {},
+    exhibitionFetchRoute: debug?.exhibitionFetchRoute || data?.source?.original_exhibition?.diagnostics?.exhibitionFetchRoute || "none",
+    playwrightStarted: debug?.playwrightStarted === true || data?.source?.original_exhibition?.diagnostics?.playwrightStarted === true,
+    playwrightFinished: debug?.playwrightFinished === true || data?.source?.original_exhibition?.diagnostics?.playwrightFinished === true,
+    playwrightError: debug?.playwrightError || data?.source?.original_exhibition?.diagnostics?.playwrightError || null,
+    playwright_render_debug:
+      debug?.playwright_render_debug ||
+      data?.source?.kyotei_biyori?.request_diagnostics?.playwright_render_debug ||
+      data?.source?.original_exhibition?.diagnostics?.playwright_render_debug ||
+      null,
+    parsed_lane_stats_rows: parsedLaneStatsRows,
+    rendered_lane_stats_rows: renderedOriginalRows,
+    merged_entries: Array.isArray(debug?.merge_results?.entries) ? debug.merge_results.entries : [],
+    html_contains:
+      debug?.html_contains ||
+      data?.source?.kyotei_biyori?.html_contains ||
+      data?.source?.original_exhibition?.diagnostics?.html_contains ||
+      {},
+    original_exhibition_static_counts:
+      debug?.original_exhibition_static_counts ||
+      data?.source?.kyotei_biyori?.original_exhibition_static_counts ||
+      data?.source?.original_exhibition?.diagnostics?.original_exhibition_static_counts ||
+      null,
+    original_exhibition_rendered_counts:
+      debug?.original_exhibition_rendered_counts ||
+      data?.source?.kyotei_biyori?.original_exhibition_rendered_counts ||
+      data?.source?.original_exhibition?.diagnostics?.original_exhibition_rendered_counts ||
+      null,
     lane_rows: Array.isArray(debug?.lane_rows)
       ? debug.lane_rows
       : (Array.isArray(data?.racers) ? data.racers : []).map((racer) => ({
@@ -981,6 +1130,8 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
           lane3renRate_raw: racer?.lane3renRate_raw ?? racer?.lane3RenRate ?? null,
           lapExStretch_raw: racer?.kyoteiBiyoriLapExStretch ?? racer?.lapExStretch ?? racer?.kyoteiBiyoriLapExhibitionScore ?? racer?.lapExhibitionScore ?? null,
           lapTime_raw: racer?.kyoteiBiyoriLapTimeRaw ?? racer?.lapRaw ?? racer?.lapTime ?? null,
+          straightTime_raw: racer?.kyoteiBiyoriStraightTime ?? racer?.straightTime ?? null,
+          turnTime_raw: racer?.kyoteiBiyoriTurnTime ?? racer?.turnTime ?? racer?.mawariashi ?? null,
           exhibitionST_raw: racer?.kyoteiBiyoriExhibitionStRaw ?? racer?.exhibitionStRaw ?? racer?.kyoteiBiyoriExhibitionSt ?? racer?.exhibitionSt ?? null,
           motor2ren_raw: racer?.motor2ren ?? racer?.kyoteiBiyoriMotor2Rate ?? racer?.motor2Rate ?? null,
           motor3ren_raw: racer?.motor3ren ?? racer?.kyoteiBiyoriMotor3Rate ?? racer?.motor3Rate ?? null,
@@ -989,6 +1140,8 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
           lane3renRate_debug: null,
           lapExStretch_debug: null,
           lapTime_debug: null,
+          turnTime_debug: null,
+          straightTime_debug: null,
           exhibitionST_debug: null,
           motor2ren_debug: null,
           motor3ren_debug: null
@@ -998,6 +1151,8 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
     lane3renRate_raw: debug?.lane3renRate_raw || {},
     lapExStretch_raw: debug?.lapExStretch_raw || {},
     lapTime_raw: debug?.lapTime_raw || {},
+    turnTime_raw: debug?.turnTime_raw || {},
+    straightTime_raw: debug?.straightTime_raw || {},
     exhibitionST_raw: debug?.exhibitionST_raw || {},
     motor2ren_raw: debug?.motor2ren_raw || {},
     motor3ren_raw: debug?.motor3ren_raw || {},
@@ -1006,6 +1161,8 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
     lane3renRate_debug: debug?.lane3renRate || {},
     lapExStretch_debug: debug?.lapExStretch || {},
     lapTime_debug: debug?.lapTime || {},
+    turnTime_debug: debug?.turnTime || {},
+    straightTime_debug: debug?.straightTime || {},
     exhibitionST_debug: debug?.exhibitionST || {},
     motor2ren_debug: debug?.motor2ren || {},
     motor3ren_debug: debug?.motor3ren || {},
@@ -1018,6 +1175,8 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
       lane3renRate_raw: row?.lane3renScore ?? row?.lane3renAvg ?? row?.lane3RenRate ?? null,
       lapExStretch_raw: row?.lapExStretch ?? row?.lapScore ?? null,
       lapTime_raw: row?.lapRaw ?? row?.lapTime ?? null,
+      straightTime_raw: row?.straightTime ?? null,
+      turnTime_raw: row?.turnTime ?? null,
       lane_scores_before_reassignment: row?.laneScoreDebug?.beforeReassignment || null,
       lane_scores_after_reassignment: row?.laneScoreDebug?.afterReassignment || null,
       motor2ren_raw: row?.motor2ren ?? row?.motor2Rate ?? null,
@@ -1026,6 +1185,8 @@ function buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }) {
       lane2renRate: Number.isFinite(Number(getLaneScoreDisplayValue(row, "lane2ren"))),
       lane3renRate: Number.isFinite(Number(getLaneScoreDisplayValue(row, "lane3ren"))),
       lapTime: Number.isFinite(Number(row?.lapTime)),
+      straightTime: Number.isFinite(Number(row?.straightTime)),
+      turnTime: Number.isFinite(Number(row?.turnTime)),
       exhibitionST: Number.isFinite(Number(row?.exhibitionSt)),
       display_lapExStretch: formatComparisonValue(row?.lapExStretch ?? row?.lapScore, 2),
       display_motor2ren: formatComparisonValue(row?.motor2ren ?? row?.motor2Rate, 2),
@@ -3722,6 +3883,9 @@ function getPlayerComparisonRows({ prediction, data }) {
         const liveStraightTime = toFiniteComparisonNumber(
           row?.kyoteiBiyoriStraightTime ?? row?.straightTime ?? row?.nobiashi
         );
+        const liveTurnTime = toFiniteComparisonNumber(
+          row?.kyoteiBiyoriTurnTime ?? row?.turnTime ?? row?.mawariashi
+        );
         const liveMotor2Rate = toFiniteComparisonNumber(row?.motor2ren ?? row?.kyoteiBiyoriMotor2Rate ?? row?.motor2Rate);
         const liveMotor3Rate = firstFiniteValue(
           row?.motor3ren,
@@ -3773,6 +3937,7 @@ function getPlayerComparisonRows({ prediction, data }) {
           lapRank: firstFiniteValue(row?.lapRank, snapshotRow?.lap_rank, snapshotRow?.feature_snapshot?.lap_rank, snapshotRow?.feature_snapshot?.lap_time_rank),
           lapGapFromBest: firstFiniteValue(row?.lapGapFromBest, snapshotRow?.lap_gap_from_best, snapshotRow?.feature_snapshot?.lap_gap_from_best, snapshotRow?.feature_snapshot?.lap_time_gap_from_best),
           straightTime: liveStraightTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_straight_time ?? snapshotRow?.straight_time ?? snapshotRow?.feature_snapshot?.straight_line_power),
+          turnTime: liveTurnTime ?? toFiniteComparisonNumber(snapshotRow?.kyoteibiyori_turn_time ?? snapshotRow?.turn_time),
           exhibitionSt: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.ex_st ?? snapshotRow?.exhibition_st ?? snapshotRow?.kyoteibiyori_ex_st ?? snapshotRow?.kyoteibiyori_exhibition_st),
           exST: liveExhibitionSt ?? toFiniteComparisonNumber(snapshotRow?.ex_st ?? snapshotRow?.exhibition_st ?? snapshotRow?.kyoteibiyori_ex_st ?? snapshotRow?.kyoteibiyori_exhibition_st),
           exhibitionStRaw: row?.kyoteiBiyoriExhibitionStRaw ?? row?.exhibitionStRaw ?? snapshotRow?.kyoteibiyori_exhibition_st_raw ?? snapshotRow?.exhibition_st_raw_detail ?? null,
@@ -3784,6 +3949,8 @@ function getPlayerComparisonRows({ prediction, data }) {
           exhibitionSTDetail: row?.kyoteiBiyoriExhibitionSTDetail || row?.exhibitionSTDetail || snapshotRow?.kyoteibiyori_exhibition_st_detail || snapshotRow?.exhibition_st_detail || null,
           exhibitionTimeDetail: row?.kyoteiBiyoriExhibitionTimeDetail || row?.exhibitionTimeDetail || snapshotRow?.kyoteibiyori_exhibition_time_detail || snapshotRow?.exhibition_time_detail || null,
           turnFootDetail: row?.kyoteiBiyoriTurnFootDetail || row?.turnFootDetail || snapshotRow?.kyoteibiyori_turn_foot_detail || snapshotRow?.turn_foot_detail || null,
+          playerTendency: row?.playerTendency || row?.racerCourseStats || snapshotRow?.player_tendency || snapshotRow?.racerCourseStats || null,
+          racerCourseStats: row?.racerCourseStats || row?.playerTendency || snapshotRow?.racer_course_stats || snapshotRow?.racerCourseStats || null,
           lapExStretch: liveLapExStretch ?? snapshotLapExStretch,
           lapScore: liveLapExStretch ?? snapshotLapExStretch,
           stretchFootLabel: row?.kyoteiBiyoriStretchFootLabel || row?.stretchFootLabel || snapshotRow?.kyoteibiyori_stretch_foot_label || snapshotRow?.stretch_foot_label || null,
@@ -3852,6 +4019,8 @@ function getPlayerComparisonRows({ prediction, data }) {
         lapSource: row?.lap_source || row?.kyoteibiyori_lap_source || null,
         lapRank: firstFiniteValue(row?.lap_rank, row?.feature_snapshot?.lap_rank, row?.feature_snapshot?.lap_time_rank),
         lapGapFromBest: firstFiniteValue(row?.lap_gap_from_best, row?.feature_snapshot?.lap_gap_from_best, row?.feature_snapshot?.lap_time_gap_from_best),
+        straightTime: toFiniteComparisonNumber(row?.straight_time ?? row?.kyoteibiyori_straight_time ?? row?.feature_snapshot?.straight_line_power),
+        turnTime: toFiniteComparisonNumber(row?.turnTime ?? row?.turn_time ?? row?.kyoteibiyori_turn_time),
         exhibitionSt: toFiniteComparisonNumber(row?.ex_st ?? row?.exhibition_st ?? row?.kyoteibiyori_ex_st ?? row?.kyoteibiyori_exhibition_st),
         exST: toFiniteComparisonNumber(row?.ex_st ?? row?.exhibition_st ?? row?.kyoteibiyori_ex_st ?? row?.kyoteibiyori_exhibition_st),
         exhibitionStRaw: row?.kyoteibiyori_exhibition_st_raw ?? row?.exhibition_st_raw_detail ?? null,
@@ -3863,6 +4032,8 @@ function getPlayerComparisonRows({ prediction, data }) {
         exhibitionSTDetail: row?.kyoteibiyori_exhibition_st_detail || row?.exhibition_st_detail || null,
         exhibitionTimeDetail: row?.kyoteibiyori_exhibition_time_detail || row?.exhibition_time_detail || null,
         turnFootDetail: row?.kyoteibiyori_turn_foot_detail || row?.turn_foot_detail || null,
+        playerTendency: row?.player_tendency || row?.playerTendency || row?.racer_course_stats || row?.racerCourseStats || null,
+        racerCourseStats: row?.racer_course_stats || row?.racerCourseStats || row?.player_tendency || row?.playerTendency || null,
         lapExStretch: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
         lapScore: toFiniteComparisonNumber(row?.kyoteibiyori_lap_ex_stretch ?? row?.lap_ex_stretch ?? row?.kyoteibiyori_lap_exhibition_score ?? row?.lap_exhibition_score),
         stretchFootLabel: row?.kyoteibiyori_stretch_foot_label || row?.stretch_foot_label || null,
@@ -4260,6 +4431,14 @@ export default function App() {
   const [openApiLoading, setOpenApiLoading] = useState(false);
   const [openApiError, setOpenApiError] = useState("");
   const [openApiModel, setOpenApiModel] = useState(null);
+  const [originalExhibition, setOriginalExhibition] = useState(null);
+  const [originalExhibitionError, setOriginalExhibitionError] = useState("");
+  const [originalExhibitionLoading, setOriginalExhibitionLoading] = useState(false);
+  const latestOpenApiRequestKeyRef = useRef("");
+  const latestOpenApiRequestIdRef = useRef(0);
+  const activeOpenApiAbortRef = useRef(null);
+  const openApiLoadingRef = useRef(false);
+  const [openApiRequestDebug, setOpenApiRequestDebug] = useState({ raceKey: "", requestId: 0 });
   const [todayRankingLoading, setTodayRankingLoading] = useState(false);
   const [todayRankingError, setTodayRankingError] = useState("");
   const [todayRankingRows, setTodayRankingRows] = useState([]);
@@ -4898,34 +5077,149 @@ export default function App() {
     () => getPlayerComparisonRows({ prediction, data }),
     [prediction, data]
   );
+  const canonicalRaceData = data?.canonicalRaceData || openApiModel?.canonicalRaceData || null;
+  const currentOriginalExhibition =
+    originalExhibition ||
+    canonicalRaceData?.debug?.originalExhibition ||
+    data?.source?.original_exhibition ||
+    null;
+  const originalExhibitionRows = useMemo(
+    () => safeArray(currentOriginalExhibition?.rows || canonicalRaceData?.debug?.originalExhibitionRows || data?.source?.original_exhibition?.rows),
+    [canonicalRaceData?.debug?.originalExhibitionRows, currentOriginalExhibition?.rows, data?.source?.original_exhibition?.rows]
+  );
+  const displayRows = useMemo(
+    () => canonicalRaceData
+      ? safeArray(canonicalRaceData.entries)
+      : mergeDisplayEntriesIntoRows(
+          playerComparisonRows,
+          data?.displayEntries || data?.source?.display_entries || [],
+          originalExhibitionRows
+        ),
+    [canonicalRaceData?.entries, data?.displayEntries, data?.source?.display_entries, originalExhibitionRows, playerComparisonRows]
+  );
   const entrySupplementalDebug = useMemo(() => {
     const fieldChecks = [
       ["lap_time", (row) => Number.isFinite(Number(row?.lapTime))],
       ["straight_time", (row) => Number.isFinite(Number(row?.straightTime))],
+      ["turn_time", (row) => Number.isFinite(Number(row?.turnTime))],
       ["exhibition_st", (row) => Number.isFinite(Number(row?.exhibitionSt))],
       ["exhibition_time", (row) => Number.isFinite(Number(row?.exhibitionTime))],
       ["motor2ren", (row) => Number.isFinite(Number(row?.motor2ren ?? row?.motor2Rate))],
       ["motor3ren", (row) => Number.isFinite(Number(row?.motor3ren ?? row?.motor3Rate))]
     ];
-    const usable = fieldChecks.filter(([, check]) => playerComparisonRows.some((row) => check(row))).map(([field]) => field);
-    const skipped = fieldChecks.filter(([, check]) => !playerComparisonRows.some((row) => check(row))).map(([field]) => field);
+    const usable = fieldChecks.filter(([, check]) => displayRows.some((row) => check(row))).map(([field]) => field);
+    const skipped = fieldChecks.filter(([, check]) => !displayRows.some((row) => check(row))).map(([field]) => field);
     return { usable, skipped };
-  }, [playerComparisonRows]);
+  }, [displayRows]);
   const playerMetricLeaders = useMemo(() => ({
-    lapTime: buildTopMetricLaneSet(playerComparisonRows, "lapTime", "asc"),
-    straightTime: buildTopMetricLaneSet(playerComparisonRows, "straightTime", "asc"),
-    exhibitionSt: buildTopMetricLaneSet(playerComparisonRows, "exhibitionSt", "asc"),
-    exhibitionTime: buildTopMetricLaneSet(playerComparisonRows, "exhibitionTime", "asc"),
-    lapScore: buildTopMetricLaneSet(playerComparisonRows, "lapScore", "desc"),
-    motor2Rate: buildTopMetricLaneSet(playerComparisonRows, "motor2Rate", "desc"),
-    laneFirstRate: buildTopMetricLaneSet(playerComparisonRows, "laneFirstRate", "desc"),
-    lane2RenRate: buildTopMetricLaneSet(playerComparisonRows, "lane2RenRate", "desc"),
-    lane3RenRate: buildTopMetricLaneSet(playerComparisonRows, "lane3RenRate", "desc")
-  }), [playerComparisonRows]);
+    lapTime: buildTopMetricLaneSet(displayRows, "lapTime", "asc"),
+    straightTime: buildTopMetricLaneSet(displayRows, "straightTime", "asc"),
+    turnTime: buildTopMetricLaneSet(displayRows, "turnTime", "asc"),
+    exhibitionSt: buildTopMetricLaneSet(displayRows, "exhibitionSt", "asc"),
+    exhibitionTime: buildTopMetricLaneSet(displayRows, "exhibitionTime", "asc"),
+    lapScore: buildTopMetricLaneSet(displayRows, "lapScore", "desc"),
+    motor2Rate: buildTopMetricLaneSet(displayRows, "motor2Rate", "desc"),
+    laneFirstRate: buildTopMetricLaneSet(displayRows, "laneFirstRate", "desc"),
+    lane2RenRate: buildTopMetricLaneSet(displayRows, "lane2RenRate", "desc"),
+    lane3RenRate: buildTopMetricLaneSet(displayRows, "lane3RenRate", "desc")
+  }), [displayRows]);
   const kyoteiBiyoriFrontendDebug = useMemo(
-    () => buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows }),
-    [data, playerComparisonRows]
+    () => buildKyoteiBiyoriFrontendDebug({ data, playerComparisonRows: displayRows }),
+    [data, displayRows]
   );
+  const kyoteiBiyoriPipelineDebug = useMemo(() => {
+    const originalExhibitionDebug = currentOriginalExhibition?.debug || currentOriginalExhibition?.diagnostics || {};
+    const renderedPresence = getHtmlContainsStage(kyoteiBiyoriFrontendDebug.html_contains, "rendered");
+    const parsedRows = safeArray(kyoteiBiyoriFrontendDebug.parsed_lane_stats_rows);
+    const renderedMergedRows = safeArray(displayRows);
+    const originalExhibitionRowsPreview = buildTableDisplayPreview(originalExhibitionRows);
+    const displayPreview = buildTableDisplayPreview(renderedMergedRows);
+    const canonicalPreview = buildTableDisplayPreview(canonicalRaceData?.entries || renderedMergedRows);
+    const tablePreview = buildTableDisplayPreview(displayRows);
+    const predictionInputPreview = canonicalRaceData?.debug?.predictionInputPreview || canonicalPreview;
+    const playwrightDebug = originalExhibitionDebug.playwright_render_debug || kyoteiBiyoriFrontendDebug.playwright_render_debug || {};
+    const selectedRaceKey = `${date}|${Number(venueId)}|${Number(raceNo)}`;
+    const originalExhibitionSource =
+      currentOriginalExhibition?.source?.source ||
+      (currentOriginalExhibition?.source?.cache === true ? "cache" : null) ||
+      currentOriginalExhibition?.source?.kind ||
+      currentOriginalExhibition?.exhibitionFetchRoute ||
+      "none";
+    const originalBackendConnected =
+      currentOriginalExhibition?.backendConnected === true ||
+      currentOriginalExhibition?.ok === true ||
+      originalExhibitionRowsPreview.length > 0;
+    const countField = (rows, field) => safeArray(rows).filter((row) => Number.isFinite(Number(row?.[field]))).length;
+    const countPresentField = (rows, field) => safeArray(rows).filter((row) => row?.[field] !== null && row?.[field] !== undefined).length;
+    const countOriginalMeasuredRows = (rows) => safeArray(rows).filter((row) =>
+      row?.lapTime !== null && row?.lapTime !== undefined ||
+      row?.straightTime !== null && row?.straightTime !== undefined ||
+      row?.turnTime !== null && row?.turnTime !== undefined
+    ).length;
+    return {
+      currentRaceKey: selectedRaceKey,
+      isFetching: openApiLoading || originalExhibitionLoading,
+      requestId: openApiRequestDebug.requestId || 0,
+      backendConnected: originalBackendConnected,
+      baseEntriesCount: canonicalRaceData?.debug?.baseEntriesCount ?? safeArray(playerComparisonRows).length,
+      originalExhibitionOk: currentOriginalExhibition?.ok === true || countOriginalMeasuredRows(originalExhibitionRows) > 0,
+      originalExhibitionBackendConnected: originalBackendConnected,
+      originalExhibitionError: originalExhibitionError || currentOriginalExhibition?.error || null,
+      originalExhibitionSource,
+      exhibitionFetchRoute: currentOriginalExhibition?.exhibitionFetchRoute || originalExhibitionDebug.exhibitionFetchRoute || "none",
+      playwrightStarted: currentOriginalExhibition?.playwrightStarted === true || originalExhibitionDebug.playwrightStarted === true,
+      playwrightFinished: currentOriginalExhibition?.playwrightFinished === true || originalExhibitionDebug.playwrightFinished === true,
+      playwrightError: currentOriginalExhibition?.playwrightError || originalExhibitionDebug.playwrightError || null,
+      pageUrl: playwrightDebug?.page_url_after_click || playwrightDebug?.page_url_before_click || null,
+      pageTitle: playwrightDebug?.page_title_after_click || playwrightDebug?.page_title_before_click || null,
+      renderedHtmlLength: Number.isFinite(Number(playwrightDebug?.rendered_html_length)) ? Number(playwrightDebug.rendered_html_length) : null,
+      clickableBefore: playwrightDebug?.clickable_before || {},
+      clickableAfter: playwrightDebug?.clickable_after || {},
+      clickAttempts: safeArray(playwrightDebug?.click_attempts),
+      networkResponses: safeArray(playwrightDebug?.network_responses),
+      networkParseResponses: safeArray(kyoteiBiyoriFrontendDebug.backend_parse_results?.rendered_network?.responses),
+      screenshotPath: playwrightDebug?.screenshot_path || null,
+      latestScreenshotPath: playwrightDebug?.latest_screenshot_path || null,
+      networkSummaryPath: playwrightDebug?.network_summary_path || null,
+      renderedContains: {
+        lap: htmlContainsAny(renderedPresence, ["周回", "周回タイム", "周回展示"]),
+        oneLap: htmlContainsAny(renderedPresence, ["一周", "一周タイム"]),
+        straight: htmlContainsAny(renderedPresence, ["直線", "直線タイム"]),
+        turnMawari: htmlContainsAny(renderedPresence, ["まわり足", "まわり足タイム"]),
+        turnMawariAlt: htmlContainsAny(renderedPresence, ["回り足", "回足"]),
+        turnShuashi: htmlContainsAny(renderedPresence, ["周足"])
+      },
+      parsedLaneStatsCount: parsedRows.length,
+      parsedLapTimeCount: countField(parsedRows, "lapTime"),
+      parsedStraightTimeCount: countField(parsedRows, "straightTime"),
+      parsedTurnTimeCount: countField(parsedRows, "turnTime"),
+      originalExhibitionRowsCount: countOriginalMeasuredRows(originalExhibitionRows),
+      canonicalLapTimeCount: countPresentField(canonicalPreview, "lapTime"),
+      canonicalStraightTimeCount: countPresentField(canonicalPreview, "straightTime"),
+      canonicalTurnTimeCount: countPresentField(canonicalPreview, "turnTime"),
+      displayLapTimeCount: countPresentField(displayPreview, "lapTime"),
+      displayStraightTimeCount: countPresentField(displayPreview, "straightTime"),
+      displayTurnTimeCount: countPresentField(displayPreview, "turnTime"),
+      laneStatsPreview: parsedRows.slice(0, 6),
+      originalExhibitionRowsPreview,
+      canonicalPreview,
+      tablePreview,
+      predictionInputPreview,
+      displayPreview
+    };
+  }, [canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.entries, currentOriginalExhibition, date, displayRows, kyoteiBiyoriFrontendDebug, openApiLoading, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceNo, venueId]);
+  const originalExhibitionFetchError =
+    originalExhibitionError ||
+    currentOriginalExhibition?.error ||
+    openApiModel?.originalExhibitionError ||
+    "";
+  const originalExhibitionMetricsUnavailable = useMemo(() => {
+    const rows = safeArray(displayRows);
+    if (rows.length === 0) return false;
+    return ["lapTime", "straightTime", "turnTime"].some(
+      (field) => rows.filter((row) => row?.[field] !== null && row?.[field] !== undefined).length < rows.length
+    );
+  }, [displayRows]);
   const safeTopRecommendedTickets = Array.isArray(predictionViewModel?.topRecommendedTickets)
     ? predictionViewModel.topRecommendedTickets
     : [];
@@ -5325,16 +5619,17 @@ export default function App() {
   }, [learningRunNotice]);
 
   useEffect(() => {
+    return () => {
+      activeOpenApiAbortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (e) => {
       if (screen !== "quickInput" && screen !== "prediction") return;
       if (!(e.altKey && !e.ctrlKey && !e.metaKey)) return;
       const k = String(e.key || "").toLowerCase();
-      if (k === "enter") {
-        e.preventDefault();
-        if (!openApiLoading) {
-          onFetchOpenApiPrediction();
-        }
-      } else if (k === "arrowright") {
+      if (k === "arrowright") {
         e.preventDefault();
         setRaceNo((prev) => Math.min(12, Number(prev || 1) + 1));
       } else if (k === "arrowleft") {
@@ -5344,11 +5639,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [screen, openApiLoading, date, venueId, raceNo]);
-
-  const onFetch = async () => {
-    await onFetchOpenApiPrediction();
-  };
+  }, [screen, date, venueId, raceNo]);
 
   const loadTodayRanking = async ({ force = false } = {}) => {
     const targetDate = localDateKey();
@@ -5418,21 +5709,74 @@ export default function App() {
   };
 
   const onFetchOpenApiPrediction = async (target = {}) => {
+    if (openApiLoadingRef.current) return;
     const targetDate = target.date || date;
     const targetVenueId = Number(target.venueId ?? venueId);
     const targetRaceNo = Number(target.raceNo ?? raceNo);
+    const forceOriginalExhibition = target.forceOriginalExhibition === true;
+    const requestKey = `${targetDate}|${targetVenueId}|${targetRaceNo}`;
+    const requestId = latestOpenApiRequestIdRef.current + 1;
+    activeOpenApiAbortRef.current?.abort();
+    const requestController = new AbortController();
+    activeOpenApiAbortRef.current = requestController;
+    latestOpenApiRequestIdRef.current = requestId;
+    latestOpenApiRequestKeyRef.current = requestKey;
+    openApiLoadingRef.current = true;
+    setOpenApiRequestDebug({ raceKey: requestKey, requestId });
+    const isCurrentRequest = () =>
+      latestOpenApiRequestIdRef.current === requestId &&
+      latestOpenApiRequestKeyRef.current === requestKey &&
+      !requestController.signal.aborted;
     setOpenApiLoading(true);
     setOpenApiError("");
+    setOriginalExhibition(null);
+    setOriginalExhibitionError("");
+    setOriginalExhibitionLoading(true);
+    setOpenApiModel(null);
+    setData(null);
     try {
-      const [programsResult, previewsResult] = await Promise.all([
-        fetchOpenApiDay(targetDate, "programs"),
-        fetchOpenApiDay(targetDate, "previews").catch((err) => ({
+      const originalExhibitionPromise = fetchOriginalExhibitionData({
+        date: targetDate,
+        venueId: targetVenueId,
+        raceNo: targetRaceNo,
+        force: forceOriginalExhibition,
+        signal: requestController.signal
+      }).catch((err) => ({
+        ok: false,
+        optional: true,
+        backendConnected: false,
+        exhibitionFetchRoute: "fetch_failed",
+        error: err?.message || "original exhibition fetch failed",
+        rows: []
+      }));
+      const programsPromise = fetchOpenApiDay(targetDate, "programs", { signal: requestController.signal })
+        .then((value) => ({ ok: true, value }))
+        .catch((err) => ({ ok: false, error: err }));
+      const previewsPromise = fetchOpenApiDay(targetDate, "previews", { signal: requestController.signal }).catch((err) => ({
           payload: null,
           url: null,
           fetchedAt: new Date().toISOString(),
           error: err?.message || "previews fetch failed"
-        }))
-      ]);
+        }));
+      let fetchedOriginalExhibition = await originalExhibitionPromise;
+      if (!isCurrentRequest()) return;
+      fetchedOriginalExhibition = {
+        ...fetchedOriginalExhibition,
+        backendConnected:
+          fetchedOriginalExhibition?.backendConnected === true ||
+          fetchedOriginalExhibition?.ok === true ||
+          safeArray(fetchedOriginalExhibition?.rows).length > 0,
+        rows: safeArray(fetchedOriginalExhibition?.rows)
+      };
+      setOriginalExhibition(fetchedOriginalExhibition);
+      setOriginalExhibitionError(fetchedOriginalExhibition?.ok === false ? fetchedOriginalExhibition?.error || "original exhibition fetch failed" : "");
+      setOriginalExhibitionLoading(false);
+      const [programsSettled, previewsResult] = await Promise.all([programsPromise, previewsPromise]);
+      if (!isCurrentRequest()) return;
+      if (!programsSettled.ok) {
+        throw programsSettled.error || new Error("programs fetch failed");
+      }
+      const programsResult = programsSettled.value;
       const programs = getOpenApiRaceRows(programsResult.payload);
       const previews = getOpenApiRaceRows(previewsResult.payload);
       const selectedProgram = programs.find((row) =>
@@ -5445,17 +5789,21 @@ export default function App() {
       const previewsByRaceKey = Object.fromEntries(previews.map((row) => [openApiRaceKey(row), row]));
       const selectedPreview = previewsByRaceKey[openApiRaceKey(selectedProgram)] || null;
       const selectedVenuePrograms = programs.filter((row) => Number(row?.race_stadium_number) === Number(targetVenueId));
-      const originalExhibition = await fetchOriginalExhibitionData({
+      const originalExhibitionRows = safeArray(fetchedOriginalExhibition.rows);
+      const canonicalRaceData = buildCanonicalRaceData({
         date: targetDate,
         venueId: targetVenueId,
-        raceNo: targetRaceNo
-      }).catch((err) => ({
-        ok: false,
-        optional: true,
-        error: err?.message || "original exhibition fetch failed",
-        rows: []
-      }));
-      const selectedProgramWithOriginal = mergeOriginalExhibitionIntoProgram(selectedProgram, originalExhibition);
+        raceNo: targetRaceNo,
+        baseProgram: selectedProgram,
+        preview: selectedPreview,
+        originalExhibition: fetchedOriginalExhibition,
+        originalExhibitionRows,
+        debug: {
+          originalExhibition: fetchedOriginalExhibition
+        }
+      });
+      const selectedProgramWithOriginal = canonicalRaceData.debug.predictionInputProgram;
+      const displayEntries = canonicalRaceData.entries;
       const selectedVenueProgramsWithOriginal = selectedVenuePrograms.map((row) =>
         openApiRaceKey(row) === openApiRaceKey(selectedProgram)
           ? selectedProgramWithOriginal
@@ -5464,7 +5812,7 @@ export default function App() {
       const prediction = buildRacePrediction(selectedProgramWithOriginal, selectedPreview);
       const previewBoats = selectedPreview?.boats && typeof selectedPreview.boats === "object" ? selectedPreview.boats : {};
       const previewExhibitionStatus = inspectPreviewExhibitionStatus(selectedPreview || {});
-      const originalByBoat = getOriginalExhibitionByBoat(originalExhibition);
+      const originalByBoat = getOriginalExhibitionByBoat(fetchedOriginalExhibition);
       console.info("[OpenAPI v2 preview source check]", {
         raceKey: openApiRaceKey(selectedProgram),
         previewsFetched: previews.length,
@@ -5512,23 +5860,27 @@ export default function App() {
       const nextOpenApiModel = {
         prediction,
         screening,
-        originalExhibition,
+        originalExhibition: fetchedOriginalExhibition,
+        canonicalRaceData,
+        predictionInputProgram: selectedProgramWithOriginal,
+        displayProgram: selectedProgramWithOriginal,
+        displayEntries,
         urls: {
           programs: programsResult.url,
           previews: previewsResult.url,
-          originalExhibition: originalExhibition?.source?.url || null
+          originalExhibition: fetchedOriginalExhibition?.source?.url || null
         },
         fetchedAt: {
           programs: programsResult.fetchedAt,
           previews: previewsResult.fetchedAt,
-          originalExhibition: originalExhibition?.fetchedAt || null
+          originalExhibition: fetchedOriginalExhibition?.fetchedAt || null
         },
         previewError: previewsResult.error || null,
-        originalExhibitionError: originalExhibition?.ok === false ? originalExhibition?.error || null : null,
+        originalExhibitionError: fetchedOriginalExhibition?.ok === false ? fetchedOriginalExhibition?.error || null : null,
         counts: {
           programs: programs.length,
           previews: previews.length,
-          originalExhibitionMeasured: Number(originalExhibition?.measuredCount || 0)
+          originalExhibitionMeasured: Number(fetchedOriginalExhibition?.measuredCount || 0)
         }
       };
       setOpenApiModel(nextOpenApiModel);
@@ -5553,11 +5905,19 @@ export default function App() {
       setError("");
       setErrorDetails(null);
     } catch (e) {
-      setOpenApiError(e?.message || "Open API prediction failed");
+      if (!isCurrentRequest()) return;
+      setOpenApiError(e?.message === "Request aborted." ? "" : e?.message || "Open API prediction failed");
       setOpenApiModel(null);
       setData(null);
     } finally {
-      setOpenApiLoading(false);
+      if (latestOpenApiRequestIdRef.current === requestId) {
+        if (activeOpenApiAbortRef.current === requestController) {
+          activeOpenApiAbortRef.current = null;
+        }
+        openApiLoadingRef.current = false;
+        setOpenApiLoading(false);
+        setOriginalExhibitionLoading(false);
+      }
     }
   };
 
@@ -6680,7 +7040,14 @@ export default function App() {
                 <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
                 <label><span>場</span><select value={venueId} onChange={(e) => applyVenueIdSelection(e.target.value)}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
                 <label><span>レース</span><select value={raceNo} onChange={(e) => setRaceNo(Number(e.target.value))}>{Array.from({ length: 12 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}R</option>)}</select></label>
-                <button className="fetch-btn" onClick={onFetchOpenApiPrediction} disabled={openApiLoading}>{openApiLoading ? "取得中..." : "予想を取得"}</button>
+                <button
+                  className="fetch-btn"
+                  type="button"
+                  onClick={() => onFetchOpenApiPrediction({ date, venueId, raceNo })}
+                  disabled={openApiLoading}
+                >
+                  {openApiLoading ? "取得中..." : "予想を取得 / 更新"}
+                </button>
               </div>
               <div className="predict-quickbar">
                 <div className="quick-chip-group">
@@ -6710,7 +7077,7 @@ export default function App() {
                       {row.venueName} {row.raceNo}R
                     </button>
                   ))}
-                  <span className="quick-shortcut">Alt+Enter fetch / Alt+←→ race</span>
+                  <span className="quick-shortcut">Alt+←→ race</span>
                 </div>
               </div>
             </section>
@@ -6723,9 +7090,18 @@ export default function App() {
                 </p>
               </div>
               <div className="controls-grid">
-                <button className="fetch-btn secondary" onClick={onFetchOpenApiPrediction} disabled={openApiLoading}>
-                  {openApiLoading ? "Open API 取得中..." : "Open API予想を取得"}
-                </button>
+                {openApiLoading ? (
+                  <div className="metric-item">
+                    <span>取得状態</span>
+                    <strong>取得中...</strong>
+                  </div>
+                ) : null}
+                {originalExhibitionLoading ? (
+                  <div className="metric-item">
+                    <span>周回・直線</span>
+                    <strong>取得中...</strong>
+                  </div>
+                ) : null}
                 {openApiModel?.prediction ? (
                   <>
                     <div className="metric-item">
@@ -6745,7 +7121,26 @@ export default function App() {
               </div>
               {openApiError ? <div className="error-banner" style={{ marginTop: 10 }}>{openApiError}</div> : null}
               {openApiModel?.previewError ? <div className="notice-banner" style={{ marginTop: 10 }}>previews取得失敗: {openApiModel.previewError}。出走表のみで予想します。</div> : null}
-              {openApiModel?.originalExhibitionError ? <div className="notice-banner" style={{ marginTop: 10 }}>周回・直線は未測定または取得失敗: {openApiModel.originalExhibitionError}</div> : null}
+              {originalExhibitionFetchError ? (
+                <div className="notice-banner" style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <span>周回・直線データ取得失敗。再取得してください。</span>
+                  <button
+                    className="fetch-btn secondary"
+                    type="button"
+                    onClick={() => onFetchOpenApiPrediction({ date, venueId, raceNo, forceOriginalExhibition: true })}
+                    disabled={openApiLoading || originalExhibitionLoading}
+                    style={{ padding: "6px 10px" }}
+                  >
+                    周回・直線を再取得
+                  </button>
+                  <span className="muted">{originalExhibitionFetchError}</span>
+                </div>
+              ) : null}
+              {openApiModel?.prediction && originalExhibitionMetricsUnavailable ? (
+                <div className="notice-banner" style={{ marginTop: 10 }}>
+                  周回・直線データ未取得のため、展示ST・展示タイム・モーター中心で予想
+                </div>
+              ) : null}
               {openApiModel?.prediction ? (
                 <div className="quick-sheet-grid" style={{ marginTop: 12 }}>
                   <div className="quick-sheet-panel">
@@ -6769,15 +7164,16 @@ export default function App() {
                         <div className="premium-ticket-row" key={`openapi-before-${boat.boat}`}>
                           <div className="ticket-mainline"><strong>{boat.boat}号艇</strong></div>
                           <div className="ticket-meta">
-                            <span>Ex ST {openApiModel.prediction.exhibition.exhibitionStartByBoat?.[boat.boat] == null ? "--" : formatMaybeNumber(openApiModel.prediction.exhibition.exhibitionStartByBoat?.[boat.boat], 2)}</span>
-                            <span>Ex Time {openApiModel.prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] == null ? "--" : formatMaybeNumber(openApiModel.prediction.exhibition.exhibitionTimeByBoat?.[boat.boat], 2)}</span>
-                            <span>Lap {boat.lapTime == null ? "未測定" : formatMaybeNumber(boat.lapTime, 2)}</span>
-                            <span>直線 {boat.straightTime == null ? "未測定" : formatMaybeNumber(boat.straightTime, 2)}</span>
+                            <span>Ex ST {openApiModel.prediction.exhibition.exhibitionStartByBoat?.[boat.boat] == null ? "-" : formatMaybeNumber(openApiModel.prediction.exhibition.exhibitionStartByBoat?.[boat.boat], 2)}</span>
+                            <span>Ex Time {openApiModel.prediction.exhibition.exhibitionTimeByBoat?.[boat.boat] == null ? "-" : formatMaybeNumber(openApiModel.prediction.exhibition.exhibitionTimeByBoat?.[boat.boat], 2)}</span>
+                            <span>Lap {boat.lapTime == null ? "-" : formatMaybeNumber(boat.lapTime, 2)}</span>
+                            <span>直線 {boat.straightTime == null ? "-" : formatMaybeNumber(boat.straightTime, 2)}</span>
+                            <span>まわり足 {boat.turnTime == null ? "-" : formatMaybeNumber(boat.turnTime, 2)}</span>
                           </div>
                         </div>
                       ))}
                     </div>
-                    <p className="muted strategy-line">Ex ST/Ex Time は OpenAPI previews 由来。Lap/直線は取得できた場合のみ使用します。</p>
+                    <p className="muted strategy-line">Ex ST/Ex Time は OpenAPI previews 由来。Lap/直線/まわり足は取得できた場合のみ使用します。</p>
                   </div>
                   <div className="quick-sheet-panel">
                     <strong>基本買い目6点</strong>
@@ -6961,7 +7357,7 @@ export default function App() {
                   </div>
                 </section>
 
-                {safeArray(playerComparisonRows).length > 0 ? (
+                {safeArray(displayRows).length > 0 ? (
                   <RenderGuard>
                   <section className="card summary-card premium-player-panel">
                     <div className="premium-card-head">
@@ -6970,64 +7366,22 @@ export default function App() {
                         <h2>選手・艇データ一覧</h2>
                       </div>
                     </div>
-                    <div className="table-wrap premium-player-table-wrap">
-                      <table className="premium-player-table">
-                        <thead>
-                          <tr>
-                            <th>艇番</th>
-                            <th>進入</th>
-                            <th>選手名</th>
-                            <th>F</th>
-                            <th>ST</th>
-                            <th>展示</th>
-                            <th>周回</th>
-                            <th>直線</th>
-                            <th>モーター2連率</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {safeArray(playerComparisonRows).map((row, idx) => (
-                            <tr key={`player-compare-${row?.boatNumber ?? row?.lane ?? idx}`}>
-                              <td>
-                                <div className="player-boat-cell">
-                                  <span className={`combo-dot ${BOAT_META[row?.boatNumber ?? row?.lane]?.className || ""}`}>{row?.boatNumber ?? row?.lane ?? "--"}</span>
-                                </div>
-                              </td>
-                              <td>
-                                <div className="player-boat-cell">
-                                  <span className={`combo-dot ${Number.isFinite(Number(row?.entryLane)) ? (BOAT_META[row?.entryLane]?.className || "") : ""}`}>
-                                    {Number.isFinite(Number(row?.entryLane)) ? row?.entryLane : "?"}
-                                  </span>
-                                </div>
-                                <div className="muted" style={{ marginTop: 4 }}>
-                                  {row?.entry ?? row?.predictedEntry ?? "-"}
-                                  {row?.entryConfirmed ? "" : " / predicted"}
-                                </div>
-                              </td>
-                              <td>
-                                <div className="player-name-cell">
-                                  <strong>{row?.name || "-"}</strong>
-                                  {row?.entryConfirmed
-                                    ? row?.courseChanged
-                                      ? <div className="muted">Moved from lane {row?.boatNumber} to entry {row?.entryLane}</div>
-                                      : <div className="muted">No course change</div>
-                                    : <div className="muted">Entry not confirmed. Showing predicted entry while keeping lane order fixed at 1-6</div>}
-                                </div>
-                              </td>
-                              <td>
-                                <span className={`f-count-badge ${Number(row?.fCount) > 0 ? "has-f" : ""}`}>F{row?.fCount ?? "--"}</span>
-                              </td>
-                              <td className={safeSetHas(playerMetricLeaders?.exhibitionSt, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exST ?? row?.exhibitionSt, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.exhibitionTime, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.exTime ?? row?.exhibitionTime, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.lapTime, row?.lane) ? "metric-hot" : ""}>{formatLapTimeCoverageValue(row, data?.source?.coverage_report)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.straightTime, row?.lane) ? "metric-hot" : ""}>{row?.straightTime == null ? "未測定" : formatComparisonValue(row?.straightTime, 2)}</td>
-                              <td className={safeSetHas(playerMetricLeaders?.motor2Rate, row?.lane) ? "metric-hot" : ""}>{formatComparisonValue(row?.motor2ren ?? row?.motor2Rate, 2)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <PlayerBoatTable
+                      entries={displayRows}
+                      boatMeta={BOAT_META}
+                      playerMetricLeaders={playerMetricLeaders}
+                      formatComparisonValue={formatComparisonValue}
+                    />
+                    <div style={{ marginTop: 10 }}>
+                      <div className="muted">display preview</div>
+                      <pre className="json-preview">{safePrettyJson(buildTableDisplayPreview(displayRows))}</pre>
                     </div>
-                    {safeArray(playerComparisonRows).some((row) => row?.entryConfirmed !== true) ? (
+                    <KyoteibiyoriDebugPanel
+                      debug={kyoteiBiyoriPipelineDebug}
+                      originalExhibition={currentOriginalExhibition}
+                      safePrettyJson={safePrettyJson}
+                    />
+                    {safeArray(displayRows).some((row) => row?.entryConfirmed !== true) ? (
                       <p className="notice-banner" style={{ marginTop: 10 }}>
                         actual entry not confirmed: API / UI ともに lane 1-6 の順を固定し、entry は別 key で扱っています。
                       </p>
@@ -7035,7 +7389,7 @@ export default function App() {
                     <details className="card" style={{ marginTop: 12 }}>
                       <summary>Lap Time detail</summary>
                       <div className="kv-list" style={{ marginTop: 10 }}>
-                        {safeArray(playerComparisonRows).map((row, idx) => (
+                        {safeArray(displayRows).map((row, idx) => (
                           <div className="kv-row" key={`lap-detail-${row?.boatNumber ?? row?.lane ?? idx}`}>
                             <span>{`${row?.boatNumber ?? row?.lane ?? "-"}号艇`}</span>
                             <strong>
@@ -7054,10 +7408,47 @@ export default function App() {
                         ))}
                       </div>
                     </details>
+                    <details className="card" style={{ marginTop: 12 }}>
+                      <summary>選手別・コース別 戦法データ</summary>
+                      <div className="table-wrap" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>艇番</th>
+                              <th>逃げ率</th>
+                              <th>逃がし率</th>
+                              <th>差し率</th>
+                              <th>まくり率</th>
+                              <th>まくり差し率</th>
+                              <th>今期平均ST</th>
+                              <th>出遅れ率</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {safeArray(displayRows).map((row, idx) => {
+                              const tendency = row?.playerTendency || row?.racerCourseStats || {};
+                              const pct = (value) => value === null || value === undefined || value === "" ? "-" : `${formatMaybeNumber(value, 1)}%`;
+                              return (
+                                <tr key={`player-tendency-${row?.boatNumber ?? row?.lane ?? idx}`}>
+                                  <td>{row?.boatNumber ?? row?.lane ?? "-"}</td>
+                                  <td>{pct(tendency.escapeRate)}</td>
+                                  <td>{pct(tendency.nigashiRate)}</td>
+                                  <td>{pct(tendency.sashiRate)}</td>
+                                  <td>{pct(tendency.makuriRate)}</td>
+                                  <td>{pct(tendency.makuriSashiRate)}</td>
+                                  <td>{formatComparisonValue(tendency.avgStartTiming, 2)}</td>
+                                  <td>{pct(tendency.lateStartRate)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
                     <p className="muted strategy-line">
                       Rows are always ordered by base lane 1-6. Entry is shown separately and remains `unconfirmed` until the actual entry is validated.
                     </p>
-                    {!hasRenderableKyoteiBiyoriData(playerComparisonRows, data) ? (
+                    {!hasRenderableKyoteiBiyoriData(displayRows, data) ? (
                       <p className="muted strategy-line">
                         Supplemental kyoteibiyori data unavailable. Base race data is still loaded.
                       </p>
@@ -7703,7 +8094,7 @@ export default function App() {
                   {adminMode ? (
                     <section className="card">
                       <h2>手動周回展示評価（管理用）</h2>
-                      <p className="muted strategy-line">本番ワークフローでは無効化されています。自動取得の展示データのみ予想に使用します。</p>
+                      <p className="muted strategy-line">本番ワークフローでは無効化されています。取得済みの展示データのみ予想に使用します。</p>
                       <div className="manual-lap-grid">
                         {Array.from({ length: 6 }, (_, idx) => idx + 1).map((lane) => (
                           <div key={`lap-${lane}`} className="manual-lap-row">
@@ -7980,10 +8371,85 @@ export default function App() {
                         <div style={{ marginTop: 10 }}>
                           <div className="kv-list" style={{ marginBottom: 10 }}>
                             <div className="kv-row"><span>kyoteibiyori_fetch_success</span><strong>{kyoteiBiyoriFrontendDebug.fetch_success ? "true" : "false"}</strong></div>
+                            <div className="kv-row"><span>直前展示取得元</span><strong>{kyoteiBiyoriFrontendDebug.original_exhibition_source || "none"}</strong></div>
+                            {[
+                              ["ST", "exST"],
+                              ["展示", "exTime"],
+                              ["周回", "lapTime"],
+                              ["直線", "straightTime"],
+                              ["まわり足", "turnTime"]
+                            ].map(([label, key]) => (
+                              <div className="kv-row" key={`kyotei-original-count-${key}`}>
+                                <span>{label}</span>
+                                <strong>{Number(kyoteiBiyoriFrontendDebug.original_exhibition_counts?.[key] || 0)} / 6</strong>
+                              </div>
+                            ))}
+                            {[
+                              ["pre_race contains 直線", "pre_race", ["直線", "直線タイム"]],
+                              ["pre_race contains 周回", "pre_race", ["周回", "一周", "周回タイム", "一周タイム", "周回展示"]],
+                              ["pre_race contains まわり足", "pre_race", ["まわり足", "回り足", "回足", "周足", "まわり足タイム"]],
+                              ["lane_stats contains 周回", "lane_stats", ["周回", "一周", "周回タイム", "一周タイム", "周回展示"]],
+                              ["lane_stats contains 直線", "lane_stats", ["直線", "直線タイム"]],
+                              ["lane_stats contains まわり足", "lane_stats", ["まわり足", "回り足", "回足", "周足", "まわり足タイム"]],
+                              ["static HTML contains 周回", "static", ["周回", "一周", "周回タイム", "一周タイム", "周回展示"]],
+                              ["static HTML contains 直線", "static", ["直線", "直線タイム"]],
+                              ["static HTML contains まわり足", "static", ["まわり足", "回り足", "回足", "周足", "まわり足タイム"]],
+                              ["rendered contains 周回", "rendered", ["周回", "一周", "周回タイム", "一周タイム", "周回展示"]],
+                              ["rendered contains 直線", "rendered", ["直線", "直線タイム"]],
+                              ["rendered contains まわり足", "rendered", ["まわり足", "回り足", "回足", "周足", "まわり足タイム"]]
+                            ].map(([label, stage, labels]) => {
+                              const presence = getHtmlContainsStage(kyoteiBiyoriFrontendDebug.html_contains, stage);
+                              return (
+                                <div className="kv-row" key={`kyotei-html-contains-${stage}-${label}`}>
+                                  <span>{label}</span>
+                                  <strong>{htmlContainsAny(presence, labels) ? "true" : "false"}</strong>
+                                </div>
+                              );
+                            })}
+                            {[
+                              ["parsed laneStats count", safeArray(kyoteiBiyoriFrontendDebug.parsed_lane_stats_rows).length],
+                              ["parsed lapTime count", safeArray(kyoteiBiyoriFrontendDebug.parsed_lane_stats_rows).filter((row) => Number.isFinite(Number(row?.lapTime))).length],
+                              ["parsed straightTime count", safeArray(kyoteiBiyoriFrontendDebug.parsed_lane_stats_rows).filter((row) => Number.isFinite(Number(row?.straightTime))).length],
+                              ["parsed turnTime count", safeArray(kyoteiBiyoriFrontendDebug.parsed_lane_stats_rows).filter((row) => Number.isFinite(Number(row?.turnTime))).length]
+                            ].map(([label, value]) => (
+                              <div className="kv-row" key={`kyotei-parser-stage-debug-${label}`}>
+                                <span>{label}</span>
+                                <strong>{Number(value || 0)} / 6</strong>
+                              </div>
+                            ))}
+                            {[
+                              ["parsed lapTime", "lapTime"],
+                              ["parsed straightTime", "straightTime"],
+                              ["parsed turnTime", "turnTime"]
+                            ].map(([label, key]) => (
+                              <div className="kv-row" key={`kyotei-parsed-count-${key}`}>
+                                <span>{label}</span>
+                                <strong>{Number(kyoteiBiyoriFrontendDebug.original_exhibition_counts?.[key] || 0)} / 6</strong>
+                              </div>
+                            ))}
+                            {[
+                              ["pre_race parsed ST", "pre_race_tab", "exST"],
+                              ["pre_race parsed 展示", "pre_race_tab", "exTime"],
+                              ["pre_race parsed モーター2連率", "pre_race_tab", "motor2Rate"],
+                              ["lane_stats parsed 周回", "lane_stats_tab", "lapTime"],
+                              ["lane_stats parsed 直線", "lane_stats_tab", "straightTime"],
+                              ["lane_stats parsed まわり足", "lane_stats_tab", "turnTime"]
+                            ].map(([label, stage, key]) => {
+                              const counts = stage === "merged"
+                                ? kyoteiBiyoriFrontendDebug.backend_merge_results?.original_exhibition_counts
+                                : kyoteiBiyoriFrontendDebug.backend_parse_results?.[stage]?.original_exhibition_counts;
+                              return (
+                                <div className="kv-row" key={`kyotei-stage-count-${stage}-${key}`}>
+                                  <span>{label}</span>
+                                  <strong>{Number(counts?.[key] || 0)} / 6</strong>
+                                </div>
+                              );
+                            })}
                             <div className="kv-row"><span>fallback_reason</span><strong>{formatDebugRawValue(kyoteiBiyoriFrontendDebug.fallback_reason)}</strong></div>
                             <div className="kv-row"><span>actual_fetch_paths</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.actual_fetch_paths)}</strong></div>
                             <div className="kv-row"><span>populated_fields</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.populated_fields)}</strong></div>
                             <div className="kv-row"><span>failed_fields</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.failed_fields)}</strong></div>
+                            <div className="kv-row"><span>parsed laneStats rows</span><strong>{safePrettyJson(kyoteiBiyoriFrontendDebug.parsed_lane_stats_rows)}</strong></div>
                           </div>
                           <div className="table-wrap" style={{ marginBottom: 10 }}>
                             <table>
@@ -7998,6 +8464,10 @@ export default function App() {
                                   <th>lane3renRate source</th>
                                   <th>lapTime</th>
                                   <th>lapTime source</th>
+                                  <th>straightTime</th>
+                                  <th>straightTime source</th>
+                                  <th>turnTime</th>
+                                  <th>turnTime source</th>
                                   <th>exhibitionST</th>
                                   <th>exhibitionST source</th>
                                   <th>motor2ren</th>
@@ -8018,6 +8488,10 @@ export default function App() {
                                     <td><code>{formatDebugRawValue(row?.lane3renRate_debug)}</code></td>
                                     <td><code>{formatDebugRawValue(row?.lapTime_raw)}</code></td>
                                     <td><code>{formatDebugRawValue(row?.lapTime_debug)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.straightTime_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.straightTime_debug)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.turnTime_raw)}</code></td>
+                                    <td><code>{formatDebugRawValue(row?.turnTime_debug)}</code></td>
                                     <td><code>{formatDebugRawValue(row?.exhibitionST_raw)}</code></td>
                                     <td><code>{formatDebugRawValue(row?.exhibitionST_debug)}</code></td>
                                     <td><code>{formatDebugRawValue(row?.motor2ren_raw)}</code></td>
@@ -8945,6 +9419,43 @@ export default function App() {
                           </div>
                         ) : null}
                       </div>
+                      <details className="hardrace-details" style={{ marginTop: 10 }}>
+                        <summary>戦法データ</summary>
+                        <div className="table-wrap" style={{ marginTop: 10 }}>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>艇番</th>
+                                <th>逃げ率</th>
+                                <th>逃がし率</th>
+                                <th>差し率</th>
+                                <th>まくり率</th>
+                                <th>まくり差し率</th>
+                                <th>今期平均ST</th>
+                                <th>出遅れ率</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {safeArray(row?.prediction?.scoredBoats).map((boat) => {
+                                const tendency = boat?.playerTendency || boat?.racerCourseStats || {};
+                                const pct = (value) => value === null || value === undefined || value === "" ? "-" : `${formatMaybeNumber(value, 1)}%`;
+                                return (
+                                  <tr key={`today-tendency-${row.stadiumNumber}-${row.raceNumber}-${boat?.boat}`}>
+                                    <td>{boat?.boat ?? "-"}</td>
+                                    <td>{pct(tendency.escapeRate)}</td>
+                                    <td>{pct(tendency.nigashiRate)}</td>
+                                    <td>{pct(tendency.sashiRate)}</td>
+                                    <td>{pct(tendency.makuriRate)}</td>
+                                    <td>{pct(tendency.makuriSashiRate)}</td>
+                                    <td>{formatComparisonValue(tendency.avgStartTiming, 2)}</td>
+                                    <td>{pct(tendency.lateStartRate)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </details>
                       <div className="row-actions" style={{ marginTop: 10 }}>
                         <button
                           className="fetch-btn secondary"

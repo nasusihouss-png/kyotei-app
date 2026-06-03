@@ -2,6 +2,7 @@
 import {
   parseKyoteiBiyoriAjaxData,
   parseKyoteiBiyoriPreRaceData,
+  parseKyoteiBiyoriPreRaceDataWithRenderedFallback,
   normalizeKyoteiBiyoriPreRaceFields,
   mergeKyoteiBiyoriDataIntoRaceContext
 } from "../src/services/kyoteibiyori.js";
@@ -612,6 +613,165 @@ assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.exhibitionTime, 6.7);
 assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.lapTime, 36.77);
 assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.straightTime, 6.91);
 assert.equal(shuffledJapaneseHeaderParsed.byLane.get(3)?.motor2Rate, 44.4);
+
+const oneLapTurnHeaderHtml = `
+  <table>
+    <tr><th>艇番</th><th>ST</th><th>展示</th><th>一周</th><th>まわり足</th><th>直線</th></tr>
+    <tr><td>1号艇</td><td>.08</td><td>6.71</td><td>36.55</td><td>5.78</td><td>6.82</td></tr>
+    <tr><td>2号艇</td><td>.12</td><td>6.75</td><td>36.70</td><td>5.91</td><td>6.95</td></tr>
+  </table>
+`;
+const oneLapTurnParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(oneLapTurnHeaderHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+);
+assert.equal(oneLapTurnParsed.byLane.get(1)?.lapTime, 36.55);
+assert.equal(oneLapTurnParsed.byLane.get(1)?.turnTime, 5.78);
+assert.equal(oneLapTurnParsed.byLane.get(1)?.straightTime, 6.82);
+
+const divPreRaceHtml = `
+  <section>
+    <div class="boat-card">艇番 1 ST .11 展示 6.72 周回 36.31 まわり足 5.77 直線 6.81 モーター2連率 42.1%</div>
+    <div class="boat-card">艇番 2 展示ST F.01 展示タイム 6.80 一周タイム 36.44 回り足 5.88 直線タイム 6.90 モーター2率 31.4%</div>
+  </section>
+`;
+const divParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(divPreRaceHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+);
+assert.equal(divParsed.byLane.get(1)?.exhibitionSt, 0.11);
+assert.equal(divParsed.byLane.get(1)?.exhibitionTime, 6.72);
+assert.equal(divParsed.byLane.get(1)?.lapTime, 36.31);
+assert.equal(divParsed.byLane.get(1)?.turnTime, 5.77);
+assert.equal(divParsed.byLane.get(1)?.straightTime, 6.81);
+assert.equal(divParsed.byLane.get(1)?.motor2Rate, 42.1);
+assert.equal(divParsed.byLane.get(2)?.exhibitionStFlag, "F");
+assert.equal(divParsed.byLane.get(2)?.turnTime, 5.88);
+
+const sectionSegmentPreRaceHtml = `
+  <section class="race-card">
+    1号艇 ST .09 展示 6.71 周回 36.21 まわり足 5.71 直線 6.80 モーター2連率 41.1%
+    2号艇 ST .12 展示 6.78 一周 36.38 回り足 5.86 直線タイム 6.92 モーター2連率 32.2%
+    3号艇 ST .14 展示 6.83 周回タイム 36.44 周足 5.90 直線 6.95 モーター2連率 30.3%
+    4号艇 ST .10 展示 6.69 一周タイム 36.30 まわり足タイム 5.76 直線 6.84 モーター2連率 44.4%
+    5号艇 ST .18 展示 6.90 周回展示 36.70 まわり足 6.01 直線タイム 7.02 モーター2連率 25.5%
+    6号艇 ST .16 展示 6.88 周回 36.64 回り足 5.98 直線 6.99 モーター2連率 21.6%
+  </section>
+`;
+const sectionSegmentParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(sectionSegmentPreRaceHtml, { mode: "pre_race", sourceLabel: "kyoteibiyori-rendered" })
+);
+assert.equal(sectionSegmentParsed.byLane.get(1)?.lapTime, 36.21);
+assert.equal(sectionSegmentParsed.byLane.get(4)?.turnTime, 5.76);
+assert.equal(sectionSegmentParsed.byLane.get(6)?.straightTime, 6.99);
+
+const labelRowDivPreRaceHtml = `
+  <div class="original-tenji">
+    <div>艇番 1 2 3 4 5 6</div>
+    <div>ST .11 .12 .13 .14 .15 .16</div>
+    <div>展示 6.71 6.72 6.73 6.74 6.75 6.76</div>
+    <div>周回 36.11 36.12 36.13 36.14 36.15 36.16</div>
+    <div>まわり足 5.71 5.72 5.73 5.74 5.75 5.76</div>
+    <div>直線 6.81 6.82 6.83 6.84 6.85 6.86</div>
+    <div>モーター2連率 31.1% 32.2% 33.3% 34.4% 35.5% 36.6%</div>
+  </div>
+`;
+const labelRowDivParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(labelRowDivPreRaceHtml, { mode: "pre_race", sourceLabel: "kyoteibiyori-rendered" })
+);
+assert.equal(labelRowDivParsed.byLane.get(1)?.exhibitionSt, 0.11);
+assert.equal(labelRowDivParsed.byLane.get(2)?.exhibitionTime, 6.72);
+assert.equal(labelRowDivParsed.byLane.get(3)?.lapTime, 36.13);
+assert.equal(labelRowDivParsed.byLane.get(4)?.turnTime, 5.74);
+assert.equal(labelRowDivParsed.byLane.get(5)?.straightTime, 6.85);
+assert.equal(labelRowDivParsed.byLane.get(6)?.motor2Rate, 36.6);
+
+const renderedLaneStatsOriginalExhibitionHtml = `
+  <table>
+    <tr>
+      <th>項目</th>
+      <th>1号艇</th><th>2号艇</th><th>3号艇</th><th>4号艇</th><th>5号艇</th><th>6号艇</th>
+    </tr>
+    <tr><td>周回</td><td>18.62</td><td>18.75</td><td>18.79</td><td>18.80</td><td>18.81</td><td>18.83</td></tr>
+    <tr><td>直線</td><td>6.81</td><td>6.82</td><td>6.83</td><td>6.84</td><td>6.85</td><td>6.86</td></tr>
+    <tr><td>回足</td><td>5.71</td><td>5.72</td><td>5.73</td><td>5.74</td><td>5.75</td><td>5.76</td></tr>
+  </table>
+`;
+const renderedLaneStatsParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(renderedLaneStatsOriginalExhibitionHtml, { mode: "pre_race", sourceLabel: "lane_stats_tab" })
+);
+assert.equal(renderedLaneStatsParsed.byLane.get(1)?.lapTime, 18.62);
+assert.equal(renderedLaneStatsParsed.byLane.get(6)?.lapTime, 18.83);
+assert.equal(renderedLaneStatsParsed.byLane.get(1)?.straightTime, 6.81);
+assert.equal(renderedLaneStatsParsed.byLane.get(6)?.straightTime, 6.86);
+assert.equal(renderedLaneStatsParsed.byLane.get(1)?.turnTime, 5.71);
+assert.equal(renderedLaneStatsParsed.byLane.get(6)?.turnTime, 5.76);
+
+const preRaceExistingFieldsHtml = `
+  <table>
+    <tr>
+      <th>艇番</th><th>ST</th><th>展示</th><th>モーター2連率</th>
+    </tr>
+    <tr><td>1号艇</td><td>.11</td><td>6.71</td><td>31.1%</td></tr>
+    <tr><td>2号艇</td><td>.12</td><td>6.72</td><td>32.2%</td></tr>
+    <tr><td>3号艇</td><td>.13</td><td>6.73</td><td>33.3%</td></tr>
+    <tr><td>4号艇</td><td>.14</td><td>6.74</td><td>34.4%</td></tr>
+    <tr><td>5号艇</td><td>.15</td><td>6.75</td><td>35.5%</td></tr>
+    <tr><td>6号艇</td><td>.16</td><td>6.76</td><td>36.6%</td></tr>
+  </table>
+`;
+const preRaceExistingParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(preRaceExistingFieldsHtml, { mode: "pre_race", sourceLabel: "pre_race_tab" })
+);
+const mergedOriginalByLane = new Map();
+const mergedFieldSources = {};
+const assignPublishedFields = (target, source) => {
+  for (const [key, value] of Object.entries(source || {})) {
+    if (value === null || value === undefined || value === "") continue;
+    target[key] = value;
+  }
+  return target;
+};
+for (let lane = 1; lane <= 6; lane += 1) {
+  mergedOriginalByLane.set(
+    lane,
+    assignPublishedFields(
+      assignPublishedFields({}, preRaceExistingParsed.byLane.get(lane) || {}),
+      renderedLaneStatsParsed.byLane.get(lane) || {}
+    )
+  );
+  mergedFieldSources[lane] = {
+    ...(preRaceExistingParsed.fieldSources?.[lane] || {}),
+    ...(renderedLaneStatsParsed.fieldSources?.[lane] || {})
+  };
+}
+const mergedRacers = mergeKyoteiBiyoriDataIntoRaceContext({
+  racers: [1, 2, 3, 4, 5, 6].map((lane) => ({ lane, exhibitionSt: null, exhibitionTime: null })),
+  kyoteiBiyori: {
+    byLane: mergedOriginalByLane,
+    fieldSources: mergedFieldSources,
+    fieldDebugs: {
+      pre_race_tab: preRaceExistingParsed.fieldDebugs,
+      lane_stats_tab: renderedLaneStatsParsed.fieldDebugs
+    }
+  }
+});
+assert.equal(mergedRacers[0]?.exST, 0.11);
+assert.equal(mergedRacers[0]?.exTime, 6.71);
+assert.equal(mergedRacers[0]?.motor2Rate, 31.1);
+assert.equal(mergedRacers[0]?.lapTime, 18.62);
+assert.equal(mergedRacers[0]?.straightTime, 6.81);
+assert.equal(mergedRacers[0]?.turnTime, 5.71);
+assert.equal(mergedRacers[5]?.lapTime, 18.83);
+assert.equal(mergedRacers[5]?.straightTime, 6.86);
+assert.equal(mergedRacers[5]?.turnTime, 5.76);
+
+const renderedFallback = parseKyoteiBiyoriPreRaceDataWithRenderedFallback({
+  staticHtml: `<html><body><p>ST 展示 モーター2連率</p></body></html>`,
+  renderedHtml: exactPreRaceStrictHtml
+});
+assert.equal(renderedFallback.source, "kyoteibiyori-rendered");
+assert.equal(renderedFallback.byLane.get(1)?.lapTime, 36.23);
+assert.equal(renderedFallback.byLane.get(1)?.straightTime, 7.0);
+assert.equal(renderedFallback.byLane.get(1)?.turnTime, 6.0);
 
 console.log("kyoteibiyori-adapter tests passed");
 

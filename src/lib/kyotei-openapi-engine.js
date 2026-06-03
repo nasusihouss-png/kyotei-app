@@ -275,10 +275,12 @@ function normalizeProgramBoats(program = {}) {
   return (Array.isArray(program?.boats) ? program.boats : [])
     .map((row) => {
       const boat = getBoatNumber(row);
+      const course = finiteNumber(row.racer_course_number ?? row.entryCourse ?? row.course ?? boat, boat);
+      const playerTendency = normalizePlayerTendency(row, boat, course);
       return {
         raw: row,
         boat,
-        course: boat,
+        course,
         name: row.racer_name ?? row.name ?? `Lane-${boat}`,
         racerNumber: row.racer_number ?? row.registrationNo ?? null,
         classNumber: row.racer_class_number ?? row.classNumber ?? null,
@@ -291,13 +293,16 @@ function normalizeProgramBoats(program = {}) {
         averageStartTiming: finiteNumber(row.racer_average_start_timing, null),
         lapTime: finiteNumber(row.racer_lap_time ?? row.lapTime ?? row.lap_time ?? row.kyoteiBiyoriLapTime ?? row.kyoteibiyori_lap_time, null),
         straightTime: finiteNumber(row.racer_straight_time ?? row.straightTime ?? row.straight_time ?? row.kyoteiBiyoriStraightTime ?? row.kyoteibiyori_straight_time, null),
+        turnTime: finiteNumber(row.racer_turn_time ?? row.turnTime ?? row.turn_time ?? row.kyoteiBiyoriTurnTime ?? row.kyoteibiyori_turn_time, null),
+        playerTendency,
+        racerCourseStats: playerTendency,
         techniqueStats: {
-          escapeRate: finiteNumber(row.escapeRate ?? row.escape_rate ?? row.course1EscapeRate ?? null, null),
-          nigashiRate: finiteNumber(row.nigashiRate ?? row.nigashi_rate ?? row.course2NigashiRate ?? null, null),
-          sashiRate: finiteNumber(row.sashiRate ?? row.sashi_rate ?? row.course2SashiRate ?? null, null),
-          makuriRate: finiteNumber(row.makuriRate ?? row.makuri_rate ?? null, null),
-          makuriSashiRate: finiteNumber(row.makuriSashiRate ?? row.makuri_sashi_rate ?? null, null),
-          course6TrifectaRate: finiteNumber(row.course6TrifectaRate ?? row.course6_trifecta_rate ?? null, null)
+          escapeRate: playerTendency.escapeRate,
+          nigashiRate: playerTendency.nigashiRate,
+          sashiRate: playerTendency.sashiRate,
+          makuriRate: playerTendency.makuriRate,
+          makuriSashiRate: playerTendency.makuriSashiRate,
+          course6TrifectaRate: playerTendency.course6TrifectaRate
         },
         flyingCount: finiteNumber(row.racer_flying_count, 0),
         lateCount: finiteNumber(row.racer_late_count, 0)
@@ -333,15 +338,64 @@ function getVenueLaneBias(config, stadiumNumber, lane) {
   return source?.[`${stadiumNumber}-${lane}`] || source?.[String(stadiumNumber)]?.[String(lane)] || null;
 }
 
+function pickFiniteFrom(source = {}, row = {}, keys = []) {
+  for (const key of keys) {
+    const value = source?.[key] ?? row?.[key];
+    const n = finiteNumber(value, null);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function normalizePlayerTendency(row = {}, boat = null, course = null) {
+  const source =
+    row?.playerTendency && typeof row.playerTendency === "object"
+      ? row.playerTendency
+      : row?.racerCourseStats && typeof row.racerCourseStats === "object"
+        ? row.racerCourseStats
+        : {};
+  return {
+    boat,
+    racerId: source.racerId ?? source.racer_id ?? row.racer_number ?? row.racerId ?? null,
+    course,
+    escapeRate: pickFiniteFrom(source, row, ["escapeRate", "escape_rate", "course1EscapeRate"]),
+    nigashiRate: pickFiniteFrom(source, row, ["nigashiRate", "nigashi_rate", "course2NigashiRate"]),
+    sashiRate: pickFiniteFrom(source, row, ["sashiRate", "sashi_rate", "course2SashiRate"]),
+    makuriRate: pickFiniteFrom(source, row, ["makuriRate", "makuri_rate"]),
+    makuriSashiRate: pickFiniteFrom(source, row, ["makuriSashiRate", "makuri_sashi_rate", "makurisashiRate", "makurisashi_rate"]),
+    course6TrifectaRate: pickFiniteFrom(source, row, ["course6TrifectaRate", "course6_trifecta_rate"]),
+    avgStartTiming: pickFiniteFrom(source, row, ["avgStartTiming", "avg_start_timing", "averageStartTiming", "racer_average_start_timing"]),
+    lateStartRate: pickFiniteFrom(source, row, ["lateStartRate", "late_start_rate", "delayRate", "delay_rate"]),
+    exhibitionToRealStartGap: pickFiniteFrom(source, row, ["exhibitionToRealStartGap", "exhibition_to_real_start_gap"]),
+    fCount: pickFiniteFrom(source, row, ["fCount", "f_count", "flyingCount", "racer_flying_count"]),
+    localWinRate: pickFiniteFrom(source, row, ["localWinRate", "local_win_rate", "racer_local_top_1_percent"]),
+    laneQuinellaRate: pickFiniteFrom(source, row, ["laneQuinellaRate", "lane_quinella_rate", "lane2RenRate", "lane2renScore", "lane2renAvg"]),
+    laneTrifectaRate: pickFiniteFrom(source, row, ["laneTrifectaRate", "lane_trifecta_rate", "lane3RenRate", "lane3renScore", "lane3renAvg"])
+  };
+}
+
+function rateDelta(value, center = 0.5) {
+  const n = optionalRate01(value);
+  return n === null ? 0 : n - center;
+}
+
+function positiveRateLift(value, threshold = 0.5) {
+  const n = optionalRate01(value);
+  return n === null ? 0 : Math.max(0, n - threshold);
+}
+
 function buildScores(boats, exhibition, config) {
   const timeZ = exhibition.exhibitionTimeByBoat ? zScores(exhibition.exhibitionTimeByBoat) : {};
   const lapValues = Object.fromEntries(boats.filter((boat) => boat.lapTime !== null).map((boat) => [boat.boat, boat.lapTime]));
   const lapZ = Object.keys(lapValues).length >= 2 ? zScores(lapValues) : {};
   const straightValues = Object.fromEntries(boats.filter((boat) => boat.straightTime !== null).map((boat) => [boat.boat, boat.straightTime]));
   const straightZ = Object.keys(straightValues).length >= 2 ? zScores(straightValues) : {};
+  const turnValues = Object.fromEntries(boats.filter((boat) => boat.turnTime !== null).map((boat) => [boat.boat, boat.turnTime]));
+  const turnZ = Object.keys(turnValues).length >= 2 ? zScores(turnValues) : {};
   const courses = exhibition.entryCourseByBoat || Object.fromEntries(boats.map((boat) => [boat.boat, boat.boat]));
   return boats.map((boat) => {
     const course = finiteNumber(courses[boat.boat], boat.boat);
+    const tendency = boat.playerTendency || {};
     const venueBias = getVenueLaneBias(config, boat.raw?.race_stadium_number, course) || getVenueLaneBias(config, config?.stadiumNumber, course);
     const venueBiasBoost = venueBias
       ? (
@@ -350,15 +404,26 @@ function buildScores(boats, exhibition, config) {
       ) * 0.12
       : 0;
     const techniqueBoost =
-      ((optionalRate01(boat.techniqueStats.escapeRate) ?? 0.5) - 0.5) * (course === 1 ? 0.08 : 0) +
-      ((optionalRate01(boat.techniqueStats.sashiRate) ?? 0.5) - 0.5) * (course === 2 ? 0.07 : 0) +
-      ((optionalRate01(boat.techniqueStats.makuriRate) ?? 0.5) - 0.5) * ([3, 4].includes(course) ? 0.07 : 0) +
-      ((optionalRate01(boat.techniqueStats.makuriSashiRate) ?? 0.5) - 0.5) * ([3, 4, 5].includes(course) ? 0.07 : 0);
+      rateDelta(tendency.escapeRate) * (course === 1 ? 0.12 : 0) +
+      rateDelta(tendency.sashiRate) * (course === 2 ? 0.1 : 0) -
+      rateDelta(tendency.nigashiRate) * (course === 2 ? 0.05 : 0) +
+      rateDelta(tendency.makuriRate) * ([3, 4].includes(course) ? 0.1 : 0) +
+      rateDelta(tendency.makuriSashiRate) * ([3, 4, 5].includes(course) ? 0.11 : 0) +
+      rateDelta(tendency.laneQuinellaRate) * 0.05 +
+      rateDelta(tendency.laneTrifectaRate) * 0.04;
+    const startTendencyBoost =
+      tendency.avgStartTiming !== null && tendency.avgStartTiming !== undefined
+        ? (startTimingScore(tendency.avgStartTiming, 0.5) - 0.5) * (course === 1 ? 0.08 : 0.04)
+        : 0;
+    const lateRatePenalty = positiveRateLift(tendency.lateStartRate, 0.12) * (course === 1 ? 0.18 : 0.08);
     const lapBoost = Object.prototype.hasOwnProperty.call(lapZ, String(boat.boat))
       ? clamp(-Number(lapZ[String(boat.boat)] || 0) / 2, -0.4, 0.4) * 0.08
       : 0;
     const straightBoost = Object.prototype.hasOwnProperty.call(straightZ, String(boat.boat))
       ? clamp(-Number(straightZ[String(boat.boat)] || 0) / 2, -0.4, 0.4) * (course >= 3 ? 0.1 : 0.04)
+      : 0;
+    const turnBoost = Object.prototype.hasOwnProperty.call(turnZ, String(boat.boat))
+      ? clamp(-Number(turnZ[String(boat.boat)] || 0) / 2, -0.4, 0.4) * ([2, 3, 4, 5].includes(course) ? 0.1 : 0.05)
       : 0;
     const base =
       config.baseWeights.laneBias * laneBias01(course) +
@@ -385,8 +450,8 @@ function buildScores(boats, exhibition, config) {
     return {
       ...boat,
       course,
-      score: base + exhibitionTimeBoost + exhibitionStBoost + entryBoost + makuriBoost + lapBoost + straightBoost + techniqueBoost + venueBiasBoost,
-      scoreParts: { base, exhibitionTimeBoost, exhibitionStBoost, entryBoost, makuriBoost, lapBoost, straightBoost, techniqueBoost, venueBiasBoost }
+      score: base + exhibitionTimeBoost + exhibitionStBoost + entryBoost + makuriBoost + lapBoost + straightBoost + turnBoost + techniqueBoost + startTendencyBoost + venueBiasBoost - lateRatePenalty,
+      scoreParts: { base, exhibitionTimeBoost, exhibitionStBoost, entryBoost, makuriBoost, lapBoost, straightBoost, turnBoost, techniqueBoost, startTendencyBoost, lateRatePenalty, venueBiasBoost }
     };
   });
 }
@@ -553,7 +618,20 @@ export function buildDevelopmentScenarios(prediction = {}) {
   const lapZ = Object.keys(lapValues).length >= 2 ? zScores(lapValues) : {};
   const straightValues = Object.fromEntries(prediction.scoredBoats.filter((boat) => boat.straightTime !== null).map((boat) => [boat.boat, boat.straightTime]));
   const straightZ = Object.keys(straightValues).length >= 2 ? zScores(straightValues) : {};
-  const boat1TrustLow = p(1) < 0.34 || (prediction.exhibition?.exhibitionStartByBoat && startTimingScore(exSt[1], 0.5) < 0.45) || Number(timeZ["1"] || 0) > 0.6 || Number(lapZ["1"] || 0) > 0.6;
+  const turnValues = Object.fromEntries(prediction.scoredBoats.filter((boat) => boat.turnTime !== null).map((boat) => [boat.boat, boat.turnTime]));
+  const turnZ = Object.keys(turnValues).length >= 2 ? zScores(turnValues) : {};
+  const t1 = boat1.playerTendency || {};
+  const t2 = boat2.playerTendency || {};
+  const t3 = boat3.playerTendency || {};
+  const t4 = boat4.playerTendency || {};
+  const boat1EscapeWeak = optionalRate01(t1.escapeRate) !== null && optionalRate01(t1.escapeRate) < 0.42;
+  const boat1LateRisk = optionalRate01(t1.lateStartRate) !== null && optionalRate01(t1.lateStartRate) >= 0.18;
+  const boat2SashiUpset = (optionalRate01(t2.nigashiRate) !== null && optionalRate01(t2.nigashiRate) < 0.42) && (optionalRate01(t2.sashiRate) !== null && optionalRate01(t2.sashiRate) > 0.55);
+  const boat3AttackReady =
+    (positiveRateLift(t3.makuriRate, 0.56) > 0 || positiveRateLift(t3.makuriSashiRate, 0.56) > 0) &&
+    (startTimingScore(exSt[3], 0.5) > 0.62 || Number(straightZ["3"] || 0) < -0.45);
+  const boat4DevelopSashiReady = boat3AttackReady && positiveRateLift(t4.makuriSashiRate, 0.54) > 0;
+  const boat1TrustLow = p(1) < 0.34 || boat1EscapeWeak || boat1LateRisk || (prediction.exhibition?.exhibitionStartByBoat && startTimingScore(exSt[1], 0.5) < 0.45) || Number(timeZ["1"] || 0) > 0.6 || Number(lapZ["1"] || 0) > 0.6;
   const sortedByScore = [...prediction.scoredBoats].sort((a, b) => b.score - a.score);
   const scoreGapSmall = Math.abs((sortedByScore[0]?.score ?? 0) - (sortedByScore[2]?.score ?? 0)) < 0.12;
   const scenarios = [
@@ -561,41 +639,41 @@ export function buildDevelopmentScenarios(prediction = {}) {
       prediction,
       scenarioName: "イン逃げ成功シナリオ",
       attacker: 1,
-      baseScore: p(1) + rateScore(boat1.techniqueStats?.escapeRate, 0.5) * 0.2,
+      baseScore: p(1) + positiveRateLift(t1.escapeRate, 0.5) * 0.35 + (t1.avgStartTiming !== null && t1.avgStartTiming !== undefined ? (startTimingScore(t1.avgStartTiming, 0.5) - 0.5) * 0.18 : 0) - (boat1LateRisk ? 0.12 : 0),
       upsetScore: boat1TrustLow ? 0.2 : 0.05,
       description: "1号艇が先マイして内有利を保つ本線展開。",
       patterns: [[1, 2, "flow"], [1, 3, "flow"]],
-      reasons: []
+      reasons: [positiveRateLift(t1.escapeRate, 0.5) > 0 ? "1号艇の逃げ率が高い" : null, boat1LateRisk ? "1号艇の出遅れ率が高い" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "2号艇差しシナリオ",
       attacker: 2,
-      baseScore: p(2) + rateScore(boat2.techniqueStats?.sashiRate, 0.5) * 0.24 + (boat1TrustLow ? 0.12 : 0),
-      upsetScore: (boat1TrustLow ? 0.35 : 0.12) + (rateScore(boat2.techniqueStats?.nigashiRate, 0.5) < 0.42 ? 0.18 : 0),
+      baseScore: p(2) + positiveRateLift(t2.sashiRate, 0.5) * 0.42 + (Number(turnZ["2"] || 0) < -0.45 ? 0.1 : 0) + (boat1TrustLow ? 0.12 : 0),
+      upsetScore: (boat1TrustLow ? 0.35 : 0.12) + (boat2SashiUpset ? 0.24 : 0),
       description: "1号艇の踏み込みが甘い場合、2号艇の差し抜けや1残しを警戒。",
       patterns: [[2, 1, "flow"], [2, 3, "flow"], [2, 4, "flow"]],
-      reasons: [boat1TrustLow ? "1号艇の信頼度が低め" : null, rateScore(boat2.techniqueStats?.sashiRate, 0.5) > 0.58 ? "2号艇の差し率が高い" : null]
+      reasons: [boat1TrustLow ? "1号艇の信頼度が低め" : null, boat2SashiUpset ? "2号艇の逃がし率が低く差し率が高い" : null, Number(turnZ["2"] || 0) < -0.45 ? "2号艇のまわり足が良い" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "3号艇まくりシナリオ",
       attacker: 3,
-      baseScore: p(3) + rateScore(boat3.techniqueStats?.makuriRate, 0.5) * 0.22 + (startTimingScore(exSt[3], 0.5) > 0.65 ? 0.12 : 0) + (Number(straightZ["3"] || 0) < -0.5 ? 0.1 : 0),
-      upsetScore: (boat1TrustLow ? 0.25 : 0.12) + (startTimingScore(exSt[3], 0.5) > 0.65 ? 0.22 : 0) + (scoreGapSmall ? 0.12 : 0) + (Number(straightZ["3"] || 0) < -0.5 ? 0.18 : 0),
+      baseScore: p(3) + positiveRateLift(t3.makuriRate, 0.5) * 0.4 + (startTimingScore(exSt[3], 0.5) > 0.65 ? 0.12 : 0) + (Number(straightZ["3"] || 0) < -0.5 ? 0.12 : 0),
+      upsetScore: (boat1TrustLow ? 0.25 : 0.12) + (boat3AttackReady ? 0.26 : 0) + (scoreGapSmall ? 0.12 : 0),
       description: "3号艇が先に握ると内が抵抗して隊形が崩れる可能性。直線が良ければまくり切りも警戒。",
       patterns: [[3, 1, "flow"], [3, 4, "flow"], [3, 5, "flow"]],
-      reasons: [startTimingScore(exSt[3], 0.5) > 0.65 ? "3号艇の展示STが早い" : null, Number(straightZ["3"] || 0) < -0.5 ? "3号艇の直線が速い" : null, scoreGapSmall ? "上位評価の差が小さい" : null]
+      reasons: [positiveRateLift(t3.makuriRate, 0.56) > 0 ? "3号艇のまくり率が高い" : null, startTimingScore(exSt[3], 0.5) > 0.65 ? "3号艇の展示STが早い" : null, Number(straightZ["3"] || 0) < -0.5 ? "3号艇の直線が速い" : null, scoreGapSmall ? "上位評価の差が小さい" : null]
     }),
     buildScenarioRow({
       prediction,
       scenarioName: "3号艇まくり差しシナリオ",
       attacker: 3,
-      baseScore: p(3) + rateScore(boat3.techniqueStats?.makuriSashiRate, 0.5) * 0.24 + (Number(timeZ["3"] || 0) < -0.5 ? 0.1 : 0),
+      baseScore: p(3) + positiveRateLift(t3.makuriSashiRate, 0.5) * 0.44 + (Number(timeZ["3"] || 0) < -0.5 ? 0.1 : 0) + (Number(turnZ["3"] || 0) < -0.45 ? 0.1 : 0),
       upsetScore: (boat1TrustLow ? 0.22 : 0.1) + (Number(timeZ["3"] || 0) < -0.5 ? 0.2 : 0),
       description: "3号艇が握りながら差し場を拾う展開。1残しと4連動を重視。",
       patterns: [[3, 1, "flow"], [3, 4, "flow"], [1, 3, "flow"]],
-      reasons: [Number(timeZ["3"] || 0) < -0.5 ? "3号艇の展示タイムが良い" : null]
+      reasons: [positiveRateLift(t3.makuriSashiRate, 0.56) > 0 ? "3号艇のまくり差し率が高い" : null, Number(timeZ["3"] || 0) < -0.5 ? "3号艇の展示タイムが良い" : null, Number(turnZ["3"] || 0) < -0.45 ? "3号艇のまわり足が良い" : null]
     }),
     buildScenarioRow({
       prediction,
@@ -611,11 +689,11 @@ export function buildDevelopmentScenarios(prediction = {}) {
       prediction,
       scenarioName: "4号艇まくり差しシナリオ",
       attacker: 4,
-      baseScore: p(4) + rateScore(boat4.techniqueStats?.makuriSashiRate, 0.5) * 0.26 + (Number(timeZ["4"] || 0) < -0.45 ? 0.1 : 0) + (Number(straightZ["4"] || 0) < -0.5 ? 0.1 : 0),
-      upsetScore: (boat1TrustLow ? 0.24 : 0.12) + (p(3) > p(2) ? 0.12 : 0) + (scoreGapSmall ? 0.1 : 0) + (Number(straightZ["4"] || 0) < -0.5 ? 0.16 : 0),
+      baseScore: p(4) + positiveRateLift(t4.makuriSashiRate, 0.5) * 0.48 + (Number(timeZ["4"] || 0) < -0.45 ? 0.1 : 0) + (Number(straightZ["4"] || 0) < -0.5 ? 0.1 : 0),
+      upsetScore: (boat1TrustLow ? 0.24 : 0.12) + (boat4DevelopSashiReady ? 0.22 : p(3) > p(2) ? 0.1 : 0) + (scoreGapSmall ? 0.1 : 0) + (Number(straightZ["4"] || 0) < -0.5 ? 0.16 : 0),
       description: "3号艇が攻めて内を動かし、4号艇が差し場を突く形に注意。直線が良い外艇は抜け出しもある。",
       patterns: [[4, 3, "flow"], [4, 1, "flow"], [3, 4, "flow"]],
-      reasons: [p(3) > p(2) ? "3号艇攻めから4号艇差しの形があり得る" : null, Number(straightZ["4"] || 0) < -0.5 ? "4号艇の直線が速い" : null, scoreGapSmall ? "1着候補が割れている" : null]
+      reasons: [boat4DevelopSashiReady ? "3号艇攻めから4号艇まくり差し率が生きる" : p(3) > p(2) ? "3号艇攻めから4号艇差しの形があり得る" : null, Number(straightZ["4"] || 0) < -0.5 ? "4号艇の直線が速い" : null, scoreGapSmall ? "1着候補が割れている" : null]
     }),
     buildScenarioRow({
       prediction,
@@ -624,7 +702,7 @@ export function buildDevelopmentScenarios(prediction = {}) {
       baseScore: p(5) + percent01(boat5.motor2Rate, 0.4) * 0.15 + (Number(lapZ["5"] || 0) < -0.6 ? 0.12 : 0) + (Number(straightZ["5"] || 0) < -0.6 ? 0.12 : 0),
       upsetScore: (Number(lapZ["5"] || 0) < -0.6 ? 0.25 : 0.1) + (Number(straightZ["5"] || 0) < -0.6 ? 0.2 : 0) + (percent01(boat5.motor2Rate, 0.4) > 0.45 ? 0.12 : 0),
       description: "内の攻め合いが長引くと5号艇が展開を突いて連に絡む筋。",
-      patterns: [[5, 1, "flow"], [5, 3, "flow"], [5, 4, "flow"]],
+      patterns: [[1, 5, "flow"], [3, 5, "flow"], [4, 5, "flow"]],
       reasons: [Number(lapZ["5"] || 0) < -0.6 ? "5号艇のLap Timeが良い" : null, Number(straightZ["5"] || 0) < -0.6 ? "5号艇の直線が速い" : null, percent01(boat5.motor2Rate, 0.4) > 0.45 ? "5号艇のモーター2連率が高い" : null]
     }),
     buildScenarioRow({
@@ -634,7 +712,7 @@ export function buildDevelopmentScenarios(prediction = {}) {
       baseScore: p(6) + percent01(boat6.motor2Rate, 0.4) * 0.15 + rateScore(boat6.techniqueStats?.course6TrifectaRate, 0.45) * 0.12 + (Number(straightZ["6"] || 0) < -0.6 ? 0.1 : 0),
       upsetScore: (Number(lapZ["6"] || 0) < -0.6 ? 0.22 : 0.08) + (Number(straightZ["6"] || 0) < -0.6 ? 0.18 : 0) + (percent01(boat6.motor2Rate, 0.4) > 0.45 ? 0.12 : 0),
       description: "外枠でも機力や残り足が上位なら、崩れた展開で3着穴まで。",
-      patterns: [[6, 1, "flow"], [6, 3, "flow"], [6, 4, "flow"]],
+      patterns: [[1, 6, "flow"], [3, 6, "flow"], [4, 6, "flow"]],
       reasons: [Number(lapZ["6"] || 0) < -0.6 ? "6号艇のLap Timeが良い" : null, Number(straightZ["6"] || 0) < -0.6 ? "6号艇の直線が速い" : null, percent01(boat6.motor2Rate, 0.4) > 0.45 ? "6号艇のモーター2連率が高い" : null]
     })
   ];
@@ -712,6 +790,9 @@ export function buildConfidenceScore(prediction = {}) {
   const firstRows = Array.isArray(prediction.firstPlaceProbabilities) ? prediction.firstPlaceProbabilities : [];
   const scoredBoats = Array.isArray(prediction.scoredBoats) ? prediction.scoredBoats : [];
   const boat1 = scoredBoats.find((boat) => boat.boat === 1) || {};
+  const boat2 = scoredBoats.find((boat) => boat.boat === 2) || {};
+  const boat3 = scoredBoats.find((boat) => boat.boat === 3) || {};
+  const boat4 = scoredBoats.find((boat) => boat.boat === 4) || {};
   const boat1First = firstRows.find((row) => row.boat === 1)?.probability ?? 0;
   const counterFirst = firstRows.find((row) => row.boat !== 1)?.probability ?? 0;
   const outsideHead = firstRows
@@ -729,6 +810,17 @@ export function buildConfidenceScore(prediction = {}) {
   const developmentPenalty = Array.isArray(prediction.extraTickets)
     ? Math.min(8, prediction.extraTickets.length * 1.2)
     : 0;
+  const extraTicketCount = Array.isArray(prediction.extraTickets) ? prediction.extraTickets.length : 0;
+  const boat1EscapeSupport =
+    positiveRateLift(boat1.playerTendency?.escapeRate, 0.55) * 16 +
+    positiveRateLift(boat2.playerTendency?.nigashiRate, 0.55) * 12;
+  const boat1LateRatePenalty = positiveRateLift(boat1.playerTendency?.lateStartRate, 0.12) * 28;
+  const clearAttackBoat =
+    positiveRateLift(boat3.playerTendency?.makuriRate, 0.56) > 0 ||
+    positiveRateLift(boat3.playerTendency?.makuriSashiRate, 0.56) > 0 ||
+    positiveRateLift(boat4.playerTendency?.makuriRate, 0.56) > 0 ||
+    positiveRateLift(boat4.playerTendency?.makuriSashiRate, 0.56) > 0;
+  const tooManyUpsetsPenalty = Math.max(0, extraTicketCount - 3) * 1.4;
   const entryUnconfirmed = prediction.exhibition?.entryCourseByBoat ? 0 : 1;
   const boat1ExhibitionStScore = prediction.exhibition?.exhibitionStartByBoat
     ? startTimingScore(prediction.exhibition.exhibitionStartByBoat[1], 0.45)
@@ -749,12 +841,19 @@ export function buildConfidenceScore(prediction = {}) {
     (topSplitPenalty * 18) -
     (entryUnconfirmed * 4) -
     fHolderPenalty -
-    developmentPenalty;
+    developmentPenalty +
+    boat1EscapeSupport -
+    boat1LateRatePenalty -
+    tooManyUpsetsPenalty;
   const warnings = [];
   if (entryUnconfirmed) warnings.push("進入未確定のため直前展示で再確認");
   if (outsideHead >= 0.18) warnings.push("5・6号艇の頭浮上余地あり");
   if (topSplitPenalty > 0.08) warnings.push("1着候補が割れている");
   if (fHolderPenalty > 0) warnings.push("F持ちの影響を評価に反映");
+  if (boat1EscapeSupport > 0) warnings.push("1号艇逃げ率と2号艇逃がし率を信頼度に反映");
+  if (boat1LateRatePenalty > 0) warnings.push("1号艇の出遅れ率が高い");
+  if (clearAttackBoat) warnings.push("攻め艇が明確で穴候補あり");
+  if (tooManyUpsetsPenalty > 0) warnings.push("穴候補が多く本線信頼度を抑制");
   if (prediction.exhibition?.status !== "exhibition_reflected") warnings.push("展示前の出走表ベース予想");
   return {
     score: Math.round(clamp(score, 0, 100)),
@@ -770,7 +869,12 @@ export function buildConfidenceScore(prediction = {}) {
       topScoreGap,
       entryUnconfirmed,
       fHolderPenalty,
-      developmentPenalty
+      developmentPenalty,
+      boat1EscapeSupport,
+      boat1LateRatePenalty,
+      clearAttackBoat,
+      extraTicketCount,
+      tooManyUpsetsPenalty
     }
   };
 }
