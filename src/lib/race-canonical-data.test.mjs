@@ -38,6 +38,47 @@ function originalRows() {
   ];
 }
 
+function tendencyRows() {
+  return [
+    {
+      boat: 1,
+      course: 1,
+      racerId: "101",
+      last6mRaceCount: 30,
+      allCourseLast6mRaceCount: 44,
+      courseSpecificLast6mRaceCount: 30,
+      sampleStatus: "ok",
+      matchMethod: "racerId",
+      courseSource: "actual",
+      allCourseWinRate: 0.27,
+      allCourseSashiRate: 0.08,
+      allCourseAvgST: 0.16,
+      escapeRate: 0.62,
+      beatenBySashiRate: 0.18,
+      beatenByMakuriRate: 0.1,
+      beatenByMakuriSashiRate: 0.07,
+      avgST: null
+    },
+    {
+      boat: 2,
+      course: 2,
+      racerId: "102",
+      last6mRaceCount: 28,
+      sashiRate: 0.22,
+      makuriRate: 0.08,
+      makuriSashiRate: 0.12
+    },
+    {
+      boat: 5,
+      course: 6,
+      coursePredicted: false,
+      racerId: "105",
+      last6mRaceCount: 12,
+      sashiRate: 0.05
+    }
+  ];
+}
+
 {
   const canonical = buildCanonicalRaceData({
     date: "2026-06-03",
@@ -109,6 +150,60 @@ function originalRows() {
   assert.equal(scoredBoat1.lapTime, canonical.entries[0].lapTime);
   assert.equal(scoredBoat1.straightTime, canonical.entries[0].straightTime);
   assert.equal(scoredBoat1.turnTime, canonical.entries[0].turnTime);
+}
+
+{
+  const canonical = buildCanonicalRaceData({
+    program: program({
+      1: { escapeRate: null, beatenBySashiRate: null },
+      2: { sashiRate: 0.31 },
+      3: { playerTendency: { makuriRate: 22 } }
+    }),
+    originalExhibitionRows: originalRows(),
+    tendencyRows: tendencyRows()
+  });
+  const boat1 = canonical.entries.find((row) => row.boat === 1);
+  const boat2 = canonical.entries.find((row) => row.boat === 2);
+  const boat3 = canonical.entries.find((row) => row.boat === 3);
+  const boat5 = canonical.entries.find((row) => row.boat === 5);
+  const predictionBoat1 = canonical.debug.predictionInputProgram.boats.find((row) => Number(row.boat) === 1);
+  assert.equal(boat1.escapeRate, 0.62);
+  assert.equal(boat1.beatenBySashiRate, 0.18);
+  assert.equal(boat1.avgST, null);
+  assert.equal(boat1.allCourseLast6mRaceCount, 44);
+  assert.equal(boat1.courseSpecificLast6mRaceCount, 30);
+  assert.equal(boat1.sampleStatus, "ok");
+  assert.equal(boat1.allCourseWinRate, 0.27);
+  assert.equal(boat1.allCourseSashiRate, 0.08);
+  assert.equal(boat1.allCourseAvgST, 0.16);
+  assert.equal(boat2.sashiRate, 0.31, "non-null canonical values must not be overwritten");
+  assert.equal(boat3.makuriRate, 0.22, "legacy percent tendency values should normalize to 0-1");
+  assert.equal(boat5.course, 6, "confirmed tendency course should replace predicted lane order");
+  assert.equal(boat5.coursePredicted, false);
+  assert.equal(predictionBoat1.playerTendency.beatenByMakuriRate, 0.1);
+  assert.equal(predictionBoat1.playerTendency.sampleStatus, "ok");
+  assert.equal(predictionBoat1.playerTendency.allCourseWinRate, 0.27);
+  assert.equal(canonical.debug.canonicalTendencyCounts.escapeRate, 1);
+  assert.equal(canonical.debug.tendencyPreview[0].last6mRaceCount, 30);
+}
+
+{
+  const canonical = buildCanonicalRaceData({
+    program: program(),
+    tendencyRows: [
+      {
+        boat: 6,
+        course: 2,
+        coursePredicted: false,
+        racerId: "101",
+        sashiRate: 0.44
+      }
+    ]
+  });
+  const boat1 = canonical.entries.find((row) => row.boat === 1);
+  const boat6 = canonical.entries.find((row) => row.boat === 6);
+  assert.equal(boat1.sashiRate, 0.44, "racerId match should merge even when boat number differs");
+  assert.equal(boat6.sashiRate, null, "boat fallback must not merge a different racerId");
 }
 
 console.log("race-canonical-data ok");

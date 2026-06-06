@@ -310,4 +310,126 @@ assert.ok(
   "missing original exhibition values should not crash and should warn"
 );
 
+const noTendencyPrediction = buildRacePrediction(originalMetricProgram(), null);
+const sashiTendencyPrediction = buildRacePrediction(originalMetricProgram({
+  1: { playerTendency: { beatenBySashiRate: 0.34 } },
+  2: { turnTime: 4.22, playerTendency: { sashiRate: 0.35 } }
+}), null);
+assert.ok(
+  sashiTendencyPrediction.developmentScenarios.find((row) => row.scenarioName === "2号艇差しシナリオ").upsetScore >
+    noTendencyPrediction.developmentScenarios.find((row) => row.scenarioName === "2号艇差しシナリオ").upsetScore,
+  "boat 1 beatenBySashiRate and boat 2 sashiRate should lift the 2-sashi scenario"
+);
+assert.ok(
+  sashiTendencyPrediction.extraTickets.some((ticket) => ticket.combo.startsWith("2-1-") || ticket.combo.startsWith("2-3-")),
+  "strong 2-sashi tendency should generate 2-head upset tickets"
+);
+
+const makuriTendencyPrediction = buildRacePrediction(originalMetricProgram({
+  1: { playerTendency: { beatenByMakuriRate: 0.28 } },
+  2: { playerTendency: { lateStartRate: 0.24 } },
+  3: { exST: 0.06, straightTime: 7.22, playerTendency: { makuriRate: 0.32 } },
+  4: { exST: 0.08, straightTime: 7.28, playerTendency: { makuriRate: 0.24 } }
+}), null);
+assert.ok(
+  makuriTendencyPrediction.developmentScenarios.find((row) => row.scenarioName === "3号艇まくりシナリオ").upsetScore >
+    noTendencyPrediction.developmentScenarios.find((row) => row.scenarioName === "3号艇まくりシナリオ").upsetScore,
+  "boat 1 beatenByMakuriRate should lift 3/4 makuri scenarios"
+);
+assert.ok(
+  makuriTendencyPrediction.extraTickets.some((ticket) => ticket.combo.startsWith("3-1-") || ticket.combo.startsWith("3-4-")),
+  "boat 3 makuriRate should generate 3-head upset tickets"
+);
+
+const okSampleSashiPrediction = buildRacePrediction(program({
+  boatOverrides: {
+    1: { playerTendency: { beatenBySashiRate: 0.6, courseSpecificLast6mRaceCount: 12, sampleStatus: "ok" } },
+    2: { playerTendency: { sashiRate: 0.8, courseSpecificLast6mRaceCount: 12, sampleStatus: "ok" } }
+  }
+}), null);
+const verySmallSashiPrediction = buildRacePrediction(program({
+  boatOverrides: {
+    1: { playerTendency: { beatenBySashiRate: 0.6, courseSpecificLast6mRaceCount: 1, sampleStatus: "very_small_sample" } },
+    2: { playerTendency: { sashiRate: 0.8, courseSpecificLast6mRaceCount: 1, sampleStatus: "very_small_sample" } }
+  }
+}), null);
+const smallSashiPrediction = buildRacePrediction(program({
+  boatOverrides: {
+    1: { playerTendency: { beatenBySashiRate: 0.6, courseSpecificLast6mRaceCount: 5, sampleStatus: "small_sample" } },
+    2: { playerTendency: { sashiRate: 0.8, courseSpecificLast6mRaceCount: 5, sampleStatus: "small_sample" } }
+  }
+}), null);
+const insufficientSashiPrediction = buildRacePrediction(program({
+  boatOverrides: {
+    1: { playerTendency: { beatenBySashiRate: 0.6, courseSpecificLast6mRaceCount: 0, sampleStatus: "insufficient_history" } },
+    2: { playerTendency: { sashiRate: 0.8, courseSpecificLast6mRaceCount: 0, sampleStatus: "insufficient_history" } }
+  }
+}), null);
+const scenarioScore = (prediction, name) =>
+  prediction.developmentScenarios.find((row) => row.scenarioName === name)?.upsetScore ?? 0;
+assert.ok(
+  scenarioScore(okSampleSashiPrediction, "2号艇差しシナリオ") >
+    scenarioScore(smallSashiPrediction, "2号艇差しシナリオ") &&
+    scenarioScore(smallSashiPrediction, "2号艇差しシナリオ") >=
+    scenarioScore(verySmallSashiPrediction, "2号艇差しシナリオ"),
+  "tendency scenario weighting should decrease as sample size gets smaller"
+);
+assert.ok(
+  scenarioScore(verySmallSashiPrediction, "2号艇差しシナリオ") >=
+    scenarioScore(insufficientSashiPrediction, "2号艇差しシナリオ"),
+  "very small samples may be a weak reference while insufficient samples must have no course-specific lift"
+);
+assert.equal(
+  verySmallSashiPrediction.extraTickets.some((ticket) => ticket.combo.startsWith("2-")),
+  false,
+  "very small tendency samples must not independently generate strong 2-head upset tickets"
+);
+assert.ok(
+  buildConfidenceScore(verySmallSashiPrediction).warnings.includes("直近6か月のコース別戦法データはサンプル不足のため、展示ST・展示タイム・周回・直線・まわり足を中心に評価しています。")
+);
+assert.ok(
+  verySmallSashiPrediction.scenario.main.text.includes("直近6か月のコース別戦法データはサンプル不足")
+);
+assert.equal(
+  insufficientSashiPrediction.scoredBoats.find((row) => row.boat === 2)?.scoreParts?.techniqueBoost,
+  0,
+  "insufficient course-specific tendency must not affect scoring"
+);
+
+const allCourseFallbackPrediction = buildRacePrediction(program({
+  boatOverrides: {
+    2: {
+      playerTendency: {
+        courseSpecificLast6mRaceCount: 0,
+        allCourseLast6mRaceCount: 20,
+        sampleStatus: "insufficient_history",
+        allCourseWinRate: 0.7,
+        allCourseSashiRate: 0.4
+      }
+    }
+  }
+}), null);
+const allCourseFallbackBoost = allCourseFallbackPrediction.scoredBoats.find((row) => row.boat === 2)?.scoreParts?.allCourseReferenceBoost ?? 0;
+assert.ok(allCourseFallbackBoost > 0 && allCourseFallbackBoost < 0.02, "all-course rates should remain a weak fallback reference");
+
+const nullTendencyPrediction = buildRacePrediction(program({
+  boatOverrides: Object.fromEntries(
+    [1, 2, 3, 4, 5, 6].map((boat) => [boat, {
+      playerTendency: {
+        escapeRate: null,
+        beatenBySashiRate: null,
+        beatenByMakuriRate: null,
+        sashiRate: null,
+        makuriRate: null,
+        makuriSashiRate: null
+      }
+    }])
+  )
+}), null);
+assert.equal(nullTendencyPrediction.scoredBoats.length, 6);
+assert.equal(nullTendencyPrediction.tendencySummary.available, false);
+assert.ok(
+  buildConfidenceScore(nullTendencyPrediction).warnings.includes("直近6か月の戦法データ未取得のため、展示・モーター中心で予想")
+);
+
 console.log("kyotei-openapi-engine ok");

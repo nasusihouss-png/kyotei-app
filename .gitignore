@@ -12,6 +12,7 @@ dist
 dist-ssr
 *.local
 backend/debug/
+backend/data/history/
 
 # Editor directories and files
 .vscode/*

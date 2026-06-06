@@ -2416,6 +2416,185 @@
   overflow-x: auto;
 }
 
+.practical-control-card,
+.practical-section,
+.practical-details,
+.advanced-debug-shell {
+  margin-bottom: 12px;
+}
+
+.compact-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.practical-controls {
+  grid-template-columns: minmax(130px, 1fr) minmax(150px, 1fr) minmax(100px, 0.7fr) minmax(160px, 1fr);
+}
+
+.important-status-stack {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.warning-banner {
+  border: 1px solid rgba(245, 159, 0, 0.45);
+  background: rgba(245, 159, 0, 0.14);
+  color: #ffe8b0;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.compact-warning {
+  font-size: 0.9rem;
+}
+
+.status-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.status-action-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.betting-summary-grid,
+.betting-ticket-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.betting-summary-grid {
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+}
+
+.betting-summary-item,
+.ticket-panel,
+.why-ticket-box,
+.flow-line {
+  border: 1px solid rgba(122, 162, 207, 0.16);
+  background: rgba(9, 17, 28, 0.58);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.betting-summary-item {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+}
+
+.betting-summary-item span,
+.flow-line span,
+.ticket-panel > strong {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.betting-summary-item strong {
+  color: var(--text-strong);
+  font-size: 0.98rem;
+  line-height: 1.35;
+}
+
+.betting-summary-item.primary {
+  border-color: rgba(81, 207, 102, 0.24);
+  background: rgba(19, 45, 35, 0.45);
+}
+
+.betting-summary-item.warning {
+  border-color: rgba(245, 159, 0, 0.36);
+  background: rgba(58, 40, 14, 0.38);
+}
+
+.bet-ticket-list,
+.race-flow-list {
+  display: grid;
+  gap: 8px;
+}
+
+.bet-ticket-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(122, 162, 207, 0.14);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(15, 24, 39, 0.62);
+}
+
+.bet-ticket-row strong {
+  font-size: 1rem;
+}
+
+.bet-ticket-row span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.flow-line {
+  display: grid;
+  gap: 5px;
+}
+
+.flow-line p,
+.why-ticket-box p {
+  margin: 0;
+  color: var(--text-main);
+  line-height: 1.55;
+}
+
+.compact-player-table-wrap {
+  margin-top: 6px;
+}
+
+.compact-player-table-wrap table {
+  min-width: 920px;
+}
+
+.compact-player-table-wrap .metric-hot {
+  color: #b8f7d4;
+  background: rgba(81, 207, 102, 0.11);
+  text-shadow: none;
+}
+
+.compact-data-table th,
+.compact-data-table td {
+  font-size: 12px;
+  padding: 8px 9px;
+}
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.advanced-debug-shell .quick-sheet-panel {
+  background: rgba(9, 17, 28, 0.42);
+}
+
+.debug-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.debug-toggle input {
+  width: 18px;
+  height: 18px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -2515,6 +2694,7 @@ th {
   .prediction-summary-grid,
   .premium-layout,
   .controls-grid,
+  .practical-controls,
   .metric-grid,
   .hardrace-kpi-grid,
   .hardrace-meta-grid,
@@ -2532,6 +2712,25 @@ th {
 
   .history-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .betting-summary-grid,
+  .betting-ticket-grid,
+  .debug-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .betting-summary-item {
+    min-height: 0;
+  }
+
+  .bet-ticket-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .compact-player-table-wrap table {
+    min-width: 840px;
   }
 
   .result-miss-summary {

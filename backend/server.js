@@ -3,6 +3,8 @@ import express from "express";
 import cors from "cors";
 import { raceRouter } from "./src/routes/race.js";
 import { fetchKyoteiBiyoriRaceData } from "./src/services/kyoteibiyori.js";
+import { runHistoryBackfill } from "./src/services/race-history-backfill.js";
+import { fetchRaceTendencies } from "./src/services/racer-tendencies.js";
 import { runPredictionFeatureLogMigrations } from "./prediction-feature-log.js";
 
 const app = express();
@@ -318,6 +320,115 @@ async function handleRaceExhibitionRequest(req, res) {
 
 app.get("/api/race/exhibition", handleRaceExhibitionRequest);
 app.get("/api/race/original-exhibition", handleRaceExhibitionRequest);
+
+app.get("/api/race/history-backfill", async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  const date = String(req.query?.date || "");
+  const targetRace = String(req.query?.targetRace || "");
+  const targetRaceMatch = targetRace.match(/^(\d+)-(\d+)$/);
+  const venueId = toPositiveInt(req.query?.venueId, targetRaceMatch ? Number(targetRaceMatch[1]) : null);
+  const raceNo = toPositiveInt(req.query?.raceNo, targetRaceMatch ? Number(targetRaceMatch[2]) : null);
+  const months = Math.max(1, Math.min(toPositiveInt(req.query?.months, 6), 24));
+  const forceRaw = String(req.query?.force || "").toLowerCase();
+  const force = forceRaw === "1" || forceRaw === "true";
+  const allVenuesRaw = String(req.query?.allVenues || "").toLowerCase();
+  const allVenues = allVenuesRaw === "1" || allVenuesRaw === "true";
+  if (!date || !venueId) {
+    return res.status(400).json({
+      ok: false,
+      attempted: false,
+      fetchedRaceCount: 0,
+      fetchedEntryCount: 0,
+      fetchedResultCount: 0,
+      skippedCount: 0,
+      errors: [{ error: "date and venueId are required" }]
+    });
+  }
+  if (allVenues && !raceNo) {
+    return res.status(400).json({
+      ok: false,
+      attempted: false,
+      allVenues: true,
+      fetchedRaceCount: 0,
+      fetchedEntryCount: 0,
+      fetchedResultCount: 0,
+      skippedCount: 0,
+      errors: [{ error: "raceNo or targetRace is required for all-venue target-racer backfill" }]
+    });
+  }
+  try {
+    if (allVenues) {
+      const tendencyResult = await fetchRaceTendencies({
+        date,
+        venueId,
+        raceNo,
+        months,
+        force,
+        backfill: true,
+        allVenues: true
+      });
+      return res.json({
+        ...(tendencyResult.historyBackfill || {}),
+        tendencyRows: tendencyResult.rows || [],
+        tendencyDebug: tendencyResult.debug || {}
+      });
+    }
+    const result = await runHistoryBackfill({ date, venueId, months, force });
+    return res.json(result);
+  } catch (error) {
+    return res.json({
+      ok: false,
+      attempted: true,
+      allVenues,
+      date,
+      venueId,
+      raceNo,
+      months,
+      fetchedRaceCount: 0,
+      fetchedEntryCount: 0,
+      fetchedResultCount: 0,
+      skippedCount: 0,
+      errors: [{ error: String(error?.message || error) }]
+    });
+  }
+});
+
+app.get("/api/race/tendencies", async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  const date = String(req.query?.date || "");
+  const venueId = toPositiveInt(req.query?.venueId, null);
+  const raceNo = toPositiveInt(req.query?.raceNo, null);
+  const months = Math.max(1, Math.min(toPositiveInt(req.query?.months, 6), 24));
+  const forceRaw = String(req.query?.force || "").toLowerCase();
+  const force = forceRaw === "1" || forceRaw === "true";
+  const backfillRaw = String(req.query?.backfill || "").toLowerCase();
+  const backfill = backfillRaw === "1" || backfillRaw === "true";
+  const allVenuesRaw = String(req.query?.allVenues || "").toLowerCase();
+  const allVenues = allVenuesRaw === "1" || allVenuesRaw === "true";
+  if (!date || !venueId || !raceNo) {
+    return res.status(400).json({
+      ok: false,
+      periodMonths: months,
+      rows: [],
+      source: "none",
+      error: "date, venueId, and raceNo are required",
+      debug: { date, venueId, raceNo, months }
+    });
+  }
+  try {
+    const result = await fetchRaceTendencies({ date, venueId, raceNo, months, force, backfill, allVenues });
+    return res.json(result);
+  } catch (error) {
+    return res.json({
+      ok: false,
+      periodMonths: months,
+      rows: [],
+      source: "error",
+      error: String(error?.message || error),
+      debug: { date, venueId, raceNo, months, backfill, allVenues }
+    });
+  }
+});
 
 app.use("/api", raceRouter);
 

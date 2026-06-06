@@ -28,8 +28,17 @@ import {
   getOriginalExhibitionByBoat,
   mergeDisplayEntriesIntoRows
 } from "./lib/race-data-merge.js";
+import {
+  buildTendencyPreview,
+  countCanonicalTendencyFields
+} from "./lib/racer-tendency-normalizer.js";
 import PlayerBoatTable from "./components/PlayerBoatTable.jsx";
 import KyoteibiyoriDebugPanel from "./components/KyoteibiyoriDebugPanel.jsx";
+import PredictionSummary from "./components/PredictionSummary.jsx";
+import TicketList from "./components/TicketList.jsx";
+import RaceFlowExplanation from "./components/RaceFlowExplanation.jsx";
+import RacerTendencyTable from "./components/RacerTendencyTable.jsx";
+import AdvancedDebugPanel from "./components/AdvancedDebugPanel.jsx";
 
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 const API_BASE = API_BASE_URL ? `${API_BASE_URL}/api` : "/api";
@@ -118,6 +127,60 @@ async function fetchOriginalExhibitionData({ date, venueId, raceNo, force = fals
   };
 }
 
+async function fetchRacerTendencies({
+  date,
+  venueId,
+  raceNo,
+  months = 6,
+  force = false,
+  backfill = false,
+  allVenues = false,
+  signal = null
+}) {
+  const params = new URLSearchParams({
+    date: String(date || ""),
+    venueId: String(venueId || ""),
+    raceNo: String(raceNo || ""),
+    months: String(months)
+  });
+  if (force) params.set("force", "1");
+  if (backfill) params.set("backfill", "1");
+  if (allVenues) params.set("allVenues", "1");
+  const payload = await fetchJsonWithTimeout(`/api/race/tendencies?${params.toString()}`, {
+    timeoutMs: backfill ? 300000 : 30000,
+    cache: "no-store",
+    signal
+  });
+  return {
+    ...payload,
+    rows: safeArray(payload?.rows)
+  };
+}
+
+async function fetchRaceHistoryBackfill({
+  date,
+  venueId,
+  raceNo = null,
+  months = 6,
+  force = false,
+  allVenues = false,
+  signal = null
+}) {
+  const params = new URLSearchParams({
+    date: String(date || ""),
+    venueId: String(venueId || ""),
+    months: String(months)
+  });
+  if (raceNo !== null && raceNo !== undefined) params.set("raceNo", String(raceNo || ""));
+  if (force) params.set("force", "1");
+  if (allVenues) params.set("allVenues", "1");
+  return fetchJsonWithTimeout(`/api/race/history-backfill?${params.toString()}`, {
+    timeoutMs: 300000,
+    cache: "no-store",
+    signal
+  });
+}
+
 function getOpenApiRaceRows(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.races)) return payload.races;
@@ -167,6 +230,37 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
   const originalMetricsWarning = originalMetricsIncomplete
     ? "周回・直線・まわり足データ未取得のため、展示ST・展示タイム・モーター中心で予想"
     : "";
+  const tendencyFields = [
+    "escapeRate",
+    "beatenBySashiRate",
+    "beatenByMakuriRate",
+    "beatenByMakuriSashiRate",
+    "sashiRate",
+    "makuriRate",
+    "makuriSashiRate",
+    "allCourseWinRate",
+    "allCourseSashiRate",
+    "allCourseMakuriRate",
+    "allCourseMakuriSashiRate",
+    "allCourseAvgST",
+    "avgST",
+    "lateStartRate",
+    "earlyStartRate"
+  ];
+  const tendencyRowsWithData = displayEntries.filter((entry) =>
+    tendencyFields.some((field) => entry?.[field] !== null && entry?.[field] !== undefined)
+  ).length;
+  const tendencyAvailable = tendencyRowsWithData > 0;
+  const tendencyOkRows = displayEntries.filter((entry) => entry?.sampleStatus === "ok").length;
+  const tendencySparse = displayEntries.some((entry) =>
+    ["small_sample", "very_small_sample", "insufficient_history"].includes(entry?.sampleStatus)
+  );
+  const tendencyComplete = tendencyRowsWithData >= 6 && tendencyOkRows >= 6;
+  const tendencyWarning = tendencySparse
+    ? "直近6か月のコース別戦法データはサンプル不足のため、展示ST・展示タイム・周回・直線・まわり足を中心に評価しています。"
+    : tendencyAvailable
+      ? ""
+      : "直近6か月の戦法データ未取得のため、展示・モーター中心で予想";
   const racers = prediction.scoredBoats.map((boat) => ({
     ...(() => {
       const displayEntry = displayEntryByBoat.get(Number(boat.boat)) || {};
@@ -190,6 +284,25 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
         lapTime,
         straightTime,
         turnTime,
+        last6mRaceCount: displayEntry?.last6mRaceCount ?? null,
+        courseSpecificLast6mRaceCount: displayEntry?.courseSpecificLast6mRaceCount ?? displayEntry?.last6mRaceCount ?? null,
+        allCourseLast6mRaceCount: displayEntry?.allCourseLast6mRaceCount ?? null,
+        sampleStatus: displayEntry?.sampleStatus ?? null,
+        allCourseWinRate: displayEntry?.allCourseWinRate ?? null,
+        allCourseSashiRate: displayEntry?.allCourseSashiRate ?? null,
+        allCourseMakuriRate: displayEntry?.allCourseMakuriRate ?? null,
+        allCourseMakuriSashiRate: displayEntry?.allCourseMakuriSashiRate ?? null,
+        allCourseAvgST: displayEntry?.allCourseAvgST ?? null,
+        escapeRate: displayEntry?.escapeRate ?? null,
+        beatenBySashiRate: displayEntry?.beatenBySashiRate ?? null,
+        beatenByMakuriRate: displayEntry?.beatenByMakuriRate ?? null,
+        beatenByMakuriSashiRate: displayEntry?.beatenByMakuriSashiRate ?? null,
+        sashiRate: displayEntry?.sashiRate ?? null,
+        makuriRate: displayEntry?.makuriRate ?? null,
+        makuriSashiRate: displayEntry?.makuriSashiRate ?? null,
+        avgST: displayEntry?.avgST ?? null,
+        lateStartRate: displayEntry?.lateStartRate ?? null,
+        earlyStartRate: displayEntry?.earlyStartRate ?? null,
         playerTendency: boat.playerTendency || boat.racerCourseStats || null,
         racerCourseStats: boat.racerCourseStats || boat.playerTendency || null,
         kyoteiBiyoriLapTime: lapTime,
@@ -217,7 +330,13 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
   const baseConfidence = firstRates[0]?.probability ?? null;
   const adjustedConfidence = baseConfidence == null
     ? null
-    : Math.max(0, Math.min(1, baseConfidence + (originalMetricsComplete ? 0.02 : 0) - (originalMetricsIncomplete ? 0.03 : 0)));
+    : Math.max(0, Math.min(
+        1,
+        baseConfidence +
+        (originalMetricsComplete ? 0.02 : 0) -
+        (originalMetricsIncomplete ? 0.03 : 0) +
+        (tendencyComplete ? 0.02 : tendencyAvailable && !tendencySparse ? 0.005 : tendencyAvailable ? 0 : -0.02)
+      ));
   const top6 = prediction.tickets.trifecta.slice(0, 6).map((row, index) => ({
     combo: row.combo,
     probability: row.probability,
@@ -243,6 +362,8 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
       preview_diagnostics: prediction.exhibition.diagnostics || null,
       original_exhibition: openApiModel.originalExhibition || null,
       original_exhibition_warning: originalMetricsWarning || null,
+      racer_tendency: openApiModel.tendency || null,
+      racer_tendency_warning: tendencyWarning || null,
       display_entries: displayEntries,
       field_sources: prediction.exhibition.sourceByField || null
     },
@@ -303,7 +424,7 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
       top6Scenario: scenarioText,
       confidence_score: adjustedConfidence,
       confidence_band: (adjustedConfidence ?? 0) >= 0.45 ? "high" : (adjustedConfidence ?? 0) >= 0.3 ? "medium" : "low",
-      warning: originalMetricsWarning || null,
+      warning: [originalMetricsWarning, tendencyWarning].filter(Boolean).join(" / ") || null,
       buyPolicy: "OpenAPI v2 probability order",
       recommendedBetMode: "probability"
     },
@@ -4422,6 +4543,10 @@ export default function App() {
     return params.get("admin") === "1";
   }, []);
   const [screen, setScreen] = useState("prediction");
+  const [showDebugPanels, setShowDebugPanels] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("kyotei-show-debug-panels") === "1";
+  });
   const [date, setDate] = useState(() => localDateKey());
   const [venueId, setVenueId] = useState(1);
   const [raceNo, setRaceNo] = useState(1);
@@ -4435,10 +4560,17 @@ export default function App() {
   const [originalExhibition, setOriginalExhibition] = useState(null);
   const [originalExhibitionError, setOriginalExhibitionError] = useState("");
   const [originalExhibitionLoading, setOriginalExhibitionLoading] = useState(false);
+  const [tendencyData, setTendencyData] = useState(null);
+  const [racerTendencyError, setRacerTendencyError] = useState("");
+  const [racerTendencyLoading, setRacerTendencyLoading] = useState(false);
+  const [historyBackfillData, setHistoryBackfillData] = useState(null);
+  const [historyBackfillError, setHistoryBackfillError] = useState("");
+  const [historyBackfillLoading, setHistoryBackfillLoading] = useState(false);
   const latestOpenApiRequestKeyRef = useRef("");
   const latestOpenApiRequestIdRef = useRef(0);
   const activeOpenApiAbortRef = useRef(null);
   const openApiLoadingRef = useRef(false);
+  const historyBackfillLoadingRef = useRef(false);
   const [openApiRequestDebug, setOpenApiRequestDebug] = useState({ raceKey: "", requestId: 0 });
   const [todayRankingLoading, setTodayRankingLoading] = useState(false);
   const [todayRankingError, setTodayRankingError] = useState("");
@@ -4450,6 +4582,11 @@ export default function App() {
   const [rankingsData, setRankingsData] = useState([]);
   const [hardRaceCalibration, setHardRaceCalibration] = useState(null);
   const [hardRaceTierFilter, setHardRaceTierFilter] = useState("ALL");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("kyotei-show-debug-panels", showDebugPanels ? "1" : "0");
+  }, [showDebugPanels]);
 
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
@@ -5088,6 +5225,16 @@ export default function App() {
     () => safeArray(currentOriginalExhibition?.rows || canonicalRaceData?.debug?.originalExhibitionRows || data?.source?.original_exhibition?.rows),
     [canonicalRaceData?.debug?.originalExhibitionRows, currentOriginalExhibition?.rows, data?.source?.original_exhibition?.rows]
   );
+  const currentRacerTendency =
+    tendencyData ||
+    canonicalRaceData?.debug?.tendency ||
+    openApiModel?.tendency ||
+    data?.source?.racer_tendency ||
+    null;
+  const racerTendencyRows = useMemo(
+    () => safeArray(currentRacerTendency?.rows || canonicalRaceData?.debug?.tendencyRows),
+    [canonicalRaceData?.debug?.tendencyRows, currentRacerTendency?.rows]
+  );
   const displayRows = useMemo(
     () => canonicalRaceData
       ? safeArray(canonicalRaceData.entries)
@@ -5130,6 +5277,8 @@ export default function App() {
   );
   const kyoteiBiyoriPipelineDebug = useMemo(() => {
     const originalExhibitionDebug = currentOriginalExhibition?.debug || currentOriginalExhibition?.diagnostics || {};
+    const tendencyHistoryDebug = currentRacerTendency?.debug || {};
+    const latestHistoryBackfill = historyBackfillData ?? tendencyHistoryDebug?.historyBackfill ?? null;
     const renderedPresence = getHtmlContainsStage(kyoteiBiyoriFrontendDebug.html_contains, "rendered");
     const parsedRows = safeArray(kyoteiBiyoriFrontendDebug.parsed_lane_stats_rows);
     const renderedMergedRows = safeArray(displayRows);
@@ -5140,6 +5289,42 @@ export default function App() {
     const predictionInputPreview = canonicalRaceData?.debug?.predictionInputPreview || canonicalPreview;
     const featureScorePreview = openApiModel?.prediction?.featureScorePreview || [];
     const scenarioScorePreview = openApiModel?.prediction?.scenarioScorePreview || [];
+    const tendencyScorePreview = openApiModel?.prediction?.tendencyScorePreview || [];
+    const tendencyPreview = buildTendencyPreview(racerTendencyRows);
+    const canonicalTendencyPreview = buildTendencyPreview(canonicalRaceData?.entries || renderedMergedRows);
+    const predictionInputTendencyPreview = buildTendencyPreview(
+      canonicalRaceData?.debug?.predictionInputProgram?.boats || canonicalRaceData?.entries || []
+    );
+    const canonicalTendencyCounts = countCanonicalTendencyFields(canonicalRaceData?.entries || renderedMergedRows);
+    const canonicalTendencyCount = safeArray(canonicalRaceData?.entries || renderedMergedRows).filter((row) =>
+      Object.keys(canonicalTendencyCounts).some((field) => row?.[field] !== null && row?.[field] !== undefined)
+    ).length;
+    const tendencyActualStartTimingAvailable =
+      tendencyHistoryDebug?.actualStartTimingAvailable ??
+      currentRacerTendency?.actualStartTimingAvailable ??
+      null;
+    const tendencyMatchPreview = racerTendencyRows.map((row) => ({
+      boat: row?.boat ?? null,
+      course: row?.course ?? null,
+      courseSource: row?.courseSource ?? null,
+      racerId: row?.racerId ?? null,
+      racerName: row?.racerName ?? null,
+      matchMethod: row?.matchMethod ?? row?.debug?.matchMethod ?? "none",
+      sampleStatus: row?.sampleStatus ?? null,
+      last6mRaceCount: row?.last6mRaceCount ?? 0,
+      allCourseLast6mRaceCount: row?.allCourseLast6mRaceCount ?? row?.debug?.allCourseLast6mRaceCount ?? 0,
+      courseSpecificLast6mRaceCount: row?.courseSpecificLast6mRaceCount ?? row?.debug?.courseSpecificLast6mRaceCount ?? 0,
+      matchedHistoryEntryCount: row?.debug?.matchedHistoryEntryCount ?? 0,
+      matchedCourseEntryCount: row?.debug?.matchedCourseEntryCount ?? 0,
+      matchedResultCount: row?.debug?.matchedResultCount ?? 0,
+      matchedTechniqueCount: row?.debug?.matchedTechniqueCount ?? 0
+    }));
+    const tendencyHistorySummary = racerTendencyRows.map((row) => ({
+      boat: row?.boat ?? null,
+      courseSpecificMatchedCount: row?.courseSpecificLast6mRaceCount ?? row?.last6mRaceCount ?? 0,
+      allCourseMatchedCount: row?.allCourseLast6mRaceCount ?? 0,
+      sampleStatus: row?.sampleStatus ?? "insufficient_history"
+    }));
     const playwrightDebug = originalExhibitionDebug.playwright_render_debug || kyoteiBiyoriFrontendDebug.playwright_render_debug || {};
     const selectedRaceKey = `${date}|${Number(venueId)}|${Number(raceNo)}`;
     const originalExhibitionSource =
@@ -5161,7 +5346,7 @@ export default function App() {
     ).length;
     return {
       currentRaceKey: selectedRaceKey,
-      isFetching: openApiLoading || originalExhibitionLoading,
+      isFetching: openApiLoading || originalExhibitionLoading || racerTendencyLoading || historyBackfillLoading,
       requestId: openApiRequestDebug.requestId || 0,
       backendConnected: originalBackendConnected,
       baseEntriesCount: canonicalRaceData?.debug?.baseEntriesCount ?? safeArray(playerComparisonRows).length,
@@ -5169,6 +5354,49 @@ export default function App() {
       originalExhibitionBackendConnected: originalBackendConnected,
       originalExhibitionError: originalExhibitionError || currentOriginalExhibition?.error || null,
       originalExhibitionSource,
+      tendencyOk: currentRacerTendency?.ok === true,
+      tendencyError: racerTendencyError || currentRacerTendency?.error || null,
+      tendencyRowsCount: racerTendencyRows.length,
+      tendencySource: currentRacerTendency?.source || "none",
+      tendencyActualStartTimingAvailable,
+      historyBackfill: latestHistoryBackfill,
+      historyBackfillAttempted: latestHistoryBackfill?.attempted === true,
+      historyBackfillAllVenues: latestHistoryBackfill?.allVenues === true,
+      historyBackfillOk: latestHistoryBackfill?.ok ?? null,
+      historyBackfillError: historyBackfillError || null,
+      historyBackfillSource: latestHistoryBackfill?.source || "none",
+      historyBackfillTargetRacerCount: latestHistoryBackfill?.targetRacerCount ?? 0,
+      historyBackfillScannedDateCount: latestHistoryBackfill?.scannedDateCount ?? 0,
+      historyBackfillScannedVenueCount: latestHistoryBackfill?.scannedVenueCount ?? 0,
+      historyBackfillScannedRaceCount: latestHistoryBackfill?.scannedRaceCount ?? 0,
+      historyBackfillScannedEntryCount: latestHistoryBackfill?.scannedEntryCount ?? 0,
+      historyBackfillMatchedEntryCount: latestHistoryBackfill?.matchedEntryCount ?? 0,
+      historyBackfillMatchedByRacer: latestHistoryBackfill?.matchedByRacer || {},
+      historyBackfillFetchedRaceCount: latestHistoryBackfill?.fetchedRaceCount ?? 0,
+      historyBackfillFetchedEntryCount: latestHistoryBackfill?.fetchedEntryCount ?? 0,
+      historyBackfillFetchedResultCount: latestHistoryBackfill?.fetchedResultCount ?? 0,
+      historyBackfillSkippedCount: latestHistoryBackfill?.skippedCount ?? 0,
+      historyBackfillCacheHitCount: latestHistoryBackfill?.cacheHitCount ?? 0,
+      historyBackfillErrors: safeArray(latestHistoryBackfill?.errors),
+      tendencyPeriod: currentRacerTendency?.periodMonths
+        ? `${currentRacerTendency.periodMonths} months (${currentRacerTendency?.periodStart || "?"} - ${currentRacerTendency?.periodEnd || "?"})`
+        : "-",
+      tendencyTargetRacers: safeArray(tendencyHistoryDebug?.targetRacers),
+      historyTotalRaceCount: tendencyHistoryDebug?.historyTotalRaceCount ?? 0,
+      historyTotalEntryCount: tendencyHistoryDebug?.historyTotalEntryCount ?? 0,
+      historyTotalResultCount: tendencyHistoryDebug?.historyTotalResultCount ?? 0,
+      matchedHistoryCountByRacer: tendencyHistoryDebug?.matchedHistoryCountByRacer || {},
+      matchedHistoryCountByBoat: tendencyHistoryDebug?.matchedHistoryCountByBoat || {},
+      tendencyMatchedHistorySamples: safeArray(tendencyHistoryDebug?.matchedHistorySamples),
+      tendencyMatchedHistorySamplesByBoat: tendencyHistoryDebug?.matchedHistorySamplesByBoat || {},
+      tendencyCourseSpecificMatchedCountByBoat: tendencyHistoryDebug?.courseSpecificMatchedCountByBoat || {},
+      tendencyAllCourseMatchedCountByBoat: tendencyHistoryDebug?.allCourseMatchedCountByBoat || {},
+      tendencySampleStatusByBoat: tendencyHistoryDebug?.sampleStatusByBoat || {},
+      tendencyHistorySummary,
+      tendencyDateRangeStart: tendencyHistoryDebug?.dateRangeStart || currentRacerTendency?.periodStart || null,
+      tendencyDateRangeEnd: tendencyHistoryDebug?.dateRangeEnd || currentRacerTendency?.periodEnd || null,
+      tendencyDateRangeEndExclusive: tendencyHistoryDebug?.dateRangeEndExclusive === true,
+      tendencyMatchPreview,
       exhibitionFetchRoute: currentOriginalExhibition?.exhibitionFetchRoute || originalExhibitionDebug.exhibitionFetchRoute || "none",
       playwrightStarted: currentOriginalExhibition?.playwrightStarted === true || originalExhibitionDebug.playwrightStarted === true,
       playwrightFinished: currentOriginalExhibition?.playwrightFinished === true || originalExhibitionDebug.playwrightFinished === true,
@@ -5210,19 +5438,64 @@ export default function App() {
       predictionInputPreview,
       featureScorePreview,
       scenarioScorePreview,
+      tendencyScorePreview,
+      tendencyPreview,
+      canonicalTendencyPreview,
+      predictionInputTendencyPreview,
+      canonicalTendencyCounts,
+      canonicalTendencyCount,
       displayPreview
     };
-  }, [canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.entries, currentOriginalExhibition, date, displayRows, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.scenarioScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceNo, venueId]);
+  }, [canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.entries, currentOriginalExhibition, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.tendencyScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
   const originalExhibitionFetchError =
     originalExhibitionError ||
     currentOriginalExhibition?.error ||
     openApiModel?.originalExhibitionError ||
     "";
+  const racerTendencyFetchError =
+    racerTendencyError ||
+    currentRacerTendency?.error ||
+    openApiModel?.tendencyError ||
+    "";
+  const actualStartTimingUnavailable =
+    (
+      currentRacerTendency?.debug?.actualStartTimingAvailable ??
+      currentRacerTendency?.actualStartTimingAvailable
+    ) === false;
+  const tendencyHistorySparse = useMemo(() => {
+    const rows = safeArray(racerTendencyRows);
+    return rows.length > 0 && rows.some((row) =>
+      ["small_sample", "very_small_sample", "insufficient_history"].includes(row?.sampleStatus)
+    );
+  }, [racerTendencyRows]);
   const originalExhibitionMetricsUnavailable = useMemo(() => {
     const rows = safeArray(displayRows);
     if (rows.length === 0) return false;
     return ["lapTime", "straightTime", "turnTime"].some(
       (field) => rows.filter((row) => row?.[field] !== null && row?.[field] !== undefined).length < rows.length
+    );
+  }, [displayRows]);
+  const racerTendencyMetricsUnavailable = useMemo(() => {
+    const rows = safeArray(displayRows);
+    const fields = [
+      "escapeRate",
+      "beatenBySashiRate",
+      "beatenByMakuriRate",
+      "beatenByMakuriSashiRate",
+      "sashiRate",
+      "makuriRate",
+      "makuriSashiRate",
+      "allCourseWinRate",
+      "allCourseSashiRate",
+      "allCourseMakuriRate",
+      "allCourseMakuriSashiRate",
+      "allCourseAvgST",
+      "avgST",
+      "lateStartRate",
+      "earlyStartRate"
+    ];
+    return rows.length > 0 && !rows.some((row) =>
+      fields.some((field) => row?.[field] !== null && row?.[field] !== undefined)
     );
   }, [displayRows]);
   const safeTopRecommendedTickets = Array.isArray(predictionViewModel?.topRecommendedTickets)
@@ -5714,11 +5987,13 @@ export default function App() {
   };
 
   const onFetchOpenApiPrediction = async (target = {}) => {
-    if (openApiLoadingRef.current) return;
+    if (openApiLoadingRef.current || (historyBackfillLoadingRef.current && target.fromHistoryBackfill !== true)) return;
     const targetDate = target.date || date;
     const targetVenueId = Number(target.venueId ?? venueId);
     const targetRaceNo = Number(target.raceNo ?? raceNo);
     const forceOriginalExhibition = target.forceOriginalExhibition === true;
+    const forceTendency = target.forceTendency === true;
+    const preserveHistoryBackfill = target.preserveHistoryBackfill === true;
     const requestKey = `${targetDate}|${targetVenueId}|${targetRaceNo}`;
     const requestId = latestOpenApiRequestIdRef.current + 1;
     activeOpenApiAbortRef.current?.abort();
@@ -5737,6 +6012,13 @@ export default function App() {
     setOriginalExhibition(null);
     setOriginalExhibitionError("");
     setOriginalExhibitionLoading(true);
+    setTendencyData(null);
+    setRacerTendencyError("");
+    setRacerTendencyLoading(true);
+    if (!preserveHistoryBackfill) {
+      setHistoryBackfillData(null);
+      setHistoryBackfillError("");
+    }
     setOpenApiModel(null);
     setData(null);
     try {
@@ -5754,6 +6036,20 @@ export default function App() {
         error: err?.message || "original exhibition fetch failed",
         rows: []
       }));
+      const tendencyPromise = fetchRacerTendencies({
+        date: targetDate,
+        venueId: targetVenueId,
+        raceNo: targetRaceNo,
+        months: 6,
+        force: forceTendency,
+        signal: requestController.signal
+      }).catch((err) => ({
+        ok: false,
+        periodMonths: 6,
+        source: "fetch_failed",
+        error: err?.message || "racer tendency fetch failed",
+        rows: []
+      }));
       const programsPromise = fetchOpenApiDay(targetDate, "programs", { signal: requestController.signal })
         .then((value) => ({ ok: true, value }))
         .catch((err) => ({ ok: false, error: err }));
@@ -5763,7 +6059,7 @@ export default function App() {
           fetchedAt: new Date().toISOString(),
           error: err?.message || "previews fetch failed"
         }));
-      let fetchedOriginalExhibition = await originalExhibitionPromise;
+      let [fetchedOriginalExhibition, fetchedTendency] = await Promise.all([originalExhibitionPromise, tendencyPromise]);
       if (!isCurrentRequest()) return;
       fetchedOriginalExhibition = {
         ...fetchedOriginalExhibition,
@@ -5776,6 +6072,13 @@ export default function App() {
       setOriginalExhibition(fetchedOriginalExhibition);
       setOriginalExhibitionError(fetchedOriginalExhibition?.ok === false ? fetchedOriginalExhibition?.error || "original exhibition fetch failed" : "");
       setOriginalExhibitionLoading(false);
+      fetchedTendency = {
+        ...fetchedTendency,
+        rows: safeArray(fetchedTendency?.rows)
+      };
+      setTendencyData(fetchedTendency);
+      setRacerTendencyError(fetchedTendency?.ok === false ? fetchedTendency?.error || "racer tendency fetch failed" : "");
+      setRacerTendencyLoading(false);
       const [programsSettled, previewsResult] = await Promise.all([programsPromise, previewsPromise]);
       if (!isCurrentRequest()) return;
       if (!programsSettled.ok) {
@@ -5795,6 +6098,7 @@ export default function App() {
       const selectedPreview = previewsByRaceKey[openApiRaceKey(selectedProgram)] || null;
       const selectedVenuePrograms = programs.filter((row) => Number(row?.race_stadium_number) === Number(targetVenueId));
       const originalExhibitionRows = safeArray(fetchedOriginalExhibition.rows);
+      const tendencyRows = safeArray(fetchedTendency.rows);
       const canonicalRaceData = buildCanonicalRaceData({
         date: targetDate,
         venueId: targetVenueId,
@@ -5803,8 +6107,11 @@ export default function App() {
         preview: selectedPreview,
         originalExhibition: fetchedOriginalExhibition,
         originalExhibitionRows,
+        tendency: fetchedTendency,
+        tendencyRows,
         debug: {
-          originalExhibition: fetchedOriginalExhibition
+          originalExhibition: fetchedOriginalExhibition,
+          tendency: fetchedTendency
         }
       });
       const selectedProgramWithOriginal = canonicalRaceData.debug.predictionInputProgram;
@@ -5866,6 +6173,7 @@ export default function App() {
         prediction,
         screening,
         originalExhibition: fetchedOriginalExhibition,
+        tendency: fetchedTendency,
         canonicalRaceData,
         predictionInputProgram: selectedProgramWithOriginal,
         displayProgram: selectedProgramWithOriginal,
@@ -5882,10 +6190,12 @@ export default function App() {
         },
         previewError: previewsResult.error || null,
         originalExhibitionError: fetchedOriginalExhibition?.ok === false ? fetchedOriginalExhibition?.error || null : null,
+        tendencyError: fetchedTendency?.ok === false ? fetchedTendency?.error || null : null,
         counts: {
           programs: programs.length,
           previews: previews.length,
-          originalExhibitionMeasured: Number(fetchedOriginalExhibition?.measuredCount || 0)
+          originalExhibitionMeasured: Number(fetchedOriginalExhibition?.measuredCount || 0),
+          tendencyRows: tendencyRows.length
         }
       };
       setOpenApiModel(nextOpenApiModel);
@@ -5922,7 +6232,51 @@ export default function App() {
         openApiLoadingRef.current = false;
         setOpenApiLoading(false);
         setOriginalExhibitionLoading(false);
+        setRacerTendencyLoading(false);
       }
+    }
+  };
+
+  const onBackfillRaceHistory = async ({ force = false } = {}) => {
+    if (historyBackfillLoadingRef.current || openApiLoadingRef.current) return;
+    const targetDate = date;
+    const targetVenueId = Number(venueId);
+    const targetRaceNo = Number(raceNo);
+    historyBackfillLoadingRef.current = true;
+    setHistoryBackfillLoading(true);
+    setHistoryBackfillError("");
+    try {
+      const result = await fetchRaceHistoryBackfill({
+        date: targetDate,
+        venueId: targetVenueId,
+        raceNo: targetRaceNo,
+        months: 6,
+        force,
+        allVenues: true
+      });
+      setHistoryBackfillData(result);
+      if (result?.ok === false) {
+        const errorMessage = safeArray(result?.errors)
+          .slice(0, 3)
+          .map((row) => row?.error)
+          .filter(Boolean)
+          .join(" / ");
+        setHistoryBackfillError(errorMessage || "直近6か月履歴の取得に失敗しました。");
+      }
+      await onFetchOpenApiPrediction({
+        date: targetDate,
+        venueId: targetVenueId,
+        raceNo: targetRaceNo,
+        forceTendency: true,
+        preserveHistoryBackfill: true,
+        fromHistoryBackfill: true
+      });
+      setHistoryBackfillData(result);
+    } catch (e) {
+      setHistoryBackfillError(e?.message || "直近6か月履歴の取得に失敗しました。");
+    } finally {
+      historyBackfillLoadingRef.current = false;
+      setHistoryBackfillLoading(false);
     }
   };
 
@@ -7040,6 +7394,122 @@ export default function App() {
 
         {screen === "prediction" && (
           <>
+            <section className="card practical-control-card">
+              <div className="section-head compact-head">
+                <h2>Race Controls</h2>
+              </div>
+              <div className="controls-grid practical-controls">
+                <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+                <label><span>場</span><select value={venueId} onChange={(e) => applyVenueIdSelection(e.target.value)}>{VENUES.map((v) => <option key={v.id} value={v.id}>{v.id} - {v.name}</option>)}</select></label>
+                <label><span>レース</span><select value={raceNo} onChange={(e) => setRaceNo(Number(e.target.value))}>{Array.from({ length: 12 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}R</option>)}</select></label>
+                <button
+                  className="fetch-btn"
+                  type="button"
+                  onClick={() => onFetchOpenApiPrediction({ date, venueId, raceNo })}
+                  disabled={openApiLoading || historyBackfillLoading}
+                >
+                  {openApiLoading ? "取得中..." : "予想を取得 / 更新"}
+                </button>
+              </div>
+              {(openApiLoading || originalExhibitionLoading || racerTendencyLoading || historyBackfillLoading) ? (
+                <div className="status-chip-row" style={{ marginTop: 10 }}>
+                  {openApiLoading ? <span className="status-pill">予想取得中</span> : null}
+                  {originalExhibitionLoading ? <span className="status-pill">周回・直線取得中</span> : null}
+                  {racerTendencyLoading ? <span className="status-pill">戦法データ取得中</span> : null}
+                  {historyBackfillLoading ? <span className="status-pill">履歴取得中</span> : null}
+                </div>
+              ) : null}
+            </section>
+
+            {(openApiError || error || originalExhibitionFetchError || racerTendencyFetchError || historyBackfillError || openApiModel?.previewError || originalExhibitionMetricsUnavailable || tendencyHistorySparse || racerTendencyMetricsUnavailable) ? (
+              <section className="important-status-stack">
+                {openApiError ? <div className="error-banner">backend connection error: {openApiError}</div> : null}
+                {error ? <div className="error-banner">{error}</div> : null}
+                {openApiModel?.previewError ? <div className="notice-banner">previews取得失敗: {openApiModel.previewError}。出走表のみで予想します。</div> : null}
+                {originalExhibitionFetchError || originalExhibitionMetricsUnavailable ? (
+                  <div className="notice-banner">
+                    周回・直線・まわり足データ未取得。展示ST・展示タイム・モーター中心で予想します。
+                    {originalExhibitionFetchError ? <span className="muted" style={{ marginLeft: 8 }}>{originalExhibitionFetchError}</span> : null}
+                  </div>
+                ) : null}
+                {racerTendencyFetchError ? (
+                  <div className="notice-banner">
+                    戦法データ取得に失敗しました。展示データ中心で予想します。
+                    <span className="muted" style={{ marginLeft: 8 }}>{racerTendencyFetchError}</span>
+                  </div>
+                ) : null}
+                {historyBackfillError ? <div className="notice-banner">履歴取得失敗: {historyBackfillError}</div> : null}
+                {tendencyHistorySparse ? (
+                  <div className="notice-banner status-action-banner">
+                    <span>戦法データ履歴不足。サンプル不足のため、展示ST・展示タイム・周回・直線・まわり足を中心に評価しています。</span>
+                    <button
+                      className="fetch-btn secondary"
+                      type="button"
+                      onClick={() => onBackfillRaceHistory({ force: historyBackfillError !== "" })}
+                      disabled={openApiLoading || historyBackfillLoading}
+                    >
+                      {historyBackfillLoading ? "履歴取得中..." : "直近6か月履歴を取得"}
+                    </button>
+                  </div>
+                ) : null}
+                {racerTendencyMetricsUnavailable && !racerTendencyFetchError && !tendencyHistorySparse ? (
+                  <div className="notice-banner">戦法データ未取得。展示・モーター中心で予想します。</div>
+                ) : null}
+              </section>
+            ) : null}
+
+            {safeArray(displayRows).length > 0 ? (
+              <section className="card practical-section">
+                <div className="section-head compact-head">
+                  <h2>Player / Boat Data</h2>
+                </div>
+                <PlayerBoatTable
+                  entries={displayRows}
+                  boatMeta={BOAT_META}
+                  playerMetricLeaders={playerMetricLeaders}
+                  formatComparisonValue={formatComparisonValue}
+                />
+              </section>
+            ) : null}
+
+            <PredictionSummary
+              prediction={openApiModel?.prediction}
+              predictionExplanation={predictionExplanationModel}
+              formatPercentDisplay={formatPercentDisplay}
+              formatMaybeNumber={formatMaybeNumber}
+            />
+            <TicketList
+              prediction={openApiModel?.prediction}
+              predictionExplanation={predictionExplanationModel}
+              formatPercentDisplay={formatPercentDisplay}
+            />
+            <RaceFlowExplanation prediction={openApiModel?.prediction} />
+
+            {safeArray(displayRows).length > 0 ? (
+              <RacerTendencyTable
+                rows={displayRows}
+                historySource={currentRacerTendency?.debug?.historySource || currentRacerTendency?.source || "-"}
+                formatMaybeNumber={formatMaybeNumber}
+              />
+            ) : null}
+
+            <AdvancedDebugPanel
+              enabled={showDebugPanels}
+              debug={kyoteiBiyoriPipelineDebug}
+              originalExhibition={currentOriginalExhibition}
+              currentRacerTendency={currentRacerTendency}
+              openApiModel={openApiModel}
+              data={data}
+              displayPreview={buildTableDisplayPreview(displayRows)}
+              safePrettyJson={safePrettyJson}
+            />
+
+            <p className="muted strategy-line">
+              非公式Open APIを利用。締切直前は必ず公式情報を確認してください。予想は参考情報であり、的中・利益を保証しません。
+            </p>
+
+            {false && (
+            <>
             <section className="card">
               <div className="controls-grid">
                 <label><span>日付</span><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
@@ -7049,9 +7519,18 @@ export default function App() {
                   className="fetch-btn"
                   type="button"
                   onClick={() => onFetchOpenApiPrediction({ date, venueId, raceNo })}
-                  disabled={openApiLoading}
+                  disabled={openApiLoading || historyBackfillLoading}
                 >
                   {openApiLoading ? "取得中..." : "予想を取得 / 更新"}
+                </button>
+                <button
+                  className="fetch-btn secondary"
+                  type="button"
+                  onClick={() => onBackfillRaceHistory({ force: historyBackfillError !== "" })}
+                  disabled={openApiLoading || historyBackfillLoading}
+                  style={{ padding: "6px 10px" }}
+                >
+                  {historyBackfillLoading ? "履歴取得中..." : "直近6か月履歴を取得"}
                 </button>
               </div>
               <div className="predict-quickbar">
@@ -7107,6 +7586,18 @@ export default function App() {
                     <strong>取得中...</strong>
                   </div>
                 ) : null}
+                {racerTendencyLoading ? (
+                  <div className="metric-item">
+                    <span>直近6か月戦法</span>
+                    <strong>取得中...</strong>
+                  </div>
+                ) : null}
+                {historyBackfillLoading ? (
+                  <div className="metric-item">
+                    <span>直近6か月履歴</span>
+                    <strong>取得中...</strong>
+                  </div>
+                ) : null}
                 {openApiModel?.prediction ? (
                   <>
                     <div className="metric-item">
@@ -7141,9 +7632,45 @@ export default function App() {
                   <span className="muted">{originalExhibitionFetchError}</span>
                 </div>
               ) : null}
+              {racerTendencyFetchError ? (
+                <div className="notice-banner" style={{ marginTop: 10 }}>
+                  直近6か月の戦法データ取得に失敗しました。展示データ中心で予想します。
+                  <span className="muted" style={{ marginLeft: 8 }}>{racerTendencyFetchError}</span>
+                </div>
+              ) : null}
+              {historyBackfillError ? (
+                <div className="notice-banner" style={{ marginTop: 10 }}>
+                  直近6か月履歴の取得に失敗しました。
+                  <span className="muted" style={{ marginLeft: 8 }}>{historyBackfillError}</span>
+                </div>
+              ) : null}
+              {historyBackfillData?.ok === true && !historyBackfillLoading ? (
+                <div className="notice-banner" style={{ marginTop: 10 }}>
+                  履歴取得完了: 全場スキャン {historyBackfillData?.allVenues ? "ON" : "OFF"} /
+                  マッチ {Number(historyBackfillData?.matchedEntryCount || 0)}件 /
+                  レース {Number(historyBackfillData?.scannedRaceCount ?? historyBackfillData?.fetchedRaceCount ?? 0)}件 /
+                  エントリー {Number(historyBackfillData?.scannedEntryCount ?? historyBackfillData?.fetchedEntryCount ?? 0)}件 /
+                  キャッシュ {Number(historyBackfillData?.cacheHitCount || 0)}日
+                </div>
+              ) : null}
+              {currentRacerTendency?.ok === true && actualStartTimingUnavailable ? (
+                <div className="notice-banner" style={{ marginTop: 10 }}>
+                  本番ST履歴は取得できないため、平均ST/出遅れ率は取得可能な範囲のみ使用しています。
+                </div>
+              ) : null}
+              {currentRacerTendency?.ok === true && tendencyHistorySparse ? (
+                <div className="notice-banner" style={{ marginTop: 10 }}>
+                  直近6か月のコース別戦法データはサンプル不足のため、展示ST・展示タイム・周回・直線・まわり足を中心に評価しています。
+                </div>
+              ) : null}
               {openApiModel?.prediction && originalExhibitionMetricsUnavailable ? (
                 <div className="notice-banner" style={{ marginTop: 10 }}>
                   周回・直線・まわり足データ未取得のため、展示ST・展示タイム・モーター中心で予想
+                </div>
+              ) : null}
+              {openApiModel?.prediction && racerTendencyMetricsUnavailable && !racerTendencyFetchError && !tendencyHistorySparse ? (
+                <div className="notice-banner" style={{ marginTop: 10 }}>
+                  直近6か月の戦法データ未取得のため、展示・モーター中心で予想
                 </div>
               ) : null}
               {openApiModel?.prediction ? (
@@ -7420,29 +7947,68 @@ export default function App() {
                           <thead>
                             <tr>
                               <th>艇番</th>
+                              <th>選手</th>
+                              <th>コース</th>
+                              <th>コース別件数</th>
+                              <th>全コース件数</th>
+                              <th>サンプル状態</th>
+                              <th>照合</th>
+                              <th>履歴ソース</th>
                               <th>逃げ率</th>
-                              <th>逃がし率</th>
+                              <th>差され率</th>
+                              <th>まくられ率</th>
+                              <th>まくり差され率</th>
                               <th>差し率</th>
                               <th>まくり率</th>
                               <th>まくり差し率</th>
-                              <th>今期平均ST</th>
+                              <th>平均ST</th>
                               <th>出遅れ率</th>
+                              <th>早仕掛け率</th>
                             </tr>
                           </thead>
                           <tbody>
                             {safeArray(displayRows).map((row, idx) => {
                               const tendency = row?.playerTendency || row?.racerCourseStats || {};
-                              const pct = (value) => value === null || value === undefined || value === "" ? "-" : `${formatMaybeNumber(value, 1)}%`;
+                              const valueOf = (field) => row?.[field] ?? tendency?.[field] ?? null;
+                              const pct = (value) => {
+                                if (value === null || value === undefined || value === "") return "-";
+                                const number = Number(value);
+                                if (!Number.isFinite(number)) return "-";
+                                return `${formatMaybeNumber(Math.abs(number) <= 1 ? number * 100 : number, 1)}%`;
+                              };
+                              const course = row?.course ?? row?.entryCourse ?? row?.entryLane ?? row?.boat ?? row?.lane ?? null;
+                              const sampleStatus = valueOf("sampleStatus");
+                              const sampleStatusLabel = sampleStatus === "small_sample"
+                                ? "少サンプル"
+                                : sampleStatus === "very_small_sample"
+                                  ? "極少サンプル"
+                                : sampleStatus === "insufficient_history"
+                                  ? "履歴不足"
+                                  : sampleStatus === "ok"
+                                    ? "十分"
+                                    : "-";
+                              const matchMethod = valueOf("matchMethod") ?? tendency?.debug?.matchMethod ?? "-";
+                              const historySource = currentRacerTendency?.debug?.historySource || currentRacerTendency?.source || "-";
                               return (
                                 <tr key={`player-tendency-${row?.boatNumber ?? row?.lane ?? idx}`}>
-                                  <td>{row?.boatNumber ?? row?.lane ?? "-"}</td>
-                                  <td>{pct(tendency.escapeRate)}</td>
-                                  <td>{pct(tendency.nigashiRate)}</td>
-                                  <td>{pct(tendency.sashiRate)}</td>
-                                  <td>{pct(tendency.makuriRate)}</td>
-                                  <td>{pct(tendency.makuriSashiRate)}</td>
-                                  <td>{formatComparisonValue(tendency.avgStartTiming, 2)}</td>
-                                  <td>{pct(tendency.lateStartRate)}</td>
+                                  <td>{row?.boatNumber ?? row?.boat ?? row?.lane ?? "-"}</td>
+                                  <td>{row?.racerName ?? row?.name ?? "-"}</td>
+                                  <td>{course == null ? "-" : `${course}${row?.coursePredicted ? " (予測)" : ""}`}</td>
+                                  <td>{valueOf("courseSpecificLast6mRaceCount") ?? valueOf("last6mRaceCount") ?? "-"}</td>
+                                  <td>{valueOf("allCourseLast6mRaceCount") ?? "-"}</td>
+                                  <td>{sampleStatusLabel}</td>
+                                  <td>{matchMethod}</td>
+                                  <td>{historySource}</td>
+                                  <td>{pct(valueOf("escapeRate"))}</td>
+                                  <td>{pct(valueOf("beatenBySashiRate"))}</td>
+                                  <td>{pct(valueOf("beatenByMakuriRate"))}</td>
+                                  <td>{pct(valueOf("beatenByMakuriSashiRate"))}</td>
+                                  <td>{pct(valueOf("sashiRate"))}</td>
+                                  <td>{pct(valueOf("makuriRate"))}</td>
+                                  <td>{pct(valueOf("makuriSashiRate"))}</td>
+                                  <td>{formatComparisonValue(valueOf("avgST") ?? tendency?.avgStartTiming, 2)}</td>
+                                  <td>{pct(valueOf("lateStartRate"))}</td>
+                                  <td>{pct(valueOf("earlyStartRate"))}</td>
                                 </tr>
                               );
                             })}
@@ -9322,6 +9888,8 @@ export default function App() {
                 </RenderGuard>
               </>
             )}
+            </>
+            )}
           </>
         )}
 
@@ -9443,7 +10011,12 @@ export default function App() {
                             <tbody>
                               {safeArray(row?.prediction?.scoredBoats).map((boat) => {
                                 const tendency = boat?.playerTendency || boat?.racerCourseStats || {};
-                                const pct = (value) => value === null || value === undefined || value === "" ? "-" : `${formatMaybeNumber(value, 1)}%`;
+                                const pct = (value) => {
+                                  if (value === null || value === undefined || value === "") return "-";
+                                  const number = Number(value);
+                                  if (!Number.isFinite(number)) return "-";
+                                  return `${formatMaybeNumber(Math.abs(number) <= 1 ? number * 100 : number, 1)}%`;
+                                };
                                 return (
                                   <tr key={`today-tendency-${row.stadiumNumber}-${row.raceNumber}-${boat?.boat}`}>
                                     <td>{boat?.boat ?? "-"}</td>
@@ -9452,7 +10025,7 @@ export default function App() {
                                     <td>{pct(tendency.sashiRate)}</td>
                                     <td>{pct(tendency.makuriRate)}</td>
                                     <td>{pct(tendency.makuriSashiRate)}</td>
-                                    <td>{formatComparisonValue(tendency.avgStartTiming, 2)}</td>
+                                    <td>{formatComparisonValue(tendency.avgST ?? tendency.avgStartTiming, 2)}</td>
                                     <td>{pct(tendency.lateStartRate)}</td>
                                   </tr>
                                 );
@@ -9659,6 +10232,19 @@ export default function App() {
               <p className="muted">API and production settings reference.</p>
             </div>
             <div className="kv-list">
+              <div className="kv-row">
+                <span>Show debug panels</span>
+                <strong>
+                  <label className="debug-toggle">
+                    <input
+                      type="checkbox"
+                      checked={showDebugPanels}
+                      onChange={(e) => setShowDebugPanels(e.target.checked)}
+                    />
+                    {showDebugPanels ? "ON" : "OFF"}
+                  </label>
+                </strong>
+              </div>
               <div className="kv-row"><span>API base</span><strong>{API_BASE}</strong></div>
               <div className="kv-row"><span>minimal QuickInput</span><strong>date / venue / raceNo / 6 racers</strong></div>
               <div className="kv-row"><span>production build</span><strong>npm run build</strong></div>
