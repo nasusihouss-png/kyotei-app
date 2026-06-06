@@ -364,12 +364,17 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
         (originalMetricsIncomplete ? 0.03 : 0) +
         (tendencyComplete ? 0.02 : tendencyAvailable && !tendencySparse ? 0.005 : tendencyAvailable ? 0 : -0.02)
       ));
-  const top6 = prediction.tickets.trifecta.slice(0, 6).map((row, index) => ({
+  const primaryTicketRows = safeArray(prediction.ticketGroups?.mainTickets).length > 0
+    ? safeArray(prediction.ticketGroups.mainTickets)
+    : safeArray(prediction.ticketGroups?.referenceTickets).length > 0
+      ? safeArray(prediction.ticketGroups.referenceTickets)
+      : prediction.tickets.trifecta.slice(0, 6);
+  const top6 = primaryTicketRows.slice(0, 6).map((row, index) => ({
     combo: row.combo,
     probability: row.probability,
     rank: index + 1,
-    tier: index === 0 ? "main" : index < 3 ? "contender" : "cover",
-    reason: prediction.exhibition.status === "exhibition_reflected" ? "OpenAPI v2 展示反映済み" : "OpenAPI v2 出走表のみ"
+    tier: row.grade === "A" ? "main" : row.grade === "B" ? "contender" : row.referenceOnly ? "reference" : "cover",
+    reason: row.displayReason || safeArray(row.reasons).join(" / ") || (prediction.exhibition.status === "exhibition_reflected" ? "OpenAPI v2 展示反映済み" : "OpenAPI v2 出走表のみ")
   }));
   const scenarioText = [
     prediction.scenario.main.text,
@@ -457,8 +462,8 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
       confidence_score: adjustedConfidence,
       confidence_band: (adjustedConfidence ?? 0) >= 0.45 ? "high" : (adjustedConfidence ?? 0) >= 0.3 ? "medium" : "low",
       warning: [originalMetricsWarning, tendencyWarning].filter(Boolean).join(" / ") || null,
-      buyPolicy: "OpenAPI v2 probability order",
-      recommendedBetMode: "probability"
+      buyPolicy: prediction.ticketGroups?.noBuyRecommended ? "見送り推奨" : "plausibility-gated",
+      recommendedBetMode: prediction.ticketGroups?.noBuyRecommended ? "reference-only" : "plausibility"
     },
     tickets: {
       top6,
@@ -5401,6 +5406,10 @@ export default function App() {
     const venueBiasContribution = openApiModel?.prediction?.venueBiasContribution || [];
     const conditionContribution = openApiModel?.prediction?.conditionContribution || [];
     const finalScenarioConsistencyCheck = openApiModel?.prediction?.finalScenarioConsistencyCheck || null;
+    const ticketPlausibilitySummary = openApiModel?.prediction?.ticketPlausibilitySummary || openApiModel?.prediction?.ticketGroups?.summary || null;
+    const ticketPlausibilityPreview = openApiModel?.prediction?.ticketPlausibilityPreview || openApiModel?.prediction?.ticketGroups?.evaluatedTickets || [];
+    const rejectedTickets = openApiModel?.prediction?.rejectedTickets || openApiModel?.prediction?.ticketGroups?.rejectedTickets || [];
+    const ticketGroups = openApiModel?.prediction?.ticketGroups || null;
     const backtestCalibrationSummary = openApiModel?.prediction?.backtestCalibrationSummary || null;
     const conditionAdjustmentLog = openApiModel?.prediction?.conditionAdjustmentLog || [];
     const tendencyScorePreview = openApiModel?.prediction?.tendencyScorePreview || [];
@@ -5594,6 +5603,10 @@ export default function App() {
       venueBiasContribution,
       conditionContribution,
       finalScenarioConsistencyCheck,
+      ticketPlausibilitySummary,
+      ticketPlausibilityPreview,
+      rejectedTickets,
+      ticketGroups,
       backtestCalibrationSummary,
       conditionAdjustmentLog,
       tendencyScorePreview,
@@ -5604,7 +5617,7 @@ export default function App() {
       canonicalTendencyCount,
       displayPreview
     };
-  }, [canonicalRaceData?.conditions, canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.debug?.raceConditions, canonicalRaceData?.entries, currentOriginalExhibition, currentRaceConditions, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.backtestCalibrationSummary, openApiModel?.prediction?.coefficientContributionByBoat, openApiModel?.prediction?.conditionAdjustmentLog, openApiModel?.prediction?.conditionContribution, openApiModel?.prediction?.currentScoringWeights, openApiModel?.prediction?.derivedScenarioGroup, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.finalScenarioConsistencyCheck, openApiModel?.prediction?.fourHeadPartnerDecision, openApiModel?.prediction?.headPartnerSplitPreview, openApiModel?.prediction?.mainScenarioGroup, openApiModel?.prediction?.motorRankContribution, openApiModel?.prediction?.raceFlowScenario?.decisionConditionedStats, openApiModel?.prediction?.raceFlowScenario?.decisionResidualScores, openApiModel?.prediction?.raceFlowScenario?.derivedScenarioGroup, openApiModel?.prediction?.raceFlowScenario?.fourHeadPartnerDecision, openApiModel?.prediction?.raceFlowScenario?.headDecisionComboStats, openApiModel?.prediction?.raceFlowScenario?.mainScenarioGroup, openApiModel?.prediction?.raceFlowScenario?.scenarioFamilies, openApiModel?.prediction?.raceFlowScenario?.venueBiasTable, openApiModel?.prediction?.raceFlowScenarioPreview, openApiModel?.prediction?.scenarioFamilyPreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.startReliabilityContribution, openApiModel?.prediction?.tendencyScorePreview, openApiModel?.prediction?.ticketAdjustmentLog, openApiModel?.prediction?.ticketDecisionCompatibilityPreview, openApiModel?.prediction?.venueBiasContribution, openApiModel?.prediction?.venueBiasTable, openApiModel?.prediction?.venueNormalizedExhibitionMetrics, openApiModel?.prediction?.wallScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceConditionsError, raceConditionsLoading, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
+  }, [canonicalRaceData?.conditions, canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.debug?.raceConditions, canonicalRaceData?.entries, currentOriginalExhibition, currentRaceConditions, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.backtestCalibrationSummary, openApiModel?.prediction?.coefficientContributionByBoat, openApiModel?.prediction?.conditionAdjustmentLog, openApiModel?.prediction?.conditionContribution, openApiModel?.prediction?.currentScoringWeights, openApiModel?.prediction?.derivedScenarioGroup, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.finalScenarioConsistencyCheck, openApiModel?.prediction?.fourHeadPartnerDecision, openApiModel?.prediction?.headPartnerSplitPreview, openApiModel?.prediction?.mainScenarioGroup, openApiModel?.prediction?.motorRankContribution, openApiModel?.prediction?.raceFlowScenario?.decisionConditionedStats, openApiModel?.prediction?.raceFlowScenario?.decisionResidualScores, openApiModel?.prediction?.raceFlowScenario?.derivedScenarioGroup, openApiModel?.prediction?.raceFlowScenario?.fourHeadPartnerDecision, openApiModel?.prediction?.raceFlowScenario?.headDecisionComboStats, openApiModel?.prediction?.raceFlowScenario?.mainScenarioGroup, openApiModel?.prediction?.raceFlowScenario?.scenarioFamilies, openApiModel?.prediction?.raceFlowScenario?.venueBiasTable, openApiModel?.prediction?.raceFlowScenarioPreview, openApiModel?.prediction?.rejectedTickets, openApiModel?.prediction?.scenarioFamilyPreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.startReliabilityContribution, openApiModel?.prediction?.tendencyScorePreview, openApiModel?.prediction?.ticketAdjustmentLog, openApiModel?.prediction?.ticketDecisionCompatibilityPreview, openApiModel?.prediction?.ticketGroups, openApiModel?.prediction?.ticketPlausibilityPreview, openApiModel?.prediction?.ticketPlausibilitySummary, openApiModel?.prediction?.venueBiasContribution, openApiModel?.prediction?.venueBiasTable, openApiModel?.prediction?.venueNormalizedExhibitionMetrics, openApiModel?.prediction?.wallScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceConditionsError, raceConditionsLoading, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
   const originalExhibitionFetchError =
     originalExhibitionError ||
     currentOriginalExhibition?.error ||

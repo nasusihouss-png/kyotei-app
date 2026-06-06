@@ -2594,6 +2594,13 @@
   font-size: 0.82rem;
 }
 
+.bet-ticket-row small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
 .flow-line {
   display: grid;
   gap: 5px;

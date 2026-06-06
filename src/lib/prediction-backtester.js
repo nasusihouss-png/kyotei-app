@@ -189,8 +189,21 @@ export function runPredictionBacktest({
     const firstRows = safeArray(prediction.firstPlaceProbabilities);
     const predictedHead = firstRows[0]?.boat ?? null;
     const top2 = firstRows.slice(0, 2).map((row) => row.boat);
-    const mainTickets = safeArray(prediction.tickets?.trifecta).slice(0, 6).map((ticket) => ticket.combo);
-    const allTickets = new Set([...mainTickets, ...safeArray(prediction.extraTickets).map((ticket) => ticket.combo)]);
+    const groupedMainTickets = safeArray(prediction.ticketGroups?.mainTickets);
+    const groupedReferenceTickets = safeArray(prediction.ticketGroups?.referenceTickets);
+    const mainTicketRows = groupedMainTickets.length > 0
+      ? groupedMainTickets
+      : groupedReferenceTickets.length > 0
+        ? []
+        : safeArray(prediction.tickets?.trifecta).slice(0, 6);
+    const mainTickets = mainTicketRows.map((ticket) => ticket.combo);
+    const allTickets = new Set([
+      ...mainTickets,
+      ...safeArray(prediction.ticketGroups?.secondaryTickets).map((ticket) => ticket.combo),
+      ...safeArray(prediction.ticketGroups?.upsetTickets).map((ticket) => ticket.combo),
+      ...groupedReferenceTickets.map((ticket) => ticket.combo),
+      ...safeArray(prediction.extraTickets).map((ticket) => ticket.combo)
+    ]);
     const boat4Row = buildBoat4OpportunityRanking([program], {}, { limit: 1, config: scoringConfig })[0] || {};
     const boat4OpportunityScore = finiteNumber(boat4Row.boat4HeadOpportunityScore, 0);
     const topScenario = prediction.raceFlowScenario?.mainScenarioGroup || prediction.raceFlowScenario?.mainScenario || null;

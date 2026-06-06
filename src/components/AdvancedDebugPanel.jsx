@@ -135,6 +135,22 @@ export default function AdvancedDebugPanel({
             <pre className="json-preview">{safePrettyJson(debug.ticketDecisionCompatibilityPreview)}</pre>
           </div>
           <div>
+            <div className="muted">ticket plausibility summary</div>
+            <pre className="json-preview">{safePrettyJson(debug.ticketPlausibilitySummary)}</pre>
+          </div>
+          <div>
+            <div className="muted">ticket plausibility preview</div>
+            <pre className="json-preview">{safePrettyJson(debug.ticketPlausibilityPreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">rejected tickets</div>
+            <pre className="json-preview">{safePrettyJson(debug.rejectedTickets)}</pre>
+          </div>
+          <div>
+            <div className="muted">ticket groups</div>
+            <pre className="json-preview">{safePrettyJson(debug.ticketGroups)}</pre>
+          </div>
+          <div>
             <div className="muted">decision residual scores</div>
             <pre className="json-preview">{safePrettyJson(debug.decisionResidualScores)}</pre>
           </div>

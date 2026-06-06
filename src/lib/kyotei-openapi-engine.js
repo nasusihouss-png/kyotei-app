@@ -27,6 +27,10 @@ function clamp(value, min = 0, max = 1) {
   return Math.max(min, Math.min(max, value));
 }
 
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function percent01(value, fallback = 0.5) {
   const n = finiteNumber(value, null);
   if (n === null) return fallback;
@@ -1480,9 +1484,22 @@ export function checkPredictionConsistency(prediction = {}) {
     prediction.derivedScenarioGroup ||
     prediction.raceFlowScenario?.derivedScenarioGroup ||
     null;
-  const mainTickets = Array.isArray(prediction.tickets?.trifecta)
-    ? prediction.tickets.trifecta.slice(0, 6)
+  const groupedMainTickets = prediction.ticketGroups && Array.isArray(prediction.ticketGroups.mainTickets)
+    ? prediction.ticketGroups.mainTickets
+    : null;
+  const visibleTicketRows = prediction.ticketGroups
+    ? [
+      ...safeArray(prediction.ticketGroups.mainTickets),
+      ...safeArray(prediction.ticketGroups.secondaryTickets),
+      ...safeArray(prediction.ticketGroups.upsetTickets),
+      ...safeArray(prediction.ticketGroups.referenceTickets)
+    ]
     : [];
+  const mainTickets = groupedMainTickets !== null
+    ? groupedMainTickets
+    : Array.isArray(prediction.tickets?.trifecta)
+      ? prediction.tickets.trifecta.slice(0, 6)
+      : [];
   const mainHeads = [...new Set(mainTickets.map((ticket) => Number(ticket?.boats?.[0])).filter(Number.isFinite))];
   const expectedHead = expectedHeadFromScenario(mainScenario);
   if (expectedHead && mainHeads.length > 0 && !mainHeads.includes(expectedHead)) {
@@ -1497,6 +1514,7 @@ export function checkPredictionConsistency(prediction = {}) {
     0
   );
   const hasFourTicket = mainTickets.some((ticket) => Number(ticket?.boats?.[0]) === 4) ||
+    visibleTicketRows.some((ticket) => Number(ticket?.boats?.[0]) === 4) ||
     (Array.isArray(prediction.extraTickets) && prediction.extraTickets.some((ticket) => String(ticket?.combo || "").startsWith("4-")));
   if ((fourHeadScore >= 0.52 || fourBenefitScore >= 0.54) && !hasFourTicket) {
     warnings.push("4-head warning is high but 4-head tickets are not reflected in main or upset tickets");
@@ -1517,6 +1535,488 @@ export function checkPredictionConsistency(prediction = {}) {
     mainHeads,
     issues,
     warnings
+  };
+}
+
+function ticketBoats(ticket = {}) {
+  const fromArray = Array.isArray(ticket?.boats)
+    ? ticket.boats.map((value) => Number(value))
+    : [];
+  const fromCombo = String(ticket?.combo ?? ticket?.ticket ?? ticket?.selection ?? "")
+    .split("-")
+    .map((value) => Number(value));
+  const boats = (fromArray.length >= 3 ? fromArray : fromCombo)
+    .filter((value) => Number.isInteger(value) && value >= 1 && value <= 6)
+    .slice(0, 3);
+  const unique = new Set(boats);
+  return boats.length === 3 && unique.size === 3 ? boats : [];
+}
+
+function ticketCombo(ticket = {}) {
+  const boats = ticketBoats(ticket);
+  return boats.length === 3 ? boats.join("-") : String(ticket?.combo ?? ticket?.ticket ?? "");
+}
+
+function getScenarioRows(prediction = {}) {
+  return [
+    ...safeArray(prediction.raceFlowScenario?.scenarioFamilies),
+    ...safeArray(prediction.raceFlowScenario?.scenarios)
+  ];
+}
+
+function scenarioAliasesForHead(head) {
+  if (head === 1) return ["escape_1"];
+  if (head === 2) return ["sashi_2"];
+  if (head === 3) return ["makuri_3", "makuri_sashi_3"];
+  if (head === 4) return ["four_beneficiary", "makuriSashi_4", "second_wave_4"];
+  if (head === 5) return ["outer_follow_5", "outside_follow_5_6"];
+  if (head === 6) return ["outer_follow_6", "outside_follow_5_6"];
+  return [];
+}
+
+function bestScenarioForHead(prediction = {}, head) {
+  const aliases = new Set(scenarioAliasesForHead(head));
+  const rows = getScenarioRows(prediction)
+    .filter((row) => aliases.has(row?.id))
+    .sort((a, b) => score01(b?.score, 0) - score01(a?.score, 0));
+  return rows[0] || null;
+}
+
+function topScenarioRank(prediction = {}, scenarioId) {
+  const rows = getScenarioRows(prediction)
+    .slice()
+    .sort((a, b) => score01(b?.score, 0) - score01(a?.score, 0));
+  const index = rows.findIndex((row) => row?.id === scenarioId);
+  return index < 0 ? 99 : index + 1;
+}
+
+function flowBoatScore(prediction = {}, boat, field, fallback = 0.5) {
+  const byBoat = prediction.raceFlowScenario?.scoreByBoat || {};
+  const raw = byBoat[String(boat)] || byBoat[boat] || {};
+  const splitRows = prediction.headPartnerSplitPreview || prediction.raceFlowScenario?.headPartnerSplit || [];
+  const split = safeArray(splitRows).find((row) => Number(row?.boat) === Number(boat)) || {};
+  return score01(raw?.[field] ?? split?.[field], fallback);
+}
+
+function liveFeatureSupport(prediction = {}, canonicalRaceData = null, boat, fallback = 0.5) {
+  const entry = safeArray(canonicalRaceData?.entries)
+    .find((row) => Number(row?.boat ?? row?.lane) === Number(boat)) || {};
+  const scores = {
+    exST: featureScore01(prediction, boat, "exST", null),
+    exTime: featureScore01(prediction, boat, "exTime", null),
+    lapTime: featureScore01(prediction, boat, "lapTime", null),
+    straightTime: featureScore01(prediction, boat, "straightTime", null),
+    turnTime: featureScore01(prediction, boat, "turnTime", null),
+    motorRank: featureScore01(prediction, boat, "motorRank", null),
+    motor2Rate: featureScore01(prediction, boat, "motor2Rate", null)
+  };
+  const values = Object.entries(scores)
+    .map(([field, value]) => {
+      if (value !== null && value !== undefined) return Number(value);
+      if (field === "motor2Rate" && entry.motor2Rate !== null && entry.motor2Rate !== undefined) {
+        return percent01(entry.motor2Rate, fallback);
+      }
+      return null;
+    })
+    .filter((value) => Number.isFinite(value));
+  if (values.length === 0) return fallback;
+  return clamp(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function partnerVenueSupport(prediction = {}, head, second, decisionScenarioId = null) {
+  const residual = prediction.raceFlowScenario?.decisionResidualScores || {};
+  if (head === 4) {
+    const exacta = residual.venue4ExactaRates?.[`${head}-${second}`];
+    const secondRate = residual.venue4SecondRates?.[String(second)];
+    return {
+      score: score01(exacta ?? secondRate, 0.5),
+      known: exacta !== null && exacta !== undefined || secondRate !== null && secondRate !== undefined
+    };
+  }
+  if (head === 3 && second === 1) {
+    const raw = decisionScenarioId === "makuri_sashi_3"
+      ? residual.venueMakuriSashiBoat1SecondRate
+      : residual.venueMakuriBoat1SecondRate;
+    return { score: score01(raw, 0.5), known: raw !== null && raw !== undefined };
+  }
+  if (head === 2 && second === 1) {
+    const raw = residual.venueSashiBoat1SecondRate;
+    return { score: score01(raw, 0.5), known: raw !== null && raw !== undefined };
+  }
+  return { score: 0.5, known: false };
+}
+
+function ticketDecisionSupport(ticket = {}) {
+  return score01(ticket?.decisionCompatibilityScore ?? ticket?.ticketDecisionCompatibilityScore, 0.5);
+}
+
+function gradeFromScore(score, gradeCap = null) {
+  let grade = score >= 72 ? "A" : score >= 60 ? "B" : score >= 48 ? "C" : "reject";
+  const order = { A: 3, B: 2, C: 1, reject: 0 };
+  if (gradeCap && order[grade] > order[gradeCap]) grade = gradeCap;
+  return grade;
+}
+
+function formatTicketReason(reasons = []) {
+  return reasons.filter(Boolean).slice(0, 3).join(" / ");
+}
+
+export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, canonicalRaceData = null) {
+  const boats = ticketBoats(ticket);
+  const combo = boats.join("-");
+  const reasons = [];
+  const rejectReasons = [];
+  const gradeCaps = [];
+  if (boats.length !== 3) {
+    return {
+      ...ticket,
+      ticket: combo || String(ticket?.combo ?? ticket?.ticket ?? "-"),
+      combo: combo || String(ticket?.combo ?? ticket?.ticket ?? "-"),
+      boats,
+      plausible: false,
+      score: 0,
+      plausibilityScore: 0,
+      grade: "reject",
+      reasons,
+      rejectReasons: ["invalid trifecta combo"]
+    };
+  }
+
+  const [head, second, third] = boats;
+  const scenario = bestScenarioForHead(finalPrediction, head);
+  const scenarioId = scenario?.id || ticket?.scenarioId || ticket?.decisionScenarioId || null;
+  const scenarioSupport = Math.max(score01(scenario?.score, 0), score01(ticket?.upsetScore, 0));
+  const scenarioRank = scenarioId ? topScenarioRank(finalPrediction, scenarioId) : 99;
+  const headScore = flowBoatScore(finalPrediction, head, "headScore", 0.35);
+  const attackerScore = flowBoatScore(finalPrediction, head, "attackerScore", 0.35);
+  const beneficiaryScore = flowBoatScore(finalPrediction, head, "beneficiaryScore", 0.35);
+  const headTriggerScore = flowBoatScore(finalPrediction, head, "scenarioTriggerScore", 0.35);
+  const firstProbability = firstPlaceProbability01(finalPrediction, head, 0.03);
+  const liveHeadSupport = liveFeatureSupport(finalPrediction, canonicalRaceData, head, 0.5);
+  const headSupport = clamp(Math.max(
+    headScore,
+    scenarioSupport,
+    attackerScore * 0.9,
+    beneficiaryScore * (head === 4 ? 1.05 : 0.82),
+    headTriggerScore * 0.82,
+    firstProbability * 1.6,
+    liveHeadSupport * 0.78
+  ));
+
+  if (headScore >= 0.54) reasons.push(`${head}頭スコア`);
+  if (scenarioSupport >= 0.54) reasons.push(scenarioId === "four_beneficiary" ? "4展開拾い" : `${head}頭シナリオ`);
+  if (head === 4 && beneficiaryScore >= 0.56) reasons.push("4 beneficiary");
+  if (liveHeadSupport >= 0.62) reasons.push(`${head}足色`);
+  if (firstProbability >= 0.22) reasons.push(`${head}一着確率`);
+
+  if (head >= 5 && headSupport < 0.66) {
+    rejectReasons.push("5・6号艇の頭は強い根拠が不足");
+  } else if (headSupport < 0.42) {
+    rejectReasons.push("head gate failed: head support is weak");
+  } else if (headSupport < 0.5) {
+    gradeCaps.push("C");
+    reasons.push("頭は条件付き");
+  }
+
+  if (!scenarioId || scenarioSupport < 0.36) {
+    rejectReasons.push("scenario gate failed: top scenario support is weak");
+  } else if (scenarioRank > 3 && scenarioSupport < 0.55) {
+    rejectReasons.push("scenario gate failed: ticket does not match top scenarios");
+  } else if (scenarioSupport < 0.48) {
+    gradeCaps.push("C");
+    reasons.push("シナリオ薄め");
+  }
+
+  const secondScore = flowBoatScore(finalPrediction, second, "secondScore", 0.42);
+  const secondResidual = flowBoatScore(finalPrediction, second, "residualScore", 0.42);
+  const secondLive = liveFeatureSupport(finalPrediction, canonicalRaceData, second, 0.5);
+  const venue = partnerVenueSupport(finalPrediction, head, second, scenarioId);
+  const partnerSupport = clamp(
+    secondScore * 0.42 +
+    secondResidual * 0.24 +
+    secondLive * 0.16 +
+    venue.score * 0.12 +
+    ticketPartnerScore01(finalPrediction, head, second) * 0.06
+  );
+  if (secondScore >= 0.56 || secondResidual >= 0.56) reasons.push(`${second}残り`);
+  if (venue.known && venue.score >= 0.56) reasons.push(`会場${head}-${second}`);
+  if (secondLive >= 0.62) reasons.push(`${second}相手足`);
+  if (partnerSupport < 0.38) rejectReasons.push("partner gate failed: second boat support is weak");
+  else if (partnerSupport < 0.5) gradeCaps.push("C");
+
+  const thirdScore = flowBoatScore(finalPrediction, third, "thirdScore", 0.4);
+  const thirdResidual = flowBoatScore(finalPrediction, third, "residualScore", 0.4);
+  const thirdLive = liveFeatureSupport(finalPrediction, canonicalRaceData, third, 0.5);
+  const thirdSupport = clamp(thirdScore * 0.46 + thirdResidual * 0.28 + thirdLive * 0.26);
+  if (thirdScore >= 0.55 || thirdResidual >= 0.55 || thirdLive >= 0.62) reasons.push(`${third}三着根拠`);
+  if (thirdSupport < 0.34) rejectReasons.push("third gate failed: third boat support is weak");
+  else if (thirdSupport < 0.47) gradeCaps.push("C");
+
+  const residualScores = finalPrediction.raceFlowScenario?.decisionResidualScores || {};
+  const boat1Residual = score01(residualScores.boat1ResidualAfterAttackScore, flowBoatScore(finalPrediction, 1, "residualScore", 0.5));
+  const boat3Residual = score01(residualScores.boat3ResidualScore, flowBoatScore(finalPrediction, 3, "residualScore", 0.5));
+  const boat5Follow = score01(residualScores.boat5LinkedFollowScore, flowBoatScore(finalPrediction, 5, "residualScore", 0.5));
+  const boat6Follow = score01(residualScores.boat6LinkedFollowScore, flowBoatScore(finalPrediction, 6, "residualScore", 0.5));
+  const insideCollapse = score01(residualScores.insideCollapseScore, clamp(1 - boat1Residual));
+  const boat1KeepSupport = (boat1Residual * 0.46) +
+    (featureScore01(finalPrediction, 1, "lapTime", 0.5) * 0.18) +
+    (featureScore01(finalPrediction, 1, "turnTime", 0.5) * 0.18) +
+    (featureScore01(finalPrediction, 1, "motorRank", featureScore01(finalPrediction, 1, "motor2Rate", 0.5)) * 0.18);
+  const boat3KeepSupport = (boat3Residual * 0.5) +
+    (featureScore01(finalPrediction, 3, "lapTime", 0.5) * 0.18) +
+    (featureScore01(finalPrediction, 3, "turnTime", 0.5) * 0.2) +
+    (featureScore01(finalPrediction, 3, "motorRank", 0.5) * 0.12);
+  const venue43 = partnerVenueSupport(finalPrediction, 4, 3, "four_beneficiary");
+  const venue41 = partnerVenueSupport(finalPrediction, 4, 1, "four_beneficiary");
+  const venue45 = partnerVenueSupport(finalPrediction, 4, 5, "four_beneficiary");
+  const venue46 = partnerVenueSupport(finalPrediction, 4, 6, "four_beneficiary");
+  const venue31 = partnerVenueSupport(finalPrediction, 3, 1, scenarioId);
+  const venue21 = partnerVenueSupport(finalPrediction, 2, 1, scenarioId);
+  let specialScoreBoost = 0;
+
+  if (head === 4) {
+    if (scenarioId !== "four_beneficiary" && scenarioId !== "makuriSashi_4" && scenarioSupport < 0.58) {
+      gradeCaps.push("C");
+      reasons.push("4頭は条件付き");
+    }
+    if (second === 3) {
+      const venueNotRare = !venue43.known || venue43.score >= 0.43;
+      const allow43 = boat3Residual >= 0.58 &&
+        boat3KeepSupport >= 0.58 &&
+        venueNotRare;
+      if (!allow43) {
+        rejectReasons.push("4-3 rejected: 3 residual/lap-turn or venue support is weak");
+      } else {
+        reasons.push("3残り強");
+      }
+    }
+    if (second === 1) {
+      if (boat1KeepSupport >= 0.56 || venue41.score >= 0.54) {
+        reasons.push("1残り強");
+        specialScoreBoost += 0.08;
+      } else {
+        gradeCaps.push("C");
+        reasons.push("1残り条件付き");
+      }
+    }
+    if (second === 5) {
+      const outsideSupported = boat1Residual <= 0.54 && insideCollapse >= 0.52 && (boat5Follow >= 0.52 || venue45.score >= 0.54);
+      if (!outsideSupported) {
+        gradeCaps.push("C");
+        reasons.push("5外追走は条件付き");
+      } else {
+        reasons.push("5外追走");
+      }
+    }
+    if (second === 6) {
+      const outsideSupported = boat1Residual <= 0.5 && insideCollapse >= 0.56 && (boat6Follow >= 0.54 || venue46.score >= 0.54);
+      if (!outsideSupported) {
+        rejectReasons.push("4-6 rejected: inside collapse and boat6 follow support are insufficient");
+      } else {
+        reasons.push("6外追走");
+      }
+    }
+  }
+
+  if (head === 3 && second === 1) {
+    const allow31 = boat1Residual >= 0.55 && boat1KeepSupport >= 0.54 && (!venue31.known || venue31.score >= 0.44);
+    if (!allow31) {
+      gradeCaps.push("C");
+      reasons.push("3-1は1残り弱めで降格");
+      if (boat1Residual < 0.42 && venue31.known && venue31.score < 0.4) {
+        rejectReasons.push("3-1 rejected: boat1 residual and venue makuri 1-second support are weak");
+      }
+    } else {
+      reasons.push("3攻め後の1残り");
+    }
+  }
+
+  if (head === 2) {
+    const sashi2 = scenarioScore01(finalPrediction, "sashi_2", 0.4);
+    if (second === 1) {
+      const allow21 = sashi2 >= 0.5 && boat1Residual >= 0.52 && (!venue21.known || venue21.score >= 0.44);
+      if (!allow21) {
+        gradeCaps.push(sashi2 < 0.43 ? "reject" : "C");
+        reasons.push("2差しは条件付き");
+      } else {
+        reasons.push("2差し+1残り");
+      }
+    } else if (sashi2 < 0.44) {
+      gradeCaps.push("C");
+      reasons.push("2頭シナリオ薄め");
+    }
+  }
+
+  const decisionSupport = ticketDecisionSupport(ticket);
+  if (decisionSupport < 0.38 && Math.max(headSupport, scenarioSupport) < 0.68) {
+    rejectReasons.push("venue combo gate failed: decision-conditioned combo support is rare");
+  } else if (decisionSupport < 0.48) {
+    gradeCaps.push("C");
+    reasons.push("会場相性薄め");
+  }
+
+  const mainScenario = finalPrediction.mainScenarioGroup || finalPrediction.raceFlowScenario?.mainScenarioGroup || null;
+  const derivedScenario = finalPrediction.derivedScenarioGroup || finalPrediction.raceFlowScenario?.derivedScenarioGroup || null;
+  const expectedMainHead = expectedHeadFromScenario(mainScenario);
+  const expectedDerivedHead = expectedHeadFromScenario(derivedScenario);
+  if (
+    expectedMainHead &&
+    head !== expectedMainHead &&
+    head !== expectedDerivedHead &&
+    scenarioSupport < 0.58
+  ) {
+    gradeCaps.push("C");
+    reasons.push("説明本線とは別筋");
+  }
+  if (finalPrediction.finalScenarioConsistencyCheck?.ok === false) {
+    gradeCaps.push("C");
+    reasons.push("整合性チェック注意");
+  }
+
+  const score = Math.round(clamp(
+    headSupport * 0.28 +
+    scenarioSupport * 0.2 +
+    partnerSupport * 0.18 +
+    thirdSupport * 0.12 +
+    decisionSupport * 0.1 +
+    liveHeadSupport * 0.07 +
+    score01(ticket?.probability, 0.02) * 0.05 +
+    specialScoreBoost
+  ) * 100);
+  const cap = gradeCaps.includes("reject")
+    ? "reject"
+    : gradeCaps.includes("C")
+      ? "C"
+      : gradeCaps.includes("B")
+        ? "B"
+        : null;
+  const grade = rejectReasons.length > 0 ? "reject" : gradeFromScore(score, cap);
+  const plausible = grade !== "reject";
+  return {
+    ...ticket,
+    ticket: combo,
+    combo,
+    boats,
+    plausible,
+    score,
+    plausibilityScore: score,
+    grade,
+    scenarioId,
+    gateScores: {
+      headSupport: roundNumber(headSupport * 100, 1),
+      scenarioSupport: roundNumber(scenarioSupport * 100, 1),
+      partnerSupport: roundNumber(partnerSupport * 100, 1),
+      thirdSupport: roundNumber(thirdSupport * 100, 1),
+      decisionSupport: roundNumber(decisionSupport * 100, 1),
+      liveHeadSupport: roundNumber(liveHeadSupport * 100, 1)
+    },
+    reasons: reasons.filter(Boolean).filter((reason, index, arr) => arr.indexOf(reason) === index),
+    rejectReasons,
+    displayReason: plausible
+      ? formatTicketReason(reasons)
+      : formatTicketReason(rejectReasons)
+  };
+}
+
+function sortEvaluatedTickets(a, b) {
+  const gradeOrder = { A: 3, B: 2, C: 1, reject: 0 };
+  return (gradeOrder[b.grade] || 0) - (gradeOrder[a.grade] || 0) ||
+    Number(b.score || 0) - Number(a.score || 0) ||
+    Number(b.probability || 0) - Number(a.probability || 0);
+}
+
+function collectTicketCandidates(prediction = {}) {
+  const rows = [];
+  const seen = new Set();
+  const add = (ticket, source) => {
+    const combo = ticketCombo(ticket);
+    if (!combo || seen.has(combo)) return;
+    const boats = ticketBoats({ ...ticket, combo });
+    if (boats.length !== 3) return;
+    seen.add(combo);
+    rows.push({ ...ticket, combo, boats, source: ticket?.source || source });
+  };
+  safeArray(prediction.tickets?.trifecta).slice(0, 36).forEach((ticket) => add(ticket, "probability"));
+  safeArray(prediction.raceFlowExtraTickets).forEach((ticket) => add(ticket, "raceFlow"));
+  safeArray(prediction.extraTickets).forEach((ticket) => add(ticket, "development"));
+  for (const scenario of safeArray(prediction.developmentScenarios)) {
+    for (const ticket of safeArray(scenario.recommendedExtraTickets)) {
+      add({ ...ticket, scenarioName: scenario.scenarioName, upsetScore: scenario.upsetScore }, "developmentScenario");
+    }
+  }
+  return rows;
+}
+
+export function buildTicketPlausibilityGroups(prediction = {}, canonicalRaceData = null) {
+  const evaluatedTickets = collectTicketCandidates(prediction)
+    .map((ticket) => evaluateTicketPlausibility(ticket, prediction, canonicalRaceData))
+    .sort(sortEvaluatedTickets);
+  const plausible = evaluatedTickets.filter((ticket) => ticket.plausible);
+  const rejectedTickets = evaluatedTickets
+    .filter((ticket) => !ticket.plausible)
+    .slice(0, 24)
+    .map((ticket) => ({
+      ticket: ticket.combo,
+      rejectedBecause: ticket.rejectReasons,
+      score: ticket.score,
+      scenarioId: ticket.scenarioId
+    }));
+  const mainScenario = prediction.mainScenarioGroup || prediction.raceFlowScenario?.mainScenarioGroup || null;
+  const derivedScenario = prediction.derivedScenarioGroup || prediction.raceFlowScenario?.derivedScenarioGroup || null;
+  const mainScenarioScore = score01(mainScenario?.score, null);
+  const derivedScenarioScore = score01(derivedScenario?.score, null);
+  const scenarioClose = mainScenarioScore !== null &&
+    derivedScenarioScore !== null &&
+    Math.abs(mainScenarioScore - derivedScenarioScore) < 0.035;
+  const consistencyFailed = prediction.finalScenarioConsistencyCheck?.ok === false;
+  const dataWarnings = safeArray(prediction.raceFlowScenario?.dataWarnings);
+  const hasA = plausible.some((ticket) => ticket.grade === "A");
+  const noBuyReasons = [
+    !hasA ? "A評価の買い目なし" : null,
+    mainScenarioScore !== null && mainScenarioScore < 0.43 ? "本線シナリオ信頼度が低い" : null,
+    scenarioClose ? "主要シナリオの差が小さい" : null,
+    consistencyFailed ? "説明と買い目の整合性チェック注意" : null,
+    dataWarnings.length > 0 ? "入力データに不足または矛盾あり" : null
+  ].filter(Boolean);
+  const noBuyRecommended = noBuyReasons.length > 0;
+  const mainTickets = noBuyRecommended
+    ? []
+    : plausible.filter((ticket) => ticket.grade === "A").slice(0, 6);
+  const secondaryTickets = noBuyRecommended
+    ? []
+    : plausible.filter((ticket) => ticket.grade === "B").slice(0, 6);
+  const upsetTickets = noBuyRecommended
+    ? []
+    : plausible.filter((ticket) => ticket.grade === "C").slice(0, 8);
+  const referenceTickets = noBuyRecommended
+    ? plausible.slice(0, 6).map((ticket) => ({ ...ticket, referenceOnly: true }))
+    : [];
+  const summary = {
+    noBuyRecommended,
+    referenceOnly: noBuyRecommended,
+    noBuyReason: noBuyRecommended
+      ? "見送り推奨: レースの軸が割れており、無理に買うレースではありません。"
+      : "",
+    noBuyReasons,
+    mainCount: mainTickets.length,
+    secondaryCount: secondaryTickets.length,
+    upsetCount: upsetTickets.length,
+    referenceCount: referenceTickets.length,
+    rejectedCount: rejectedTickets.length,
+    evaluatedCount: evaluatedTickets.length
+  };
+  return {
+    mainTickets,
+    secondaryTickets,
+    upsetTickets,
+    referenceTickets,
+    rejectedTickets,
+    evaluatedTickets: evaluatedTickets.slice(0, 36),
+    noBuyRecommended,
+    referenceOnly: noBuyRecommended,
+    noBuyReason: summary.noBuyReason,
+    noBuyReasons,
+    summary
   };
 }
 
@@ -1642,6 +2142,37 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     extraTickets
   };
   finalPrediction.finalScenarioConsistencyCheck = checkPredictionConsistency(finalPrediction);
+  const ticketGroups = buildTicketPlausibilityGroups(finalPrediction, program);
+  finalPrediction.ticketGroups = ticketGroups;
+  finalPrediction.ticketPlausibilityPreview = ticketGroups.evaluatedTickets;
+  finalPrediction.ticketPlausibilitySummary = ticketGroups.summary;
+  finalPrediction.rejectedTickets = ticketGroups.rejectedTickets;
+  finalPrediction.tickets = {
+    ...finalPrediction.tickets,
+    plausibleTrifecta: ticketGroups.mainTickets,
+    secondaryTrifecta: ticketGroups.secondaryTickets,
+    upsetTrifecta: ticketGroups.upsetTickets,
+    referenceTrifecta: ticketGroups.referenceTickets
+  };
+  const legacyExtraCandidates = ticketGroups.noBuyRecommended
+    ? [
+      ...ticketGroups.referenceTickets,
+      ...ticketGroups.evaluatedTickets.filter((ticket) => ticket.plausible && Number(ticket?.boats?.[0]) !== 1)
+    ]
+    : [
+      ...ticketGroups.mainTickets.filter((ticket) => Number(ticket?.boats?.[0]) !== 1),
+      ...ticketGroups.secondaryTickets.filter((ticket) => Number(ticket?.boats?.[0]) !== 1),
+      ...ticketGroups.upsetTickets
+    ];
+  const legacyExtraSeen = new Set();
+  finalPrediction.extraTickets = legacyExtraCandidates
+    .filter((ticket) => {
+      if (Number(ticket?.boats?.[0]) === 1 || !ticket?.combo || legacyExtraSeen.has(ticket.combo)) return false;
+      legacyExtraSeen.add(ticket.combo);
+      return true;
+    })
+    .slice(0, 6);
+  finalPrediction.finalScenarioConsistencyCheck = checkPredictionConsistency(finalPrediction);
   finalPrediction.coefficientWarning = finalPrediction.finalScenarioConsistencyCheck.warnings;
   return finalPrediction;
 }
@@ -1667,10 +2198,17 @@ export function buildConfidenceScore(prediction = {}) {
   const fHolderPenalty = scoredBoats
     .filter((boat) => boat.boat >= 2)
     .reduce((sum, boat) => sum + Math.max(0, Number(boat.flyingCount || 0)) * (boat.boat >= 5 ? 3 : 1.5), 0);
-  const developmentPenalty = Array.isArray(prediction.extraTickets)
-    ? Math.min(8, prediction.extraTickets.length * 1.2)
-    : 0;
-  const extraTicketCount = Array.isArray(prediction.extraTickets) ? prediction.extraTickets.length : 0;
+  const groupedExtraTicketCount = prediction.ticketGroups
+    ? safeArray(prediction.ticketGroups.secondaryTickets).length + safeArray(prediction.ticketGroups.upsetTickets).length
+    : null;
+  const developmentPenalty = groupedExtraTicketCount !== null
+    ? Math.min(8, groupedExtraTicketCount * 1.2)
+    : Array.isArray(prediction.extraTickets)
+      ? Math.min(8, prediction.extraTickets.length * 1.2)
+      : 0;
+  const extraTicketCount = groupedExtraTicketCount !== null
+    ? groupedExtraTicketCount
+    : Array.isArray(prediction.extraTickets) ? prediction.extraTickets.length : 0;
   const boat1EscapeSupport =
     weightedPositiveRateLift(boat1.playerTendency, "escapeRate", 0.55) * 16 +
     weightedPositiveRateLift(boat2.playerTendency, "nigashiRate", 0.55) * 12;
@@ -1760,6 +2298,10 @@ export function buildConfidenceScore(prediction = {}) {
     : [];
   for (const warning of consistencyWarnings) {
     if (warning && !warnings.includes(warning)) warnings.push(warning);
+  }
+  if (prediction.ticketGroups?.noBuyRecommended) {
+    const warning = prediction.ticketGroups.noBuyReason || "見送り推奨: 買い目Aがなく参考扱い";
+    if (!warnings.includes(warning)) warnings.push(warning);
   }
   if (prediction.exhibition?.status !== "exhibition_reflected") warnings.push("展示前の出走表ベース予想");
   const roundedScore = Math.round(clamp(score, 0, 100));
@@ -2135,10 +2677,11 @@ export function buildTodayRanking(programs = [], previewsByRaceKey = {}, options
         const prediction = buildRacePrediction(program, previewsByRaceKey[key] || null, config);
         if (!Array.isArray(prediction.scoredBoats) || prediction.scoredBoats.length !== 6) return null;
         const confidence = buildConfidenceScore(prediction);
-        const topTickets = prediction.tickets.trifecta.slice(0, 6);
-        while (topTickets.length < 6 && prediction.tickets.trifecta[topTickets.length]) {
-          topTickets.push(prediction.tickets.trifecta[topTickets.length]);
-        }
+        const topTickets = safeArray(prediction.ticketGroups?.mainTickets).length > 0
+          ? safeArray(prediction.ticketGroups.mainTickets)
+          : safeArray(prediction.ticketGroups?.referenceTickets).length > 0
+            ? safeArray(prediction.ticketGroups.referenceTickets)
+            : prediction.tickets.trifecta.slice(0, 6);
         const head = prediction.firstPlaceProbabilities[0] || null;
         const counter = prediction.firstPlaceProbabilities.find((row) => row.boat !== head?.boat) || null;
         const insideCandidate =
@@ -2165,6 +2708,7 @@ export function buildTodayRanking(programs = [], previewsByRaceKey = {}, options
           upsetAlert: prediction.upsetAlert,
           upsetReasons: prediction.upsetReasons,
           extraTickets: prediction.extraTickets,
+          ticketGroups: prediction.ticketGroups,
           developmentScenarios: prediction.developmentScenarios,
           insideCandidate,
           exhibitionStatus: prediction.exhibition.status,

@@ -3,8 +3,10 @@ import {
   buildExhibitionFeatures,
   buildConfidenceScore,
   buildBoat4OpportunityRanking,
+  buildTicketPlausibilityGroups,
   buildTodayRanking,
   checkPredictionConsistency,
+  evaluateTicketPlausibility,
   buildRacePrediction,
   DEFAULT_SCORING_CONFIG,
   inspectPreviewExhibitionStatus,
@@ -548,5 +550,130 @@ assert.ok(
   strongWindPrediction.conditionAdjustmentLog.some((row) => row.type === "wind" && row.level === "strong"),
   "strong wind should be recorded in the condition adjustment log"
 );
+
+function plausibilityFixture(overrides = {}) {
+  const scoreByBoat = {
+    1: { boat: 1, headScore: 0.62, attackerScore: 0.62, secondScore: 0.68, thirdScore: 0.64, scenarioTriggerScore: 0.62, beneficiaryScore: 0.54, residualScore: 0.66 },
+    2: { boat: 2, headScore: 0.44, attackerScore: 0.48, secondScore: 0.58, thirdScore: 0.56, scenarioTriggerScore: 0.48, beneficiaryScore: 0.5, residualScore: 0.55 },
+    3: { boat: 3, headScore: 0.58, attackerScore: 0.66, secondScore: 0.46, thirdScore: 0.45, scenarioTriggerScore: 0.68, beneficiaryScore: 0.5, residualScore: 0.42 },
+    4: { boat: 4, headScore: 0.58, attackerScore: 0.54, secondScore: 0.62, thirdScore: 0.62, scenarioTriggerScore: 0.62, beneficiaryScore: 0.72, residualScore: 0.61 },
+    5: { boat: 5, headScore: 0.24, attackerScore: 0.25, secondScore: 0.58, thirdScore: 0.61, scenarioTriggerScore: 0.46, beneficiaryScore: 0.55, residualScore: 0.56 },
+    6: { boat: 6, headScore: 0.22, attackerScore: 0.22, secondScore: 0.42, thirdScore: 0.44, scenarioTriggerScore: 0.38, beneficiaryScore: 0.4, residualScore: 0.42 }
+  };
+  const featureScores = {
+    byBoat: Object.fromEntries([1, 2, 3, 4, 5, 6].map((boat) => [String(boat), {
+      scores: {
+        exST: boat === 3 ? 0.72 : 0.55,
+        exTime: 0.56,
+        lapTime: boat === 1 ? 0.7 : boat === 3 ? 0.43 : boat === 4 ? 0.7 : boat === 5 ? 0.62 : 0.5,
+        straightTime: boat === 3 ? 0.72 : boat === 4 ? 0.7 : boat === 5 ? 0.62 : 0.52,
+        turnTime: boat === 1 ? 0.7 : boat === 3 ? 0.42 : boat === 4 ? 0.74 : boat === 5 ? 0.58 : 0.5,
+        motorRank: boat === 1 ? 0.68 : boat === 4 ? 0.74 : boat === 5 ? 0.62 : 0.5,
+        motor2Rate: boat === 1 ? 0.64 : boat === 4 ? 0.72 : boat === 5 ? 0.61 : 0.5
+      }
+    }]))
+  };
+  return {
+    tickets: {
+      trifecta: [
+        { combo: "4-1-5", boats: [4, 1, 5], probability: 0.08, decisionCompatibilityScore: 68 },
+        { combo: "4-3-1", boats: [4, 3, 1], probability: 0.075, decisionCompatibilityScore: 42 },
+        { combo: "3-1-4", boats: [3, 1, 4], probability: 0.07, decisionCompatibilityScore: 52 },
+        { combo: "1-2-3", boats: [1, 2, 3], probability: 0.065, decisionCompatibilityScore: 62 },
+        { combo: "5-1-2", boats: [5, 1, 2], probability: 0.04, decisionCompatibilityScore: 45 },
+        { combo: "6-1-2", boats: [6, 1, 2], probability: 0.03, decisionCompatibilityScore: 42 }
+      ]
+    },
+    firstPlaceProbabilities: [
+      { boat: 4, probability: 0.22 },
+      { boat: 1, probability: 0.2 },
+      { boat: 3, probability: 0.18 }
+    ],
+    featureScores,
+    raceFlowScenario: {
+      scenarioFamilies: [
+        { id: "four_beneficiary", score: 66, patterns: [[4, 1, "flow"], [4, 5, "flow"]] },
+        { id: "makuri_3", score: 61, patterns: [[3, 1, "flow"], [3, 4, "flow"]] },
+        { id: "escape_1", score: 58, patterns: [[1, 2, "flow"]] },
+        { id: "sashi_2", score: 43, patterns: [[2, 1, "flow"]] },
+        { id: "outer_follow_5", score: 38, patterns: [[4, 5, "flow"]] },
+        { id: "outer_follow_6", score: 28, patterns: [[4, 6, "flow"]] }
+      ],
+      scoreByBoat,
+      headPartnerSplit: Object.values(scoreByBoat),
+      mainScenarioGroup: { id: "four_beneficiary", score: 66 },
+      derivedScenarioGroup: { id: "makuri_3", score: 61 },
+      decisionResidualScores: {
+        boat1ResidualAfterAttackScore: 0.68,
+        boat3ResidualScore: 0.42,
+        boat5LinkedFollowScore: 0.58,
+        boat6LinkedFollowScore: 0.38,
+        insideCollapseScore: 0.44,
+        venueMakuriBoat1SecondRate: 0.34,
+        venueSashiBoat1SecondRate: 0.48,
+        venue4ExactaRates: {
+          "4-1": 0.62,
+          "4-2": 0.52,
+          "4-3": 0.34,
+          "4-5": 0.58,
+          "4-6": 0.36
+        },
+        venue4SecondRates: {
+          "1": 0.62,
+          "2": 0.52,
+          "3": 0.34,
+          "5": 0.58,
+          "6": 0.36
+        }
+      },
+      dataWarnings: []
+    },
+    mainScenarioGroup: { id: "four_beneficiary", score: 66 },
+    derivedScenarioGroup: { id: "makuri_3", score: 61 },
+    finalScenarioConsistencyCheck: { ok: true, warnings: [] },
+    ...overrides
+  };
+}
+
+const weak43 = evaluateTicketPlausibility({ combo: "4-3-1", boats: [4, 3, 1], probability: 0.08, decisionCompatibilityScore: 42 }, plausibilityFixture());
+assert.equal(weak43.grade, "reject", "4-3 should be rejected when boat 3 residual and venue 4-3 bias are weak");
+assert.ok(weak43.rejectReasons.some((reason) => reason.includes("4-3 rejected")));
+
+const promoted41 = evaluateTicketPlausibility({ combo: "4-1-5", boats: [4, 1, 5], probability: 0.08, decisionCompatibilityScore: 68 }, plausibilityFixture());
+assert.equal(promoted41.grade, "A", "4-1 should be promoted when boat 1 residual and venue 4-1 support are strong");
+assert.ok(promoted41.reasons.some((reason) => reason.includes("1残り")));
+
+const demoted31 = evaluateTicketPlausibility({ combo: "3-1-4", boats: [3, 1, 4], probability: 0.08, decisionCompatibilityScore: 52 }, plausibilityFixture());
+assert.notEqual(demoted31.grade, "A", "3-1 should be demoted when venue makuri boat1SecondRate is low");
+assert.ok(demoted31.reasons.some((reason) => reason.includes("3-1")));
+
+const groupedTickets = buildTicketPlausibilityGroups(plausibilityFixture());
+assert.ok(groupedTickets.mainTickets.length < 6, "ticket gate must not force exactly 6 main tickets");
+assert.ok(groupedTickets.rejectedTickets.some((row) => row.ticket === "4-3-1"), "rejected tickets should be available for debug");
+
+const noBuyGroups = buildTicketPlausibilityGroups(plausibilityFixture({
+  tickets: {
+    trifecta: [
+      { combo: "5-1-2", boats: [5, 1, 2], probability: 0.04, decisionCompatibilityScore: 38 },
+      { combo: "6-1-2", boats: [6, 1, 2], probability: 0.03, decisionCompatibilityScore: 38 }
+    ]
+  },
+  raceFlowScenario: {
+    ...plausibilityFixture().raceFlowScenario,
+    dataWarnings: ["missing exhibition"],
+    scenarioFamilies: [
+      { id: "escape_1", score: 41 },
+      { id: "sashi_2", score: 40 },
+      { id: "makuri_3", score: 39 }
+    ],
+    mainScenarioGroup: { id: "escape_1", score: 41 },
+    derivedScenarioGroup: { id: "sashi_2", score: 40 }
+  },
+  mainScenarioGroup: { id: "escape_1", score: 41 },
+  derivedScenarioGroup: { id: "sashi_2", score: 40 },
+  finalScenarioConsistencyCheck: { ok: false, warnings: ["scenario mismatch"] }
+}));
+assert.equal(noBuyGroups.noBuyRecommended, true, "low confidence / inconsistent tickets should return no-buy recommendation");
+assert.equal(noBuyGroups.mainTickets.length, 0, "no-buy mode should not expose main tickets");
 
 console.log("kyotei-openapi-engine ok");
