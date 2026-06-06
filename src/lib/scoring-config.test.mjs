@@ -19,6 +19,13 @@ const merged = mergeScoringConfig({
 });
 assert.equal(merged.scoringCoefficients.headScore.exST, 21);
 assert.equal(merged.scoringCoefficients.headScore.turnTime, 12);
+const aliasMerged = mergeScoringConfig({
+  headScoreWeights: { exST: 22 },
+  ticketGateThresholds: { mainScore: 74 }
+});
+assert.equal(aliasMerged.scoringCoefficients.headScore.exST, 22);
+assert.equal(aliasMerged.headScoreWeights.exST, 22);
+assert.equal(aliasMerged.ticketGateThresholds.mainScore, 74);
 
 const venueAdjusted = getVenueScoringConfig({
   ...DEFAULT_SCORING_CONFIG,

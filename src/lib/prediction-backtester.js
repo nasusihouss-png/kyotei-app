@@ -79,6 +79,8 @@ function actualFromRace(race = {}) {
   const trifecta = byFinish.length >= 3 ? byFinish.slice(0, 3).map((row) => row.boat).join("-") : null;
   return {
     winnerBoat,
+    secondBoat: byFinish[1]?.boat ?? null,
+    thirdBoat: byFinish[2]?.boat ?? null,
     trifecta,
     winnerDecision: normalizeDecision(race.result?.winningDecision ?? race.result?.decision ?? race.result?.kimarite),
     boat1InTop3: byFinish.slice(0, 3).some((row) => row.boat === 1)
@@ -131,16 +133,36 @@ function buildCalibrationSummary(factorRows = [], raceRows = []) {
     .slice(0, 12);
   const coefficientSuggestions = [];
   if (factorRows.length < 20) {
-    coefficientSuggestions.push("sample size is small; keep coefficient changes manual and conservative.");
+    coefficientSuggestions.push({
+      factor: "sampleSize",
+      currentWeight: null,
+      suggestion: "hold",
+      reason: "Sample size is small; keep coefficient changes manual and conservative."
+    });
   }
   if ((correlations.turnTimeScore?.fourHead ?? 0) > (correlations.exSTScore?.fourHead ?? 0) + 0.08) {
-    coefficientSuggestions.push("turnTime weight may be too low for 4-head beneficiary scenarios.");
+    coefficientSuggestions.push({
+      factor: "turnTime",
+      currentWeight: DEFAULT_SCORING_CONFIG.scoringCoefficients?.fourHeadOpportunity?.boat4TurnTime ?? null,
+      suggestion: "increase for fourHeadOpportunity/residualScore",
+      reason: "turnTime correlates with 4-head beneficiary cases more than exST in this sample."
+    });
   }
   if ((correlations.exSTScore?.head ?? 0) < 0 && falsePositiveCases.length > 0) {
-    coefficientSuggestions.push("exST weight may be too high for this venue/date range.");
+    coefficientSuggestions.push({
+      factor: "exST",
+      currentWeight: DEFAULT_SCORING_CONFIG.scoringCoefficients?.headScore?.exST ?? null,
+      suggestion: "decrease",
+      reason: "High false positives for head prediction when exST correlation is weak or negative."
+    });
   }
   if ((correlations.motorRankScore?.involvement ?? 0) > 0.12) {
-    coefficientSuggestions.push("motorRank improves residual prediction and should be weighted more.");
+    coefficientSuggestions.push({
+      factor: "motorRank",
+      currentWeight: DEFAULT_SCORING_CONFIG.scoringCoefficients?.partnerResidualScore?.motorRank ?? null,
+      suggestion: "increase for residualScore",
+      reason: "Strong motorRank correlates with 2nd/3rd involvement."
+    });
   }
   return {
     correlations,
@@ -172,8 +194,14 @@ export function runPredictionBacktest({
   let headTop2 = 0;
   let trifectaMain = 0;
   let trifectaMainPlusUpset = 0;
+  let secondPartnerHit = 0;
   let fourHeadActual = 0;
   let fourHeadDetected = 0;
+  let fourHeadPredicted = 0;
+  let fourHeadTruePositive = 0;
+  let falseThreeHead = 0;
+  let falseOutsideHead = 0;
+  let passDecisionCorrect = 0;
   let avoidBadRaceCorrect = 0;
   let scenarioDecisionMatches = 0;
   let scenarioDecisionCount = 0;
@@ -186,6 +214,7 @@ export function runPredictionBacktest({
     const prediction = buildRacePrediction(program, null, scoringConfig);
     const confidence = buildConfidenceScore(prediction);
     const consistency = checkPredictionConsistency({ ...prediction, confidence });
+    const finalDecision = prediction.finalPrediction?.buyDecision || (confidence.score < 45 || consistency.referenceOnly ? "pass" : "buy");
     const firstRows = safeArray(prediction.firstPlaceProbabilities);
     const predictedHead = firstRows[0]?.boat ?? null;
     const top2 = firstRows.slice(0, 2).map((row) => row.boat);
@@ -219,15 +248,26 @@ export function runPredictionBacktest({
 
     if (predictedHead === actual.winnerBoat) headTop1 += 1;
     if (top2.includes(actual.winnerBoat)) headTop2 += 1;
+    if (actual.secondBoat && mainTicketRows.some((ticket) => Number(ticket.boats?.[0]) === actual.winnerBoat && Number(ticket.boats?.[1]) === actual.secondBoat)) {
+      secondPartnerHit += 1;
+    }
     if (actual.trifecta && mainTickets.includes(actual.trifecta)) trifectaMain += 1;
     if (actual.trifecta && allTickets.has(actual.trifecta)) trifectaMainPlusUpset += 1;
+    const predictedFourHead = boat4OpportunityScore >= 48 || safeArray(prediction.finalPrediction?.headCandidates).some((row) => row.boat === 4);
+    if (predictedFourHead) fourHeadPredicted += 1;
     if (actual.winnerBoat === 4) {
       fourHeadActual += 1;
-      if (boat4OpportunityScore >= 48) fourHeadDetected += 1;
+      if (predictedFourHead) {
+        fourHeadDetected += 1;
+        fourHeadTruePositive += 1;
+      }
     }
-    const avoidRecommended = confidence.score < 45 || consistency.referenceOnly;
+    if (predictedHead === 3 && actual.winnerBoat !== 3) falseThreeHead += 1;
+    if (predictedHead >= 5 && actual.winnerBoat !== predictedHead) falseOutsideHead += 1;
+    const avoidRecommended = finalDecision === "pass" || confidence.score < 45 || consistency.referenceOnly;
     const badRace = actual.trifecta ? !mainTickets.includes(actual.trifecta) : predictedHead !== actual.winnerBoat;
     if (avoidRecommended === badRace) avoidBadRaceCorrect += 1;
+    if ((finalDecision === "pass") === badRace) passDecisionCorrect += 1;
     if (expectedDecision && actual.winnerDecision) {
       scenarioDecisionCount += 1;
       if (expectedDecision === actual.winnerDecision) scenarioDecisionMatches += 1;
@@ -239,6 +279,7 @@ export function runPredictionBacktest({
       predictedHead,
       topHeadProbability: finiteNumber(firstRows[0]?.probability, 0),
       confidenceScore: confidence.score,
+      buyDecision: finalDecision,
       boat4OpportunityScore,
       mainScenarioId: topScenario?.id ?? null,
       actualDecision: actual.winnerDecision,
@@ -268,13 +309,19 @@ export function runPredictionBacktest({
   return {
     ok: true,
     sampleRaceCount,
-    hitRates: {
+      hitRates: {
       headTop1: hitRate(headTop1, sampleRaceCount),
       headTop2: hitRate(headTop2, sampleRaceCount),
+      secondPartner: hitRate(secondPartnerHit, sampleRaceCount),
       trifectaMain: hitRate(trifectaMain, sampleRaceCount),
       trifectaMainPlusUpset: hitRate(trifectaMainPlusUpset, sampleRaceCount),
       fourHeadDetection: hitRate(fourHeadDetected, fourHeadActual),
+      fourHeadPrecision: hitRate(fourHeadTruePositive, fourHeadPredicted),
+      fourHeadRecall: hitRate(fourHeadTruePositive, fourHeadActual),
+      falseThreeHeadRate: hitRate(falseThreeHead, sampleRaceCount),
+      falseOutsideHeadRate: hitRate(falseOutsideHead, sampleRaceCount),
       avoidBadRaceAccuracy: hitRate(avoidBadRaceCorrect, sampleRaceCount),
+      passDecisionAccuracy: hitRate(passDecisionCorrect, sampleRaceCount),
       scenarioDecision: hitRate(scenarioDecisionMatches, scenarioDecisionCount)
     },
     calibration: buildCalibrationSummary(factorRows, raceRows),

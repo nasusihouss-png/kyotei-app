@@ -45,11 +45,12 @@ export default function PredictionSummary({
   formatPercentDisplay
 }) {
   if (!prediction) return null;
+  const finalPrediction = prediction.finalPrediction || prediction;
   const groups = prediction.ticketGroups || {};
-  const mainTickets = safeArray(groups.mainTickets);
-  const secondaryTickets = safeArray(groups.secondaryTickets);
-  const upsetTickets = safeArray(groups.upsetTickets);
-  const referenceTickets = safeArray(groups.referenceTickets);
+  const mainTickets = safeArray(finalPrediction.mainTickets || groups.mainTickets);
+  const secondaryTickets = safeArray(finalPrediction.secondaryTickets || groups.secondaryTickets);
+  const upsetTickets = safeArray(finalPrediction.upsetTickets || groups.upsetTickets);
+  const referenceTickets = safeArray(finalPrediction.referenceTickets || groups.referenceTickets);
   const candidateTickets = [
     ...mainTickets,
     ...secondaryTickets,
@@ -58,8 +59,12 @@ export default function PredictionSummary({
     ...safeArray(prediction?.tickets?.trifecta).slice(0, 10)
   ];
   const raceFlow = prediction?.raceFlowScenario || {};
-  const headCandidates = safeArray(raceFlow.headCandidates);
-  const partnerCandidates = safeArray(raceFlow.partnerCandidates);
+  const headCandidates = safeArray(finalPrediction.headCandidates).length > 0
+    ? safeArray(finalPrediction.headCandidates)
+    : safeArray(raceFlow.headCandidates);
+  const partnerCandidates = safeArray(finalPrediction.partnerCandidates).length > 0
+    ? safeArray(finalPrediction.partnerCandidates).map((row) => ({ boat: row.partner ?? row.boat, ...row }))
+    : safeArray(raceFlow.partnerCandidates);
   const dangerousButNotHead = safeArray(raceFlow.dangerousButNotHead);
   const firstCandidates = headCandidates.length > 0
     ? headCandidates.slice(0, 3).map((row) => row.boat)
@@ -70,12 +75,21 @@ export default function PredictionSummary({
   const thirdCandidates = partnerCandidates.length > 0
     ? partnerCandidates.slice(0, 5).map((row) => row.boat)
     : uniqueTopBoats(candidateTickets, 2, 5);
-  const confidence = predictionExplanation?.confidence_score ?? null;
+  const confidence = finalPrediction.confidence?.score != null
+    ? Number(finalPrediction.confidence.score) / 100
+    : predictionExplanation?.confidence_score ?? null;
   const confidenceLabel = confidence === null || confidence === undefined
     ? "-"
     : formatPercentDisplay(confidence);
   const confidenceBand = predictionExplanation?.confidence_band || "-";
-  const noBuyRecommended = groups.noBuyRecommended === true;
+  const noBuyRecommended = finalPrediction.buyDecision === "pass" || groups.noBuyRecommended === true;
+  const buyDecisionLabel = finalPrediction.buyDecision === "buy"
+    ? "買い"
+    : finalPrediction.buyDecision === "light"
+      ? "軽め"
+      : finalPrediction.buyDecision === "pass"
+        ? "見送り"
+        : "-";
   const upsetText = upsetTickets.length > 0
     ? prediction?.upsetAlert || "展開穴あり"
     : noBuyRecommended
@@ -116,17 +130,21 @@ export default function PredictionSummary({
           <span>信頼度</span>
           <strong>{confidenceLabel} / {confidenceBand}</strong>
         </div>
+        <div className={`betting-summary-item ${finalPrediction.buyDecision === "pass" ? "warning" : finalPrediction.buyDecision === "buy" ? "primary" : ""}`}>
+          <span>Buy Decision</span>
+          <strong>{buyDecisionLabel}</strong>
+        </div>
         <div className={`betting-summary-item ${upsetTickets.length > 0 || noBuyRecommended ? "warning" : ""}`}>
           <span>荒れ警報</span>
           <strong>{upsetText}</strong>
         </div>
         <div className="betting-summary-item">
           <span>本線展開</span>
-          <strong>{scenarioLabel(raceFlow.mainScenarioGroup || raceFlow.mainScenario)}</strong>
+          <strong>{scenarioLabel(finalPrediction.mainScenario || raceFlow.mainScenarioGroup || raceFlow.mainScenario)}</strong>
         </div>
         <div className="betting-summary-item">
           <span>派生展開</span>
-          <strong>{scenarioLabel(raceFlow.derivedScenarioGroup || raceFlow.secondaryScenario)}</strong>
+          <strong>{scenarioLabel(finalPrediction.secondaryScenario || raceFlow.derivedScenarioGroup || raceFlow.secondaryScenario)}</strong>
         </div>
         <div className="betting-summary-item">
           <span>参考券</span>
@@ -139,7 +157,13 @@ export default function PredictionSummary({
       </div>
       {noBuyRecommended ? (
         <div className="warning-banner compact-warning" style={{ marginTop: 10 }}>
-          {groups.noBuyReason || "見送り推奨: レースの軸が割れており、無理に買うレースではありません。"}
+          {finalPrediction.explanation?.summary || groups.noBuyReason || "見送り推奨: レースの軸が割れており、無理に買うレースではありません。"}
+        </div>
+      ) : null}
+      {finalPrediction.dataQuality?.overall ? (
+        <div className="notice-banner compact-warning" style={{ marginTop: 10 }}>
+          Data quality: {finalPrediction.dataQuality.overall}
+          {safeArray(finalPrediction.warnings).length > 0 ? ` / ${safeArray(finalPrediction.warnings).slice(0, 2).join(" / ")}` : ""}
         </div>
       ) : null}
       {predictionExplanation?.skipRiskReason ? (

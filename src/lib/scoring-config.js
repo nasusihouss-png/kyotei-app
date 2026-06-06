@@ -126,14 +126,58 @@ export const DEFAULT_SCORING_CONFIG = {
     exhibitionHistoryContradictionPenalty: 0.06
   },
   scoringCoefficients: DEFAULT_SCORING_COEFFICIENTS,
+  headScoreWeights: DEFAULT_SCORING_COEFFICIENTS.headScore,
+  partnerScoreWeights: DEFAULT_SCORING_COEFFICIENTS.partnerResidualScore,
+  residualScoreWeights: DEFAULT_SCORING_COEFFICIENTS.partnerResidualScore,
+  beneficiaryScoreWeights: DEFAULT_SCORING_COEFFICIENTS.partnerResidualScore,
+  fourHeadOpportunityWeights: DEFAULT_SCORING_COEFFICIENTS.fourHeadOpportunity,
+  venueBiasWeights: {
+    head: 10,
+    partner: 10,
+    decisionConditioned: 12,
+    headConditionedCombo: 12
+  },
+  conditionWeights: {
+    windStabilityPenalty: 6,
+    waveTurnStability: 8,
+    tailwindCenterAttack: 5,
+    roughWaterOutsideHeadPenalty: 7
+  },
+  ticketGateThresholds: {
+    mainScore: 72,
+    secondaryScore: 60,
+    upsetScore: 48,
+    minHeadSupport: 0.42,
+    minScenarioSupport: 0.36,
+    minPartnerSupport: 0.38,
+    minThirdSupport: 0.34,
+    outsideHeadMinSupport: 0.66
+  },
+  buyDecisionThresholds: {
+    buyConfidence: 58,
+    lightConfidence: 45,
+    passConfidence: 40,
+    scenarioCloseGap: 0.035,
+    minMainTicketsForBuy: 1
+  },
   venueScoringOverrides: {
     "24": {
       headScore: {
         venueBias: 0,
         outsideHeadPenalty: 1
       },
+      headScoreWeights: {
+        venueBias: 0,
+        outsideHeadPenalty: 1
+      },
       fourHeadOpportunity: {
         venue4HeadBias: 0
+      },
+      fourHeadOpportunityWeights: {
+        venue4HeadBias: 0
+      },
+      ticketGateThresholds: {
+        outsideHeadMinSupport: 0.68
       }
     }
   },
@@ -183,7 +227,25 @@ function addNumericDeltas(base = {}, deltas = {}) {
 }
 
 export function mergeScoringConfig(config = {}) {
-  return deepMerge(DEFAULT_SCORING_CONFIG, config || {});
+  const merged = deepMerge(DEFAULT_SCORING_CONFIG, config || {});
+  const aliases = {
+    headScoreWeights: "headScore",
+    partnerScoreWeights: "partnerResidualScore",
+    residualScoreWeights: "partnerResidualScore",
+    beneficiaryScoreWeights: "partnerResidualScore",
+    fourHeadOpportunityWeights: "fourHeadOpportunity"
+  };
+  for (const [alias, target] of Object.entries(aliases)) {
+    if (isPlainObject(config?.[alias])) {
+      merged.scoringCoefficients[target] = deepMerge(merged.scoringCoefficients[target] || {}, config[alias]);
+    }
+  }
+  merged.headScoreWeights = merged.scoringCoefficients.headScore;
+  merged.partnerScoreWeights = merged.scoringCoefficients.partnerResidualScore;
+  merged.residualScoreWeights = merged.scoringCoefficients.partnerResidualScore;
+  merged.beneficiaryScoreWeights = merged.scoringCoefficients.partnerResidualScore;
+  merged.fourHeadOpportunityWeights = merged.scoringCoefficients.fourHeadOpportunity;
+  return merged;
 }
 
 export function getVenueScoringConfig(config = DEFAULT_SCORING_CONFIG, venueId = null) {
@@ -192,13 +254,26 @@ export function getVenueScoringConfig(config = DEFAULT_SCORING_CONFIG, venueId =
   const override = merged.venueScoringOverrides?.[key];
   if (!override) return merged;
   const next = deepMerge({}, merged);
+  const headOverride = addNumericDeltas(override.headScoreWeights || {}, override.headScore || {});
+  const partnerOverride = addNumericDeltas(
+    addNumericDeltas(override.partnerScoreWeights || {}, override.residualScoreWeights || {}),
+    override.partnerResidualScore || {}
+  );
+  const fourHeadOverride = addNumericDeltas(override.fourHeadOpportunityWeights || {}, override.fourHeadOpportunity || {});
   next.scoringCoefficients = {
     ...next.scoringCoefficients,
-    headScore: addNumericDeltas(next.scoringCoefficients?.headScore || {}, override.headScore || {}),
-    partnerResidualScore: addNumericDeltas(next.scoringCoefficients?.partnerResidualScore || {}, override.partnerResidualScore || {}),
-    fourHeadOpportunity: addNumericDeltas(next.scoringCoefficients?.fourHeadOpportunity || {}, override.fourHeadOpportunity || {}),
+    headScore: addNumericDeltas(next.scoringCoefficients?.headScore || {}, headOverride),
+    partnerResidualScore: addNumericDeltas(next.scoringCoefficients?.partnerResidualScore || {}, partnerOverride),
+    fourHeadOpportunity: addNumericDeltas(next.scoringCoefficients?.fourHeadOpportunity || {}, fourHeadOverride),
     scenarioScores: addNumericDeltas(next.scoringCoefficients?.scenarioScores || {}, override.scenarioScores || {})
   };
+  next.headScoreWeights = next.scoringCoefficients.headScore;
+  next.partnerScoreWeights = next.scoringCoefficients.partnerResidualScore;
+  next.residualScoreWeights = next.scoringCoefficients.partnerResidualScore;
+  next.beneficiaryScoreWeights = next.scoringCoefficients.partnerResidualScore;
+  next.fourHeadOpportunityWeights = next.scoringCoefficients.fourHeadOpportunity;
+  next.ticketGateThresholds = deepMerge(next.ticketGateThresholds || {}, override.ticketGateThresholds || {});
+  next.buyDecisionThresholds = deepMerge(next.buyDecisionThresholds || {}, override.buyDecisionThresholds || {});
   next.venueOverrideApplied = { venueId: key, override };
   return next;
 }

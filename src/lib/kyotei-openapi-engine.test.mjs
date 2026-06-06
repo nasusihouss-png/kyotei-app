@@ -551,6 +551,64 @@ assert.ok(
   "strong wind should be recorded in the condition adjustment log"
 );
 
+const finalViewPrediction = buildRacePrediction(originalMetricProgram(), null);
+assert.ok(finalViewPrediction.finalPrediction, "buildRacePrediction should expose a single finalPrediction view");
+assert.ok(["high", "medium", "low"].includes(finalViewPrediction.finalPrediction.dataQuality.overall));
+assert.ok(["buy", "light", "pass"].includes(finalViewPrediction.finalPrediction.buyDecision));
+assert.ok(Array.isArray(finalViewPrediction.finalPrediction.debug.headValidation.rows));
+
+const strongBoat1ResidualPrediction = buildRacePrediction(originalMetricProgram({
+  1: { lapTime: 18.05, turnTime: 4.2, motorPercentileAtVenue: 0.95, racer_assigned_motor_top_2_percent: 52 },
+  3: { exST: 0.04, straightTime: 6.8 },
+  4: { turnTime: 4.25, straightTime: 6.85 }
+}), null);
+assert.equal(
+  strongBoat1ResidualPrediction.finalPrediction.debug.headValidation.byBoat["1"].status,
+  "main",
+  "strong boat1 residual/motor/lap-turn should keep boat 1 as a main head candidate"
+);
+assert.equal(
+  strongBoat1ResidualPrediction.finalPrediction.debug.headValidation.byBoat["5"].status,
+  "partner_only",
+  "strong inside residual should prevent overrating outside head"
+);
+
+const weakWallFourBenefitPrediction = buildRacePrediction(originalMetricProgram({
+  1: { lapTime: 18.8, turnTime: 4.85, racer_assigned_motor_top_2_percent: 20 },
+  2: { exST: 0.22, turnTime: 4.8, playerTendency: { lateStartRate: 0.3, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  3: { exST: 0.04, straightTime: 6.8, turnTime: 4.7 },
+  4: { straightTime: 6.75, turnTime: 4.2, motorPercentileAtVenue: 0.95 }
+}), null);
+assert.equal(
+  weakWallFourBenefitPrediction.finalPrediction.debug.headValidation.byBoat["4"].status,
+  "main",
+  "weak boat2 wall + strong 3 trigger + strong 4 beneficiary should promote 4-head"
+);
+
+const strong3WeakResidualPrediction = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.04, straightTime: 6.75, turnTime: 4.85 },
+  4: { turnTime: 4.2, straightTime: 6.8, motorPercentileAtVenue: 0.9 }
+}), null);
+assert.notEqual(
+  strong3WeakResidualPrediction.finalPrediction.debug.headValidation.byBoat["3"].status,
+  "main",
+  "strong 3 attack with weak 3 residual/turn should not become a main 3-head"
+);
+
+const outsideExhibitionOnlyPrediction = buildRacePrediction(originalMetricProgram({
+  5: { exST: 0.03, straightTime: 6.65, lapTime: 18.05, turnTime: 4.2, motorPercentileAtVenue: 0.99 },
+  6: { exST: 0.04, straightTime: 6.66, lapTime: 18.06, turnTime: 4.21, motorPercentileAtVenue: 0.98 }
+}), null);
+assert.equal(outsideExhibitionOnlyPrediction.finalPrediction.debug.headValidation.byBoat["5"].status, "partner_only");
+assert.equal(outsideExhibitionOnlyPrediction.finalPrediction.debug.headValidation.byBoat["6"].status, "partner_only");
+
+assert.equal(
+  missingOriginalPrediction.finalPrediction.buyDecision,
+  "pass",
+  "low confidence or missing data should return pass"
+);
+assert.equal(missingOriginalPrediction.finalPrediction.dataQuality.exhibitionQuality, "low");
+
 function plausibilityFixture(overrides = {}) {
   const scoreByBoat = {
     1: { boat: 1, headScore: 0.62, attackerScore: 0.62, secondScore: 0.68, thirdScore: 0.64, scenarioTriggerScore: 0.62, beneficiaryScore: 0.54, residualScore: 0.66 },

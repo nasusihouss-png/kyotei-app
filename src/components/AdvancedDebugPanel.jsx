@@ -151,6 +151,19 @@ export default function AdvancedDebugPanel({
             <pre className="json-preview">{safePrettyJson(debug.ticketGroups)}</pre>
           </div>
           <div>
+            <div className="muted">final prediction</div>
+            <pre className="json-preview">{safePrettyJson(debug.finalPrediction)}</pre>
+          </div>
+          <div>
+            <div className="muted">data quality / buy decision</div>
+            <pre className="json-preview">{safePrettyJson({
+              dataQuality: debug.dataQuality,
+              buyDecision: debug.buyDecision,
+              headValidation: debug.headValidation,
+              partnerValidation: debug.partnerValidation
+            })}</pre>
+          </div>
+          <div>
             <div className="muted">decision residual scores</div>
             <pre className="json-preview">{safePrettyJson(debug.decisionResidualScores)}</pre>
           </div>

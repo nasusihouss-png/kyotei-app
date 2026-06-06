@@ -7,14 +7,18 @@ function ticketReason(ticket) {
   return ticket?.displayReason || safeArray(ticket?.reasons).slice(0, 3).join(" / ") || "-";
 }
 
+function ticketScenario(ticket) {
+  return ticket?.scenarioId || ticket?.scenarioName || ticket?.decisionScenarioId || "-";
+}
+
 function TicketRow({ ticket, label, formatPercentDisplay }) {
   if (!ticket) return null;
   return (
     <div className="bet-ticket-row">
       <strong>{ticket.combo || "-"}</strong>
-      <span>{label}</span>
+      <span>{ticket.grade || label}</span>
       <span>{ticket.probability == null ? "-" : formatPercentDisplay(ticket.probability)}</span>
-      <small className="muted">{ticketReason(ticket)}</small>
+      <small className="muted">理由: {ticketReason(ticket)} / scenario: {ticketScenario(ticket)}</small>
     </div>
   );
 }
@@ -47,15 +51,16 @@ export default function TicketList({
   formatPercentDisplay
 }) {
   if (!prediction) return null;
+  const finalPrediction = prediction.finalPrediction || prediction;
   const groups = prediction.ticketGroups || {};
-  const mainTickets = safeArray(groups.mainTickets);
-  const secondaryTickets = safeArray(groups.secondaryTickets);
-  const upsetTickets = safeArray(groups.upsetTickets);
-  const referenceTickets = safeArray(groups.referenceTickets);
+  const mainTickets = safeArray(finalPrediction.mainTickets || groups.mainTickets);
+  const secondaryTickets = safeArray(finalPrediction.secondaryTickets || groups.secondaryTickets);
+  const upsetTickets = safeArray(finalPrediction.upsetTickets || groups.upsetTickets);
+  const referenceTickets = safeArray(finalPrediction.referenceTickets || groups.referenceTickets);
   const fallbackTickets = safeArray(prediction?.tickets?.trifecta).slice(0, 6);
   const confidence = Number(predictionExplanation?.confidence_score ?? NaN);
-  const noBuyRecommended = groups.noBuyRecommended === true || (Number.isFinite(confidence) && confidence < 0.3);
-  const noBuyReason = groups.noBuyReason || "見送り推奨: レースの軸が割れており、無理に買うレースではありません。";
+  const noBuyRecommended = finalPrediction.buyDecision === "pass" || groups.noBuyRecommended === true || (Number.isFinite(confidence) && confidence < 0.3);
+  const noBuyReason = finalPrediction.explanation?.summary || groups.noBuyReason || "見送り推奨: レースの軸が割れており、無理に買うレースではありません。";
   const displayedReference = referenceTickets.length > 0
     ? referenceTickets
     : noBuyRecommended
@@ -66,13 +71,14 @@ export default function TicketList({
     <section className="card practical-section">
       <div className="section-head compact-head">
         <h2>Tickets</h2>
+        {finalPrediction.buyDecision ? <p className="muted">判定: {finalPrediction.buyDecision}</p> : null}
       </div>
       {noBuyRecommended ? (
         <div className="warning-banner compact-warning">
           <strong>見送り推奨</strong>
           <div>{noBuyReason}</div>
-          {safeArray(groups.noBuyReasons).length > 0 ? (
-            <small>{groups.noBuyReasons.join(" / ")}</small>
+          {safeArray(finalPrediction.warnings || groups.noBuyReasons).length > 0 ? (
+            <small>{safeArray(finalPrediction.warnings || groups.noBuyReasons).slice(0, 4).join(" / ")}</small>
           ) : null}
         </div>
       ) : null}
