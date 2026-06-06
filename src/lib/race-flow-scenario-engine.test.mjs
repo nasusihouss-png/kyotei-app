@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 
 import {
   applyRaceFlowScenarioAdjustments,
+  applyRaceFlowTicketDecisionCompatibility,
   buildRaceFlowScenarioModel,
-  buildRaceFlowScenarioTickets
+  buildRaceFlowScenarioTickets,
+  scoreRaceFlowTicketDecisionCompatibility
 } from "./race-flow-scenario-engine.js";
 
 const DEFAULT_SCORES = {
@@ -183,6 +185,145 @@ assert.ok(
   scenario(tailwindEnglishAttack, "makuri_3").score > scenario(calmAttack, "makuri_3").score,
   "tailwind keyword should boost 3 attack with strong exST and straightTime"
 );
+
+const lowMakuriBoat1ResidualVenue = {
+  decisionConditionedStats: {
+    makuri: {
+      sampleCount: 60,
+      boat1SecondRate: 0.08,
+      boat1ThirdRate: 0.1,
+      insideResidualRate: 0.18,
+      outsideLinkedRate: 0.72
+    }
+  }
+};
+const highMakuriBoat1ResidualVenue = {
+  decisionConditionedStats: {
+    makuri: {
+      sampleCount: 60,
+      boat1SecondRate: 0.68,
+      boat1ThirdRate: 0.22,
+      insideResidualRate: 0.76,
+      outsideLinkedRate: 0.38
+    }
+  }
+};
+const lowMakuriResidualModel = buildRaceFlowScenarioModel({
+  entries: entries({
+    1: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, beatenByMakuriRate: 0.34 },
+    3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriRate: 0.38 }
+  }),
+  featureScores: featureScores({
+    1: { lapTime: 0.18, turnTime: 0.22, motor2Rate: 0.18 },
+    2: { exST: 0.15, turnTime: 0.18 },
+    3: { exST: 0.9, straightTime: 0.92, turnTime: 0.58 }
+  }),
+  venueBias: lowMakuriBoat1ResidualVenue
+});
+const highMakuriResidualModel = buildRaceFlowScenarioModel({
+  entries: entries({
+    1: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, escapeRate: 0.52 },
+    3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriRate: 0.38 }
+  }),
+  featureScores: featureScores({
+    1: { lapTime: 0.9, turnTime: 0.88, motor2Rate: 0.84 },
+    2: { exST: 0.15, turnTime: 0.18 },
+    3: { exST: 0.9, straightTime: 0.92, turnTime: 0.58 }
+  }),
+  venueBias: highMakuriBoat1ResidualVenue
+});
+const low31Compatibility = scoreRaceFlowTicketDecisionCompatibility({ combo: "3-1-4" }, lowMakuriResidualModel);
+const high31Compatibility = scoreRaceFlowTicketDecisionCompatibility({ combo: "3-1-4" }, highMakuriResidualModel);
+assert.ok(
+  low31Compatibility.multiplier < high31Compatibility.multiplier,
+  "low venue makuri boat1SecondRate should demote 3-1 relative to high residual venues"
+);
+assert.ok(lowMakuriResidualModel.ticketAdjustmentLog.some((row) => row.target === "3-1-flow" && row.action === "demote"));
+assert.ok(highMakuriResidualModel.ticketAdjustmentLog.some((row) => row.target === "3-1-flow" && ["keep", "promote"].includes(row.action)));
+
+const rare43Venue = {
+  headDecisionComboStats: {
+    4: {
+      makuriSashi: {
+        sampleCount: 60,
+        secondRates: { 1: 0.44, 2: 0.3, 3: 0.04, 5: 0.18 },
+        exactaRates: { "4-1": 0.42, "4-2": 0.3, "4-3": 0.03, "4-5": 0.18 }
+      }
+    }
+  }
+};
+const common41Venue = {
+  headDecisionComboStats: {
+    4: {
+      makuriSashi: {
+        sampleCount: 60,
+        secondRates: { 1: 0.62, 2: 0.18, 3: 0.08, 5: 0.12 },
+        exactaRates: { "4-1": 0.58, "4-2": 0.18, "4-3": 0.08, "4-5": 0.12 }
+      }
+    }
+  }
+};
+const rare43Model = buildRaceFlowScenarioModel({
+  entries: entries({
+    3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriRate: 0.34 },
+    4: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriSashiRate: 0.4 }
+  }),
+  featureScores: featureScores({
+    1: { lapTime: 0.82, turnTime: 0.82, motor2Rate: 0.7 },
+    3: { exST: 0.9, straightTime: 0.92, turnTime: 0.2, lapTime: 0.2, motor2Rate: 0.2 },
+    4: { exST: 0.82, straightTime: 0.9, turnTime: 0.92 }
+  }),
+  venueBias: rare43Venue
+});
+const common41Model = buildRaceFlowScenarioModel({
+  entries: entries({
+    1: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, escapeRate: 0.52 },
+    3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriRate: 0.34 },
+    4: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriSashiRate: 0.4 }
+  }),
+  featureScores: featureScores({
+    1: { lapTime: 0.92, turnTime: 0.9, motor2Rate: 0.86 },
+    3: { exST: 0.9, straightTime: 0.92, turnTime: 0.28, lapTime: 0.28 },
+    4: { exST: 0.82, straightTime: 0.9, turnTime: 0.92 }
+  }),
+  venueBias: common41Venue
+});
+const rare43Compatibility = scoreRaceFlowTicketDecisionCompatibility({ combo: "4-3-1" }, rare43Model);
+const common41Compatibility = scoreRaceFlowTicketDecisionCompatibility({ combo: "4-1-3" }, common41Model);
+assert.ok(rare43Compatibility.multiplier < 0.9, "rare 4-3 with weak boat3ResidualScore should demote 4-3");
+assert.ok(common41Compatibility.multiplier > 1, "common 4-1 with strong boat1 residual should boost 4-1");
+
+const smallSampleVenue = {
+  decisionConditionedStats: {
+    makuri: {
+      sampleCount: 6,
+      boat1SecondRate: 0.02,
+      insideResidualRate: 0.04,
+      outsideLinkedRate: 0.9
+    }
+  }
+};
+const smallSampleModel = buildRaceFlowScenarioModel({
+  entries: entries({
+    3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriRate: 0.38 }
+  }),
+  featureScores: featureScores({
+    1: { lapTime: 0.55, turnTime: 0.55, motor2Rate: 0.5 },
+    3: { exST: 0.9, straightTime: 0.92, turnTime: 0.58 }
+  }),
+  venueBias: smallSampleVenue
+});
+const small31Compatibility = scoreRaceFlowTicketDecisionCompatibility({ combo: "3-1-4" }, smallSampleModel);
+assert.ok(small31Compatibility.multiplier > low31Compatibility.multiplier, "small decision samples should not over-adjust 3-1");
+
+const missingDecisionStatsModel = buildRaceFlowScenarioModel({
+  entries: entries(),
+  featureScores: featureScores(),
+  venueBias: null
+});
+const missingAdjusted = applyRaceFlowTicketDecisionCompatibility([{ combo: "3-1-4", boats: [3, 1, 4], probability: 0.1 }], missingDecisionStatsModel);
+assert.equal(missingAdjusted.tickets.length, 1);
+assert.ok(Number.isFinite(missingAdjusted.tickets[0].probability));
 
 const highWaveStableInside = buildRaceFlowScenarioModel({
   entries: entries(),

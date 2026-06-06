@@ -36,6 +36,14 @@ export default function AdvancedDebugPanel({
             <pre className="json-preview">{safePrettyJson(debug.predictionInputPreview)}</pre>
           </div>
           <div>
+            <div className="muted">source exhibition table preview</div>
+            <pre className="json-preview">{safePrettyJson(debug.sourceExhibitionTablePreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">parser warnings preview</div>
+            <pre className="json-preview">{safePrettyJson(debug.parserWarningsPreview)}</pre>
+          </div>
+          <div>
             <div className="muted">race conditions</div>
             <pre className="json-preview">{safePrettyJson({
               ok: debug.raceConditionsOk,
@@ -81,12 +89,33 @@ export default function AdvancedDebugPanel({
             <pre className="json-preview">{safePrettyJson(debug.ticketAdjustmentLog)}</pre>
           </div>
           <div>
+            <div className="muted">ticket decision compatibility preview</div>
+            <pre className="json-preview">{safePrettyJson(debug.ticketDecisionCompatibilityPreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">decision residual scores</div>
+            <pre className="json-preview">{safePrettyJson(debug.decisionResidualScores)}</pre>
+          </div>
+          <div>
             <div className="muted">condition adjustment log</div>
             <pre className="json-preview">{safePrettyJson(debug.conditionAdjustmentLog)}</pre>
           </div>
           <div>
             <div className="muted">tendency score preview</div>
             <pre className="json-preview">{safePrettyJson(debug.tendencyScorePreview)}</pre>
+          </div>
+        </div>
+      </details>
+      <details className="practical-details">
+        <summary>場別・頭別 出目バイアス</summary>
+        <div className="debug-grid">
+          <div>
+            <div className="muted">decisionConditionedStats preview</div>
+            <pre className="json-preview">{safePrettyJson(debug.decisionConditionedStatsPreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">headDecisionComboStats preview</div>
+            <pre className="json-preview">{safePrettyJson(debug.headDecisionComboStatsPreview)}</pre>
           </div>
         </div>
       </details>

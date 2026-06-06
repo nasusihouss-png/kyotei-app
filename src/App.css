@@ -2405,6 +2405,53 @@
   background: rgba(59, 130, 246, 0.2);
 }
 
+.boat4-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.filter-chip {
+  border: 1px solid rgba(156, 163, 175, 0.36);
+  background: rgba(156, 163, 175, 0.1);
+  color: var(--text-main);
+  border-radius: 999px;
+  padding: 7px 12px;
+  min-height: 36px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.filter-chip.active {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.22);
+}
+
+.boat4-ranking-list {
+  display: grid;
+  gap: 10px;
+}
+
+.boat4-ranking-card .recommend-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 0;
+}
+
+.boat4-score-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.boat4-ranking-card .kv-row strong {
+  line-height: 1.55;
+}
+
 .shortcut-hint {
   color: var(--text-sub);
   font-size: 0.75rem;

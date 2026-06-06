@@ -684,13 +684,59 @@ assert.equal(labelRowDivParsed.byLane.get(4)?.turnTime, 5.74);
 assert.equal(labelRowDivParsed.byLane.get(5)?.straightTime, 6.85);
 assert.equal(labelRowDivParsed.byLane.get(6)?.motor2Rate, 36.6);
 
+const rowLabelValidatedExhibitionHtml = `
+  <table>
+    <tr>
+      <th>項目</th>
+      <th>1号艇</th><th>2号艇</th><th>3号艇</th><th>4号艇</th><th>5号艇</th><th>6号艇</th>
+    </tr>
+    <tr><td>ST</td><td>.01</td><td>.07</td><td>.10</td><td>-.04</td><td>0.11</td><td>F.03</td></tr>
+    <tr><td>展示</td><td>6.68</td><td>6.70</td><td>6.73</td><td>6.75</td><td>6.77</td><td>6.80</td></tr>
+    <tr><td>周回</td><td>36.70</td><td>36.80</td><td>36.90</td><td>37.00</td><td>37.10</td><td>37.20</td></tr>
+    <tr><td>周り足</td><td>5.31</td><td>5.32</td><td>5.33</td><td>5.34</td><td>5.35</td><td>5.36</td></tr>
+    <tr><td>直線</td><td>7.10</td><td>7.11</td><td>7.12</td><td>7.13</td><td>7.14</td><td>7.15</td></tr>
+    <tr><td>体重</td><td>52.2</td><td>51.0</td><td>50.0</td><td>49.0</td><td>48.0</td><td>47.0</td></tr>
+  </table>
+`;
+const rowLabelValidatedParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(rowLabelValidatedExhibitionHtml, { mode: "pre_race", sourceLabel: "kyoteibiyori-rendered" })
+);
+assert.equal(rowLabelValidatedParsed.byLane.get(1)?.exhibitionSt, 0.01);
+assert.equal(rowLabelValidatedParsed.byLane.get(4)?.exhibitionSt, -0.04);
+assert.equal(rowLabelValidatedParsed.byLane.get(6)?.exhibitionStSignedValue, -0.03);
+assert.equal(rowLabelValidatedParsed.byLane.get(1)?.exhibitionTime, 6.68);
+assert.equal(rowLabelValidatedParsed.byLane.get(1)?.lapTime, 36.70);
+assert.equal(rowLabelValidatedParsed.byLane.get(1)?.turnTime, 5.31);
+assert.equal(rowLabelValidatedParsed.byLane.get(1)?.straightTime, 7.10);
+assert.notEqual(rowLabelValidatedParsed.byLane.get(1)?.lapTime, 52.2);
+
+const invalidLapTimeHtml = `
+  <table>
+    <tr>
+      <th>項目</th>
+      <th>1号艇</th><th>2号艇</th><th>3号艇</th><th>4号艇</th><th>5号艇</th><th>6号艇</th>
+    </tr>
+    <tr><td>ST</td><td>01</td><td>.07</td><td>.10</td><td>-.04</td><td>0.11</td><td>F.03</td></tr>
+    <tr><td>周回</td><td>62.20</td><td>20.10</td><td>16.00</td><td>9.70</td><td>5.40</td><td>36.70</td></tr>
+    <tr><td>直線</td><td>7.10</td><td>7.11</td><td>7.12</td><td>7.13</td><td>7.14</td><td>7.15</td></tr>
+    <tr><td>周り足</td><td>5.31</td><td>5.32</td><td>5.33</td><td>5.34</td><td>5.35</td><td>5.36</td></tr>
+  </table>
+`;
+const invalidLapParsed = normalizeKyoteiBiyoriPreRaceFields(
+  parseKyoteiBiyoriPreRaceData(invalidLapTimeHtml, { mode: "pre_race", sourceLabel: "kyoteibiyori-rendered" })
+);
+assert.equal(invalidLapParsed.byLane.get(1)?.exhibitionSt, 0.01);
+assert.equal(invalidLapParsed.byLane.get(1)?.lapTime, null);
+assert.equal(invalidLapParsed.byLane.get(6)?.lapTime, 36.70);
+assert.ok(invalidLapParsed.byLane.get(1)?.parserWarnings?.some((warning) => warning.includes("lapTime 62.20 rejected")));
+
 const renderedLaneStatsOriginalExhibitionHtml = `
   <table>
     <tr>
       <th>項目</th>
       <th>1号艇</th><th>2号艇</th><th>3号艇</th><th>4号艇</th><th>5号艇</th><th>6号艇</th>
     </tr>
-    <tr><td>周回</td><td>18.62</td><td>18.75</td><td>18.79</td><td>18.80</td><td>18.81</td><td>18.83</td></tr>
+    <tr><td>周回</td><td>36.62</td><td>36.75</td><td>36.79</td><td>36.80</td><td>36.81</td><td>36.83</td></tr>
     <tr><td>直線</td><td>6.81</td><td>6.82</td><td>6.83</td><td>6.84</td><td>6.85</td><td>6.86</td></tr>
     <tr><td>回足</td><td>5.71</td><td>5.72</td><td>5.73</td><td>5.74</td><td>5.75</td><td>5.76</td></tr>
   </table>
@@ -698,8 +744,8 @@ const renderedLaneStatsOriginalExhibitionHtml = `
 const renderedLaneStatsParsed = normalizeKyoteiBiyoriPreRaceFields(
   parseKyoteiBiyoriPreRaceData(renderedLaneStatsOriginalExhibitionHtml, { mode: "pre_race", sourceLabel: "lane_stats_tab" })
 );
-assert.equal(renderedLaneStatsParsed.byLane.get(1)?.lapTime, 18.62);
-assert.equal(renderedLaneStatsParsed.byLane.get(6)?.lapTime, 18.83);
+assert.equal(renderedLaneStatsParsed.byLane.get(1)?.lapTime, 36.62);
+assert.equal(renderedLaneStatsParsed.byLane.get(6)?.lapTime, 36.83);
 assert.equal(renderedLaneStatsParsed.byLane.get(1)?.straightTime, 6.81);
 assert.equal(renderedLaneStatsParsed.byLane.get(6)?.straightTime, 6.86);
 assert.equal(renderedLaneStatsParsed.byLane.get(1)?.turnTime, 5.71);
@@ -757,10 +803,10 @@ const mergedRacers = mergeKyoteiBiyoriDataIntoRaceContext({
 assert.equal(mergedRacers[0]?.exST, 0.11);
 assert.equal(mergedRacers[0]?.exTime, 6.71);
 assert.equal(mergedRacers[0]?.motor2Rate, 31.1);
-assert.equal(mergedRacers[0]?.lapTime, 18.62);
+assert.equal(mergedRacers[0]?.lapTime, 36.62);
 assert.equal(mergedRacers[0]?.straightTime, 6.81);
 assert.equal(mergedRacers[0]?.turnTime, 5.71);
-assert.equal(mergedRacers[5]?.lapTime, 18.83);
+assert.equal(mergedRacers[5]?.lapTime, 36.83);
 assert.equal(mergedRacers[5]?.straightTime, 6.86);
 assert.equal(mergedRacers[5]?.turnTime, 5.76);
 

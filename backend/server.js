@@ -140,8 +140,47 @@ function buildEmptyOriginalExhibitionRows() {
     straightSource: null,
     turnTime: null,
     turnSource: null,
+    sourceRaw: {
+      exST: null,
+      exTime: null,
+      lapTime: null,
+      straightTime: null,
+      turnTime: null
+    },
+    parsed: {
+      exST: null,
+      exTime: null,
+      lapTime: null,
+      straightTime: null,
+      turnTime: null
+    },
+    warnings: [],
     measured: false
   }));
+}
+
+const ORIGINAL_EXHIBITION_VALID_RANGES = {
+  exST: [-0.3, 0.5],
+  exTime: [6, 8.5],
+  lapTime: [30, 45],
+  straightTime: [5, 9],
+  turnTime: [4, 8],
+  motor2Rate: [0, 100]
+};
+
+function validateOriginalExhibitionValue(field, value, warnings = []) {
+  const n = toNullableNumber(value);
+  if (n === null) return null;
+  const range = ORIGINAL_EXHIBITION_VALID_RANGES[field];
+  if (!range) return n;
+  if (n < range[0] || n > range[1]) {
+    warnings.push(`${field} ${n.toFixed(2)} rejected: out of valid range`);
+    if (field === "exST" && n >= 1) {
+      warnings.push(`${field} ${n.toFixed(2)} rejected: likely decimal parsing error from .01`);
+    }
+    return null;
+  }
+  return n;
 }
 
 function buildOriginalExhibitionRows(kyoteiBiyori = null) {
@@ -150,15 +189,17 @@ function buildOriginalExhibitionRows(kyoteiBiyori = null) {
   return buildEmptyOriginalExhibitionRows().map((base) => {
     const row = byLane.get(base.lane) || {};
     const laneSources = fieldSources[base.lane] || fieldSources[String(base.lane)] || {};
-    const lapTime = toNullableNumber(row?.lapTime);
-    const lapTimeRaw = toNullableNumber(row?.lapTimeRaw ?? row?.lapRaw ?? row?.lapTime);
-    const straightTime = toNullableNumber(row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi);
-    const turnTime = toNullableNumber(row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi);
+    const parserWarnings = Array.isArray(row?.parserWarnings) ? [...row.parserWarnings] : [];
+    const lapTime = validateOriginalExhibitionValue("lapTime", row?.lapTime, parserWarnings);
+    const lapTimeRaw = validateOriginalExhibitionValue("lapTime", row?.lapTimeRaw ?? row?.lapRaw ?? row?.lapTime, parserWarnings);
+    const straightTime = validateOriginalExhibitionValue("straightTime", row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi, parserWarnings);
+    const turnTime = validateOriginalExhibitionValue("turnTime", row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi, parserWarnings);
     const signedExST = toNullableNumber(row?.exhibitionStSignedValue);
     const rawExST = toNullableNumber(row?.exST ?? row?.exhibitionSt ?? row?.exhibitionST);
-    const exST = signedExST ?? (String(row?.exhibitionStFlag || "").toUpperCase() === "F" && rawExST !== null && rawExST > 0 ? -Math.abs(rawExST) : rawExST);
+    const exSTRawCandidate = signedExST ?? (String(row?.exhibitionStFlag || "").toUpperCase() === "F" && rawExST !== null && rawExST > 0 ? -Math.abs(rawExST) : rawExST);
+    const exST = validateOriginalExhibitionValue("exST", exSTRawCandidate, parserWarnings);
     const exTimeRaw = toNullableNumber(row?.exTime ?? row?.exhibitionTime);
-    const exTime = exTimeRaw !== null && exTimeRaw > 0 ? exTimeRaw : null;
+    const exTime = validateOriginalExhibitionValue("exTime", exTimeRaw !== null && exTimeRaw > 0 ? exTimeRaw : null, parserWarnings);
     const lapSource = row?.lapSource || row?.lapTimeDetail?.source || laneSources?.lapTime || laneSources?.lapTimeRaw || null;
     const straightSource =
       row?.straightTimeDetail?.source ||
@@ -191,6 +232,21 @@ function buildOriginalExhibitionRows(kyoteiBiyori = null) {
       straightSource,
       turnTime,
       turnSource,
+      sourceRaw: row?.sourceRaw || {
+        exST: row?.exhibitionStRaw ?? null,
+        exTime: row?.exhibitionTime ?? null,
+        lapTime: row?.lapTimeRaw ?? row?.lapTime ?? null,
+        straightTime: row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi ?? null,
+        turnTime: row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi ?? null
+      },
+      parsed: {
+        exST,
+        exTime,
+        lapTime,
+        straightTime,
+        turnTime
+      },
+      warnings: [...new Set(parserWarnings)],
       measured: lapTime !== null || straightTime !== null || turnTime !== null,
       exSTStatus: exST !== null ? "ok" : "not_measured",
       exTimeStatus: exTime !== null ? "ok" : "not_measured",
@@ -306,6 +362,20 @@ async function handleRaceExhibitionRequest(req, res) {
     const requestDiagnostics = kyoteiBiyori?.diagnostics || {};
     const rows = buildOriginalExhibitionRows(kyoteiBiyori);
     const measuredCount = rows.filter((row) => row.measured).length;
+    const sourceExhibitionTablePreview = rows.map((row) => ({
+      boat: row.boat,
+      exST: row.exST,
+      exTime: row.exTime,
+      lapTime: row.lapTime,
+      straightTime: row.straightTime,
+      turnTime: row.turnTime
+    }));
+    const parserWarningsPreview = rows.map((row) => ({
+      boat: row.boat,
+      sourceRaw: row.sourceRaw,
+      parsed: row.parsed,
+      warnings: row.warnings || []
+    }));
     const debug = {
       ...(requestDiagnostics || {}),
       raceKey,
@@ -316,7 +386,9 @@ async function handleRaceExhibitionRequest(req, res) {
       fieldSources: kyoteiBiyori?.fieldSources || {},
       fieldDiagnostics: kyoteiBiyori?.fieldDiagnostics || null,
       fetch: kyoteiBiyori?.diagnostics?.fetch_results || null,
-      parse: kyoteiBiyori?.diagnostics?.parse_results || null
+      parse: kyoteiBiyori?.diagnostics?.parse_results || null,
+      sourceExhibitionTablePreview,
+      parserWarningsPreview
     };
     console.info("[ORIGINAL_EXHIBITION_FETCH]", JSON.stringify({
       date,

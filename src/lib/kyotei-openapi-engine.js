@@ -1,5 +1,6 @@
 ﻿import {
   applyRaceFlowScenarioAdjustments,
+  applyRaceFlowTicketDecisionCompatibility,
   buildRaceFlowScenarioModel,
   buildRaceFlowScenarioTickets
 } from "./race-flow-scenario-engine.js";
@@ -1250,10 +1251,19 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
   exhibition.conditions = raceConditions;
   const featureScores = buildOriginalExhibitionFeatureScores(boats, exhibition);
   const baseScoredBoats = buildScores(boats, exhibition, scoringConfig, featureScores).sort((a, b) => a.boat - b.boat);
+  const venueBiasSource =
+    scoringConfig.venueLaneBias ||
+    scoringConfig.venueBias ||
+    program.venue_scenario_bias ||
+    program.venueBias ||
+    program.venueBiasProfile ||
+    previewWithConditions.venue_scenario_bias ||
+    previewWithConditions.venueBias ||
+    null;
   const raceFlowScenario = buildRaceFlowScenarioModel({
     entries: baseScoredBoats,
     featureScores,
-    venueBias: scoringConfig.venueLaneBias || scoringConfig.venueBias || null,
+    venueBias: venueBiasSource,
     stadiumNumber: scoringConfig.stadiumNumber,
     raceConditions
   });
@@ -1263,7 +1273,8 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     .map((row) => ({ boat: row.boat, course: row.course, probability: row.probability }))
     .sort((a, b) => b.probability - a.probability);
   const trifecta = plackettLuceTrifecta(scoredBoats);
-  const tickets = marginalizeTickets(trifecta);
+  const decisionCompatibleTickets = applyRaceFlowTicketDecisionCompatibility(trifecta, raceFlowScenario);
+  const tickets = marginalizeTickets(decisionCompatibleTickets.tickets);
   const prediction = {
     race: {
       date: program.race_date ?? null,
@@ -1280,6 +1291,7 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     wallScorePreview: raceFlowScenario.wallScores,
     headPartnerSplitPreview: raceFlowScenario.headPartnerSplit,
     ticketAdjustmentLog: raceFlowScenario.ticketAdjustmentLog,
+    ticketDecisionCompatibilityPreview: decisionCompatibleTickets.preview,
     conditionAdjustmentLog: raceFlowScenario.conditionAdjustmentLog,
     tendencySummary,
     tendencyScorePreview: tendencySummary.preview,
@@ -1464,6 +1476,316 @@ export function buildConfidenceScore(prediction = {}) {
       raceFlowQualityAdjustment
     }
   };
+}
+
+function roundNumber(value, digits = 1) {
+  const n = finiteNumber(value, null);
+  if (n === null) return null;
+  const scale = 10 ** digits;
+  return Math.round(n * scale) / scale;
+}
+
+function score01(value, fallback = 0.5) {
+  const n = finiteNumber(value, null);
+  if (n === null) return fallback;
+  return clamp(Math.abs(n) > 1 ? n / 100 : n, 0, 1);
+}
+
+function scoreByBoatFromRows(rows = [], boat, field, fallback = 0.5) {
+  const row = (Array.isArray(rows) ? rows : []).find((item) => Number(item?.boat) === Number(boat));
+  return score01(row?.[field], fallback);
+}
+
+function scenarioScore01(prediction = {}, scenarioId, fallback = 0.5) {
+  const scenario = (Array.isArray(prediction.raceFlowScenario?.scenarios) ? prediction.raceFlowScenario.scenarios : [])
+    .find((row) => row?.id === scenarioId);
+  return score01(scenario?.score, fallback);
+}
+
+function featureScore01(prediction = {}, boat, field, fallback = 0.5) {
+  const row = prediction.featureScores?.byBoat?.[String(boat)] || {};
+  return score01(row?.scores?.[field], fallback);
+}
+
+function firstPlaceProbability01(prediction = {}, boat, fallback = 0.04) {
+  const row = (Array.isArray(prediction.firstPlaceProbabilities) ? prediction.firstPlaceProbabilities : [])
+    .find((item) => Number(item?.boat) === Number(boat));
+  return score01(row?.probability, fallback);
+}
+
+function ticketPartnerScore01(prediction = {}, head, partner) {
+  const rows = Array.isArray(prediction.tickets?.trifecta) ? prediction.tickets.trifecta : [];
+  const total = rows
+    .filter((ticket) => Array.isArray(ticket?.boats) && Number(ticket.boats[0]) === Number(head) && Number(ticket.boats[1]) === Number(partner))
+    .reduce((sum, ticket) => sum + Number(ticket.probability || 0), 0);
+  return clamp(total * 12, 0, 1);
+}
+
+function buildBoat4PartnerRanking(prediction = {}) {
+  const splitRows = Array.isArray(prediction.headPartnerSplitPreview) ? prediction.headPartnerSplitPreview : [];
+  return [1, 2, 3, 5, 6]
+    .map((partner) => {
+      const residual =
+        (scoreByBoatFromRows(splitRows, partner, "secondScore", 0.45) * 0.6) +
+        (scoreByBoatFromRows(splitRows, partner, "thirdScore", 0.45) * 0.25) +
+        (ticketPartnerScore01(prediction, 4, partner) * 0.15);
+      return {
+        partner,
+        score: roundNumber(clamp(residual) * 100, 1)
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+function buildBoat4ConditionScore(prediction = {}, parts = {}) {
+  const conditions = prediction.race?.conditions || {};
+  const windSpeed = finiteNumber(conditions.windSpeed ?? conditions.wind_speed, null);
+  const waveHeight = finiteNumber(conditions.waveHeight ?? conditions.wave_height, null);
+  const windDirection = String(conditions.windDirection ?? conditions.wind_direction ?? "").toLowerCase();
+  const tailwind = /tail|追|順/.test(windDirection);
+  const headwind = /head|向|against/.test(windDirection);
+  const crosswind = /cross|横/.test(windDirection);
+  let score = 0.5;
+  const notes = [];
+
+  if (windSpeed !== null && windSpeed >= 7) {
+    score -= 0.08;
+    notes.push("風速7m以上で全体の再現性をやや抑制");
+  } else if (windSpeed !== null && windSpeed >= 5) {
+    score -= 0.04;
+    notes.push("風速5m以上で展開の安定度を少し抑制");
+  }
+  if (waveHeight !== null && waveHeight >= 8) {
+    score += (parts.boat4TurnTimeScore * 0.09) + (parts.boat4LapTimeScore * 0.07) - 0.04;
+    notes.push("波高8cm以上でまわり足・周回の安定を重視");
+  } else if (waveHeight !== null && waveHeight >= 5) {
+    score += (parts.boat4TurnTimeScore * 0.06) + (parts.boat4LapTimeScore * 0.04);
+    notes.push("波高5cm以上でターン安定を加点");
+  }
+  if (tailwind) {
+    score += Math.max(0, parts.boat3TriggerScore - 0.5) * 0.12;
+    notes.push("追い風気味でセンター攻めの起点を少し加点");
+  }
+  if (headwind) {
+    score += ((parts.boat4TurnTimeScore + parts.boat4LapTimeScore) / 2 - 0.5) * 0.1;
+    notes.push("向かい風気味で周回・まわり足を重視");
+  }
+  if (crosswind) {
+    score -= 0.03;
+    score += Math.max(0, parts.boat4TurnTimeScore - 0.55) * 0.08;
+    notes.push("横風で再現性を抑え、ターン安定を評価");
+  }
+  return {
+    score: clamp(score),
+    notes
+  };
+}
+
+function boat4MakuriSashiReferenceScore(boat4 = {}) {
+  const tendency = boat4?.playerTendency || boat4?.racerCourseStats || {};
+  if (!tendencyCanDriveUpset(tendency)) return 0.5;
+  return optionalRate01(tendency.makuriSashiRate) ?? 0.5;
+}
+
+function buildBoat4RecommendedTickets({
+  scoreLabel,
+  components,
+  partnerRanking,
+  prediction
+}) {
+  const tickets = [];
+  const reasons = [];
+  const add = (combo, reason) => {
+    if (tickets.includes(combo)) return;
+    tickets.push(combo);
+    reasons.push({ action: "promote", target: combo, reason });
+  };
+  const highOrMedium = scoreLabel === "高" || scoreLabel === "中";
+  if (highOrMedium) {
+    add("4-1-flow", "4頭時は1残りを最優先相手に評価");
+    add("4-2-flow", "2差し切りより4の展開拾いを上に見る形");
+  }
+  const partner5 = partnerRanking.find((row) => row.partner === 5)?.score ?? 0;
+  if (scoreLabel === "高" && partner5 >= 48) {
+    add("4-5-flow", "5号艇の追走スコアが一定以上");
+  }
+  const partner3 = partnerRanking.find((row) => row.partner === 3)?.score ?? 0;
+  const boat3TurnScore = featureScore01(prediction, 3, "turnTime", 0.5);
+  const boat3LapScore = featureScore01(prediction, 3, "lapTime", 0.5);
+  const allow43 =
+    components.boat3ResidualScore >= 0.58 &&
+    (boat3TurnScore >= 0.62 || boat3LapScore >= 0.62) &&
+    partner3 >= 44;
+  if (allow43) {
+    add("4-3-flow", "3号艇の残り足と会場相手評価が残るため4-3も押さえ");
+  } else if (highOrMedium) {
+    reasons.push({
+      action: "demote",
+      target: "4-3-flow",
+      reason: "3号艇は攻めの起点寄りで、4頭時は4-1 / 4-2を優先"
+    });
+  }
+  return {
+    tickets: tickets.slice(0, 4),
+    reasons
+  };
+}
+
+function buildBoat4OpportunityRow(program = {}, prediction = {}, confidence = buildConfidenceScore(prediction), config = {}) {
+  const boat4 = (Array.isArray(prediction.scoredBoats) ? prediction.scoredBoats : []).find((row) => row.boat === 4) || {};
+  const wallRows = Array.isArray(prediction.wallScorePreview) ? prediction.wallScorePreview : [];
+  const splitRows = Array.isArray(prediction.headPartnerSplitPreview) ? prediction.headPartnerSplitPreview : [];
+  const boat4HeadPotentialScore = Math.max(
+    scoreByBoatFromRows(splitRows, 4, "headScore", 0.42),
+    firstPlaceProbability01(prediction, 4, 0.04) * 1.8
+  );
+  const boat3TriggerScore = Math.max(
+    scenarioScore01(prediction, "makuri_3", 0.45),
+    scenarioScore01(prediction, "makuri_sashi_3", 0.45),
+    scoreByBoatFromRows(splitRows, 3, "scenarioTriggerScore", 0.45)
+  );
+  const boat3ResidualScore = (
+    scoreByBoatFromRows(splitRows, 3, "secondScore", 0.45) +
+    scoreByBoatFromRows(splitRows, 3, "thirdScore", 0.45)
+  ) / 2;
+  const boat4BeneficiaryScore = scoreByBoatFromRows(splitRows, 4, "beneficiaryScore", 0.5);
+  const threeAttackFourBenefitScore = clamp(
+    boat3TriggerScore * (
+      boat4BeneficiaryScore * 0.68 +
+      featureScore01(prediction, 4, "turnTime", 0.5) * 0.17 +
+      featureScore01(prediction, 4, "straightTime", 0.5) * 0.15
+    )
+  );
+  const sashi2Score = scenarioScore01(prediction, "sashi_2", 0.5);
+  const twoSashiFailureScore = clamp(1 - sashi2Score);
+  const boat2WallScore = scoreByBoatFromRows(wallRows, 2, "wallScore", 0.52);
+  const boat2WallWeaknessScore = clamp(1 - boat2WallScore);
+  const boat4TurnTimeScore = featureScore01(prediction, 4, "turnTime", 0.5);
+  const boat4StraightTimeScore = featureScore01(prediction, 4, "straightTime", 0.5);
+  const boat4LapTimeScore = featureScore01(prediction, 4, "lapTime", 0.5);
+  const boat4Motor2RateScore = featureScore01(prediction, 4, "motor2Rate", 0.5);
+  const boat4MakuriSashiRateScore = boat4MakuriSashiReferenceScore(boat4);
+  const venue4HeadComboBiasScore =
+    score01(config?.boat4HeadComboBias ?? config?.venue4HeadComboBias, null) ??
+    (prediction.raceFlowScenario?.quality?.venueAvailable ? 0.54 : 0.5);
+  const condition = buildBoat4ConditionScore(prediction, {
+    boat3TriggerScore,
+    boat4TurnTimeScore,
+    boat4LapTimeScore
+  });
+  const rawScore =
+    boat4HeadPotentialScore * 0.18 +
+    threeAttackFourBenefitScore * 0.18 +
+    twoSashiFailureScore * 0.1 +
+    boat2WallWeaknessScore * 0.1 +
+    boat3TriggerScore * 0.11 +
+    Math.max(0, 0.66 - boat3ResidualScore) * 0.05 +
+    boat4BeneficiaryScore * 0.14 +
+    venue4HeadComboBiasScore * 0.04 +
+    condition.score * 0.04 +
+    boat4TurnTimeScore * 0.06 +
+    boat4StraightTimeScore * 0.05 +
+    boat4Motor2RateScore * 0.03 +
+    boat4MakuriSashiRateScore * 0.04;
+  const boat4HeadOpportunityScore = roundNumber(clamp(rawScore) * 100, 1);
+  const strengthLabel =
+    boat4HeadOpportunityScore >= 60 ? "高" :
+      boat4HeadOpportunityScore >= 48 ? "中" :
+        "低";
+  const confidenceScore = roundNumber(clamp((boat4HeadOpportunityScore / 100) * 0.7 + (Number(confidence.score || 0) / 100) * 0.3) * 100, 0);
+  const partnerRanking = buildBoat4PartnerRanking(prediction);
+  const ticketModel = buildBoat4RecommendedTickets({
+    scoreLabel: strengthLabel,
+    components: {
+      boat3ResidualScore
+    },
+    partnerRanking,
+    prediction
+  });
+  const mainReason =
+    threeAttackFourBenefitScore >= 0.58
+      ? "3号艇が攻めの起点になりそうですが、3自身が残すより4号艇が展開を拾う形を高く見ます。"
+      : twoSashiFailureScore >= 0.52 && boat4TurnTimeScore >= 0.58
+        ? "2号艇の差し切り評価が低く、4号艇のまわり足・直線が良いため4頭警戒。"
+        : boat4HeadOpportunityScore >= 48
+          ? "4号艇の足色と展開受けが噛み合えば、4頭まで押さえたいレースです。"
+          : "4頭条件は薄めで、基本は相手候補までの評価です。";
+  const caution = [
+    strengthLabel === "低" ? "4頭推奨度は低め。無理に頭固定しない。" : null,
+    ticketModel.reasons.some((row) => row.action === "demote" && row.target === "4-3-flow")
+      ? "4頭の場合、この場では4-3より4-1 / 4-2を優先します。"
+      : null,
+    confidenceScore < 48 ? "全体信頼度が低く、見送り含めて検討。" : null,
+    ...condition.notes
+  ].filter(Boolean).join(" / ");
+
+  const components = {
+    boat4HeadPotentialScore,
+    threeAttackFourBenefitScore,
+    twoSashiFailureScore,
+    boat2WallScore,
+    boat2WallWeaknessScore,
+    boat3TriggerScore,
+    boat3ResidualScore,
+    boat4BeneficiaryScore,
+    venue4HeadComboBiasScore,
+    conditionScore: condition.score,
+    boat4TurnTimeScore,
+    boat4StraightTimeScore,
+    boat4LapTimeScore,
+    boat4Motor2RateScore,
+    boat4MakuriSashiRateScore
+  };
+
+  return {
+    stadiumNumber: finiteNumber(program.race_stadium_number, null),
+    raceNumber: finiteNumber(program.race_number, null),
+    closedAt: program.race_closed_at ?? null,
+    boat4HeadOpportunityScore,
+    confidence: confidenceScore,
+    strengthLabel,
+    mainReason,
+    recommendedTickets: ticketModel.tickets,
+    caution: caution || "大きな注意点なし",
+    exhibitionStatus: prediction.exhibition?.status || "unknown",
+    debug: {
+      ...Object.fromEntries(Object.entries(components).map(([key, value]) => [key, roundNumber(value * 100, 1)])),
+      venue4HeadPartnerRanking: partnerRanking,
+      ticketPromotionDemotionReasons: ticketModel.reasons,
+      conditionNotes: condition.notes,
+      confidenceWarnings: confidence.warnings
+    },
+    prediction
+  };
+}
+
+export function buildBoat4OpportunityRanking(programs = [], previewsByRaceKey = {}, options = {}) {
+  const config = {
+    ...DEFAULT_SCORING_CONFIG,
+    ...(options.config || {})
+  };
+  const rows = (Array.isArray(programs) ? programs : [])
+    .map((program) => {
+      try {
+        const key = `${program.race_stadium_number}-${program.race_number}`;
+        const prediction = buildRacePrediction(program, previewsByRaceKey[key] || null, config);
+        if (!Array.isArray(prediction.scoredBoats) || prediction.scoredBoats.length !== 6) return null;
+        const confidence = buildConfidenceScore(prediction);
+        return buildBoat4OpportunityRow(program, prediction, confidence, config);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) =>
+      Number(b.boat4HeadOpportunityScore || 0) - Number(a.boat4HeadOpportunityScore || 0) ||
+      Number(b.confidence || 0) - Number(a.confidence || 0) ||
+      Number(a.stadiumNumber || 99) - Number(b.stadiumNumber || 99) ||
+      Number(a.raceNumber || 99) - Number(b.raceNumber || 99)
+    );
+  return rows
+    .slice(0, Math.max(1, Number(options.limit || 60)))
+    .map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
 export function buildTodayRanking(programs = [], previewsByRaceKey = {}, options = {}) {

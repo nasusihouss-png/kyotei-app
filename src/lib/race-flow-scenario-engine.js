@@ -1,3 +1,10 @@
+import {
+  decisionSampleWeight,
+  getDecisionConditionedStats,
+  getHeadDecisionComboStats,
+  weightedDecisionRate
+} from "./venue-bias-engine.js";
+
 const BOATS = [1, 2, 3, 4, 5, 6];
 
 const SCENARIO_LABELS = {
@@ -197,6 +204,27 @@ function venueRate(venueBias, stadiumNumber, course, fields = []) {
   return null;
 }
 
+function decisionRate(row = {}, field, fallback = 0.5) {
+  return weightedDecisionRate(row, field, fallback);
+}
+
+function comboRate(row = {}, group, key, fallback = 0.5) {
+  const rates = row?.[group] && typeof row[group] === "object" ? row[group] : {};
+  const raw = optionalRate01(rates?.[key]);
+  if (raw === null) return fallback;
+  return fallback + (raw - fallback) * decisionSampleWeight(row?.sampleCount);
+}
+
+function residualVenueBlend(...values) {
+  const present = values.filter((value) => value !== null && value !== undefined && Number.isFinite(Number(value)));
+  if (!present.length) return 0.5;
+  return present.reduce((sum, value) => sum + Number(value), 0) / present.length;
+}
+
+function decisionCompatibilityMultiplier(score, floor = 0.62, ceiling = 1.24) {
+  return clamp(floor + clamp(score) * (ceiling - floor), floor, ceiling);
+}
+
 function normalizeRaceConditions(source = {}) {
   const root = source && typeof source === "object" ? source : {};
   const text = String(root.windDirection ?? root.wind_direction ?? root.windDir ?? "");
@@ -357,6 +385,23 @@ export function buildRaceFlowScenarioModel({
   const vMakuri3 = venueRate(venueBias, stadiumNumber, 3, ["makuriRate", "decisionMakuriRate"]) ?? 0.5;
   const vMakuriSashi3 = venueRate(venueBias, stadiumNumber, 3, ["makuriSashiRate", "decisionMakuriSashiRate"]) ?? 0.5;
   const vMakuriSashi4 = venueRate(venueBias, stadiumNumber, 4, ["makuriSashiRate", "decisionMakuriSashiRate"]) ?? 0.5;
+  const decisionConditionedStats = getDecisionConditionedStats(venueBias, stadiumNumber);
+  const headDecisionComboStats = getHeadDecisionComboStats(venueBias, stadiumNumber);
+  const venueMakuriBoat1Second = decisionRate(decisionConditionedStats.makuri, "boat1SecondRate", 0.5);
+  const venueMakuriSashiBoat1Second = decisionRate(decisionConditionedStats.makuriSashi, "boat1SecondRate", 0.5);
+  const venueSashiBoat1Second = decisionRate(decisionConditionedStats.sashi, "boat1SecondRate", 0.5);
+  const venueMakuriInsideResidual = decisionRate(decisionConditionedStats.makuri, "insideResidualRate", 0.5);
+  const venueMakuriOutsideLinked = decisionRate(decisionConditionedStats.makuri, "outsideLinkedRate", 0.5);
+  const venueMakuriSashiOutsideLinked = decisionRate(decisionConditionedStats.makuriSashi, "outsideLinkedRate", 0.5);
+  const venue4MakuriSashi = headDecisionComboStats?.["4"]?.makuriSashi || {};
+  const venue4Second1 = comboRate(venue4MakuriSashi, "secondRates", "1", 0.5);
+  const venue4Second2 = comboRate(venue4MakuriSashi, "secondRates", "2", 0.5);
+  const venue4Second3 = comboRate(venue4MakuriSashi, "secondRates", "3", 0.5);
+  const venue4Second5 = comboRate(venue4MakuriSashi, "secondRates", "5", 0.5);
+  const venue4Exacta1 = comboRate(venue4MakuriSashi, "exactaRates", "4-1", 0.5);
+  const venue4Exacta2 = comboRate(venue4MakuriSashi, "exactaRates", "4-2", 0.5);
+  const venue4Exacta3 = comboRate(venue4MakuriSashi, "exactaRates", "4-3", 0.5);
+  const venue4Exacta5 = comboRate(venue4MakuriSashi, "exactaRates", "4-5", 0.5);
 
   const b1 = metrics[1];
   const b2 = metrics[2];
@@ -380,6 +425,25 @@ export function buildRaceFlowScenarioModel({
   const crosswindStability = conditions.isCrosswind ? conditions.windLevel * 0.04 : 0;
   const waveAggressionPenalty = conditions.waveLevel * 0.08;
   const conditionAdjustmentLog = [];
+  const venueBoat1Residual = residualVenueBlend(
+    venueMakuriBoat1Second,
+    venueMakuriSashiBoat1Second,
+    venueSashiBoat1Second,
+    venueMakuriInsideResidual
+  );
+  const boat1ResidualAfterAttackScore = clamp(
+    0.12 +
+    b1.lapTime * 0.18 +
+    b1.turnTime * 0.2 +
+    b1.motor2Rate * 0.1 +
+    b1Escape * 0.42 +
+    venueBoat1Residual * 0.2 +
+    conditions.waveLevel * Math.max(0, ((b1.lapTime + b1.turnTime) / 2) - 0.55) * 0.08 +
+    conditions.isHeadwind * conditions.windLevel * Math.max(0, b1.turnTime - 0.55) * 0.05 -
+    b1BeatenByMakuri * 0.28 -
+    b1BeatenByMakuriSashi * 0.24 -
+    boat1WeakFoot * 0.08
+  );
 
   const escape1 = clamp(
     0.24 +
@@ -468,6 +532,36 @@ export function buildRaceFlowScenarioModel({
   );
 
   const attack3 = Math.max(makuri3, makuriSashi3);
+  const boat3ResidualScore = clamp(
+    0.12 +
+    b3.lapTime * 0.14 +
+    b3.turnTime * 0.18 +
+    b3.motor2Rate * 0.08 +
+    positiveRate(b3.tendency, "makuriRate", 0.08) * 0.18 +
+    positiveRate(b3.tendency, "makuriSashiRate", 0.07) * 0.14 +
+    venue4Second3 * 0.12 +
+    venue4Exacta3 * 0.16 -
+    Math.max(0, attack3 - 0.56) * 0.08 +
+    conditions.waveLevel * Math.max(0, b3.turnTime - 0.55) * 0.06
+  );
+  const boat2ResidualAfterFlowScore = clamp(
+    0.18 +
+    b2.turnTime * 0.18 +
+    b2.lapTime * 0.1 +
+    walls[2] * 0.12 +
+    positiveRate(b2.tendency, "sashiRate", 0.08) * 0.14 +
+    venue4Second2 * 0.12 +
+    venue4Exacta2 * 0.14
+  );
+  const boat5LinkedFollowScore = clamp(
+    0.14 +
+    b5.lapTime * 0.13 +
+    b5.straightTime * 0.14 +
+    b5.turnTime * 0.08 +
+    b5.motor2Rate * 0.1 +
+    Math.max(venue4Second5, venue4Exacta5) * 0.16 +
+    Math.max(venueMakuriOutsideLinked, venueMakuriSashiOutsideLinked) * 0.12
+  );
   const b4DirectSupport = supportCount([
     b4.exST >= 0.6,
     b4.straightTime >= 0.62,
@@ -533,8 +627,8 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 1,
       headScore: headScore1,
-      secondScore: clamp(0.22 + escape1 * 0.28 + sashi2 * 0.18 + attack3 * 0.16 + b1.lapTime * 0.12 + b1.turnTime * 0.12),
-      thirdScore: clamp(0.2 + escape1 * 0.18 + Math.max(sashi2, attack3, secondWave4) * 0.2 + b1.lapTime * 0.11 + b1.turnTime * 0.11),
+      secondScore: clamp(0.18 + escape1 * 0.2 + sashi2 * 0.14 + attack3 * boat1ResidualAfterAttackScore * 0.24 + b1.lapTime * 0.12 + b1.turnTime * 0.12 + venue4Exacta1 * 0.06),
+      thirdScore: clamp(0.18 + escape1 * 0.14 + Math.max(sashi2, attack3, secondWave4) * boat1ResidualAfterAttackScore * 0.2 + b1.lapTime * 0.11 + b1.turnTime * 0.11 + venue4Second1 * 0.05),
       scenarioTriggerScore: escape1,
       beneficiaryScore: clamp(escape1 * 0.42 + b1.lapTime * 0.18 + b1.turnTime * 0.18),
       supportFactors: supportCount([b1.lapTime >= 0.62, b1.turnTime >= 0.62, b1Escape > 0, walls[2] >= 0.55]),
@@ -549,8 +643,8 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 2,
       headScore: headScore2,
-      secondScore: clamp(0.22 + sashi2 * 0.3 + b2.turnTime * 0.18 + walls[2] * 0.13 + b2.lapTime * 0.08),
-      thirdScore: clamp(0.21 + sashi2 * 0.18 + b2.turnTime * 0.14 + b2.lapTime * 0.1 + walls[2] * 0.08),
+      secondScore: clamp(0.2 + sashi2 * 0.26 + boat2ResidualAfterFlowScore * 0.1 + b2.turnTime * 0.18 + walls[2] * 0.12 + b2.lapTime * 0.08),
+      thirdScore: clamp(0.2 + sashi2 * 0.16 + boat2ResidualAfterFlowScore * 0.09 + b2.turnTime * 0.14 + b2.lapTime * 0.1 + walls[2] * 0.07),
       scenarioTriggerScore: sashi2,
       beneficiaryScore: clamp(sashi2 * 0.36 + walls[2] * 0.24 + b2.turnTime * 0.14),
       supportFactors: sashi2Support,
@@ -565,8 +659,8 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 3,
       headScore: headScore3,
-      secondScore: clamp(0.22 + attack3 * 0.3 + b3.straightTime * 0.12 + b3.turnTime * 0.14),
-      thirdScore: clamp(0.2 + attack3 * 0.22 + b3.straightTime * 0.12 + b3.turnTime * 0.14),
+      secondScore: clamp(0.18 + attack3 * 0.18 + boat3ResidualScore * 0.22 + b3.straightTime * 0.1 + b3.turnTime * 0.13),
+      thirdScore: clamp(0.19 + attack3 * 0.16 + boat3ResidualScore * 0.2 + b3.straightTime * 0.1 + b3.turnTime * 0.13),
       scenarioTriggerScore: attack3,
       beneficiaryScore: clamp(makuriSashi3 * 0.3 + b3.turnTime * 0.18 + b3.straightTime * 0.12),
       supportFactors: Math.max(makuri3Support, makuriSashi3Support),
@@ -598,8 +692,8 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 5,
       headScore: headScore5,
-      secondScore: clamp(0.14 + outside5 * 0.24 + b5.lapTime * 0.1 + b5.straightTime * 0.1),
-      thirdScore: clamp(0.2 + outside5 * 0.36 + b5.lapTime * 0.12 + b5.straightTime * 0.12),
+      secondScore: clamp(0.13 + outside5 * 0.2 + boat5LinkedFollowScore * 0.14 + b5.lapTime * 0.1 + b5.straightTime * 0.1),
+      thirdScore: clamp(0.18 + outside5 * 0.3 + boat5LinkedFollowScore * 0.16 + b5.lapTime * 0.12 + b5.straightTime * 0.12),
       scenarioTriggerScore: outside5,
       beneficiaryScore: beneficiary5,
       supportFactors: supportCount([b5.lapTime >= 0.62, b5.straightTime >= 0.62, b5.turnTime >= 0.62]),
@@ -754,6 +848,95 @@ export function buildRaceFlowScenarioModel({
       reason: row.reason
     });
   }
+  const makuriSampleWeight = decisionSampleWeight(decisionConditionedStats.makuri?.sampleCount);
+  const makuriSashiSampleWeight = decisionSampleWeight(decisionConditionedStats.makuriSashi?.sampleCount);
+  const sashiSampleWeight = decisionSampleWeight(decisionConditionedStats.sashi?.sampleCount);
+  const boat4MakuriSashiSampleWeight = decisionSampleWeight(venue4MakuriSashi?.sampleCount);
+  const decisionResidualScores = {
+    boat1ResidualAfterAttackScore: roundScore(boat1ResidualAfterAttackScore),
+    boat3ResidualScore: roundScore(boat3ResidualScore),
+    boat2ResidualAfterFlowScore: roundScore(boat2ResidualAfterFlowScore),
+    boat5LinkedFollowScore: roundScore(boat5LinkedFollowScore),
+    venueMakuriBoat1SecondRate: roundScore(venueMakuriBoat1Second),
+    venueMakuriSashiBoat1SecondRate: roundScore(venueMakuriSashiBoat1Second),
+    venueSashiBoat1SecondRate: roundScore(venueSashiBoat1Second),
+    venue4SecondRates: {
+      "1": roundScore(venue4Second1),
+      "2": roundScore(venue4Second2),
+      "3": roundScore(venue4Second3),
+      "5": roundScore(venue4Second5)
+    },
+    venue4ExactaRates: {
+      "4-1": roundScore(venue4Exacta1),
+      "4-2": roundScore(venue4Exacta2),
+      "4-3": roundScore(venue4Exacta3),
+      "4-5": roundScore(venue4Exacta5)
+    },
+    sampleWeights: {
+      makuri: round(makuriSampleWeight, 3),
+      makuriSashi: round(makuriSashiSampleWeight, 3),
+      sashi: round(sashiSampleWeight, 3),
+      boat4MakuriSashi: round(boat4MakuriSashiSampleWeight, 3)
+    }
+  };
+  if (makuriSampleWeight >= 0.35 && venueMakuriBoat1Second < 0.44 && boat1ResidualAfterAttackScore < 0.55) {
+    ticketAdjustmentLog.push({
+      action: "demote",
+      target: "3-1-flow",
+      scenarioId: "makuri_3",
+      reason: "まくり決着時の1号艇2着残りが低く、1の残留足も強くないため3-1を本線から下げます"
+    });
+  } else if (makuriSampleWeight >= 0.35 && (venueMakuriBoat1Second >= 0.58 || boat1ResidualAfterAttackScore >= 0.64)) {
+    ticketAdjustmentLog.push({
+      action: "keep",
+      target: "3-1-flow",
+      scenarioId: "makuri_3",
+      reason: "まくり決着でも1号艇が2着に残る根拠があるため3-1を維持します"
+    });
+  }
+  if (boat4MakuriSashiSampleWeight >= 0.35 && venue4Exacta3 < 0.42 && boat3ResidualScore < 0.54) {
+    ticketAdjustmentLog.push({
+      action: "demote",
+      target: "4-3-flow",
+      scenarioId: "second_wave_4",
+      reason: "4頭時の4-3が薄く、3号艇は攻めの起点後に残る評価が弱いため4-3を下げます"
+    });
+  }
+  if (boat4MakuriSashiSampleWeight >= 0.35 && (venue4Exacta1 >= 0.56 || boat1ResidualAfterAttackScore >= 0.62)) {
+    ticketAdjustmentLog.push({
+      action: "promote",
+      target: "4-1-flow",
+      scenarioId: "second_wave_4",
+      reason: "4頭時に1号艇残りの根拠があるため4-1を相手上位に評価します"
+    });
+  }
+  if (boat4MakuriSashiSampleWeight >= 0.35 && venue4Exacta5 >= 0.56 && boat5LinkedFollowScore >= 0.52) {
+    ticketAdjustmentLog.push({
+      action: "promote",
+      target: "4-5-flow",
+      scenarioId: "second_wave_4",
+      reason: "4頭時の外連動と5号艇の追走評価があるため4-5系を少し評価します"
+    });
+  }
+  if (
+    makuriSampleWeight > 0 && makuriSampleWeight < 0.35 ||
+    makuriSashiSampleWeight > 0 && makuriSashiSampleWeight < 0.35 ||
+    sashiSampleWeight > 0 && sashiSampleWeight < 0.35 ||
+    boat4MakuriSashiSampleWeight > 0 && boat4MakuriSashiSampleWeight < 0.35
+  ) {
+    ticketAdjustmentLog.push({
+      action: "reference_only",
+      target: "decision-conditioned venue bias",
+      reason: "決まり手別の会場サンプルが少ないため、出目補正は参考程度に抑えます"
+    });
+  }
+  const decisionBiasExplanations = ticketAdjustmentLog
+    .filter((row) =>
+      ["3-1-flow", "4-3-flow", "4-1-flow", "4-5-flow", "decision-conditioned venue bias"].includes(row.target)
+    )
+    .map((row) => row.reason)
+    .filter(Boolean)
+    .slice(0, 4);
 
   return {
     available: safeArray(entries).length > 0,
@@ -781,8 +964,11 @@ export function buildRaceFlowScenarioModel({
       }])
     ),
     ticketAdjustmentLog,
+    decisionConditionedStats,
+    headDecisionComboStats,
+    decisionResidualScores,
     conditionAdjustmentLog,
-    explanations,
+    explanations: [...explanations, ...decisionBiasExplanations],
     quality: {
       tendencyAvailable,
       venueAvailable,
@@ -826,6 +1012,170 @@ export function applyRaceFlowScenarioAdjustments(entries = [], model = {}) {
   });
 }
 
+function scenarioById(model = {}, id) {
+  return safeArray(model?.scenarios).find((row) => row?.id === id) || null;
+}
+
+function scenarioDecisionForTicket(model = {}, head) {
+  if (head === 2) return { scenarioId: "sashi_2", decision: "sashi" };
+  if (head === 4) return { scenarioId: "second_wave_4", decision: "makuriSashi" };
+  if (head === 3) {
+    const makuri = finiteNumber(scenarioById(model, "makuri_3")?.score, 0);
+    const makuriSashi = finiteNumber(scenarioById(model, "makuri_sashi_3")?.score, 0);
+    return makuri >= makuriSashi
+      ? { scenarioId: "makuri_3", decision: "makuri" }
+      : { scenarioId: "makuri_sashi_3", decision: "makuriSashi" };
+  }
+  if (head === 1) return { scenarioId: "escape_1", decision: "escape" };
+  return { scenarioId: "outside_follow_5_6", decision: null };
+}
+
+function residualScore01(model = {}, field, fallback = 0.5) {
+  return optionalRate01(model?.decisionResidualScores?.[field]) ?? fallback;
+}
+
+function decisionStat(model = {}, decision) {
+  return model?.decisionConditionedStats?.[decision] || {};
+}
+
+function headDecisionStat(model = {}, head, decision) {
+  return model?.headDecisionComboStats?.[String(head)]?.[decision] || {};
+}
+
+function rateFromStats(row = {}, group, key, fallback = 0.5) {
+  const raw = row?.[group]?.[key];
+  const rate = optionalRate01(raw);
+  if (rate === null) return fallback;
+  return fallback + (rate - fallback) * decisionSampleWeight(row?.sampleCount);
+}
+
+function blendSupport(liveScore, venueScore, venueWeight = 0.5) {
+  return clamp(0.5 + (liveScore - 0.5) * 0.72 + (venueScore - 0.5) * venueWeight);
+}
+
+export function scoreRaceFlowTicketDecisionCompatibility(ticket = {}, model = {}) {
+  const boats = Array.isArray(ticket?.boats)
+    ? ticket.boats.map((value) => Number(value))
+    : String(ticket?.combo || "").split("-").map((value) => Number(value));
+  const [head, second] = boats;
+  const scenario = scenarioDecisionForTicket(model, head);
+  const reasons = [];
+  let support = 0.5;
+  let floor = 0.74;
+  let ceiling = 1.18;
+  const boat1Residual = residualScore01(model, "boat1ResidualAfterAttackScore", 0.5);
+  const boat3Residual = residualScore01(model, "boat3ResidualScore", 0.5);
+  const boat2Residual = residualScore01(model, "boat2ResidualAfterFlowScore", 0.5);
+  const boat5Follow = residualScore01(model, "boat5LinkedFollowScore", 0.5);
+
+  if (head === 3 && second === 1) {
+    const stats = decisionStat(model, scenario.decision || "makuri");
+    const venue = decisionRate(stats, "boat1SecondRate", 0.5);
+    support = blendSupport(boat1Residual, venue, 0.9);
+    floor = 0.62;
+    ceiling = 1.22;
+    if (support < 0.46) reasons.push("3頭時の1残り根拠が弱いため3-1を降格");
+    if (support > 0.6) reasons.push("3頭時でも1が残る根拠があるため3-1を維持");
+  } else if (head === 3 && second >= 4) {
+    const stats = decisionStat(model, scenario.decision || "makuri");
+    support = decisionRate(stats, "outsideLinkedRate", 0.5);
+    floor = 0.86;
+    ceiling = 1.16;
+    if (support > 0.58) reasons.push("3攻め後の外連動が出やすく外相手を加点");
+  } else if (head === 2 && second === 1) {
+    const stats = decisionStat(model, "sashi");
+    const venue = decisionRate(stats, "boat1SecondRate", 0.5);
+    support = blendSupport(boat1Residual, venue, 0.85);
+    floor = 0.68;
+    ceiling = 1.18;
+    if (support < 0.46) reasons.push("差し決着時の1残りが薄く2-1を降格");
+    if (support > 0.58) reasons.push("差し決着時の1残りがあり2-1を維持");
+  } else if (head === 4 && second === 3) {
+    const stats = headDecisionStat(model, 4, "makuriSashi");
+    const venue = Math.max(
+      rateFromStats(stats, "secondRates", "3", 0.5),
+      rateFromStats(stats, "exactaRates", "4-3", 0.5)
+    );
+    support = blendSupport(boat3Residual, venue, 0.95);
+    floor = 0.58;
+    ceiling = 1.18;
+    if (support < 0.48) reasons.push("3は攻めの起点後に残る根拠が弱く4-3を降格");
+    if (support > 0.6) reasons.push("3の残り足と4-3傾向があり4-3を維持");
+  } else if (head === 4 && second === 1) {
+    const stats = headDecisionStat(model, 4, "makuriSashi");
+    const venue = Math.max(
+      rateFromStats(stats, "secondRates", "1", 0.5),
+      rateFromStats(stats, "exactaRates", "4-1", 0.5)
+    );
+    support = blendSupport(boat1Residual, venue, 0.95);
+    floor = 0.76;
+    ceiling = 1.24;
+    if (support > 0.58) reasons.push("4頭時の1残り根拠があり4-1を加点");
+  } else if (head === 4 && second === 2) {
+    const stats = headDecisionStat(model, 4, "makuriSashi");
+    const venue = Math.max(
+      rateFromStats(stats, "secondRates", "2", 0.5),
+      rateFromStats(stats, "exactaRates", "4-2", 0.5)
+    );
+    support = blendSupport(boat2Residual, venue, 0.8);
+    floor = 0.8;
+    ceiling = 1.18;
+    if (support > 0.58) reasons.push("4頭時の2残りがあり4-2を加点");
+  } else if (head === 4 && second === 5) {
+    const stats = headDecisionStat(model, 4, "makuriSashi");
+    const venue = Math.max(
+      rateFromStats(stats, "secondRates", "5", 0.5),
+      rateFromStats(stats, "exactaRates", "4-5", 0.5)
+    );
+    support = blendSupport(boat5Follow, venue, 0.85);
+    floor = 0.82;
+    ceiling = 1.2;
+    if (support > 0.58) reasons.push("4頭時の外連動があり4-5を少し加点");
+  }
+
+  const multiplier = decisionCompatibilityMultiplier(support, floor, ceiling);
+  return {
+    combo: ticket?.combo || boats.join("-"),
+    scenarioId: scenario.scenarioId,
+    decision: scenario.decision,
+    ticketDecisionCompatibilityScore: roundScore(support),
+    multiplier: round(multiplier, 4),
+    reasons
+  };
+}
+
+export function applyRaceFlowTicketDecisionCompatibility(trifecta = [], model = {}) {
+  const adjusted = safeArray(trifecta).map((ticket) => {
+    const compatibility = scoreRaceFlowTicketDecisionCompatibility(ticket, model);
+    return {
+      ...ticket,
+      probability: finiteNumber(ticket?.probability, 0) * compatibility.multiplier,
+      decisionCompatibilityScore: compatibility.ticketDecisionCompatibilityScore,
+      decisionCompatibilityMultiplier: compatibility.multiplier,
+      decisionCompatibilityReasons: compatibility.reasons,
+      decisionScenarioId: compatibility.scenarioId,
+      decisionMethod: compatibility.decision
+    };
+  });
+  const total = adjusted.reduce((sum, ticket) => sum + finiteNumber(ticket.probability, 0), 0);
+  const normalized = total > 0
+    ? adjusted.map((ticket) => ({ ...ticket, probability: ticket.probability / total }))
+    : adjusted;
+  const preview = normalized
+    .filter((ticket) => safeArray(ticket.decisionCompatibilityReasons).length > 0 || ticket.decisionCompatibilityMultiplier !== 1)
+    .sort((a, b) => Math.abs(1 - b.decisionCompatibilityMultiplier) - Math.abs(1 - a.decisionCompatibilityMultiplier))
+    .slice(0, 24)
+    .map((ticket) => ({
+      combo: ticket.combo,
+      decisionMethod: ticket.decisionMethod,
+      scenarioId: ticket.decisionScenarioId,
+      ticketDecisionCompatibilityScore: ticket.decisionCompatibilityScore,
+      multiplier: ticket.decisionCompatibilityMultiplier,
+      reasons: ticket.decisionCompatibilityReasons
+    }));
+  return { tickets: normalized.sort((a, b) => b.probability - a.probability), preview };
+}
+
 export function buildRaceFlowScenarioTickets(model = {}, baseTickets = [], limit = 6) {
   const baseTicketCombos = new Set(safeArray(baseTickets).map((ticket) => ticket?.combo).filter(Boolean));
   const rows = [];
@@ -835,17 +1185,39 @@ export function buildRaceFlowScenarioTickets(model = {}, baseTickets = [], limit
     .sort((a, b) => b.score - a.score);
   for (const scenario of scenarios) {
     for (const pattern of safeArray(scenario.patterns)) {
-      for (const combo of expandPattern(pattern, baseTicketCombos)) {
+      const candidates = expandPattern(pattern, baseTicketCombos)
+        .map((combo) => ({
+          combo,
+          compatibility: scoreRaceFlowTicketDecisionCompatibility({
+            combo,
+            boats: combo.split("-").map((value) => Number(value))
+          }, model)
+        }))
+        .sort((a, b) => b.compatibility.multiplier - a.compatibility.multiplier);
+      for (const { combo, compatibility } of candidates) {
         if (seen.has(combo)) continue;
+        if (compatibility.multiplier < 0.82) {
+          model.ticketAdjustmentLog?.push?.({
+            action: "demote",
+            target: combo,
+            scenarioId: scenario.id,
+            ticketDecisionCompatibilityScore: compatibility.ticketDecisionCompatibilityScore,
+            reason: compatibility.reasons[0] || "decision-conditioned combo compatibility is low"
+          });
+          continue;
+        }
         seen.add(combo);
         rows.push({
           combo,
           boats: combo.split("-").map((value) => Number(value)),
-          probability: round(clamp((scenario.score / 100) * 0.07), 4),
+          probability: round(clamp((scenario.score / 100) * 0.07 * compatibility.multiplier), 4),
           sourcePattern: scenario.label,
           scenarioId: scenario.id,
           scenarioName: scenario.label,
-          upsetScore: scenario.score
+          upsetScore: scenario.score,
+          decisionCompatibilityScore: compatibility.ticketDecisionCompatibilityScore,
+          decisionCompatibilityMultiplier: compatibility.multiplier,
+          decisionCompatibilityReasons: compatibility.reasons
         });
         model.ticketAdjustmentLog?.push?.({
           action: "promote",

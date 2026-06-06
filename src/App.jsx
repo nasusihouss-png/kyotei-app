@@ -16,6 +16,7 @@ import {
 } from "./lib/kyotei-models.js";
 import {
   DEFAULT_SCORING_CONFIG,
+  buildBoat4OpportunityRanking,
   buildTodayRanking,
   buildRacePrediction,
   inspectPreviewExhibitionStatus,
@@ -4631,6 +4632,8 @@ export default function App() {
   const [todayRankingRows, setTodayRankingRows] = useState([]);
   const [todayRankingProgress, setTodayRankingProgress] = useState({ done: 0, total: 0 });
   const [todayRankingUpdatedAt, setTodayRankingUpdatedAt] = useState("");
+  const [boat4TargetRows, setBoat4TargetRows] = useState([]);
+  const [boat4TargetFilter, setBoat4TargetFilter] = useState("HIGH_MEDIUM");
   const [rankingsLoading, setRankingsLoading] = useState(false);
   const [rankingsError, setRankingsError] = useState("");
   const [rankingsData, setRankingsData] = useState([]);
@@ -5346,6 +5349,28 @@ export default function App() {
     const displayPreview = buildTableDisplayPreview(renderedMergedRows);
     const canonicalPreview = buildTableDisplayPreview(canonicalRaceData?.entries || renderedMergedRows);
     const tablePreview = buildTableDisplayPreview(displayRows);
+    const sourceExhibitionTablePreview = originalExhibitionDebug.sourceExhibitionTablePreview ||
+      safeArray(currentOriginalExhibition?.rows).map((row) => ({
+        boat: row?.boat ?? row?.lane ?? null,
+        exST: row?.exST ?? row?.exhibitionSt ?? null,
+        exTime: row?.exTime ?? row?.exhibitionTime ?? null,
+        lapTime: row?.lapTime ?? null,
+        straightTime: row?.straightTime ?? null,
+        turnTime: row?.turnTime ?? null
+      }));
+    const parserWarningsPreview = originalExhibitionDebug.parserWarningsPreview ||
+      safeArray(currentOriginalExhibition?.rows).map((row) => ({
+        boat: row?.boat ?? row?.lane ?? null,
+        sourceRaw: row?.sourceRaw || null,
+        parsed: row?.parsed || {
+          exST: row?.exST ?? row?.exhibitionSt ?? null,
+          exTime: row?.exTime ?? row?.exhibitionTime ?? null,
+          lapTime: row?.lapTime ?? null,
+          straightTime: row?.straightTime ?? null,
+          turnTime: row?.turnTime ?? null
+        },
+        warnings: row?.warnings || []
+      }));
     const raceConditionsDebug = currentRaceConditions?.debug || canonicalRaceData?.debug?.raceConditions?.debug || {};
     const predictionInputPreview = canonicalRaceData?.debug?.predictionInputPreview || canonicalPreview;
     const featureScorePreview = openApiModel?.prediction?.featureScorePreview || [];
@@ -5354,6 +5379,10 @@ export default function App() {
     const wallScorePreview = openApiModel?.prediction?.wallScorePreview || [];
     const headPartnerSplitPreview = openApiModel?.prediction?.headPartnerSplitPreview || [];
     const ticketAdjustmentLog = openApiModel?.prediction?.ticketAdjustmentLog || [];
+    const ticketDecisionCompatibilityPreview = openApiModel?.prediction?.ticketDecisionCompatibilityPreview || [];
+    const decisionConditionedStatsPreview = openApiModel?.prediction?.raceFlowScenario?.decisionConditionedStats || {};
+    const headDecisionComboStatsPreview = openApiModel?.prediction?.raceFlowScenario?.headDecisionComboStats || {};
+    const decisionResidualScores = openApiModel?.prediction?.raceFlowScenario?.decisionResidualScores || {};
     const conditionAdjustmentLog = openApiModel?.prediction?.conditionAdjustmentLog || [];
     const tendencyScorePreview = openApiModel?.prediction?.tendencyScorePreview || [];
     const tendencyPreview = buildTendencyPreview(racerTendencyRows);
@@ -5514,6 +5543,8 @@ export default function App() {
       displayTurnTimeCount: countPresentField(displayPreview, "turnTime"),
       laneStatsPreview: parsedRows.slice(0, 6),
       originalExhibitionRowsPreview,
+      sourceExhibitionTablePreview,
+      parserWarningsPreview,
       canonicalPreview,
       tablePreview,
       predictionInputPreview,
@@ -5523,6 +5554,10 @@ export default function App() {
       wallScorePreview,
       headPartnerSplitPreview,
       ticketAdjustmentLog,
+      ticketDecisionCompatibilityPreview,
+      decisionConditionedStatsPreview,
+      headDecisionComboStatsPreview,
+      decisionResidualScores,
       conditionAdjustmentLog,
       tendencyScorePreview,
       tendencyPreview,
@@ -5532,7 +5567,7 @@ export default function App() {
       canonicalTendencyCount,
       displayPreview
     };
-  }, [canonicalRaceData?.conditions, canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.debug?.raceConditions, canonicalRaceData?.entries, currentOriginalExhibition, currentRaceConditions, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.conditionAdjustmentLog, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.headPartnerSplitPreview, openApiModel?.prediction?.raceFlowScenarioPreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.tendencyScorePreview, openApiModel?.prediction?.ticketAdjustmentLog, openApiModel?.prediction?.wallScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceConditionsError, raceConditionsLoading, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
+  }, [canonicalRaceData?.conditions, canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.debug?.raceConditions, canonicalRaceData?.entries, currentOriginalExhibition, currentRaceConditions, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.conditionAdjustmentLog, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.headPartnerSplitPreview, openApiModel?.prediction?.raceFlowScenario?.decisionConditionedStats, openApiModel?.prediction?.raceFlowScenario?.decisionResidualScores, openApiModel?.prediction?.raceFlowScenario?.headDecisionComboStats, openApiModel?.prediction?.raceFlowScenarioPreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.tendencyScorePreview, openApiModel?.prediction?.ticketAdjustmentLog, openApiModel?.prediction?.ticketDecisionCompatibilityPreview, openApiModel?.prediction?.wallScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceConditionsError, raceConditionsLoading, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
   const originalExhibitionFetchError =
     originalExhibitionError ||
     currentOriginalExhibition?.error ||
@@ -5969,6 +6004,9 @@ export default function App() {
     if (screen === "todayRanking" && todayRankingRows.length === 0 && !todayRankingLoading) {
       loadTodayRanking();
     }
+    if (screen === "boat4Target" && boat4TargetRows.length === 0 && !todayRankingLoading) {
+      loadTodayRanking();
+    }
   }, [screen]);
 
   useEffect(() => {
@@ -6016,6 +6054,7 @@ export default function App() {
     const cached = !force ? todayRankingCache.get(targetDate) : null;
     if (cached) {
       setTodayRankingRows(cached.rows);
+      setBoat4TargetRows(Array.isArray(cached.boat4Rows) ? cached.boat4Rows : []);
       setTodayRankingUpdatedAt(cached.updatedAt);
       setTodayRankingProgress({ done: cached.total, total: cached.total });
       setTodayRankingError("");
@@ -6047,10 +6086,12 @@ export default function App() {
       );
       const total = Math.max(programs.length, 1);
       const analyzed = [];
+      const boat4Analyzed = [];
       const chunkSize = 8;
       for (let index = 0; index < programs.length; index += chunkSize) {
         const chunk = programs.slice(index, index + chunkSize);
         analyzed.push(...buildTodayRanking(chunk, previewsByRaceKey, { limit: chunk.length }));
+        boat4Analyzed.push(...buildBoat4OpportunityRanking(chunk, previewsByRaceKey, { limit: chunk.length }));
         setTodayRankingProgress({ done: Math.min(index + chunk.length, total), total });
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
@@ -6058,13 +6099,24 @@ export default function App() {
         .sort((a, b) => b.confidenceScore - a.confidenceScore || Number(a.stadiumNumber || 99) - Number(b.stadiumNumber || 99) || Number(a.raceNumber || 99) - Number(b.raceNumber || 99))
         .slice(0, 20)
         .map((row, index) => ({ ...row, rank: index + 1 }));
+      const boat4Rows = boat4Analyzed
+        .sort((a, b) =>
+          Number(b.boat4HeadOpportunityScore || 0) - Number(a.boat4HeadOpportunityScore || 0) ||
+          Number(b.confidence || 0) - Number(a.confidence || 0) ||
+          Number(a.stadiumNumber || 99) - Number(b.stadiumNumber || 99) ||
+          Number(a.raceNumber || 99) - Number(b.raceNumber || 99)
+        )
+        .slice(0, 60)
+        .map((row, index) => ({ ...row, rank: index + 1 }));
       const updatedAt = new Date().toISOString();
       todayRankingCache.set(targetDate, {
         rows,
+        boat4Rows,
         updatedAt,
         total
       });
       setTodayRankingRows(rows);
+      setBoat4TargetRows(boat4Rows);
       setTodayRankingUpdatedAt(updatedAt);
       setTodayRankingProgress({ done: total, total });
       if (previewsResult.error) {
@@ -6072,6 +6124,7 @@ export default function App() {
       }
     } catch (e) {
       setTodayRankingRows([]);
+      setBoat4TargetRows([]);
       setTodayRankingError(e?.message || "Today Ranking の取得に失敗しました");
     } finally {
       setTodayRankingLoading(false);
@@ -7516,6 +7569,13 @@ export default function App() {
     onRemovePendingTicket
   ]);
 
+  const filteredBoat4TargetRows = useMemo(() => {
+    const rows = safeArray(boat4TargetRows);
+    if (boat4TargetFilter === "HIGH_ONLY") return rows.filter((row) => row?.strengthLabel === "高");
+    if (boat4TargetFilter === "HIGH_MEDIUM") return rows.filter((row) => row?.strengthLabel === "高" || row?.strengthLabel === "中");
+    return rows;
+  }, [boat4TargetRows, boat4TargetFilter]);
+
   return (
     <div className="app-shell">
       <div className="app-container">
@@ -7527,6 +7587,7 @@ export default function App() {
           <div className="screen-tabs">
             <button className={screen === "prediction" ? "tab on" : "tab"} onClick={() => setScreen("prediction")}>Prediction</button>
             <button className={screen === "todayRanking" ? "tab on" : "tab"} onClick={() => setScreen("todayRanking")}>Today Ranking</button>
+            <button className={screen === "boat4Target" ? "tab on" : "tab"} onClick={() => setScreen("boat4Target")}>4号艇狙い</button>
             <button className={screen === "tickets" ? "tab on" : "tab"} onClick={() => setScreen("tickets")}>Tickets</button>
             <button className={screen === "raceLog" ? "tab on" : "tab"} onClick={() => setScreen("raceLog")}>RaceLog</button>
             <button className={screen === "settings" ? "tab on" : "tab"} onClick={() => setScreen("settings")}>Settings</button>
@@ -10199,6 +10260,118 @@ export default function App() {
                           詳細予想へ
                         </button>
                       </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
+        {screen === "boat4Target" && (
+          <section className="card">
+            <div className="section-head">
+              <div>
+                <h2>4号艇狙い</h2>
+                <p className="muted">3号艇の攻めを起点に、4号艇が展開を拾って頭まで届くレースを並べます。</p>
+              </div>
+              <div className="row-actions">
+                <span className="muted">
+                  {todayRankingLoading
+                    ? `全レース取得中: ${todayRankingProgress.done} / ${todayRankingProgress.total || 288}`
+                    : todayRankingUpdatedAt
+                      ? `最終更新 ${todayRankingUpdatedAt}`
+                      : "未取得"}
+                </span>
+                <button className="fetch-btn secondary" onClick={() => loadTodayRanking({ force: true })} disabled={todayRankingLoading}>
+                  {todayRankingLoading ? "取得中..." : "再取得"}
+                </button>
+              </div>
+            </div>
+            {todayRankingError ? <div className="notice-banner" style={{ marginBottom: 12 }}>{todayRankingError}</div> : null}
+            <div className="boat4-filter-row">
+              {[
+                { key: "HIGH_ONLY", label: "高のみ" },
+                { key: "HIGH_MEDIUM", label: "高＋中" },
+                { key: "ALL", label: "全表示" }
+              ].map((filter) => (
+                <button
+                  key={`boat4-filter-${filter.key}`}
+                  type="button"
+                  className={`filter-chip ${boat4TargetFilter === filter.key ? "active" : ""}`}
+                  onClick={() => setBoat4TargetFilter(filter.key)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            {todayRankingLoading ? (
+              <div className="metric-grid compact">
+                <div className="metric-item">
+                  <span>progress</span>
+                  <strong>{todayRankingProgress.done} / {todayRankingProgress.total || 288}</strong>
+                </div>
+                <div className="metric-item">
+                  <span>source</span>
+                  <strong>OpenAPI v2 programs / previews</strong>
+                </div>
+              </div>
+            ) : filteredBoat4TargetRows.length === 0 ? (
+              <p className="muted">条件に合う4号艇頭候補はまだありません。再取得するか、フィルタを「全表示」にしてください。</p>
+            ) : (
+              <div className="boat4-ranking-list">
+                {filteredBoat4TargetRows.map((row) => {
+                  const venue = VENUES.find((v) => Number(v.id) === Number(row.stadiumNumber));
+                  const toneClass = row.strengthLabel === "高" ? "status-hit" : row.strengthLabel === "中" ? "status-unsettled" : "status-miss";
+                  return (
+                    <article className="recommend-card boat4-ranking-card" key={`boat4-target-${row.stadiumNumber}-${row.raceNumber}`}>
+                      <div className="recommend-head">
+                        <div>
+                          <strong>{row.rank}位 {venue?.name || row.stadiumNumber} {row.raceNumber}R</strong>
+                          <p className="muted strategy-line">
+                            {row.closedAt ? `締切 ${row.closedAt}` : "締切時刻なし"} / {row.exhibitionStatus === "exhibition_reflected" ? "展示反映済み" : "展示前（出走表のみ）"}
+                          </p>
+                        </div>
+                        <div className="boat4-score-badges">
+                          <span className={`status-pill ${toneClass}`}>{row.strengthLabel}</span>
+                          <span className="status-pill status-unsettled">score {formatMaybeNumber(row.boat4HeadOpportunityScore, 1)}</span>
+                          <span className="status-pill status-unsettled">confidence {formatMaybeNumber(row.confidence, 0)}</span>
+                        </div>
+                      </div>
+                      <div className="kv-list">
+                        <div className="kv-row">
+                          <span>main reason</span>
+                          <strong>{row.mainReason || "-"}</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>recommended tickets</span>
+                          <strong>{safeArray(row.recommendedTickets).length > 0 ? row.recommendedTickets.join(" / ") : "なし"}</strong>
+                        </div>
+                        <div className="kv-row">
+                          <span>caution</span>
+                          <strong>{row.caution || "大きな注意点なし"}</strong>
+                        </div>
+                      </div>
+                      <div className="row-actions">
+                        <button
+                          className="fetch-btn secondary"
+                          type="button"
+                          onClick={() => {
+                            applyVenueIdSelection(row.stadiumNumber);
+                            setRaceNo(Number(row.raceNumber || 1));
+                            setScreen("prediction");
+                            onFetchOpenApiPrediction({ date: localDateKey(), venueId: row.stadiumNumber, raceNo: row.raceNumber });
+                          }}
+                        >
+                          詳細予想へ
+                        </button>
+                      </div>
+                      {showDebugPanels ? (
+                        <details className="hardrace-details">
+                          <summary>4号艇狙い debug</summary>
+                          <pre className="json-preview">{safePrettyJson(row.debug || {})}</pre>
+                        </details>
+                      ) : null}
                     </article>
                   );
                 })}

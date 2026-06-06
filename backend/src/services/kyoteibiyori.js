@@ -395,6 +395,55 @@ function parseFCount(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+const EXHIBITION_VALID_RANGES = {
+  exST: { min: -0.3, max: 0.5, label: "exST" },
+  exTime: { min: 6, max: 8.5, label: "exTime" },
+  lapTime: { min: 30, max: 45, label: "lapTime" },
+  straightTime: { min: 5, max: 9, label: "straightTime" },
+  turnTime: { min: 4, max: 8, label: "turnTime" },
+  motor2Rate: { min: 0, max: 100, label: "motor2Rate" }
+};
+
+function exhibitionRangeKey(field) {
+  if (["exhibitionSt", "exhibitionST", "exST", "exhibitionStSignedValue"].includes(field)) return "exST";
+  if (["exhibitionTime", "exTime"].includes(field)) return "exTime";
+  if (["lapTime", "lapTimeRaw", "lapRaw"].includes(field)) return "lapTime";
+  if (["straightTime", "nobiashi", "__nobiashi", "__chokusen"].includes(field)) return "straightTime";
+  if (["turnTime", "mawariashi", "__mawariashi"].includes(field)) return "turnTime";
+  if (["motor2Rate", "motor2ren", "motor3Rate", "motor3ren"].includes(field)) return "motor2Rate";
+  return null;
+}
+
+function formatWarningValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : String(value ?? "-");
+}
+
+function validateMetricValue(field, value, rawValue = null) {
+  const key = exhibitionRangeKey(field);
+  const n = toFiniteNumberOrNull(value);
+  if (n === null || !key) return { value: n, warnings: [] };
+  const range = EXHIBITION_VALID_RANGES[key];
+  if (n < range.min || n > range.max) {
+    const warnings = [`${range.label} ${formatWarningValue(n)} rejected: out of valid range`];
+    if (key === "exST" && n >= 1) {
+      warnings.push(`${range.label} ${formatWarningValue(n)} rejected: likely decimal parsing error from ${rawValue ?? value}`);
+    }
+    return { value: null, warnings };
+  }
+  return { value: n, warnings: [] };
+}
+
+function parseStartTimingNumber(normalized) {
+  if (!normalized) return null;
+  const sign = normalized.startsWith("-") ? -1 : 1;
+  const unsigned = normalized.replace(/^[+-]/, "");
+  if (/^\d{1,2}$/.test(unsigned)) {
+    return Number((sign * Number(`0.${unsigned.padStart(2, "0")}`)).toFixed(3));
+  }
+  return parseDecimal(normalized);
+}
+
 function parseStartTimingRaw(value) {
   const raw = normalizeSpace(value) || null;
   if (!raw) return { raw: null, type: "missing", numeric: null, flag: null, signedValue: null };
@@ -404,26 +453,33 @@ function parseStartTimingRaw(value) {
     const rawNumeric = String(flagMatch[2] || "");
     const numeric = rawNumeric.startsWith(".")
       ? parseDecimal(rawNumeric)
-      : parseDecimal(`.${rawNumeric.replace(/^\./, "")}`);
+      : parseStartTimingNumber(rawNumeric);
     const flag = flagMatch[1];
-    const signedValue = Number.isFinite(numeric)
+    const signedValueRaw = Number.isFinite(numeric)
       ? Number((flag === "F" ? -numeric : numeric).toFixed(3))
       : null;
+    const checked = validateMetricValue("exhibitionSt", signedValueRaw, raw);
+    const signedValue = checked.value;
+    const displayNumeric = signedValue === null ? null : Math.abs(signedValue);
     return {
       raw,
       type: flag === "F" ? "flying" : "late",
-      numeric,
+      numeric: displayNumeric,
       flag,
-      signedValue
+      signedValue,
+      warnings: checked.warnings
     };
   }
-  const numeric = parseDecimal(normalized);
+  const numericRaw = parseStartTimingNumber(normalized);
+  const checked = validateMetricValue("exhibitionSt", numericRaw, raw);
+  const numeric = checked.value;
   return {
     raw,
     type: numeric === null ? "unknown" : "normal",
     numeric,
     flag: null,
-    signedValue: Number.isFinite(numeric) ? numeric : null
+    signedValue: Number.isFinite(numeric) ? numeric : null,
+    warnings: checked.warnings
   };
 }
 
@@ -486,9 +542,11 @@ function mergeAjaxAggregateRows({ payload, byLane, fieldSources }) {
       for (let lane = 1; lane <= 6; lane += 1) {
         const courseKey = `course${lane}`;
         const rawValue = row?.[courseKey];
-        const numericValue = arrayKey === "tenji_ave_data"
+        const numericValueRaw = arrayKey === "tenji_ave_data"
           ? parseScaledDecimal(rawValue, 100)
           : parseScaledDecimal(rawValue, 100);
+        const checked = validateMetricValue(mappedField, numericValueRaw, rawValue);
+        const numericValue = checked.value;
         if (numericValue === null) continue;
 
         const current = byLane.get(lane) || {};
@@ -499,7 +557,8 @@ function mergeAjaxAggregateRows({ payload, byLane, fieldSources }) {
           mode: row?.mode ?? null,
           type: Number.isFinite(typeKey) ? typeKey : null,
           value: numericValue,
-          raw: rawValue ?? null
+          raw: rawValue ?? null,
+          warnings: checked.warnings
         };
 
         current.ajaxAggregateMeta = appendAjaxAggregateMetric(
@@ -707,9 +766,26 @@ function buildOriginalExhibitionLaneRows(byLane) {
     .sort(([a], [b]) => Number(a) - Number(b))
     .map(([lane, row]) => ({
       boat: Number(lane),
+      exST: firstFiniteValue(row?.exhibitionStSignedValue, row?.exhibitionSt, row?.exST),
+      exTime: firstFiniteValue(row?.exhibitionTime, row?.exTime),
       lapTime: firstFiniteValue(row?.lapTime, row?.lapTimeRaw),
       straightTime: firstFiniteValue(row?.straightTime, row?.nobiashi, row?.__nobiashi),
-      turnTime: firstFiniteValue(row?.turnTime, row?.mawariashi, row?.__mawariashi)
+      turnTime: firstFiniteValue(row?.turnTime, row?.mawariashi, row?.__mawariashi),
+      sourceRaw: row?.sourceRaw || {
+        exST: row?.exhibitionStRaw ?? null,
+        exTime: row?.exhibitionTime ?? null,
+        lapTime: row?.lapTimeRaw ?? row?.lapTime ?? null,
+        straightTime: row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi ?? null,
+        turnTime: row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi ?? null
+      },
+      parsed: row?.parsed || {
+        exST: firstFiniteValue(row?.exhibitionStSignedValue, row?.exhibitionSt, row?.exST),
+        exTime: firstFiniteValue(row?.exhibitionTime, row?.exTime),
+        lapTime: firstFiniteValue(row?.lapTime, row?.lapTimeRaw),
+        straightTime: firstFiniteValue(row?.straightTime, row?.nobiashi, row?.__nobiashi),
+        turnTime: firstFiniteValue(row?.turnTime, row?.mawariashi, row?.__mawariashi)
+      },
+      warnings: Array.isArray(row?.parserWarnings) ? row.parserWarnings : []
     }));
 }
 
@@ -723,7 +799,10 @@ function buildMergedEntryDebugRows(byLane) {
       motor2Rate: firstFiniteValue(row?.motor2Rate, row?.motor2ren),
       lapTime: firstFiniteValue(row?.lapTime, row?.lapTimeRaw),
       straightTime: firstFiniteValue(row?.straightTime, row?.nobiashi, row?.__nobiashi),
-      turnTime: firstFiniteValue(row?.turnTime, row?.mawariashi, row?.__mawariashi)
+      turnTime: firstFiniteValue(row?.turnTime, row?.mawariashi, row?.__mawariashi),
+      sourceRaw: row?.sourceRaw || null,
+      parsed: row?.parsed || null,
+      warnings: Array.isArray(row?.parserWarnings) ? row.parserWarnings : []
     }));
 }
 
@@ -2002,13 +2081,15 @@ function resolveExplicitFieldMatch({ mode = "all", rowLabels = [], tableContextL
 
 function parseExplicitTargetCell(field, rawText) {
   if (field === "lapTimeRaw") {
-    const lapTimeRaw = parseDecimal(rawText);
+    const checked = validateMetricValue("lapTime", parseDecimal(rawText), rawText);
+    const lapTimeRaw = checked.value;
     return {
       fields: {
         lapTimeRaw,
         lapTime: lapTimeRaw
       },
-      value: lapTimeRaw
+      value: lapTimeRaw,
+      warnings: checked.warnings
     };
   }
 
@@ -2022,47 +2103,58 @@ function parseExplicitTargetCell(field, rawText) {
         exhibitionStFlag: parsed.flag,
         exhibitionStSignedValue: parsed.signedValue
       },
-      value
+      value,
+      warnings: parsed.warnings || []
     };
   }
 
   if (field === "exhibitionTime") {
-    const value = parseDecimal(rawText);
+    const checked = validateMetricValue("exhibitionTime", parseDecimal(rawText), rawText);
+    const value = checked.value;
     return {
       fields: { exhibitionTime: value },
-      value
+      value,
+      warnings: checked.warnings
     };
   }
 
   if (field === "mawariashi") {
-    const value = parseDecimal(rawText);
+    const checked = validateMetricValue("turnTime", parseDecimal(rawText), rawText);
+    const value = checked.value;
     return {
       fields: { turnTime: value, mawariashi: value, __mawariashi: value },
-      value
+      value,
+      warnings: checked.warnings
     };
   }
 
   if (field === "nobiashi") {
-    const value = parseDecimal(rawText);
+    const checked = validateMetricValue("straightTime", parseDecimal(rawText), rawText);
+    const value = checked.value;
     return {
       fields: { straightTime: value, nobiashi: value, __nobiashi: value },
-      value
+      value,
+      warnings: checked.warnings
     };
   }
 
   if (field === "motor2Rate") {
-    const value = parsePercent(rawText);
+    const checked = validateMetricValue("motor2Rate", parsePercent(rawText), rawText);
+    const value = checked.value;
     return {
       fields: { motor2Rate: value },
-      value
+      value,
+      warnings: checked.warnings
     };
   }
 
   if (field === "motor3Rate") {
-    const value = parsePercent(rawText);
+    const checked = validateMetricValue("motor2Rate", parsePercent(rawText), rawText);
+    const value = checked.value;
     return {
       fields: { motor3Rate: value },
-      value
+      value,
+      warnings: checked.warnings
     };
   }
 
@@ -2092,7 +2184,8 @@ function parseExplicitTargetCell(field, rawText) {
 
   return {
     fields: {},
-    value: null
+    value: null,
+    warnings: []
   };
 }
 
@@ -2200,7 +2293,8 @@ function parseHtmlSupplementExplicit(html, options = {}) {
           boatColumn: columnHeader,
           raw: rawCellText || null,
           value: parsed.value,
-          exact_match_verified: !!target?.exactMatchVerified
+          exact_match_verified: !!target?.exactMatchVerified,
+          warnings: Array.isArray(parsed?.warnings) ? parsed.warnings : []
         };
         if (options?.mode === "lane_stats") {
           const laneField = FIELD_DEBUG_NAME_MAP[target.field] || target.field;
@@ -2221,7 +2315,8 @@ function parseHtmlSupplementExplicit(html, options = {}) {
           row_label: debugEntry.row,
           column_header: debugEntry.column,
           raw_cell_text: debugEntry.raw,
-          normalized_value: debugEntry.value
+          normalized_value: debugEntry.value,
+          warnings: debugEntry.warnings
         });
       }
     }
@@ -2376,7 +2471,8 @@ function setParsedHeaderField({ row, laneFieldSources, fieldDebugs, lane, source
     boatColumn: `${lane}号艇`,
     raw: normalizeSpace(rawText) || null,
     value,
-    exact_match_verified: true
+    exact_match_verified: true,
+    warnings: Array.isArray(parsed?.warnings) ? parsed.warnings : []
   });
 }
 
@@ -2450,7 +2546,8 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
               exhibitionStFlag: parsed.flag,
               exhibitionStSignedValue: parsed.signedValue
             },
-            value: parsed.numeric
+            value: parsed.numeric,
+            warnings: parsed.warnings || []
           };
         }
       });
@@ -2465,14 +2562,16 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
         rowLabel: "まわり足",
         debugName: "turnTime",
         parser: (rawText) => {
-          const turnTime = parseDecimal(rawText);
+          const checked = validateMetricValue("turnTime", parseDecimal(rawText), rawText);
+          const turnTime = checked.value;
           return {
             fields: {
               turnTime,
               mawariashi: turnTime,
               __mawariashi: turnTime
             },
-            value: turnTime
+            value: turnTime,
+            warnings: checked.warnings
           };
         }
       });
@@ -2485,7 +2584,10 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
         field: "exhibitionTime",
         rawText: indexes.exhibitionTime !== null ? values[indexes.exhibitionTime] : null,
         rowLabel: "展示",
-        parser: (rawText) => parseDecimal(rawText)
+        parser: (rawText) => {
+          const checked = validateMetricValue("exhibitionTime", parseDecimal(rawText), rawText);
+          return { fields: { exhibitionTime: checked.value }, value: checked.value, warnings: checked.warnings };
+        }
       });
       setParsedHeaderField({
         row: current,
@@ -2497,10 +2599,12 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
         rawText: indexes.lapTime !== null ? values[indexes.lapTime] : null,
         rowLabel: "周回",
         parser: (rawText) => {
-          const lapTimeRaw = parseDecimal(rawText);
+          const checked = validateMetricValue("lapTime", parseDecimal(rawText), rawText);
+          const lapTimeRaw = checked.value;
           return {
             fields: { lapTimeRaw, lapTime: lapTimeRaw },
-            value: lapTimeRaw
+            value: lapTimeRaw,
+            warnings: checked.warnings
           };
         }
       });
@@ -2514,14 +2618,16 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
         rawText: indexes.straightTime !== null ? values[indexes.straightTime] : null,
         rowLabel: "直線",
         parser: (rawText) => {
-          const straightTime = parseDecimal(rawText);
+          const checked = validateMetricValue("straightTime", parseDecimal(rawText), rawText);
+          const straightTime = checked.value;
           return {
             fields: {
               straightTime,
               nobiashi: straightTime,
               __nobiashi: straightTime
             },
-            value: straightTime
+            value: straightTime,
+            warnings: checked.warnings
           };
         }
       });
@@ -2535,7 +2641,10 @@ function parseHtmlSupplementByJapaneseHeaders(html, options = {}) {
         rawText: indexes.motor2Rate !== null ? values[indexes.motor2Rate] : null,
         rowLabel: "モーター2連率",
         debugName: "motor2ren",
-        parser: (rawText) => parsePercent(rawText)
+        parser: (rawText) => {
+          const checked = validateMetricValue("motor2Rate", parsePercent(rawText), rawText);
+          return { fields: { motor2Rate: checked.value }, value: checked.value, warnings: checked.warnings };
+        }
       });
 
       byLane.set(lane, current);
@@ -2604,7 +2713,8 @@ function getBlockMetricConfigs() {
             exhibitionStFlag: parsed.flag,
             exhibitionStSignedValue: parsed.signedValue
           },
-          value: parsed.numeric
+          value: parsed.numeric,
+          warnings: parsed.warnings || []
         };
       }
     },
@@ -2613,7 +2723,10 @@ function getBlockMetricConfigs() {
       debugName: "exhibitionTime",
       rowLabel: "展示",
       labelPattern: "(?:展示\\s*タイム|(?<!周回)展示(?!\\s*ST))",
-      parser: (raw) => ({ fields: { exhibitionTime: parseDecimal(raw) }, value: parseDecimal(raw) })
+      parser: (raw) => {
+        const checked = validateMetricValue("exhibitionTime", parseDecimal(raw), raw);
+        return { fields: { exhibitionTime: checked.value }, value: checked.value, warnings: checked.warnings };
+      }
     },
     {
       field: "lapTimeRaw",
@@ -2621,8 +2734,9 @@ function getBlockMetricConfigs() {
       rowLabel: "周回",
       labelPattern: "(?:周回\\s*(?:タイム|展示)?|一周\\s*(?:タイム)?)",
       parser: (raw) => {
-        const lapTimeRaw = parseDecimal(raw);
-        return { fields: { lapTimeRaw, lapTime: lapTimeRaw }, value: lapTimeRaw };
+        const checked = validateMetricValue("lapTime", parseDecimal(raw), raw);
+        const lapTimeRaw = checked.value;
+        return { fields: { lapTimeRaw, lapTime: lapTimeRaw }, value: lapTimeRaw, warnings: checked.warnings };
       }
     },
     {
@@ -2631,8 +2745,9 @@ function getBlockMetricConfigs() {
       rowLabel: "まわり足",
       labelPattern: "(?:まわり足\\s*(?:タイム)?|回り足|回足|周り足|周足)",
       parser: (raw) => {
-        const turnTime = parseDecimal(raw);
-        return { fields: { turnTime, mawariashi: turnTime, __mawariashi: turnTime }, value: turnTime };
+        const checked = validateMetricValue("turnTime", parseDecimal(raw), raw);
+        const turnTime = checked.value;
+        return { fields: { turnTime, mawariashi: turnTime, __mawariashi: turnTime }, value: turnTime, warnings: checked.warnings };
       }
     },
     {
@@ -2641,8 +2756,9 @@ function getBlockMetricConfigs() {
       rowLabel: "直線",
       labelPattern: "(?:直線\\s*(?:タイム)?|伸び足)",
       parser: (raw) => {
-        const straightTime = parseDecimal(raw);
-        return { fields: { straightTime, nobiashi: straightTime, __nobiashi: straightTime }, value: straightTime };
+        const checked = validateMetricValue("straightTime", parseDecimal(raw), raw);
+        const straightTime = checked.value;
+        return { fields: { straightTime, nobiashi: straightTime, __nobiashi: straightTime }, value: straightTime, warnings: checked.warnings };
       }
     },
     {
@@ -2650,7 +2766,10 @@ function getBlockMetricConfigs() {
       debugName: "motor2ren",
       rowLabel: "モーター2連率",
       labelPattern: "(?:モーター\\s*2\\s*(?:連対率|連率|率|連)?|モーター(?!\\s*3\\s*(?:連対率|連率|率|連)?))",
-      parser: (raw) => ({ fields: { motor2Rate: parsePercent(raw) }, value: parsePercent(raw) })
+      parser: (raw) => {
+        const checked = validateMetricValue("motor2Rate", parsePercent(raw), raw);
+        return { fields: { motor2Rate: checked.value }, value: checked.value, warnings: checked.warnings };
+      }
     }
   ];
 }
@@ -2672,7 +2791,8 @@ function parseBlockMetrics(text) {
       boatColumn: null,
       raw: raw ?? null,
       value: parsed.value,
-      exact_match_verified: true
+      exact_match_verified: true,
+      warnings: Array.isArray(parsed?.warnings) ? parsed.warnings : []
     };
   }
   return { fields, debugEntries };
@@ -2795,7 +2915,8 @@ function parseLabelRowsFromText(text, sourceLabel) {
             boatColumn: `${lane}号艇`,
             raw,
             value: parsed.value,
-            exact_match_verified: true
+            exact_match_verified: true,
+            warnings: Array.isArray(parsed?.warnings) ? parsed.warnings : []
           }
         }
       };
@@ -2946,13 +3067,15 @@ function getAllowedSupplementRowLabels(mode = "all") {
 
 function parseSupplementCell(rowLabel, rawText) {
   if (rowLabel === "周回") {
-    const lapTimeRaw = parseDecimal(rawText);
+    const checked = validateMetricValue("lapTime", parseDecimal(rawText), rawText);
+    const lapTimeRaw = checked.value;
     return {
       fields: {
         lapTimeRaw,
         lapTime: lapTimeRaw
       },
-      parsedValue: lapTimeRaw
+      parsedValue: lapTimeRaw,
+      warnings: checked.warnings
     };
   }
   if (rowLabel === "ST") {
@@ -2964,44 +3087,55 @@ function parseSupplementCell(rowLabel, rawText) {
         exhibitionStFlag: parsed.flag,
         exhibitionStSignedValue: parsed.signedValue
       },
-      parsedValue: parsed.numeric
+      parsedValue: parsed.numeric,
+      warnings: parsed.warnings || []
     };
   }
   if (rowLabel === "展示") {
-    const exhibitionTime = parseDecimal(rawText);
+    const checked = validateMetricValue("exhibitionTime", parseDecimal(rawText), rawText);
+    const exhibitionTime = checked.value;
     return {
       fields: {
         exhibitionTime
       },
-      parsedValue: exhibitionTime
+      parsedValue: exhibitionTime,
+      warnings: checked.warnings
     };
   }
   if (rowLabel === "周り足") {
-    const mawariashi = parseDecimal(rawText);
+    const checked = validateMetricValue("turnTime", parseDecimal(rawText), rawText);
+    const mawariashi = checked.value;
     return {
       fields: { __mawariashi: mawariashi },
-      parsedValue: mawariashi
+      parsedValue: mawariashi,
+      warnings: checked.warnings
     };
   }
   if (rowLabel === "直線") {
-    const chokusen = parseDecimal(rawText);
+    const checked = validateMetricValue("straightTime", parseDecimal(rawText), rawText);
+    const chokusen = checked.value;
     return {
       fields: { straightTime: chokusen, nobiashi: chokusen, __nobiashi: chokusen, __chokusen: chokusen },
-      parsedValue: chokusen
+      parsedValue: chokusen,
+      warnings: checked.warnings
     };
   }
   if (rowLabel === "モーター2連率") {
-    const motor2Rate = parsePercent(rawText);
+    const checked = validateMetricValue("motor2Rate", parsePercent(rawText), rawText);
+    const motor2Rate = checked.value;
     return {
       fields: { motor2Rate },
-      parsedValue: motor2Rate
+      parsedValue: motor2Rate,
+      warnings: checked.warnings
     };
   }
   if (rowLabel === "モーター3連率") {
-    const motor3Rate = parsePercent(rawText);
+    const checked = validateMetricValue("motor2Rate", parsePercent(rawText), rawText);
+    const motor3Rate = checked.value;
     return {
       fields: { motor3Rate },
-      parsedValue: motor3Rate
+      parsedValue: motor3Rate,
+      warnings: checked.warnings
     };
   }
   if (rowLabel === "1着率") {
@@ -3027,7 +3161,8 @@ function parseSupplementCell(rowLabel, rawText) {
   }
   return {
     fields: {},
-    parsedValue: null
+    parsedValue: null,
+    warnings: []
   };
 }
 
@@ -3183,7 +3318,8 @@ function parseHtmlSupplementStrict(html, options = {}) {
           row_label: matchedRowLabel,
           column_header: columnHeader,
           raw_cell_text: rawCellText,
-          parsed_value: parsed.parsedValue
+          parsed_value: parsed.parsedValue,
+          warnings: Array.isArray(parsed?.warnings) ? parsed.warnings : []
         });
       }
       parsedCount += 1;
@@ -3232,10 +3368,14 @@ export function parseKyoteiBiyoriAjaxData(payload) {
     const playerNo = String(row?.player_no || "");
     const oriten = oritenAveList[playerNo] || null;
 
-    const lapTimeRaw = parseScaledDecimal(row?.shukai, 100);
-    const exhibitionTime = parseScaledDecimal(row?.tenji, 100);
-    const mawariashi = parseScaledDecimal(row?.mawariashi, 100);
-    const chokusen = parseScaledDecimal(row?.chokusen, 100);
+    const lapTimeChecked = validateMetricValue("lapTime", parseScaledDecimal(row?.shukai, 100), row?.shukai);
+    const exhibitionTimeChecked = validateMetricValue("exhibitionTime", parseScaledDecimal(row?.tenji, 100), row?.tenji);
+    const mawariashiChecked = validateMetricValue("turnTime", parseScaledDecimal(row?.mawariashi, 100), row?.mawariashi);
+    const chokusenChecked = validateMetricValue("straightTime", parseScaledDecimal(row?.chokusen, 100), row?.chokusen);
+    const lapTimeRaw = lapTimeChecked.value;
+    const exhibitionTime = exhibitionTimeChecked.value;
+    const mawariashi = mawariashiChecked.value;
+    const chokusen = chokusenChecked.value;
     const startParsed = parseStartTimingRaw(row?.start);
     const lapExhibitionScore = computeLapExhibitionScore({ mawariashi, chokusen });
     const entryCourse = Number(row?.shinnyuu);
@@ -3280,11 +3420,18 @@ export function parseKyoteiBiyoriAjaxData(payload) {
       lane2RenRate: currentCourseField("shukai_1_2"),
       lane3RenRate: currentCourseField("shukai_1_3")
     };
+    laneRow.parserWarnings = [
+      ...(startParsed.warnings || []),
+      ...lapTimeChecked.warnings,
+      ...exhibitionTimeChecked.warnings,
+      ...mawariashiChecked.warnings,
+      ...chokusenChecked.warnings
+    ];
 
     byLane.set(lane, laneRow);
     fieldSources[lane] = Object.fromEntries(
       Object.entries(laneRow)
-        .filter(([, value]) => value !== null && value !== undefined && value !== "")
+        .filter(([key, value]) => key !== "parserWarnings" && value !== null && value !== undefined && value !== "")
         .map(([key]) => [
           key,
           key.startsWith("lane")
@@ -3584,6 +3731,16 @@ function mergeFieldDebugMaps(target, source) {
   }
 }
 
+function collectParserWarnings(laneDebug = {}, row = {}) {
+  const warnings = [];
+  for (const key of ["exhibitionST", "exhibitionTime", "lapTime", "straightTime", "turnTime", "motor2ren"]) {
+    const entryWarnings = laneDebug?.[key]?.warnings;
+    if (Array.isArray(entryWarnings)) warnings.push(...entryWarnings);
+  }
+  if (Array.isArray(row?.parserWarnings)) warnings.push(...row.parserWarnings);
+  return [...new Set(warnings.filter(Boolean))];
+}
+
 export function parseKyoteiBiyoriPreRaceData(html, options = {}) {
   const baseSupplement = parseHtmlSupplement(html);
   const headerSupplement = parseHtmlSupplementByJapaneseHeaders(html, options);
@@ -3775,6 +3932,21 @@ export function normalizeKyoteiBiyoriPreRaceFields(parsed) {
         signedValue: normalizedRow.exhibitionStSignedValue
       }
     });
+    normalizedRow.sourceRaw = {
+      exST: laneDebug?.exhibitionST?.raw ?? row?.exhibitionStRaw ?? null,
+      exTime: laneDebug?.exhibitionTime?.raw ?? row?.exhibitionTime ?? null,
+      lapTime: laneDebug?.lapTime?.raw ?? row?.lapTimeRaw ?? row?.lapTime ?? null,
+      straightTime: laneDebug?.straightTime?.raw ?? row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi ?? null,
+      turnTime: laneDebug?.turnTime?.raw ?? row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi ?? null
+    };
+    normalizedRow.parsed = {
+      exST: normalizedRow.exhibitionStSignedValue ?? normalizedRow.exhibitionSt,
+      exTime: normalizedRow.exhibitionTime,
+      lapTime: normalizedRow.lapTime,
+      straightTime: normalizedRow.straightTime,
+      turnTime: normalizedRow.turnTime
+    };
+    normalizedRow.parserWarnings = collectParserWarnings(laneDebug, row);
     normalizedRow.laneFirstRate = normalizedRow.lane1stScore;
     normalizedRow.lane2RenRate = normalizedRow.lane2renScore;
     normalizedRow.lane3RenRate = normalizedRow.lane3renScore;

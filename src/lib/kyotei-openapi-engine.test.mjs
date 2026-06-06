@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   buildExhibitionFeatures,
   buildConfidenceScore,
+  buildBoat4OpportunityRanking,
   buildTodayRanking,
   buildRacePrediction,
   DEFAULT_SCORING_CONFIG,
@@ -440,6 +441,20 @@ assert.equal(raceFlowPrediction.raceFlowScenario.scenarios.length, 6);
 assert.ok(raceFlowPrediction.wallScorePreview.length >= 3);
 assert.ok(raceFlowPrediction.headPartnerSplitPreview.some((row) => row.boat === 4));
 assert.ok(Array.isArray(raceFlowPrediction.ticketAdjustmentLog));
+
+const boat4OpportunityRows = buildBoat4OpportunityRanking([
+  originalMetricProgram({
+    1: { lapTime: 18.74, turnTime: 4.78, racer_assigned_motor_top_2_percent: 22 },
+    2: { exST: 0.19, turnTime: 4.72, racer_average_start_timing: 0.22, playerTendency: { lateStartRate: 0.24, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+    3: { exST: 0.06, straightTime: 6.7, turnTime: 4.34, playerTendency: { makuriRate: 0.34, makuriSashiRate: 0.28, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+    4: { exST: 0.08, straightTime: 6.69, turnTime: 4.2, racer_assigned_motor_top_2_percent: 55, playerTendency: { makuriSashiRate: 0.42, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } }
+  })
+], {}, { limit: 1 });
+assert.equal(boat4OpportunityRows.length, 1);
+assert.ok(["高", "中"].includes(boat4OpportunityRows[0].strengthLabel));
+assert.ok(boat4OpportunityRows[0].recommendedTickets.includes("4-1-flow"));
+assert.ok(boat4OpportunityRows[0].recommendedTickets.includes("4-2-flow"));
+assert.ok(boat4OpportunityRows[0].debug.threeAttackFourBenefitScore > 0);
 
 const calmConditionPrediction = buildRacePrediction({
   ...originalMetricProgram(),
