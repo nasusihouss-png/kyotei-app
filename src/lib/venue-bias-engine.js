@@ -1,6 +1,51 @@
 const DECISIONS = ["makuri", "makuriSashi", "sashi", "escape"];
 const BOATS = [1, 2, 3, 4, 5, 6];
 
+const VENUE_BIAS_GROUPS = {
+  inner: new Set([2, 4, 10, 11, 14, 16, 18, 22]),
+  attack: new Set([3, 5, 9, 13, 17, 20, 21, 24]),
+  mixed: new Set([1, 6, 7, 8, 12, 15, 19, 23])
+};
+
+const VENUE_BIAS_TEMPLATES = {
+  inner: {
+    headRates: { 1: 0.58, 2: 0.16, 3: 0.11, 4: 0.08, 5: 0.05, 6: 0.02 },
+    scenarioFollowerBias: {
+      makuri: { insideResidualRate: 0.62, outsideLinkedRate: 0.38, boat1SecondRate: 0.48 },
+      makuriSashi: { insideResidualRate: 0.66, outsideLinkedRate: 0.34, boat1SecondRate: 0.52 },
+      sashi: { insideResidualRate: 0.72, outsideLinkedRate: 0.28, boat1SecondRate: 0.62 }
+    },
+    head4SecondBias: { 1: 0.44, 2: 0.24, 3: 0.12, 5: 0.14, 6: 0.06 },
+    head3SecondBias: { 1: 0.46, 2: 0.18, 4: 0.22, 5: 0.1, 6: 0.04 },
+    head2SecondBias: { 1: 0.58, 3: 0.18, 4: 0.12, 5: 0.08, 6: 0.04 },
+    weights: { insideResidual: 1.12, straight: 0.92, turn: 1.08, fourBeneficiary: 0.9, outsideFollow: 0.82 }
+  },
+  attack: {
+    headRates: { 1: 0.47, 2: 0.17, 3: 0.15, 4: 0.12, 5: 0.07, 6: 0.02 },
+    scenarioFollowerBias: {
+      makuri: { insideResidualRate: 0.38, outsideLinkedRate: 0.62, boat1SecondRate: 0.28 },
+      makuriSashi: { insideResidualRate: 0.42, outsideLinkedRate: 0.58, boat1SecondRate: 0.34 },
+      sashi: { insideResidualRate: 0.58, outsideLinkedRate: 0.42, boat1SecondRate: 0.48 }
+    },
+    head4SecondBias: { 1: 0.25, 2: 0.18, 3: 0.12, 5: 0.29, 6: 0.16 },
+    head3SecondBias: { 1: 0.25, 2: 0.12, 4: 0.34, 5: 0.2, 6: 0.09 },
+    head2SecondBias: { 1: 0.46, 3: 0.24, 4: 0.18, 5: 0.08, 6: 0.04 },
+    weights: { insideResidual: 0.86, straight: 1.14, turn: 1.06, fourBeneficiary: 1.18, outsideFollow: 1.14 }
+  },
+  mixed: {
+    headRates: { 1: 0.52, 2: 0.16, 3: 0.13, 4: 0.1, 5: 0.07, 6: 0.02 },
+    scenarioFollowerBias: {
+      makuri: { insideResidualRate: 0.5, outsideLinkedRate: 0.5, boat1SecondRate: 0.38 },
+      makuriSashi: { insideResidualRate: 0.52, outsideLinkedRate: 0.48, boat1SecondRate: 0.42 },
+      sashi: { insideResidualRate: 0.64, outsideLinkedRate: 0.36, boat1SecondRate: 0.54 }
+    },
+    head4SecondBias: { 1: 0.34, 2: 0.22, 3: 0.12, 5: 0.22, 6: 0.1 },
+    head3SecondBias: { 1: 0.35, 2: 0.16, 4: 0.28, 5: 0.15, 6: 0.06 },
+    head2SecondBias: { 1: 0.52, 3: 0.2, 4: 0.16, 5: 0.08, 6: 0.04 },
+    weights: { insideResidual: 1, straight: 1, turn: 1, fourBeneficiary: 1, outsideFollow: 1 }
+  }
+};
+
 function finiteNumber(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
   const n = Number(value);
@@ -32,6 +77,75 @@ function normalizeRate(value) {
   const n = finiteNumber(value, null);
   if (n === null) return null;
   return clamp(Math.abs(n) > 1 ? n / 100 : n, 0, 1);
+}
+
+function venueBiasGroup(venueId) {
+  const id = Number(venueId) || 0;
+  if (VENUE_BIAS_GROUPS.inner.has(id)) return "inner";
+  if (VENUE_BIAS_GROUPS.attack.has(id)) return "attack";
+  return "mixed";
+}
+
+function decisionFromTemplate(template = {}, decision) {
+  const row = template.scenarioFollowerBias?.[decision] || {};
+  return {
+    sampleCount: 24,
+    sampleStatus: "small_sample",
+    boat1SecondRate: row.boat1SecondRate ?? null,
+    boat1ThirdRate: null,
+    insideResidualRate: row.insideResidualRate ?? null,
+    outsideLinkedRate: row.outsideLinkedRate ?? null,
+    commonExacta: [],
+    rareExacta: [],
+    commonTrifecta: [],
+    rareTrifecta: []
+  };
+}
+
+function headSecondBiasToStats(head, decision, secondBias = {}) {
+  const exactaRates = Object.fromEntries(
+    Object.entries(secondBias).map(([boat, value]) => [`${head}-${boat}`, value])
+  );
+  return {
+    sampleCount: 24,
+    sampleStatus: "small_sample",
+    secondRates: { ...secondBias },
+    thirdRates: {},
+    exactaRates,
+    trifectaRates: {}
+  };
+}
+
+export function getEstimatedVenueBias(venueId) {
+  const group = venueBiasGroup(venueId);
+  const template = VENUE_BIAS_TEMPLATES[group] || VENUE_BIAS_TEMPLATES.mixed;
+  return {
+    venueId: Number(venueId) || null,
+    source: "estimated_static_venue_bias",
+    group,
+    headRates: { ...template.headRates },
+    scenarioFollowerBias: JSON.parse(JSON.stringify(template.scenarioFollowerBias)),
+    head4SecondBias: { ...template.head4SecondBias },
+    head3SecondBias: { ...template.head3SecondBias },
+    head2SecondBias: { ...template.head2SecondBias },
+    venueFeatureWeights: { ...template.weights },
+    decisionConditionedStats: {
+      makuri: decisionFromTemplate(template, "makuri"),
+      makuriSashi: decisionFromTemplate(template, "makuriSashi"),
+      sashi: decisionFromTemplate(template, "sashi"),
+      escape: {
+        sampleCount: 24,
+        sampleStatus: "small_sample",
+        commonSecondBoats: [],
+        commonThirdBoats: []
+      }
+    },
+    headDecisionComboStats: {
+      "2": { sashi: headSecondBiasToStats(2, "sashi", template.head2SecondBias) },
+      "3": { makuri: headSecondBiasToStats(3, "makuri", template.head3SecondBias) },
+      "4": { makuriSashi: headSecondBiasToStats(4, "makuriSashi", template.head4SecondBias) }
+    }
+  };
 }
 
 export function decisionSampleStatus(sampleCount) {

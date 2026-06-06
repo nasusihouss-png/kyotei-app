@@ -69,6 +69,10 @@ export default function AdvancedDebugPanel({
             <pre className="json-preview">{safePrettyJson(debug.featureScorePreview)}</pre>
           </div>
           <div>
+            <div className="muted">venue-normalized exhibition metrics</div>
+            <pre className="json-preview">{safePrettyJson(debug.venueNormalizedExhibitionMetrics)}</pre>
+          </div>
+          <div>
             <div className="muted">scenario score preview</div>
             <pre className="json-preview">{safePrettyJson(debug.scenarioScorePreview)}</pre>
           </div>
@@ -77,12 +81,31 @@ export default function AdvancedDebugPanel({
             <pre className="json-preview">{safePrettyJson(debug.raceFlowScenarioPreview)}</pre>
           </div>
           <div>
+            <div className="muted">scenario families</div>
+            <pre className="json-preview">{safePrettyJson(debug.scenarioFamilyPreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">main / derived scenario group</div>
+            <pre className="json-preview">{safePrettyJson({
+              mainScenarioGroup: debug.mainScenarioGroup,
+              derivedScenarioGroup: debug.derivedScenarioGroup
+            })}</pre>
+          </div>
+          <div>
             <div className="muted">wall scores</div>
             <pre className="json-preview">{safePrettyJson(debug.wallScorePreview)}</pre>
           </div>
           <div>
             <div className="muted">head / partner split</div>
             <pre className="json-preview">{safePrettyJson(debug.headPartnerSplitPreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">attacker / beneficiary / residual scores</div>
+            <pre className="json-preview">{safePrettyJson({
+              attackerScorePreview: debug.attackerScorePreview,
+              beneficiaryScorePreview: debug.beneficiaryScorePreview,
+              residualScorePreview: debug.residualScorePreview
+            })}</pre>
           </div>
           <div>
             <div className="muted">ticket adjustment log</div>
@@ -95,6 +118,10 @@ export default function AdvancedDebugPanel({
           <div>
             <div className="muted">decision residual scores</div>
             <pre className="json-preview">{safePrettyJson(debug.decisionResidualScores)}</pre>
+          </div>
+          <div>
+            <div className="muted">4-head partner decision</div>
+            <pre className="json-preview">{safePrettyJson(debug.fourHeadPartnerDecision)}</pre>
           </div>
           <div>
             <div className="muted">condition adjustment log</div>
@@ -116,6 +143,14 @@ export default function AdvancedDebugPanel({
           <div>
             <div className="muted">headDecisionComboStats preview</div>
             <pre className="json-preview">{safePrettyJson(debug.headDecisionComboStatsPreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">head4 second-place bias</div>
+            <pre className="json-preview">{safePrettyJson(debug.head4SecondBias)}</pre>
+          </div>
+          <div>
+            <div className="muted">venue bias table</div>
+            <pre className="json-preview">{safePrettyJson(debug.venueBiasTable)}</pre>
           </div>
         </div>
       </details>

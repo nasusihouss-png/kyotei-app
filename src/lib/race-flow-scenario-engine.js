@@ -1,6 +1,7 @@
 import {
   decisionSampleWeight,
   getDecisionConditionedStats,
+  getEstimatedVenueBias,
   getHeadDecisionComboStats,
   weightedDecisionRate
 } from "./venue-bias-engine.js";
@@ -171,6 +172,15 @@ function roleScore(row = {}, featureScores = {}, fallback = 0.5) {
   return fallback;
 }
 
+function featureAggregateScore(row = {}, featureScores = {}, key, fallback = 0.5) {
+  const boat = boatNumber(row);
+  const fromRow = row?.featureScores?.[key];
+  if (fromRow !== null && fromRow !== undefined) return clamp(Number(fromRow), 0, 1);
+  const fromAll = featureScores?.byBoat?.[String(boat)]?.[key];
+  if (fromAll !== null && fromAll !== undefined) return clamp(Number(fromAll), 0, 1);
+  return fallback;
+}
+
 function normalizeVenueNode(node, course) {
   if (!node || typeof node !== "object") return null;
   if (Array.isArray(node)) {
@@ -264,6 +274,9 @@ function boatMetrics(row = {}, featureScores = {}) {
     turnTime: featureScore(row, featureScores, "turnTime", 0.5),
     motor2Rate: featureScore(row, featureScores, "motor2Rate", optionalRate01(row.motor2Rate) ?? 0.5),
     roleScore: roleScore(row, featureScores, 0.5),
+    headFeatureScore: featureAggregateScore(row, featureScores, "headFeatureScore", roleScore(row, featureScores, 0.5)),
+    residualFeatureScore: featureAggregateScore(row, featureScores, "residualFeatureScore", roleScore(row, featureScores, 0.5)),
+    fourBeneficiaryFeatureScore: featureAggregateScore(row, featureScores, "fourBeneficiaryFeatureScore", roleScore(row, featureScores, 0.5)),
     tendency,
     sampleStatus: tendencySampleStatus(tendency),
     sampleWeight: tendencySampleWeight(tendency),
@@ -361,6 +374,7 @@ export function buildRaceFlowScenarioModel({
   stadiumNumber = null,
   raceConditions = null
 } = {}) {
+  const effectiveVenueBias = venueBias || getEstimatedVenueBias(stadiumNumber);
   const map = buildBoatMap(entries);
   const metrics = {};
   for (const boat of BOATS) {
@@ -368,7 +382,7 @@ export function buildRaceFlowScenarioModel({
   }
 
   const tendencyAvailable = Object.values(metrics).some((row) => tendencyHasSignal(row.tendency));
-  const venueAvailable = BOATS.some((boat) => venueCourseBias(venueBias, stadiumNumber, boat));
+  const venueAvailable = !!effectiveVenueBias || BOATS.some((boat) => venueCourseBias(effectiveVenueBias, stadiumNumber, boat));
   const dataWarnings = [];
   if (!tendencyAvailable) dataWarnings.push("戦法データが不足しているため、展開シナリオは展示・足色中心で評価");
   if (!venueAvailable) dataWarnings.push("会場バイアスが未取得のため、全国共通の展開評価で補正");
@@ -380,13 +394,14 @@ export function buildRaceFlowScenarioModel({
     4: wallScore(metrics[4])
   };
 
-  const vEscape = venueRate(venueBias, stadiumNumber, 1, ["escapeRate", "nigeRate", "winRate"]) ?? 0.5;
-  const vSashi2 = venueRate(venueBias, stadiumNumber, 2, ["sashiRate", "decisionSashiRate"]) ?? 0.5;
-  const vMakuri3 = venueRate(venueBias, stadiumNumber, 3, ["makuriRate", "decisionMakuriRate"]) ?? 0.5;
-  const vMakuriSashi3 = venueRate(venueBias, stadiumNumber, 3, ["makuriSashiRate", "decisionMakuriSashiRate"]) ?? 0.5;
-  const vMakuriSashi4 = venueRate(venueBias, stadiumNumber, 4, ["makuriSashiRate", "decisionMakuriSashiRate"]) ?? 0.5;
-  const decisionConditionedStats = getDecisionConditionedStats(venueBias, stadiumNumber);
-  const headDecisionComboStats = getHeadDecisionComboStats(venueBias, stadiumNumber);
+  const vEscape = venueRate(effectiveVenueBias, stadiumNumber, 1, ["escapeRate", "nigeRate", "winRate"]) ?? optionalRate01(effectiveVenueBias?.headRates?.["1"] ?? effectiveVenueBias?.headRates?.[1]) ?? 0.5;
+  const vSashi2 = venueRate(effectiveVenueBias, stadiumNumber, 2, ["sashiRate", "decisionSashiRate"]) ?? optionalRate01(effectiveVenueBias?.headRates?.["2"] ?? effectiveVenueBias?.headRates?.[2]) ?? 0.5;
+  const vMakuri3 = venueRate(effectiveVenueBias, stadiumNumber, 3, ["makuriRate", "decisionMakuriRate"]) ?? optionalRate01(effectiveVenueBias?.headRates?.["3"] ?? effectiveVenueBias?.headRates?.[3]) ?? 0.5;
+  const vMakuriSashi3 = venueRate(effectiveVenueBias, stadiumNumber, 3, ["makuriSashiRate", "decisionMakuriSashiRate"]) ?? optionalRate01(effectiveVenueBias?.headRates?.["3"] ?? effectiveVenueBias?.headRates?.[3]) ?? 0.5;
+  const vMakuriSashi4 = venueRate(effectiveVenueBias, stadiumNumber, 4, ["makuriSashiRate", "decisionMakuriSashiRate"]) ?? optionalRate01(effectiveVenueBias?.headRates?.["4"] ?? effectiveVenueBias?.headRates?.[4]) ?? 0.5;
+  const venueFeatureWeights = effectiveVenueBias?.venueFeatureWeights || {};
+  const decisionConditionedStats = getDecisionConditionedStats(effectiveVenueBias, stadiumNumber);
+  const headDecisionComboStats = getHeadDecisionComboStats(effectiveVenueBias, stadiumNumber);
   const venueMakuriBoat1Second = decisionRate(decisionConditionedStats.makuri, "boat1SecondRate", 0.5);
   const venueMakuriSashiBoat1Second = decisionRate(decisionConditionedStats.makuriSashi, "boat1SecondRate", 0.5);
   const venueSashiBoat1Second = decisionRate(decisionConditionedStats.sashi, "boat1SecondRate", 0.5);
@@ -398,10 +413,12 @@ export function buildRaceFlowScenarioModel({
   const venue4Second2 = comboRate(venue4MakuriSashi, "secondRates", "2", 0.5);
   const venue4Second3 = comboRate(venue4MakuriSashi, "secondRates", "3", 0.5);
   const venue4Second5 = comboRate(venue4MakuriSashi, "secondRates", "5", 0.5);
+  const venue4Second6 = comboRate(venue4MakuriSashi, "secondRates", "6", 0.5);
   const venue4Exacta1 = comboRate(venue4MakuriSashi, "exactaRates", "4-1", 0.5);
   const venue4Exacta2 = comboRate(venue4MakuriSashi, "exactaRates", "4-2", 0.5);
   const venue4Exacta3 = comboRate(venue4MakuriSashi, "exactaRates", "4-3", 0.5);
   const venue4Exacta5 = comboRate(venue4MakuriSashi, "exactaRates", "4-5", 0.5);
+  const venue4Exacta6 = comboRate(venue4MakuriSashi, "exactaRates", "4-6", 0.5);
 
   const b1 = metrics[1];
   const b2 = metrics[2];
@@ -562,6 +579,14 @@ export function buildRaceFlowScenarioModel({
     Math.max(venue4Second5, venue4Exacta5) * 0.16 +
     Math.max(venueMakuriOutsideLinked, venueMakuriSashiOutsideLinked) * 0.12
   );
+  const boat6LinkedFollowScore = clamp(
+    0.12 +
+    b6.lapTime * 0.12 +
+    b6.straightTime * 0.14 +
+    b6.turnTime * 0.08 +
+    b6.motor2Rate * 0.1 +
+    Math.max(venueMakuriOutsideLinked, venueMakuriSashiOutsideLinked) * 0.12
+  );
   const b4DirectSupport = supportCount([
     b4.exST >= 0.6,
     b4.straightTime >= 0.62,
@@ -570,18 +595,32 @@ export function buildRaceFlowScenarioModel({
     attack3 >= 0.5,
     vMakuriSashi4 >= 0.56
   ]);
+  const makuriSashi4 = clamp(
+    0.06 +
+    b4.headFeatureScore * 0.18 +
+    b4.exST * 0.1 +
+    b4.straightTime * 0.14 +
+    b4.turnTime * 0.2 +
+    b4.motor2Rate * 0.1 +
+    positiveRate(b4.tendency, "makuriSashiRate", 0.07) * 0.6 +
+    weakBoat3Wall * 0.08 +
+    (vMakuriSashi4 - 0.5) * 0.12
+  );
   const secondWave4 = clamp(
     0.08 +
-    b4.exST * 0.1 +
-    b4.straightTime * 0.19 +
-    b4.turnTime * 0.25 +
+    b4.fourBeneficiaryFeatureScore * 0.16 +
+    b4.exST * 0.08 +
+    b4.straightTime * 0.16 * (venueFeatureWeights.straight ?? 1) +
+    b4.turnTime * 0.2 * (venueFeatureWeights.turn ?? 1) +
+    b4.motor2Rate * 0.08 +
     positiveRate(b4.tendency, "makuriSashiRate", 0.07) * 0.78 +
-    attack3 * 0.24 +
+    attack3 * 0.28 +
+    (1 - boat1ResidualAfterAttackScore) * 0.16 +
     weakBoat3Wall * 0.08 +
     b1BeatenByMakuriSashi * 0.42 +
     conditions.waveLevel * Math.max(0, b4.turnTime - 0.55) * 0.1 +
     conditions.isTailwind * conditions.windLevel * Math.max(0, b4.straightTime - 0.55) * 0.04 +
-    (vMakuriSashi4 - 0.5) * 0.15
+    (vMakuriSashi4 - 0.5) * 0.15 * (venueFeatureWeights.fourBeneficiary ?? 1)
   );
 
   const outside5 = clamp(0.1 + b5.lapTime * 0.17 + b5.straightTime * 0.16 + b5.turnTime * 0.11 + b5.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.18 - waveAggressionPenalty * 0.35);
@@ -613,7 +652,7 @@ export function buildRaceFlowScenarioModel({
   const headScore1 = escape1;
   const headScore2 = sashi2 * (sashi2Support >= 2 ? 0.95 : 0.62);
   const headScore3 = Math.max(makuri3 * (makuri3Support >= 2 ? 0.94 : 0.62), makuriSashi3 * (makuriSashi3Support >= 2 ? 0.9 : 0.62));
-  const headScore4Raw = secondWave4 * (b4DirectSupport >= 3 ? 0.82 : b4DirectSupport >= 2 ? 0.62 : 0.42);
+  const headScore4Raw = Math.max(makuriSashi4 * 0.86, secondWave4 * (b4DirectSupport >= 3 ? 0.84 : b4DirectSupport >= 2 ? 0.66 : 0.44));
   const headScore4 = b4DirectSupport >= 2 ? headScore4Raw : Math.min(headScore4Raw, 0.42);
   const outsideHeadCap = 0.31;
   const headScore5 = Math.min(outside5 * 0.35, outsideHeadCap);
@@ -622,15 +661,54 @@ export function buildRaceFlowScenarioModel({
   const beneficiary4 = clamp(0.12 + attack3 * 0.38 + b4.turnTime * 0.2 + b4.straightTime * 0.16 + positiveRate(b4.tendency, "makuriSashiRate", 0.07) * 0.48);
   const beneficiary5 = outside5;
   const beneficiary6 = outside6;
+  const attackerScores = {
+    1: escape1,
+    2: sashi2,
+    3: attack3,
+    4: makuriSashi4,
+    5: headScore5,
+    6: headScore6
+  };
+  const beneficiaryScores = {
+    1: clamp(escape1 * 0.42 + b1.lapTime * 0.18 + b1.turnTime * 0.18),
+    2: clamp(sashi2 * 0.36 + walls[2] * 0.24 + b2.turnTime * 0.14),
+    3: clamp(makuriSashi3 * 0.3 + b3.turnTime * 0.18 + b3.straightTime * 0.12),
+    4: beneficiary4,
+    5: beneficiary5,
+    6: beneficiary6
+  };
+  const residualScores = {
+    1: boat1ResidualAfterAttackScore,
+    2: boat2ResidualAfterFlowScore,
+    3: boat3ResidualScore,
+    4: clamp(b4.residualFeatureScore * 0.56 + b4.turnTime * 0.18 + b4.motor2Rate * 0.14 + secondWave4 * 0.12),
+    5: boat5LinkedFollowScore,
+    6: boat6LinkedFollowScore
+  };
+  const insideCollapseScore = clamp(1 - boat1ResidualAfterAttackScore + Math.max(0, attack3 - 0.56) * 0.25 + weakBoat2Wall * 0.12);
+  const fourHeadPartnerDecision = {
+    prefer41: boat1ResidualAfterAttackScore >= 0.58 || venue4Exacta1 >= 0.58,
+    prefer45: insideCollapseScore >= 0.54 && boat5LinkedFollowScore >= 0.52,
+    prefer46: insideCollapseScore >= 0.58 && boat6LinkedFollowScore >= 0.52,
+    allow43: boat3ResidualScore >= 0.62 && insideCollapseScore >= 0.5 && venue4Exacta3 >= 0.46,
+    insideCollapseScore: roundScore(insideCollapseScore),
+    why: []
+  };
+  if (fourHeadPartnerDecision.prefer41) fourHeadPartnerDecision.why.push("1 residual/motor/lap-turn supports 4-1");
+  if (fourHeadPartnerDecision.prefer45) fourHeadPartnerDecision.why.push("inside collapse + boat5 outside follow supports 4-5");
+  if (fourHeadPartnerDecision.prefer46) fourHeadPartnerDecision.why.push("inside collapse + boat6 outside follow supports 4-6");
+  if (!fourHeadPartnerDecision.allow43) fourHeadPartnerDecision.why.push("4-3 requires boat3 residual; default is demoted");
 
   const rows = [
     {
       boat: 1,
       headScore: headScore1,
+      attackerScore: attackerScores[1],
       secondScore: clamp(0.18 + escape1 * 0.2 + sashi2 * 0.14 + attack3 * boat1ResidualAfterAttackScore * 0.24 + b1.lapTime * 0.12 + b1.turnTime * 0.12 + venue4Exacta1 * 0.06),
       thirdScore: clamp(0.18 + escape1 * 0.14 + Math.max(sashi2, attack3, secondWave4) * boat1ResidualAfterAttackScore * 0.2 + b1.lapTime * 0.11 + b1.turnTime * 0.11 + venue4Second1 * 0.05),
       scenarioTriggerScore: escape1,
-      beneficiaryScore: clamp(escape1 * 0.42 + b1.lapTime * 0.18 + b1.turnTime * 0.18),
+      beneficiaryScore: beneficiaryScores[1],
+      residualScore: residualScores[1],
       supportFactors: supportCount([b1.lapTime >= 0.62, b1.turnTime >= 0.62, b1Escape > 0, walls[2] >= 0.55]),
       canBeHead: headScore1 >= 0.42,
       headReasons: [
@@ -643,10 +721,12 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 2,
       headScore: headScore2,
+      attackerScore: attackerScores[2],
       secondScore: clamp(0.2 + sashi2 * 0.26 + boat2ResidualAfterFlowScore * 0.1 + b2.turnTime * 0.18 + walls[2] * 0.12 + b2.lapTime * 0.08),
       thirdScore: clamp(0.2 + sashi2 * 0.16 + boat2ResidualAfterFlowScore * 0.09 + b2.turnTime * 0.14 + b2.lapTime * 0.1 + walls[2] * 0.07),
       scenarioTriggerScore: sashi2,
-      beneficiaryScore: clamp(sashi2 * 0.36 + walls[2] * 0.24 + b2.turnTime * 0.14),
+      beneficiaryScore: beneficiaryScores[2],
+      residualScore: residualScores[2],
       supportFactors: sashi2Support,
       canBeHead: headScore2 >= 0.48 && sashi2Support >= 2,
       headReasons: [
@@ -659,10 +739,12 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 3,
       headScore: headScore3,
+      attackerScore: attackerScores[3],
       secondScore: clamp(0.18 + attack3 * 0.18 + boat3ResidualScore * 0.22 + b3.straightTime * 0.1 + b3.turnTime * 0.13),
       thirdScore: clamp(0.19 + attack3 * 0.16 + boat3ResidualScore * 0.2 + b3.straightTime * 0.1 + b3.turnTime * 0.13),
       scenarioTriggerScore: attack3,
-      beneficiaryScore: clamp(makuriSashi3 * 0.3 + b3.turnTime * 0.18 + b3.straightTime * 0.12),
+      beneficiaryScore: beneficiaryScores[3],
+      residualScore: residualScores[3],
       supportFactors: Math.max(makuri3Support, makuriSashi3Support),
       canBeHead: headScore3 >= 0.5 && Math.max(makuri3Support, makuriSashi3Support) >= 2,
       headReasons: [
@@ -675,10 +757,12 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 4,
       headScore: headScore4,
+      attackerScore: attackerScores[4],
       secondScore: clamp(0.22 + secondWave4 * 0.32 + beneficiary4 * 0.18 + b4.turnTime * 0.12 + b4.straightTime * 0.1),
       thirdScore: clamp(0.24 + secondWave4 * 0.28 + beneficiary4 * 0.18 + b4.turnTime * 0.12 + b4.straightTime * 0.1),
       scenarioTriggerScore: secondWave4,
-      beneficiaryScore: beneficiary4,
+      beneficiaryScore: beneficiaryScores[4],
+      residualScore: residualScores[4],
       supportFactors: b4DirectSupport,
       canBeHead: headScore4 >= 0.5 && b4DirectSupport >= 2,
       headReasons: [
@@ -692,10 +776,12 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 5,
       headScore: headScore5,
+      attackerScore: attackerScores[5],
       secondScore: clamp(0.13 + outside5 * 0.2 + boat5LinkedFollowScore * 0.14 + b5.lapTime * 0.1 + b5.straightTime * 0.1),
       thirdScore: clamp(0.18 + outside5 * 0.3 + boat5LinkedFollowScore * 0.16 + b5.lapTime * 0.12 + b5.straightTime * 0.12),
       scenarioTriggerScore: outside5,
-      beneficiaryScore: beneficiary5,
+      beneficiaryScore: beneficiaryScores[5],
+      residualScore: residualScores[5],
       supportFactors: supportCount([b5.lapTime >= 0.62, b5.straightTime >= 0.62, b5.turnTime >= 0.62]),
       canBeHead: false,
       headReasons: [],
@@ -705,10 +791,12 @@ export function buildRaceFlowScenarioModel({
     {
       boat: 6,
       headScore: headScore6,
+      attackerScore: attackerScores[6],
       secondScore: clamp(0.12 + outside6 * 0.22 + b6.lapTime * 0.1 + b6.straightTime * 0.1),
       thirdScore: clamp(0.18 + outside6 * 0.34 + b6.lapTime * 0.12 + b6.straightTime * 0.12),
       scenarioTriggerScore: outside6,
-      beneficiaryScore: beneficiary6,
+      beneficiaryScore: beneficiaryScores[6],
+      residualScore: residualScores[6],
       supportFactors: supportCount([b6.lapTime >= 0.62, b6.straightTime >= 0.62, b6.turnTime >= 0.62]),
       canBeHead: false,
       headReasons: [],
@@ -798,6 +886,87 @@ export function buildRaceFlowScenarioModel({
     })
   ].sort((a, b) => b.score - a.score);
 
+  const fourBeneficiaryPatterns = [];
+  if (fourHeadPartnerDecision.prefer41) fourBeneficiaryPatterns.push([4, 1, "flow"]);
+  if (boat2ResidualAfterFlowScore >= 0.52 || venue4Exacta2 >= 0.54) fourBeneficiaryPatterns.push([4, 2, "flow"]);
+  if (fourHeadPartnerDecision.prefer45) fourBeneficiaryPatterns.push([4, 5, "flow"]);
+  if (fourHeadPartnerDecision.prefer46) fourBeneficiaryPatterns.push([4, 6, "flow"]);
+  if (fourHeadPartnerDecision.allow43) fourBeneficiaryPatterns.push([4, 3, "flow"]);
+  if (!fourBeneficiaryPatterns.length) {
+    fourBeneficiaryPatterns.push(insideCollapseScore >= 0.56 ? [4, 5, "flow"] : [4, 1, "flow"]);
+  }
+  const scenarioFamilies = [
+    scenarioRow({
+      id: "escape_1",
+      attacker: 1,
+      score: escape1,
+      beneficiaries: [1, 2, 3],
+      partners: [2, 3, 4],
+      patterns: [[1, 2, "flow"], [1, 3, "flow"], [1, 4, "flow"]],
+      reasons: ["1 direct escape family"]
+    }),
+    scenarioRow({
+      id: "sashi_2",
+      attacker: 2,
+      score: sashi2,
+      beneficiaries: [1, 2, 3],
+      partners: [1, 3, 4],
+      patterns: [[2, 1, "flow"], [2, 3, "flow"], [2, 4, "flow"]],
+      reasons: ["2 sashi direct head family"]
+    }),
+    scenarioRow({
+      id: "makuri_3",
+      attacker: 3,
+      score: makuri3,
+      beneficiaries: [3, 4, 5],
+      partners: [1, 4, 5],
+      patterns: [[3, 1, "flow"], [3, 4, "flow"], [3, 5, "flow"]],
+      reasons: ["3 attacks and wins directly"]
+    }),
+    scenarioRow({
+      id: "makuriSashi_4",
+      attacker: 4,
+      score: makuriSashi4,
+      beneficiaries: [1, 2, 5],
+      partners: [1, 2, 5],
+      patterns: [[4, 1, "flow"], [4, 2, "flow"], [4, 5, "flow"]],
+      reasons: ["4 attacks directly by makuri-sashi"]
+    }),
+    scenarioRow({
+      id: "four_beneficiary",
+      attacker: 3,
+      score: secondWave4,
+      triggerScore: attack3,
+      beneficiaries: [4, 5, 6],
+      partners: fourBeneficiaryPatterns.map((pattern) => pattern[1]),
+      patterns: fourBeneficiaryPatterns,
+      reasons: fourHeadPartnerDecision.why
+    }),
+    scenarioRow({
+      id: "outer_follow_5",
+      attacker: null,
+      score: outside5,
+      beneficiaries: [5],
+      partners: [1, 3, 4],
+      patterns: [[3, 5, "flow"], [4, 5, "flow"], [1, 5, "flow"]],
+      reasons: ["5 follows when inside shape collapses"]
+    }),
+    scenarioRow({
+      id: "outer_follow_6",
+      attacker: null,
+      score: outside6,
+      beneficiaries: [6],
+      partners: [1, 3, 4],
+      patterns: [[3, 6, "flow"], [4, 6, "flow"], [1, 6, "flow"]],
+      reasons: ["6 follows only as outside residual"]
+    })
+  ].sort((a, b) => b.score - a.score);
+  const mainScenarioGroup = scenarioFamilies.find((row) => ["escape_1", "sashi_2", "makuri_3", "makuriSashi_4"].includes(row.id)) || scenarioFamilies[0] || null;
+  const derivedScenarioGroup = scenarioFamilies.find((row) => row.id === "four_beneficiary" && row.score >= 45) ||
+    scenarioFamilies.find((row) => row.id === "outer_follow_5" && row.score >= 50) ||
+    scenarioFamilies.find((row) => row.id === "outer_follow_6" && row.score >= 50) ||
+    null;
+
   const headCandidates = buildHeadCandidateRows(scoreByBoat);
   const partnerCandidates = buildPartnerRows(scoreByBoat);
   const dangerousButNotHead = buildDangerRows(scoreByBoat);
@@ -824,10 +993,12 @@ export function buildRaceFlowScenarioModel({
     .map((row) => ({
       boat: row.boat,
       headScore: roundScore(row.headScore),
+      attackerScore: roundScore(row.attackerScore),
       secondScore: roundScore(row.secondScore),
       thirdScore: roundScore(row.thirdScore),
       scenarioTriggerScore: roundScore(row.scenarioTriggerScore),
       beneficiaryScore: roundScore(row.beneficiaryScore),
+      residualScore: roundScore(row.residualScore),
       supportFactors: row.supportFactors,
       canBeHead: row.canBeHead,
       dangerReason: row.dangerReason
@@ -857,6 +1028,9 @@ export function buildRaceFlowScenarioModel({
     boat3ResidualScore: roundScore(boat3ResidualScore),
     boat2ResidualAfterFlowScore: roundScore(boat2ResidualAfterFlowScore),
     boat5LinkedFollowScore: roundScore(boat5LinkedFollowScore),
+    boat6LinkedFollowScore: roundScore(boat6LinkedFollowScore),
+    insideCollapseScore: roundScore(insideCollapseScore),
+    fourHeadPartnerDecision,
     venueMakuriBoat1SecondRate: roundScore(venueMakuriBoat1Second),
     venueMakuriSashiBoat1SecondRate: roundScore(venueMakuriSashiBoat1Second),
     venueSashiBoat1SecondRate: roundScore(venueSashiBoat1Second),
@@ -864,13 +1038,15 @@ export function buildRaceFlowScenarioModel({
       "1": roundScore(venue4Second1),
       "2": roundScore(venue4Second2),
       "3": roundScore(venue4Second3),
-      "5": roundScore(venue4Second5)
+      "5": roundScore(venue4Second5),
+      "6": roundScore(venue4Second6)
     },
     venue4ExactaRates: {
       "4-1": roundScore(venue4Exacta1),
       "4-2": roundScore(venue4Exacta2),
       "4-3": roundScore(venue4Exacta3),
-      "4-5": roundScore(venue4Exacta5)
+      "4-5": roundScore(venue4Exacta5),
+      "4-6": roundScore(venue4Exacta6)
     },
     sampleWeights: {
       makuri: round(makuriSampleWeight, 3),
@@ -898,7 +1074,7 @@ export function buildRaceFlowScenarioModel({
     ticketAdjustmentLog.push({
       action: "demote",
       target: "4-3-flow",
-      scenarioId: "second_wave_4",
+      scenarioId: "four_beneficiary",
       reason: "4頭時の4-3が薄く、3号艇は攻めの起点後に残る評価が弱いため4-3を下げます"
     });
   }
@@ -906,16 +1082,31 @@ export function buildRaceFlowScenarioModel({
     ticketAdjustmentLog.push({
       action: "promote",
       target: "4-1-flow",
-      scenarioId: "second_wave_4",
+      scenarioId: "four_beneficiary",
       reason: "4頭時に1号艇残りの根拠があるため4-1を相手上位に評価します"
+    });
+  } else if (insideCollapseScore >= 0.56 && boat1ResidualAfterAttackScore < 0.52) {
+    ticketAdjustmentLog.push({
+      action: "demote",
+      target: "4-1-flow",
+      scenarioId: "four_beneficiary",
+      reason: "4頭時でも1号艇の残留評価が弱く、4-1より外連動を優先します"
     });
   }
   if (boat4MakuriSashiSampleWeight >= 0.35 && venue4Exacta5 >= 0.56 && boat5LinkedFollowScore >= 0.52) {
     ticketAdjustmentLog.push({
       action: "promote",
       target: "4-5-flow",
-      scenarioId: "second_wave_4",
+      scenarioId: "four_beneficiary",
       reason: "4頭時の外連動と5号艇の追走評価があるため4-5系を少し評価します"
+    });
+  }
+  if (boat4MakuriSashiSampleWeight >= 0.35 && venue4Exacta6 >= 0.54 && boat6LinkedFollowScore >= 0.52) {
+    ticketAdjustmentLog.push({
+      action: "promote",
+      target: "4-6-flow",
+      scenarioId: "four_beneficiary",
+      reason: "内側が崩れる4頭展開で6号艇の追走評価があり4-6系も候補に入れます"
     });
   }
   if (
@@ -932,7 +1123,7 @@ export function buildRaceFlowScenarioModel({
   }
   const decisionBiasExplanations = ticketAdjustmentLog
     .filter((row) =>
-      ["3-1-flow", "4-3-flow", "4-1-flow", "4-5-flow", "decision-conditioned venue bias"].includes(row.target)
+      ["3-1-flow", "4-3-flow", "4-1-flow", "4-5-flow", "4-6-flow", "decision-conditioned venue bias"].includes(row.target)
     )
     .map((row) => row.reason)
     .filter(Boolean)
@@ -942,6 +1133,9 @@ export function buildRaceFlowScenarioModel({
     available: safeArray(entries).length > 0,
     dataWarnings,
     scenarios,
+    scenarioFamilies,
+    mainScenarioGroup,
+    derivedScenarioGroup,
     mainScenario: topScenario || null,
     secondaryScenario,
     upsetScenario,
@@ -954,16 +1148,27 @@ export function buildRaceFlowScenarioModel({
       Object.entries(scoreByBoat).map(([boat, row]) => [boat, {
         boat: row.boat,
         headScore: row.headScore,
+        attackerScore: row.attackerScore,
         secondScore: row.secondScore,
         thirdScore: row.thirdScore,
         scenarioTriggerScore: row.scenarioTriggerScore,
         beneficiaryScore: row.beneficiaryScore,
+        residualScore: row.residualScore,
         supportFactors: row.supportFactors,
         canBeHead: row.canBeHead,
         dangerReason: row.dangerReason
       }])
     ),
     ticketAdjustmentLog,
+    fourHeadPartnerDecision,
+    venueBiasTable: {
+      headRates: effectiveVenueBias?.headRates || null,
+      scenarioFollowerBias: effectiveVenueBias?.scenarioFollowerBias || null,
+      head4SecondBias: effectiveVenueBias?.head4SecondBias || null,
+      head3SecondBias: effectiveVenueBias?.head3SecondBias || null,
+      head2SecondBias: effectiveVenueBias?.head2SecondBias || null,
+      source: effectiveVenueBias?.source || null
+    },
     decisionConditionedStats,
     headDecisionComboStats,
     decisionResidualScores,
@@ -1007,18 +1212,28 @@ export function applyRaceFlowScenarioAdjustments(entries = [], model = {}) {
       raceFlowThirdScore: roundScore(third),
       raceFlowScenarioTriggerScore: roundScore(trigger),
       raceFlowBeneficiaryScore: roundScore(beneficiary),
+      raceFlowResidualScore: roundScore(finiteNumber(scores.residualScore, 0.5)),
+      raceFlowAttackerScore: roundScore(finiteNumber(scores.attackerScore, head)),
       raceFlowCanBeHead: scores.canBeHead === true
     };
   });
 }
 
 function scenarioById(model = {}, id) {
-  return safeArray(model?.scenarios).find((row) => row?.id === id) || null;
+  return safeArray(model?.scenarioFamilies).find((row) => row?.id === id) ||
+    safeArray(model?.scenarios).find((row) => row?.id === id) ||
+    null;
 }
 
 function scenarioDecisionForTicket(model = {}, head) {
   if (head === 2) return { scenarioId: "sashi_2", decision: "sashi" };
-  if (head === 4) return { scenarioId: "second_wave_4", decision: "makuriSashi" };
+  if (head === 4) {
+    const fourBenefit = finiteNumber(scenarioById(model, "four_beneficiary")?.score, 0);
+    const directFour = finiteNumber(scenarioById(model, "makuriSashi_4")?.score, 0);
+    return fourBenefit >= directFour
+      ? { scenarioId: "four_beneficiary", decision: "makuriSashi" }
+      : { scenarioId: "makuriSashi_4", decision: "makuriSashi" };
+  }
   if (head === 3) {
     const makuri = finiteNumber(scenarioById(model, "makuri_3")?.score, 0);
     const makuriSashi = finiteNumber(scenarioById(model, "makuri_sashi_3")?.score, 0);
@@ -1067,6 +1282,7 @@ export function scoreRaceFlowTicketDecisionCompatibility(ticket = {}, model = {}
   const boat3Residual = residualScore01(model, "boat3ResidualScore", 0.5);
   const boat2Residual = residualScore01(model, "boat2ResidualAfterFlowScore", 0.5);
   const boat5Follow = residualScore01(model, "boat5LinkedFollowScore", 0.5);
+  const boat6Follow = residualScore01(model, "boat6LinkedFollowScore", 0.5);
 
   if (head === 3 && second === 1) {
     const stats = decisionStat(model, scenario.decision || "makuri");
@@ -1131,6 +1347,16 @@ export function scoreRaceFlowTicketDecisionCompatibility(ticket = {}, model = {}
     floor = 0.82;
     ceiling = 1.2;
     if (support > 0.58) reasons.push("4頭時の外連動があり4-5を少し加点");
+  } else if (head === 4 && second === 6) {
+    const stats = headDecisionStat(model, 4, "makuriSashi");
+    const venue = Math.max(
+      rateFromStats(stats, "secondRates", "6", 0.5),
+      rateFromStats(stats, "exactaRates", "4-6", 0.5)
+    );
+    support = blendSupport(boat6Follow, venue, 0.82);
+    floor = 0.8;
+    ceiling = 1.18;
+    if (support > 0.58) reasons.push("4頭時の内崩れと6号艇の追走評価があり4-6を加点");
   }
 
   const multiplier = decisionCompatibilityMultiplier(support, floor, ceiling);
@@ -1180,7 +1406,10 @@ export function buildRaceFlowScenarioTickets(model = {}, baseTickets = [], limit
   const baseTicketCombos = new Set(safeArray(baseTickets).map((ticket) => ticket?.combo).filter(Boolean));
   const rows = [];
   const seen = new Set(baseTicketCombos);
-  const scenarios = safeArray(model?.scenarios)
+  const scenarioSource = safeArray(model?.scenarioFamilies).length > 0
+    ? safeArray(model?.scenarioFamilies)
+    : safeArray(model?.scenarios);
+  const scenarios = scenarioSource
     .filter((scenario) => scenario.id !== "escape_1" && scenario.score >= 54)
     .sort((a, b) => b.score - a.score);
   for (const scenario of scenarios) {

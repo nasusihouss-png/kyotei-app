@@ -48,6 +48,10 @@ function scenario(model, id) {
   return model.scenarios.find((row) => row.id === id);
 }
 
+function family(model, id) {
+  return model.scenarioFamilies.find((row) => row.id === id);
+}
+
 function split(model, boat) {
   return model.headPartnerSplit.find((row) => row.boat === boat);
 }
@@ -104,6 +108,12 @@ assert.ok(
   "3 attack plus 4 turn/straight should raise the 4 second-wave scenario"
 );
 assert.ok(split(boat4StrongAfter3Attack, 4).beneficiaryScore > split(boat4WeakAfter3Attack, 4).beneficiaryScore);
+assert.notEqual(family(boat4StrongAfter3Attack, "makuri_3")?.id, family(boat4StrongAfter3Attack, "four_beneficiary")?.id);
+assert.ok(family(boat4StrongAfter3Attack, "makuri_3"), "3-head attack must be its own scenario family");
+assert.ok(family(boat4StrongAfter3Attack, "four_beneficiary"), "4-head beneficiary must be its own scenario family");
+assert.ok(Number.isFinite(split(boat4StrongAfter3Attack, 4).attackerScore));
+assert.ok(Number.isFinite(split(boat4StrongAfter3Attack, 4).beneficiaryScore));
+assert.ok(Number.isFinite(split(boat4StrongAfter3Attack, 4).residualScore));
 
 const boat2Sashi = buildRaceFlowScenarioModel({
   entries: entries({
@@ -292,6 +302,47 @@ const rare43Compatibility = scoreRaceFlowTicketDecisionCompatibility({ combo: "4
 const common41Compatibility = scoreRaceFlowTicketDecisionCompatibility({ combo: "4-1-3" }, common41Model);
 assert.ok(rare43Compatibility.multiplier < 0.9, "rare 4-3 with weak boat3ResidualScore should demote 4-3");
 assert.ok(common41Compatibility.multiplier > 1, "common 4-1 with strong boat1 residual should boost 4-1");
+assert.equal(
+  family(rare43Model, "four_beneficiary").patterns.some((pattern) => pattern[0] === 4 && pattern[1] === 3),
+  false,
+  "4-3 must not be generated when boat 3 does not clearly survive"
+);
+
+const outsideFollowVenue = {
+  headDecisionComboStats: {
+    4: {
+      makuriSashi: {
+        sampleCount: 60,
+        secondRates: { 1: 0.08, 2: 0.16, 3: 0.05, 5: 0.38, 6: 0.22 },
+        exactaRates: { "4-1": 0.08, "4-2": 0.16, "4-3": 0.05, "4-5": 0.38, "4-6": 0.22 }
+      }
+    }
+  },
+  scenarioFollowerBias: {
+    four_beneficiary: { second: { 1: 0.08, 2: 0.16, 3: 0.05, 5: 0.38, 6: 0.22 } }
+  }
+};
+const outsideFollowFourHeadModel = buildRaceFlowScenarioModel({
+  entries: entries({
+    3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriRate: 0.36 },
+    4: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, makuriSashiRate: 0.42 }
+  }),
+  featureScores: featureScores({
+    1: { lapTime: 0.12, turnTime: 0.12, motor2Rate: 0.16 },
+    2: { exST: 0.14, turnTime: 0.14, motor2Rate: 0.16 },
+    3: { exST: 0.94, straightTime: 0.94, turnTime: 0.2, lapTime: 0.2 },
+    4: { exST: 0.84, straightTime: 0.9, turnTime: 0.92, motor2Rate: 0.88 },
+    5: { lapTime: 0.9, straightTime: 0.92, turnTime: 0.82, motor2Rate: 0.88 },
+    6: { lapTime: 0.88, straightTime: 0.9, turnTime: 0.8, motor2Rate: 0.86 }
+  }),
+  venueBias: outsideFollowVenue
+});
+const outsideFollowFourPatterns = family(outsideFollowFourHeadModel, "four_beneficiary").patterns.map((pattern) => pattern.join("-"));
+assert.ok(
+  outsideFollowFourPatterns.includes("4-5-flow") || outsideFollowFourPatterns.includes("4-6-flow"),
+  "4-5 / 4-6 should be promoted when inside collapses and outside follow is strong"
+);
+assert.equal(outsideFollowFourPatterns.includes("4-1-flow"), false, "4-1 should not be over-selected when boat 1 residual is weak");
 
 const smallSampleVenue = {
   decisionConditionedStats: {

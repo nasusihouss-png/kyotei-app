@@ -444,42 +444,90 @@ function zScores(valuesByBoat) {
   return Object.fromEntries(entries.map(([boat, value]) => [boat, (value - mean) / sd]));
 }
 
-function lowerTimeFeatureScores(valuesByBoat = {}) {
+const EXHIBITION_DELTA_CONTEXT = {
+  exST: 0.16,
+  exTime: 0.22,
+  lapTime: 1.1,
+  straightTime: 0.45,
+  turnTime: 0.5,
+  motor2Rate: 28
+};
+
+function venueFeatureContextMultiplier(venueId, field) {
+  const id = Number(venueId) || 0;
+  const attackVenues = new Set([3, 5, 9, 13, 17, 20, 21, 24]);
+  const innerVenues = new Set([2, 4, 10, 11, 14, 16, 18, 22]);
+  if (attackVenues.has(id)) {
+    if (field === "straightTime") return 0.82;
+    if (field === "turnTime") return 0.9;
+    if (field === "lapTime") return 0.95;
+  }
+  if (innerVenues.has(id)) {
+    if (field === "straightTime") return 1.12;
+    if (field === "turnTime") return 0.92;
+    if (field === "lapTime") return 0.88;
+  }
+  return 1;
+}
+
+function featureScoreModel(valuesByBoat = {}, { lowerBetter = true, field = "value", venueId = null } = {}) {
   const entries = Object.entries(valuesByBoat)
     .map(([boat, value]) => [String(boat), finiteNumber(value, null)])
     .filter(([, value]) => value !== null);
-  if (entries.length === 0) return { scores: {}, ranks: {}, count: 0 };
-  const sorted = [...entries].sort((a, b) => a[1] - b[1]);
-  const min = sorted[0][1];
-  const max = sorted[sorted.length - 1][1];
+  if (entries.length === 0) {
+    return { scores: {}, ranks: {}, deltasFromBest: {}, percentiles: {}, venueNormalizedScores: {}, rawValues: {}, count: 0 };
+  }
+  const sorted = [...entries].sort((a, b) => lowerBetter ? a[1] - b[1] : b[1] - a[1]);
+  const rawValues = Object.fromEntries(entries);
+  const best = sorted[0][1];
+  const values = entries.map(([, value]) => value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
   const spread = max - min;
+  const expectedSpread = (EXHIBITION_DELTA_CONTEXT[field] || Math.max(spread, 1)) * venueFeatureContextMultiplier(venueId, field);
+  const ranks = Object.fromEntries(sorted.map(([boat], index) => [boat, index + 1]));
+  const deltasFromBest = Object.fromEntries(entries.map(([boat, value]) => [
+    boat,
+    lowerBetter ? value - best : best - value
+  ]));
+  const percentiles = Object.fromEntries(entries.map(([boat]) => [
+    boat,
+    entries.length <= 1 ? 0.5 : clamp((entries.length - ranks[boat]) / (entries.length - 1), 0, 1)
+  ]));
+  const raceScores = Object.fromEntries(entries.map(([boat, value]) => [
+    boat,
+    spread === 0 ? 0.5 : lowerBetter ? clamp((max - value) / spread, 0, 1) : clamp((value - min) / spread, 0, 1)
+  ]));
+  const deltaScores = Object.fromEntries(entries.map(([boat]) => [
+    boat,
+    expectedSpread > 0 ? clamp(1 - Math.max(0, deltasFromBest[boat]) / expectedSpread, 0, 1) : raceScores[boat]
+  ]));
+  const venueNormalizedScores = Object.fromEntries(entries.map(([boat]) => [
+    boat,
+    clamp(raceScores[boat] * 0.48 + percentiles[boat] * 0.34 + deltaScores[boat] * 0.18, 0, 1)
+  ]));
   return {
-    scores: Object.fromEntries(entries.map(([boat, value]) => [
-      boat,
-      spread === 0 ? 0.5 : clamp((max - value) / spread, 0, 1)
-    ])),
-    ranks: Object.fromEntries(sorted.map(([boat], index) => [boat, index + 1])),
+    scores: venueNormalizedScores,
+    raceScores,
+    ranks,
+    deltasFromBest,
+    deltaScores,
+    percentiles,
+    venueNormalizedScores,
+    rawValues,
+    best,
+    spread,
+    expectedSpread,
     count: entries.length
   };
 }
 
-function highValueFeatureScores(valuesByBoat = {}) {
-  const entries = Object.entries(valuesByBoat)
-    .map(([boat, value]) => [String(boat), finiteNumber(value, null)])
-    .filter(([, value]) => value !== null);
-  if (entries.length === 0) return { scores: {}, ranks: {}, count: 0 };
-  const sorted = [...entries].sort((a, b) => b[1] - a[1]);
-  const min = Math.min(...entries.map(([, value]) => value));
-  const max = Math.max(...entries.map(([, value]) => value));
-  const spread = max - min;
-  return {
-    scores: Object.fromEntries(entries.map(([boat, value]) => [
-      boat,
-      spread === 0 ? 0.5 : clamp((value - min) / spread, 0, 1)
-    ])),
-    ranks: Object.fromEntries(sorted.map(([boat], index) => [boat, index + 1])),
-    count: entries.length
-  };
+function lowerTimeFeatureScores(valuesByBoat = {}, options = {}) {
+  return featureScoreModel(valuesByBoat, { ...options, lowerBetter: true });
+}
+
+function highValueFeatureScores(valuesByBoat = {}, options = {}) {
+  return featureScoreModel(valuesByBoat, { ...options, lowerBetter: false });
 }
 
 function weightedFeatureAverage(parts = {}, weights = {}) {
@@ -499,15 +547,45 @@ function weightedFeatureAverage(parts = {}, weights = {}) {
   };
 }
 
-function roleFeatureWeights(boat) {
-  if (boat === 1) return { exST: 0.18, exTime: 0.16, lapTime: 0.24, turnTime: 0.24, motor2Rate: 0.18 };
-  if (boat === 2) return { exST: 0.24, turnTime: 0.3, lapTime: 0.2, motor2Rate: 0.26 };
-  if (boat === 3) return { exST: 0.28, straightTime: 0.3, exTime: 0.18, turnTime: 0.24 };
-  if (boat === 4) return { exST: 0.24, straightTime: 0.28, turnTime: 0.28, motor2Rate: 0.2 };
+const HEAD_FEATURE_WEIGHTS = { exST: 20, exTime: 10, lapTime: 12, straightTime: 14, turnTime: 12, motor2Rate: 14 };
+const RESIDUAL_FEATURE_WEIGHTS = { lapTime: 18, turnTime: 18, motor2Rate: 18, straightTime: 10, exTime: 8, exST: 6 };
+const FOUR_BENEFICIARY_FEATURE_WEIGHTS = { turnTime: 16, straightTime: 14, motor2Rate: 14, exST: 8, exTime: 6, lapTime: 8 };
+
+function venueWeightMultiplier(venueId, field, mode = "head") {
+  const id = Number(venueId) || 0;
+  const attackVenues = new Set([3, 5, 9, 13, 17, 20, 21, 24]);
+  const innerVenues = new Set([2, 4, 10, 11, 14, 16, 18, 22]);
+  if (mode === "residual") {
+    if (innerVenues.has(id) && ["lapTime", "turnTime", "motor2Rate"].includes(field)) return 1.12;
+    if (attackVenues.has(id) && ["straightTime", "motor2Rate"].includes(field)) return 1.08;
+  }
+  if (mode === "fourBeneficiary") {
+    if (attackVenues.has(id) && ["straightTime", "turnTime", "motor2Rate"].includes(field)) return 1.14;
+    if (innerVenues.has(id) && field === "straightTime") return 0.9;
+  }
+  if (mode === "head") {
+    if (attackVenues.has(id) && field === "straightTime") return 1.12;
+    if (innerVenues.has(id) && ["lapTime", "turnTime"].includes(field)) return 1.08;
+  }
+  return 1;
+}
+
+function applyVenueWeightMultipliers(weights = {}, venueId = null, mode = "head") {
+  return Object.fromEntries(
+    Object.entries(weights).map(([field, weight]) => [field, weight * venueWeightMultiplier(venueId, field, mode)])
+  );
+}
+
+function roleFeatureWeights(boat, venueId = null) {
+  if (boat === 1) return applyVenueWeightMultipliers({ exST: 20, exTime: 10, lapTime: 18, turnTime: 18, motor2Rate: 16 }, venueId, "head");
+  if (boat === 2) return applyVenueWeightMultipliers({ exST: 20, turnTime: 20, lapTime: 14, motor2Rate: 16, exTime: 8 }, venueId, "head");
+  if (boat === 3) return applyVenueWeightMultipliers({ exST: 22, straightTime: 22, exTime: 10, turnTime: 14, motor2Rate: 12 }, venueId, "head");
+  if (boat === 4) return applyVenueWeightMultipliers({ exST: 18, straightTime: 20, turnTime: 20, motor2Rate: 16, lapTime: 8 }, venueId, "fourBeneficiary");
   return { straightTime: 0.3, lapTime: 0.25, turnTime: 0.25, motor2Rate: 0.2 };
 }
 
-function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}) {
+function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}, options = {}) {
+  const venueId = options.venueId ?? options.stadiumNumber ?? null;
   const values = {
     exST: Object.fromEntries(boats.map((boat) => [boat.boat, exhibition.exhibitionStartByBoat?.[boat.boat] ?? boat.exST ?? null])),
     exTime: Object.fromEntries(boats.map((boat) => [boat.boat, exhibition.exhibitionTimeByBoat?.[boat.boat] ?? boat.exTime ?? null])),
@@ -517,12 +595,12 @@ function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}) {
     motor2Rate: Object.fromEntries(boats.map((boat) => [boat.boat, boat.motor2Rate ?? null]))
   };
   const fieldScores = {
-    exST: lowerTimeFeatureScores(values.exST),
-    exTime: lowerTimeFeatureScores(values.exTime),
-    lapTime: lowerTimeFeatureScores(values.lapTime),
-    straightTime: lowerTimeFeatureScores(values.straightTime),
-    turnTime: lowerTimeFeatureScores(values.turnTime),
-    motor2Rate: highValueFeatureScores(values.motor2Rate)
+    exST: lowerTimeFeatureScores(values.exST, { field: "exST", venueId }),
+    exTime: lowerTimeFeatureScores(values.exTime, { field: "exTime", venueId }),
+    lapTime: lowerTimeFeatureScores(values.lapTime, { field: "lapTime", venueId }),
+    straightTime: lowerTimeFeatureScores(values.straightTime, { field: "straightTime", venueId }),
+    turnTime: lowerTimeFeatureScores(values.turnTime, { field: "turnTime", venueId }),
+    motor2Rate: highValueFeatureScores(values.motor2Rate, { field: "motor2Rate", venueId })
   };
   const byBoat = {};
   for (const boat of boats) {
@@ -535,13 +613,31 @@ function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}) {
       turnTime: Object.prototype.hasOwnProperty.call(fieldScores.turnTime.scores, key) ? fieldScores.turnTime.scores[key] : null,
       motor2Rate: Object.prototype.hasOwnProperty.call(fieldScores.motor2Rate.scores, key) ? fieldScores.motor2Rate.scores[key] : null
     };
-    const role = weightedFeatureAverage(parts, roleFeatureWeights(boat.boat));
+    const role = weightedFeatureAverage(parts, roleFeatureWeights(boat.boat, venueId));
+    const headFeature = weightedFeatureAverage(parts, applyVenueWeightMultipliers(HEAD_FEATURE_WEIGHTS, venueId, "head"));
+    const residualFeature = weightedFeatureAverage(parts, applyVenueWeightMultipliers(RESIDUAL_FEATURE_WEIGHTS, venueId, "residual"));
+    const fourBeneficiaryFeature = weightedFeatureAverage(parts, applyVenueWeightMultipliers(FOUR_BENEFICIARY_FEATURE_WEIGHTS, venueId, "fourBeneficiary"));
+    const venueNormalizedMetrics = Object.fromEntries(Object.keys(parts).map((field) => [
+      field,
+      {
+        raw: values[field]?.[boat.boat] ?? null,
+        rank: fieldScores[field]?.ranks?.[key] ?? null,
+        deltaFromBest: fieldScores[field]?.deltasFromBest?.[key] ?? null,
+        raceScore: fieldScores[field]?.raceScores?.[key] ?? null,
+        venueDayNormalizedScore: fieldScores[field]?.venueNormalizedScores?.[key] ?? null,
+        percentile: fieldScores[field]?.percentiles?.[key] ?? null
+      }
+    ]));
     byBoat[key] = {
       boat: boat.boat,
       values: Object.fromEntries(Object.keys(parts).map((field) => [field, values[field]?.[boat.boat] ?? null])),
       ranks: Object.fromEntries(Object.keys(parts).map((field) => [field, fieldScores[field]?.ranks?.[key] ?? null])),
       scores: parts,
+      venueNormalizedMetrics,
       roleScore: role.score,
+      headFeatureScore: headFeature.score,
+      residualFeatureScore: residualFeature.score,
+      fourBeneficiaryFeatureScore: fourBeneficiaryFeature.score,
       roleUsedFields: Object.keys(role.used)
     };
   }
@@ -555,6 +651,10 @@ function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}) {
     fieldCounts: Object.fromEntries(Object.entries(fieldScores).map(([field, model]) => [field, model.count])),
     originalCounts,
     allOriginalExhibitionTimesComplete: originalCounts.lapTime >= 6 && originalCounts.straightTime >= 6 && originalCounts.turnTime >= 6,
+    venueNormalizedMetrics: BOATS.map((boat) => byBoat[String(boat)]).filter(Boolean).map((row) => ({
+      boat: row.boat,
+      ...row.venueNormalizedMetrics
+    })),
     preview: BOATS.map((boat) => byBoat[String(boat)]).filter(Boolean).map((row) => ({
       boat: row.boat,
       exST: row.values.exST,
@@ -569,7 +669,11 @@ function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}) {
       turnTimeScore: row.scores.turnTime,
       motor2Rate: row.values.motor2Rate,
       motor2RateScore: row.scores.motor2Rate,
+      venueNormalizedMetrics: row.venueNormalizedMetrics,
       roleScore: row.roleScore,
+      headFeatureScore: row.headFeatureScore,
+      residualFeatureScore: row.residualFeatureScore,
+      fourBeneficiaryFeatureScore: row.fourBeneficiaryFeatureScore,
       roleUsedFields: row.roleUsedFields
     }))
   };
@@ -1249,7 +1353,7 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
   const previewWithConditions = mergeRaceConditionsIntoPreview(preview || {}, raceConditions);
   const exhibition = enrichExhibitionFeaturesFromBoats(buildExhibitionFeatures(previewWithConditions), boats);
   exhibition.conditions = raceConditions;
-  const featureScores = buildOriginalExhibitionFeatureScores(boats, exhibition);
+  const featureScores = buildOriginalExhibitionFeatureScores(boats, exhibition, { venueId: scoringConfig.stadiumNumber });
   const baseScoredBoats = buildScores(boats, exhibition, scoringConfig, featureScores).sort((a, b) => a.boat - b.boat);
   const venueBiasSource =
     scoringConfig.venueLaneBias ||
@@ -1286,10 +1390,16 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     exhibition,
     featureScores,
     featureScorePreview: featureScores.preview,
+    venueNormalizedExhibitionMetrics: featureScores.venueNormalizedMetrics,
     raceFlowScenario,
-    raceFlowScenarioPreview: raceFlowScenario.scenarios,
+    raceFlowScenarioPreview: raceFlowScenario.scenarioFamilies || raceFlowScenario.scenarios,
+    scenarioFamilyPreview: raceFlowScenario.scenarioFamilies || [],
+    mainScenarioGroup: raceFlowScenario.mainScenarioGroup || null,
+    derivedScenarioGroup: raceFlowScenario.derivedScenarioGroup || null,
     wallScorePreview: raceFlowScenario.wallScores,
     headPartnerSplitPreview: raceFlowScenario.headPartnerSplit,
+    fourHeadPartnerDecision: raceFlowScenario.fourHeadPartnerDecision || null,
+    venueBiasTable: raceFlowScenario.venueBiasTable || null,
     ticketAdjustmentLog: raceFlowScenario.ticketAdjustmentLog,
     ticketDecisionCompatibilityPreview: decisionCompatibleTickets.preview,
     conditionAdjustmentLog: raceFlowScenario.conditionAdjustmentLog,

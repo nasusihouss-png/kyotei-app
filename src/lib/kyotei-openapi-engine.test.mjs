@@ -438,8 +438,21 @@ const raceFlowPrediction = buildRacePrediction(originalMetricProgram({
   4: { straightTime: 6.72, turnTime: 4.22 }
 }), null);
 assert.equal(raceFlowPrediction.raceFlowScenario.scenarios.length, 6);
+assert.equal(raceFlowPrediction.raceFlowScenario.scenarioFamilies.length, 7);
+assert.ok(raceFlowPrediction.raceFlowScenario.mainScenarioGroup);
+assert.ok(Array.isArray(raceFlowPrediction.scenarioFamilyPreview));
 assert.ok(raceFlowPrediction.wallScorePreview.length >= 3);
 assert.ok(raceFlowPrediction.headPartnerSplitPreview.some((row) => row.boat === 4));
+assert.ok(Number.isFinite(raceFlowPrediction.headPartnerSplitPreview.find((row) => row.boat === 4).attackerScore));
+assert.ok(Number.isFinite(raceFlowPrediction.headPartnerSplitPreview.find((row) => row.boat === 4).beneficiaryScore));
+assert.ok(Number.isFinite(raceFlowPrediction.headPartnerSplitPreview.find((row) => row.boat === 4).residualScore));
+assert.ok(Array.isArray(raceFlowPrediction.venueNormalizedExhibitionMetrics));
+assert.ok(raceFlowPrediction.venueNormalizedExhibitionMetrics.length >= 6);
+const normalizedBoat3 = raceFlowPrediction.venueNormalizedExhibitionMetrics.find((row) => row.boat === 3);
+assert.ok(normalizedBoat3.straightTime.rank >= 1);
+assert.ok(Number.isFinite(normalizedBoat3.straightTime.deltaFromBest));
+assert.ok(Number.isFinite(normalizedBoat3.straightTime.venueDayNormalizedScore));
+assert.ok(Number.isFinite(normalizedBoat3.straightTime.percentile));
 assert.ok(Array.isArray(raceFlowPrediction.ticketAdjustmentLog));
 
 const boat4OpportunityRows = buildBoat4OpportunityRanking([

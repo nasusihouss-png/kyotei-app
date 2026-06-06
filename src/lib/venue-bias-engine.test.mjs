@@ -4,6 +4,7 @@ import {
   buildDecisionConditionedVenueBiasFromRaces,
   decisionSampleStatus,
   getDecisionConditionedStats,
+  getEstimatedVenueBias,
   getHeadDecisionComboStats,
   normalizeDecisionKey
 } from "./venue-bias-engine.js";
@@ -66,5 +67,12 @@ const normalizedDecisionStats = getDecisionConditionedStats(venueBias, 24);
 const normalizedHeadStats = getHeadDecisionComboStats(venueBias, 24);
 assert.equal(normalizedDecisionStats.makuri.sampleCount, 2);
 assert.equal(normalizedHeadStats["4"].makuriSashi.secondRates["1"], 1);
+
+const estimatedVenueBias = getEstimatedVenueBias(24);
+assert.equal(estimatedVenueBias.source, "estimated_static_venue_bias");
+assert.ok(estimatedVenueBias.headRates["4"] > 0);
+assert.ok(estimatedVenueBias.scenarioFollowerBias.makuriSashi.outsideLinkedRate > 0);
+assert.ok(estimatedVenueBias.head4SecondBias["5"] > 0);
+assert.ok(estimatedVenueBias.headDecisionComboStats["4"].makuriSashi.exactaRates["4-5"] > 0);
 
 console.log("venue-bias-engine ok");
