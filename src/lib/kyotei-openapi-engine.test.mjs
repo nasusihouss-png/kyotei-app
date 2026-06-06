@@ -4,6 +4,7 @@ import {
   buildConfidenceScore,
   buildBoat4OpportunityRanking,
   buildTodayRanking,
+  checkPredictionConsistency,
   buildRacePrediction,
   DEFAULT_SCORING_CONFIG,
   inspectPreviewExhibitionStatus,
@@ -454,6 +455,45 @@ assert.ok(Number.isFinite(normalizedBoat3.straightTime.deltaFromBest));
 assert.ok(Number.isFinite(normalizedBoat3.straightTime.venueDayNormalizedScore));
 assert.ok(Number.isFinite(normalizedBoat3.straightTime.percentile));
 assert.ok(Array.isArray(raceFlowPrediction.ticketAdjustmentLog));
+assert.ok(Array.isArray(raceFlowPrediction.coefficientContributionByBoat));
+assert.ok(raceFlowPrediction.currentScoringWeights.headScore.motorRank > 0);
+
+const strongMotorRankPrediction = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.06, straightTime: 6.7, turnTime: 4.3, motorPercentileAtVenue: 0.7 },
+  4: { straightTime: 6.72, turnTime: 4.22, motorPercentileAtVenue: 0.95, racer_assigned_motor_top_2_percent: 35 }
+}), null);
+const weakMotorRankPrediction = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.06, straightTime: 6.7, turnTime: 4.3, motorPercentileAtVenue: 0.7 },
+  4: { straightTime: 6.72, turnTime: 4.22, motorPercentileAtVenue: 0.05, racer_assigned_motor_top_2_percent: 35 }
+}), null);
+assert.ok(
+  strongMotorRankPrediction.headPartnerSplitPreview.find((row) => row.boat === 4).beneficiaryScore >
+    weakMotorRankPrediction.headPartnerSplitPreview.find((row) => row.boat === 4).beneficiaryScore,
+  "motorRank should affect beneficiary score"
+);
+assert.ok(
+  strongMotorRankPrediction.headPartnerSplitPreview.find((row) => row.boat === 4).residualScore >
+    weakMotorRankPrediction.headPartnerSplitPreview.find((row) => row.boat === 4).residualScore,
+  "motorRank should affect residual score"
+);
+
+const boat3NoF = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.04, straightTime: 6.7, turnTime: 4.28, racer_flying_count: 0 }
+}), null);
+const boat3WithF = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.04, straightTime: 6.7, turnTime: 4.28, racer_flying_count: 1 }
+}), null);
+assert.ok(
+  boat3NoF.scoredBoats.find((row) => row.boat === 3).score >
+    boat3WithF.scoredBoats.find((row) => row.boat === 3).score,
+  "F status should reduce aggressive head score"
+);
+
+const mismatchCheck = checkPredictionConsistency({
+  raceFlowScenario: { mainScenarioGroup: { id: "four_beneficiary", patterns: [[4, 1, "flow"]] } },
+  tickets: { trifecta: [{ combo: "1-2-3", boats: [1, 2, 3], probability: 0.3 }] }
+});
+assert.equal(mismatchCheck.ok, false, "final prediction consistency check should catch main scenario/ticket mismatch");
 
 const boat4OpportunityRows = buildBoat4OpportunityRanking([
   originalMetricProgram({
@@ -468,6 +508,27 @@ assert.ok(["高", "中"].includes(boat4OpportunityRows[0].strengthLabel));
 assert.ok(boat4OpportunityRows[0].recommendedTickets.includes("4-1-flow"));
 assert.ok(boat4OpportunityRows[0].recommendedTickets.includes("4-2-flow"));
 assert.ok(boat4OpportunityRows[0].debug.threeAttackFourBenefitScore > 0);
+
+const boat4StrongMotorOpportunity = buildBoat4OpportunityRanking([
+  originalMetricProgram({
+    1: { lapTime: 18.74, turnTime: 4.78, racer_assigned_motor_top_2_percent: 22 },
+    2: { exST: 0.2, turnTime: 4.72, playerTendency: { lateStartRate: 0.24, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+    3: { exST: 0.06, straightTime: 6.7, playerTendency: { makuriRate: 0.34, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+    4: { straightTime: 6.69, turnTime: 4.2, motorPercentileAtVenue: 0.95, racer_assigned_motor_top_2_percent: 35, playerTendency: { makuriSashiRate: 0.42, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } }
+  })
+], {}, { limit: 1 })[0];
+const boat4WeakMotorOpportunity = buildBoat4OpportunityRanking([
+  originalMetricProgram({
+    1: { lapTime: 18.74, turnTime: 4.78, racer_assigned_motor_top_2_percent: 22 },
+    2: { exST: 0.2, turnTime: 4.72, playerTendency: { lateStartRate: 0.24, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+    3: { exST: 0.06, straightTime: 6.7, playerTendency: { makuriRate: 0.34, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+    4: { straightTime: 6.69, turnTime: 4.2, motorPercentileAtVenue: 0.05, racer_assigned_motor_top_2_percent: 35, playerTendency: { makuriSashiRate: 0.42, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } }
+  })
+], {}, { limit: 1 })[0];
+assert.ok(
+  boat4StrongMotorOpportunity.boat4HeadOpportunityScore > boat4WeakMotorOpportunity.boat4HeadOpportunityScore,
+  "4-head opportunity should use motorRank and wall weakness"
+);
 
 const calmConditionPrediction = buildRacePrediction({
   ...originalMetricProgram(),

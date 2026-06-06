@@ -5,6 +5,7 @@ import {
   getHeadDecisionComboStats,
   weightedDecisionRate
 } from "./venue-bias-engine.js";
+import { DEFAULT_SCORING_CONFIG, mergeScoringConfig } from "./scoring-config.js";
 
 const BOATS = [1, 2, 3, 4, 5, 6];
 
@@ -264,6 +265,9 @@ function boatMetrics(row = {}, featureScores = {}) {
   const tendency = mergeTendency(row);
   const tendencyStart = tendency.avgStartTiming ?? tendency.avgST ?? tendency.allCourseAvgST;
   const lateRate = optionalRate01(tendency.lateStartRate);
+  const earlyRate = optionalRate01(tendency.earlyStartRate);
+  const fCount = Math.max(0, finiteNumber(row.flyingCount ?? row.fCount ?? row.F, 0));
+  const fStatusText = String(row.fStatus ?? row.F ?? "").toUpperCase();
   return {
     boat: boatNumber(row),
     course: finiteNumber(row.course ?? row.lane ?? row.boat, boatNumber(row)),
@@ -272,6 +276,7 @@ function boatMetrics(row = {}, featureScores = {}) {
     lapTime: featureScore(row, featureScores, "lapTime", 0.5),
     straightTime: featureScore(row, featureScores, "straightTime", 0.5),
     turnTime: featureScore(row, featureScores, "turnTime", 0.5),
+    motorRank: featureScore(row, featureScores, "motorRank", row.motorPercentileAtVenue ?? 0.5),
     motor2Rate: featureScore(row, featureScores, "motor2Rate", optionalRate01(row.motor2Rate) ?? 0.5),
     roleScore: roleScore(row, featureScores, 0.5),
     headFeatureScore: featureAggregateScore(row, featureScores, "headFeatureScore", roleScore(row, featureScores, 0.5)),
@@ -282,21 +287,44 @@ function boatMetrics(row = {}, featureScores = {}) {
     sampleWeight: tendencySampleWeight(tendency),
     startHistoryScore: startTimingScore(tendencyStart, 0.5),
     lateRate: lateRate ?? 0.08,
-    flyingPenalty: Math.max(0, finiteNumber(row.flyingCount ?? row.fCount ?? row.F, 0)) * 0.08,
+    earlyRate: earlyRate ?? 0.08,
+    fCount,
+    hasFRisk: fCount > 0 || /\bF|Ｆ/.test(fStatusText),
+    flyingPenalty: fCount * 0.08,
     raw: row
   };
 }
 
-function wallScore(metric = {}) {
+function wallScore(metric = {}, scoringConfig = DEFAULT_SCORING_CONFIG) {
+  const startWeight = scoringConfig?.scoringCoefficients?.headScore?.exST ? 0.14 : 0.12;
   return clamp(
     0.18 +
     metric.exST * 0.24 +
     metric.straightTime * 0.14 +
     metric.turnTime * 0.12 +
+    metric.motorRank * 0.14 +
     metric.motor2Rate * 0.13 +
-    metric.startHistoryScore * 0.12 +
-    (1 - metric.lateRate) * 0.11 -
-    metric.flyingPenalty
+    metric.startHistoryScore * startWeight +
+    (1 - metric.lateRate) * 0.14 +
+    Math.max(0, metric.earlyRate - 0.16) * 0.04 -
+    metric.flyingPenalty -
+    (metric.hasFRisk ? 0.04 : 0)
+  );
+}
+
+function boat3WallAttackScore(metric = {}) {
+  return clamp(
+    0.12 +
+    metric.exST * 0.24 +
+    metric.straightTime * 0.22 +
+    metric.turnTime * 0.08 +
+    metric.motorRank * 0.14 +
+    metric.motor2Rate * 0.08 +
+    positiveRate(metric.tendency, "makuriRate", 0.08) * 0.32 +
+    positiveRate(metric.tendency, "makuriSashiRate", 0.07) * 0.26 +
+    metric.startHistoryScore * 0.1 -
+    Math.max(0, metric.lateRate - 0.12) * 0.12 -
+    (metric.hasFRisk ? 0.06 : 0)
   );
 }
 
@@ -372,8 +400,10 @@ export function buildRaceFlowScenarioModel({
   featureScores = {},
   venueBias = null,
   stadiumNumber = null,
-  raceConditions = null
+  raceConditions = null,
+  scoringConfig = DEFAULT_SCORING_CONFIG
 } = {}) {
+  const config = mergeScoringConfig(scoringConfig || {});
   const effectiveVenueBias = venueBias || getEstimatedVenueBias(stadiumNumber);
   const map = buildBoatMap(entries);
   const metrics = {};
@@ -389,10 +419,11 @@ export function buildRaceFlowScenarioModel({
   const conditions = normalizeRaceConditions(raceConditions || {});
 
   const walls = {
-    2: wallScore(metrics[2]),
-    3: wallScore(metrics[3]),
-    4: wallScore(metrics[4])
+    2: wallScore(metrics[2], config),
+    3: wallScore(metrics[3], config),
+    4: wallScore(metrics[4], config)
   };
+  const boat3AttackWall = boat3WallAttackScore(metrics[3]);
 
   const vEscape = venueRate(effectiveVenueBias, stadiumNumber, 1, ["escapeRate", "nigeRate", "winRate"]) ?? optionalRate01(effectiveVenueBias?.headRates?.["1"] ?? effectiveVenueBias?.headRates?.[1]) ?? 0.5;
   const vSashi2 = venueRate(effectiveVenueBias, stadiumNumber, 2, ["sashiRate", "decisionSashiRate"]) ?? optionalRate01(effectiveVenueBias?.headRates?.["2"] ?? effectiveVenueBias?.headRates?.[2]) ?? 0.5;
@@ -452,6 +483,7 @@ export function buildRaceFlowScenarioModel({
     0.12 +
     b1.lapTime * 0.18 +
     b1.turnTime * 0.2 +
+    b1.motorRank * 0.12 +
     b1.motor2Rate * 0.1 +
     b1Escape * 0.42 +
     venueBoat1Residual * 0.2 +
@@ -468,6 +500,7 @@ export function buildRaceFlowScenarioModel({
     b1.exTime * 0.09 +
     b1.lapTime * 0.15 +
     b1.turnTime * 0.16 +
+    b1.motorRank * 0.1 +
     b1.motor2Rate * 0.08 +
     b1Escape * 0.55 +
     walls[2] * 0.12 +
@@ -516,6 +549,9 @@ export function buildRaceFlowScenarioModel({
     0.1 +
     b3.exST * 0.2 +
     b3.straightTime * 0.24 +
+    b3.motorRank * 0.12 +
+    boat3AttackWall * 0.1 +
+    b3.startHistoryScore * 0.08 +
     positiveRate(b3.tendency, "makuriRate", 0.08) * 0.9 +
     b1BeatenByMakuri * 0.7 +
     weakBoat2Wall * 0.22 +
@@ -553,6 +589,7 @@ export function buildRaceFlowScenarioModel({
     0.12 +
     b3.lapTime * 0.14 +
     b3.turnTime * 0.18 +
+    b3.motorRank * 0.12 +
     b3.motor2Rate * 0.08 +
     positiveRate(b3.tendency, "makuriRate", 0.08) * 0.18 +
     positiveRate(b3.tendency, "makuriSashiRate", 0.07) * 0.14 +
@@ -575,6 +612,7 @@ export function buildRaceFlowScenarioModel({
     b5.lapTime * 0.13 +
     b5.straightTime * 0.14 +
     b5.turnTime * 0.08 +
+    b5.motorRank * 0.14 +
     b5.motor2Rate * 0.1 +
     Math.max(venue4Second5, venue4Exacta5) * 0.16 +
     Math.max(venueMakuriOutsideLinked, venueMakuriSashiOutsideLinked) * 0.12
@@ -584,6 +622,7 @@ export function buildRaceFlowScenarioModel({
     b6.lapTime * 0.12 +
     b6.straightTime * 0.14 +
     b6.turnTime * 0.08 +
+    b6.motorRank * 0.14 +
     b6.motor2Rate * 0.1 +
     Math.max(venueMakuriOutsideLinked, venueMakuriSashiOutsideLinked) * 0.12
   );
@@ -601,6 +640,7 @@ export function buildRaceFlowScenarioModel({
     b4.exST * 0.1 +
     b4.straightTime * 0.14 +
     b4.turnTime * 0.2 +
+    b4.motorRank * 0.14 +
     b4.motor2Rate * 0.1 +
     positiveRate(b4.tendency, "makuriSashiRate", 0.07) * 0.6 +
     weakBoat3Wall * 0.08 +
@@ -612,6 +652,7 @@ export function buildRaceFlowScenarioModel({
     b4.exST * 0.08 +
     b4.straightTime * 0.16 * (venueFeatureWeights.straight ?? 1) +
     b4.turnTime * 0.2 * (venueFeatureWeights.turn ?? 1) +
+    b4.motorRank * 0.14 +
     b4.motor2Rate * 0.08 +
     positiveRate(b4.tendency, "makuriSashiRate", 0.07) * 0.78 +
     attack3 * 0.28 +
@@ -623,8 +664,8 @@ export function buildRaceFlowScenarioModel({
     (vMakuriSashi4 - 0.5) * 0.15 * (venueFeatureWeights.fourBeneficiary ?? 1)
   );
 
-  const outside5 = clamp(0.1 + b5.lapTime * 0.17 + b5.straightTime * 0.16 + b5.turnTime * 0.11 + b5.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.18 - waveAggressionPenalty * 0.35);
-  const outside6 = clamp(0.08 + b6.lapTime * 0.15 + b6.straightTime * 0.15 + b6.turnTime * 0.1 + b6.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.15 - waveAggressionPenalty * 0.42);
+  const outside5 = clamp(0.1 + b5.lapTime * 0.17 + b5.straightTime * 0.16 + b5.turnTime * 0.11 + b5.motorRank * 0.12 + b5.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.18 - waveAggressionPenalty * 0.35);
+  const outside6 = clamp(0.08 + b6.lapTime * 0.15 + b6.straightTime * 0.15 + b6.turnTime * 0.1 + b6.motorRank * 0.12 + b6.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.15 - waveAggressionPenalty * 0.42);
   const outsideFollow = Math.max(outside5, outside6);
   if (conditions.windLevel > 0) {
     conditionAdjustmentLog.push({
@@ -658,7 +699,7 @@ export function buildRaceFlowScenarioModel({
   const headScore5 = Math.min(outside5 * 0.35, outsideHeadCap);
   const headScore6 = Math.min(outside6 * 0.32, outsideHeadCap - 0.02);
 
-  const beneficiary4 = clamp(0.12 + attack3 * 0.38 + b4.turnTime * 0.2 + b4.straightTime * 0.16 + positiveRate(b4.tendency, "makuriSashiRate", 0.07) * 0.48);
+  const beneficiary4 = clamp(0.12 + attack3 * 0.38 + b4.turnTime * 0.2 + b4.straightTime * 0.16 + b4.motorRank * 0.12 + positiveRate(b4.tendency, "makuriSashiRate", 0.07) * 0.48);
   const beneficiary5 = outside5;
   const beneficiary6 = outside6;
   const attackerScores = {
@@ -681,7 +722,7 @@ export function buildRaceFlowScenarioModel({
     1: boat1ResidualAfterAttackScore,
     2: boat2ResidualAfterFlowScore,
     3: boat3ResidualScore,
-    4: clamp(b4.residualFeatureScore * 0.56 + b4.turnTime * 0.18 + b4.motor2Rate * 0.14 + secondWave4 * 0.12),
+    4: clamp(b4.residualFeatureScore * 0.5 + b4.turnTime * 0.18 + b4.motorRank * 0.16 + b4.motor2Rate * 0.1 + secondWave4 * 0.12),
     5: boat5LinkedFollowScore,
     6: boat6LinkedFollowScore
   };
@@ -764,7 +805,10 @@ export function buildRaceFlowScenarioModel({
       beneficiaryScore: beneficiaryScores[4],
       residualScore: residualScores[4],
       supportFactors: b4DirectSupport,
-      canBeHead: headScore4 >= 0.5 && b4DirectSupport >= 2,
+      canBeHead: headScore4 >= 0.5 && b4DirectSupport >= 2 && (
+        attack3 >= 0.5 && Math.max(makuri3Support, makuriSashi3Support) >= 2 ||
+        positiveRate(b4.tendency, "makuriSashiRate", 0.07) > 0
+      ),
       headReasons: [
         attack3 >= 0.5 ? "3攻め後の差し場あり" : null,
         b4.turnTime >= 0.62 ? "まわり足上位" : null,
@@ -985,8 +1029,12 @@ export function buildRaceFlowScenarioModel({
   const wallScores = [2, 3, 4].map((boat) => ({
     boat,
     wallScore: roundScore(walls[boat]),
+    wallAttackScore: boat === 3 ? roundScore(boat3AttackWall) : null,
     sampleStatus: metrics[boat].sampleStatus,
-    lateStartRate: metrics[boat].lateRate
+    lateStartRate: metrics[boat].lateRate,
+    earlyStartRate: metrics[boat].earlyRate,
+    motorRank: roundScore(metrics[boat].motorRank),
+    hasFRisk: metrics[boat].hasFRisk
   }));
   const headPartnerSplit = Object.values(scoreByBoat)
     .sort((a, b) => a.boat - b.boat)
@@ -1412,7 +1460,9 @@ export function buildRaceFlowScenarioTickets(model = {}, baseTickets = [], limit
   const scenarios = scenarioSource
     .filter((scenario) => scenario.id !== "escape_1" && scenario.score >= 54)
     .sort((a, b) => b.score - a.score);
+  const maxRowsPerScenario = Math.max(2, Math.ceil(limit / 2));
   for (const scenario of scenarios) {
+    let scenarioRowsAdded = 0;
     for (const pattern of safeArray(scenario.patterns)) {
       const candidates = expandPattern(pattern, baseTicketCombos)
         .map((combo) => ({
@@ -1454,8 +1504,11 @@ export function buildRaceFlowScenarioTickets(model = {}, baseTickets = [], limit
           scenarioId: scenario.id,
           reason: `${scenario.label}の展開スコアが高いため追加候補へ昇格`
         });
+        scenarioRowsAdded += 1;
         if (rows.length >= limit) return rows;
+        if (scenarioRowsAdded >= maxRowsPerScenario) break;
       }
+      if (scenarioRowsAdded >= maxRowsPerScenario) break;
     }
   }
   return rows;

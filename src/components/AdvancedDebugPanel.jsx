@@ -65,6 +65,25 @@ export default function AdvancedDebugPanel({
         <summary>予想エンジン内部スコア</summary>
         <div className="debug-grid">
           <div>
+            <div className="muted">coefficient contribution by boat</div>
+            <pre className="json-preview">{safePrettyJson(debug.coefficientContributionByBoat)}</pre>
+          </div>
+          <div>
+            <div className="muted">motor rank contribution</div>
+            <pre className="json-preview">{safePrettyJson(debug.motorRankContribution)}</pre>
+          </div>
+          <div>
+            <div className="muted">start reliability contribution</div>
+            <pre className="json-preview">{safePrettyJson(debug.startReliabilityContribution)}</pre>
+          </div>
+          <div>
+            <div className="muted">venue / condition contribution</div>
+            <pre className="json-preview">{safePrettyJson({
+              venueBiasContribution: debug.venueBiasContribution,
+              conditionContribution: debug.conditionContribution
+            })}</pre>
+          </div>
+          <div>
             <div className="muted">feature score preview</div>
             <pre className="json-preview">{safePrettyJson(debug.featureScorePreview)}</pre>
           </div>
@@ -126,6 +145,14 @@ export default function AdvancedDebugPanel({
           <div>
             <div className="muted">condition adjustment log</div>
             <pre className="json-preview">{safePrettyJson(debug.conditionAdjustmentLog)}</pre>
+          </div>
+          <div>
+            <div className="muted">final scenario consistency check</div>
+            <pre className="json-preview">{safePrettyJson(debug.finalScenarioConsistencyCheck)}</pre>
+          </div>
+          <div>
+            <div className="muted">backtest calibration summary</div>
+            <pre className="json-preview">{safePrettyJson(debug.backtestCalibrationSummary)}</pre>
           </div>
           <div>
             <div className="muted">tendency score preview</div>

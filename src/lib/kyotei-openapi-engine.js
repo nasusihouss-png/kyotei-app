@@ -4,43 +4,15 @@
   buildRaceFlowScenarioModel,
   buildRaceFlowScenarioTickets
 } from "./race-flow-scenario-engine.js";
+import {
+  DEFAULT_SCORING_CONFIG as BASE_DEFAULT_SCORING_CONFIG,
+  getVenueScoringConfig,
+  mergeScoringConfig,
+  motorStrengthLabel,
+  weightedAverageFromWeights
+} from "./scoring-config.js";
 
-export const DEFAULT_SCORING_CONFIG = {
-  shrinkK: 24,
-  baseWeights: {
-    laneBias: 0.28,
-    class: 0.2,
-    nationalWinRatePoint: 0.34,
-    localWinRatePoint: 0.16,
-    motor2Rate: 0.13,
-    boat2Rate: 0.05,
-    averageStartTiming: 0.16,
-    flyingPenalty: 0.08,
-    latePenalty: 0.04
-  },
-  exhibitionWeights: {
-    exhibitionTimeZ: 0.18,
-    exhibitionStartTiming: 0.08,
-    entryCourse: 0.16,
-    windBias: 0.04,
-    makuriAlert: 0.1
-  },
-  originalExhibitionWeights: {
-    roleFeatureBoost: 0.26,
-    outsideFirstPlaceDampening: 0.42
-  },
-  screeningWeights: {
-    boat1Strength: 0.26,
-    startTrust: 0.16,
-    courseEscape: 0.18,
-    localFit: 0.1,
-    venueInsideAdvantage: 0.14,
-    weakWall: 0.12,
-    wind: 0.04
-  },
-  makuriAlertSeconds: 0.07,
-  insideCandidateThreshold: 62
-};
+export const DEFAULT_SCORING_CONFIG = BASE_DEFAULT_SCORING_CONFIG;
 
 const BOATS = [1, 2, 3, 4, 5, 6];
 const CLASS_SCORE = { 1: 1, 2: 0.72, 3: 0.44, 4: 0.24, A1: 1, A2: 0.72, B1: 0.44, B2: 0.24 };
@@ -391,7 +363,11 @@ function normalizeProgramBoats(program = {}) {
         national2Rate: finiteNumber(row.racer_national_top_2_percent, null),
         localWinRatePoint: finiteNumber(row.racer_local_top_1_percent, null),
         local2Rate: finiteNumber(row.racer_local_top_2_percent, null),
+        motorNo: row.racer_assigned_motor_number ?? row.motorNo ?? row.motor_no ?? row.motorNumber ?? null,
         motor2Rate: finiteNumber(row.racer_assigned_motor_top_2_percent ?? row.motor2Rate ?? row.motor_2rate, null),
+        motorRankAtVenue: finiteNumber(row.motorRankAtVenue ?? row.motor_rank_at_venue ?? row.motorRank ?? row.motor_rank, null),
+        motorPercentileAtVenue: finiteNumber(row.motorPercentileAtVenue ?? row.motor_percentile_at_venue ?? row.motorPercentile ?? row.motor_percentile, null),
+        motorStrengthLabel: row.motorStrengthLabel ?? row.motor_strength_label ?? null,
         boat2Rate: finiteNumber(row.racer_assigned_boat_top_2_percent, null),
         averageStartTiming: finiteNumber(row.racer_average_start_timing, null),
         exST: firstStartTiming(row.racer_start_timing, row.exST, row.exSt, row.startTiming, row.exhibitionStSignedValue, row.exhibitionStRaw, row.exhibitionSTRaw, row.exhibitionSt, row.exhibitionST),
@@ -425,11 +401,41 @@ function normalizeProgramBoats(program = {}) {
           course6TrifectaRate: playerTendency.course6TrifectaRate
         },
         flyingCount: finiteNumber(row.racer_flying_count, 0),
+        fStatus: row.fStatus ?? row.F ?? row.f_status ?? row.flyingStatus ?? null,
         lateCount: finiteNumber(row.racer_late_count, 0)
       };
     })
     .filter((row) => Number.isInteger(row.boat) && row.boat >= 1 && row.boat <= 6)
     .sort((a, b) => a.boat - b.boat);
+}
+
+function normalizePercentile(value) {
+  const n = finiteNumber(value, null);
+  if (n === null) return null;
+  return clamp(Math.abs(n) > 1 ? n / 100 : n, 0, 1);
+}
+
+function enrichMotorRanking(boats = []) {
+  const validRateRows = boats
+    .filter((boat) => finiteNumber(boat.motor2Rate, null) !== null)
+    .sort((a, b) => finiteNumber(b.motor2Rate, 0) - finiteNumber(a.motor2Rate, 0));
+  const fallbackRankByBoat = new Map(validRateRows.map((boat, index) => [boat.boat, index + 1]));
+  const count = Math.max(validRateRows.length, 1);
+  return boats.map((boat) => {
+    const explicitRank = finiteNumber(boat.motorRankAtVenue, null);
+    const fallbackRank = fallbackRankByBoat.get(boat.boat) ?? null;
+    const rank = explicitRank ?? fallbackRank;
+    const explicitPercentile = normalizePercentile(boat.motorPercentileAtVenue);
+    const fallbackPercentile = rank !== null && count > 1 ? clamp((count - rank) / (count - 1), 0, 1) : normalizePercentile(boat.motor2Rate);
+    const percentile = explicitPercentile ?? fallbackPercentile ?? 0.5;
+    return {
+      ...boat,
+      motorRankAtVenue: rank,
+      motorPercentileAtVenue: percentile,
+      motorStrengthLabel: boat.motorStrengthLabel || motorStrengthLabel(percentile),
+      motorRankSource: explicitRank !== null || explicitPercentile !== null ? "entry_motor_rank" : fallbackRank !== null ? "race_motor2Rate_rank" : "missing"
+    };
+  });
 }
 
 function laneBias01(course) {
@@ -450,6 +456,7 @@ const EXHIBITION_DELTA_CONTEXT = {
   lapTime: 1.1,
   straightTime: 0.45,
   turnTime: 0.5,
+  motorRank: 1,
   motor2Rate: 28
 };
 
@@ -547,9 +554,17 @@ function weightedFeatureAverage(parts = {}, weights = {}) {
   };
 }
 
-const HEAD_FEATURE_WEIGHTS = { exST: 20, exTime: 10, lapTime: 12, straightTime: 14, turnTime: 12, motor2Rate: 14 };
-const RESIDUAL_FEATURE_WEIGHTS = { lapTime: 18, turnTime: 18, motor2Rate: 18, straightTime: 10, exTime: 8, exST: 6 };
-const FOUR_BENEFICIARY_FEATURE_WEIGHTS = { turnTime: 16, straightTime: 14, motor2Rate: 14, exST: 8, exTime: 6, lapTime: 8 };
+const HEAD_FEATURE_WEIGHTS = BASE_DEFAULT_SCORING_CONFIG.scoringCoefficients.headScore;
+const RESIDUAL_FEATURE_WEIGHTS = BASE_DEFAULT_SCORING_CONFIG.scoringCoefficients.partnerResidualScore;
+const FOUR_BENEFICIARY_FEATURE_WEIGHTS = {
+  turnTime: BASE_DEFAULT_SCORING_CONFIG.scoringCoefficients.fourHeadOpportunity.boat4TurnTime,
+  straightTime: BASE_DEFAULT_SCORING_CONFIG.scoringCoefficients.fourHeadOpportunity.boat4StraightTime,
+  motorRank: BASE_DEFAULT_SCORING_CONFIG.scoringCoefficients.fourHeadOpportunity.boat4MotorRank,
+  motor2Rate: 8,
+  exST: 8,
+  exTime: 6,
+  lapTime: 8
+};
 
 function venueWeightMultiplier(venueId, field, mode = "head") {
   const id = Number(venueId) || 0;
@@ -577,11 +592,11 @@ function applyVenueWeightMultipliers(weights = {}, venueId = null, mode = "head"
 }
 
 function roleFeatureWeights(boat, venueId = null) {
-  if (boat === 1) return applyVenueWeightMultipliers({ exST: 20, exTime: 10, lapTime: 18, turnTime: 18, motor2Rate: 16 }, venueId, "head");
-  if (boat === 2) return applyVenueWeightMultipliers({ exST: 20, turnTime: 20, lapTime: 14, motor2Rate: 16, exTime: 8 }, venueId, "head");
-  if (boat === 3) return applyVenueWeightMultipliers({ exST: 22, straightTime: 22, exTime: 10, turnTime: 14, motor2Rate: 12 }, venueId, "head");
-  if (boat === 4) return applyVenueWeightMultipliers({ exST: 18, straightTime: 20, turnTime: 20, motor2Rate: 16, lapTime: 8 }, venueId, "fourBeneficiary");
-  return { straightTime: 0.3, lapTime: 0.25, turnTime: 0.25, motor2Rate: 0.2 };
+  if (boat === 1) return applyVenueWeightMultipliers({ exST: 18, exTime: 8, lapTime: 18, turnTime: 18, motorRank: 16, motor2Rate: 8 }, venueId, "head");
+  if (boat === 2) return applyVenueWeightMultipliers({ exST: 18, turnTime: 20, lapTime: 14, motorRank: 16, motor2Rate: 8, exTime: 6 }, venueId, "head");
+  if (boat === 3) return applyVenueWeightMultipliers({ exST: 22, straightTime: 22, exTime: 8, turnTime: 14, motorRank: 16, motor2Rate: 8 }, venueId, "head");
+  if (boat === 4) return applyVenueWeightMultipliers({ exST: 16, straightTime: 18, turnTime: 20, motorRank: 18, motor2Rate: 8, lapTime: 8 }, venueId, "fourBeneficiary");
+  return { straightTime: 12, lapTime: 12, turnTime: 12, motorRank: 18, motor2Rate: 8 };
 }
 
 function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}, options = {}) {
@@ -592,6 +607,7 @@ function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}, optio
     lapTime: Object.fromEntries(boats.map((boat) => [boat.boat, boat.lapTime ?? null])),
     straightTime: Object.fromEntries(boats.map((boat) => [boat.boat, boat.straightTime ?? null])),
     turnTime: Object.fromEntries(boats.map((boat) => [boat.boat, boat.turnTime ?? null])),
+    motorRank: Object.fromEntries(boats.map((boat) => [boat.boat, boat.motorPercentileAtVenue ?? null])),
     motor2Rate: Object.fromEntries(boats.map((boat) => [boat.boat, boat.motor2Rate ?? null]))
   };
   const fieldScores = {
@@ -600,6 +616,7 @@ function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}, optio
     lapTime: lowerTimeFeatureScores(values.lapTime, { field: "lapTime", venueId }),
     straightTime: lowerTimeFeatureScores(values.straightTime, { field: "straightTime", venueId }),
     turnTime: lowerTimeFeatureScores(values.turnTime, { field: "turnTime", venueId }),
+    motorRank: highValueFeatureScores(values.motorRank, { field: "motorRank", venueId }),
     motor2Rate: highValueFeatureScores(values.motor2Rate, { field: "motor2Rate", venueId })
   };
   const byBoat = {};
@@ -611,6 +628,7 @@ function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}, optio
       lapTime: Object.prototype.hasOwnProperty.call(fieldScores.lapTime.scores, key) ? fieldScores.lapTime.scores[key] : null,
       straightTime: Object.prototype.hasOwnProperty.call(fieldScores.straightTime.scores, key) ? fieldScores.straightTime.scores[key] : null,
       turnTime: Object.prototype.hasOwnProperty.call(fieldScores.turnTime.scores, key) ? fieldScores.turnTime.scores[key] : null,
+      motorRank: Object.prototype.hasOwnProperty.call(fieldScores.motorRank.scores, key) ? fieldScores.motorRank.scores[key] : null,
       motor2Rate: Object.prototype.hasOwnProperty.call(fieldScores.motor2Rate.scores, key) ? fieldScores.motor2Rate.scores[key] : null
     };
     const role = weightedFeatureAverage(parts, roleFeatureWeights(boat.boat, venueId));
@@ -668,6 +686,10 @@ function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}, optio
       turnTime: row.values.turnTime,
       turnTimeScore: row.scores.turnTime,
       motor2Rate: row.values.motor2Rate,
+      motorRankAtVenue: boats.find((boatRow) => boatRow.boat === row.boat)?.motorRankAtVenue ?? null,
+      motorPercentileAtVenue: boats.find((boatRow) => boatRow.boat === row.boat)?.motorPercentileAtVenue ?? null,
+      motorStrengthLabel: boats.find((boatRow) => boatRow.boat === row.boat)?.motorStrengthLabel ?? null,
+      motorRankScore: row.scores.motorRank,
       motor2RateScore: row.scores.motor2Rate,
       venueNormalizedMetrics: row.venueNormalizedMetrics,
       roleScore: row.roleScore,
@@ -813,6 +835,49 @@ function allCourseReferenceWeight(tendency = {}) {
   return 0;
 }
 
+function buildStartReliabilityContribution({ boat = {}, tendency = {}, featureRow = {}, course = null, config = {} } = {}) {
+  const avgStart = tendency.avgStartTiming ?? tendency.allCourseAvgST ?? boat.averageStartTiming;
+  const avgSTScore = avgStart !== null && avgStart !== undefined ? startTimingScore(avgStart, 0.5) : 0.5;
+  const lateStartRate = optionalRate01(tendency.lateStartRate) ?? 0;
+  const earlyStartRate = optionalRate01(tendency.earlyStartRate) ?? 0;
+  const fCount = Math.max(0, finiteNumber(boat.flyingCount ?? tendency.fCount, 0));
+  const fStatusText = String(boat.fStatus ?? "").toUpperCase();
+  const hasFRisk = fCount > 0 || /\bF|Ｆ/.test(fStatusText);
+  const exSTScore = finiteNumber(featureRow?.scores?.exST, null);
+  const exhibitionGoodButHistoryPoor =
+    exSTScore !== null &&
+    exSTScore >= 0.72 &&
+    (avgSTScore <= 0.42 || lateStartRate >= 0.18);
+  const weights = config.professionalFactorWeights || {};
+  const headAdjustment =
+    (avgSTScore - 0.5) * finiteNumber(weights.startReliabilityHead, 0.11) +
+    Math.max(0, earlyStartRate - 0.18) * finiteNumber(weights.earlyStartAttack, 0.05) * (course >= 3 ? 1 : 0.45) -
+    Math.max(0, lateStartRate - 0.12) * (course <= 2 ? 0.12 : 0.08) -
+    (hasFRisk ? finiteNumber(weights.fRiskHeadPenalty, 0.08) : 0) -
+    (exhibitionGoodButHistoryPoor ? finiteNumber(weights.exhibitionHistoryContradictionPenalty, 0.06) : 0);
+  const wallAdjustment =
+    (avgSTScore - 0.5) * 0.1 -
+    Math.max(0, lateStartRate - 0.12) * 0.16 -
+    (hasFRisk ? 0.05 : 0);
+  const warning =
+    exhibitionGoodButHistoryPoor
+      ? "展示STは良いが平均ST/出遅れ率に不安があり、過信を抑制"
+      : hasFRisk && earlyStartRate >= 0.18
+        ? "早仕掛け傾向とFリスクがあり、攻め評価を抑制"
+        : null;
+  return {
+    avgSTScore,
+    lateStartRate,
+    earlyStartRate,
+    fCount,
+    hasFRisk,
+    exhibitionGoodButHistoryPoor,
+    headAdjustment,
+    wallAdjustment,
+    warning
+  };
+}
+
 function buildScores(boats, exhibition, config, featureScores = buildOriginalExhibitionFeatureScores(boats, exhibition)) {
   const timeZ = exhibition.exhibitionTimeByBoat ? zScores(exhibition.exhibitionTimeByBoat) : {};
   const lapValues = Object.fromEntries(boats.filter((boat) => boat.lapTime !== null).map((boat) => [boat.boat, boat.lapTime]));
@@ -876,6 +941,18 @@ function buildScores(boats, exhibition, config, featureScores = buildOriginalExh
     const roleFeatureBoost = roleScore === null
       ? 0
       : (roleScore - 0.5) * finiteNumber(config.originalExhibitionWeights?.roleFeatureBoost, 0.26) * firstPlaceDampening;
+    const motorRankScore = finiteNumber(featureRow?.scores?.motorRank, normalizePercentile(boat.motorPercentileAtVenue) ?? 0.5);
+    const motorRankBoost = (motorRankScore - 0.5) * finiteNumber(config.professionalFactorWeights?.motorRankHead, 0.18) * firstPlaceDampening;
+    const exhibitionExcellent = (
+      finiteNumber(featureRow?.scores?.exST, 0.5) >= 0.72 ||
+      finiteNumber(featureRow?.scores?.exTime, 0.5) >= 0.72
+    ) && (
+      finiteNumber(featureRow?.scores?.turnTime, 0.5) >= 0.66 ||
+      finiteNumber(featureRow?.scores?.straightTime, 0.5) >= 0.66
+    );
+    const weakMotorHeadPenalty = motorRankScore < 0.28 && !exhibitionExcellent ? (0.28 - motorRankScore) * 0.1 : 0;
+    const startReliability = buildStartReliabilityContribution({ boat, tendency, featureRow, course, config });
+    const startReliabilityBoost = startReliability.headAdjustment;
     const base =
       config.baseWeights.laneBias * laneBias01(course) +
       config.baseWeights.class * (CLASS_SCORE[boat.classNumber] ?? 0.48) +
@@ -902,8 +979,16 @@ function buildScores(boats, exhibition, config, featureScores = buildOriginalExh
       ...boat,
       course,
       featureScores: featureRow,
-      score: base + exhibitionTimeBoost + exhibitionStBoost + entryBoost + makuriBoost + lapBoost + straightBoost + turnBoost + roleFeatureBoost + techniqueBoost + allCourseReferenceBoost + startTendencyBoost + venueBiasBoost - lateRatePenalty,
-      scoreParts: { base, exhibitionTimeBoost, exhibitionStBoost, entryBoost, makuriBoost, lapBoost, straightBoost, turnBoost, roleFeatureBoost, techniqueBoost, allCourseReferenceBoost, startTendencyBoost, lateRatePenalty, venueBiasBoost }
+      score: base + exhibitionTimeBoost + exhibitionStBoost + entryBoost + makuriBoost + lapBoost + straightBoost + turnBoost + roleFeatureBoost + motorRankBoost + startReliabilityBoost + techniqueBoost + allCourseReferenceBoost + startTendencyBoost + venueBiasBoost - lateRatePenalty - weakMotorHeadPenalty,
+      scoreParts: { base, exhibitionTimeBoost, exhibitionStBoost, entryBoost, makuriBoost, lapBoost, straightBoost, turnBoost, roleFeatureBoost, motorRankBoost, startReliabilityBoost, weakMotorHeadPenalty, techniqueBoost, allCourseReferenceBoost, startTendencyBoost, lateRatePenalty, venueBiasBoost },
+      professionalFactors: {
+        motorRankScore,
+        motorRankBoost,
+        motorRankSource: boat.motorRankSource,
+        motorStrengthLabel: boat.motorStrengthLabel,
+        startReliability,
+        weakMotorHeadPenalty
+      }
     };
   });
 }
@@ -1338,17 +1423,110 @@ function buildTendencySummary(scoredBoats = []) {
   };
 }
 
-export function buildRacePrediction(program = {}, preview = null, config = DEFAULT_SCORING_CONFIG) {
-  const scoringConfig = {
-    ...DEFAULT_SCORING_CONFIG,
-    ...config,
-    baseWeights: { ...DEFAULT_SCORING_CONFIG.baseWeights, ...(config?.baseWeights || {}) },
-    exhibitionWeights: { ...DEFAULT_SCORING_CONFIG.exhibitionWeights, ...(config?.exhibitionWeights || {}) },
-    originalExhibitionWeights: { ...DEFAULT_SCORING_CONFIG.originalExhibitionWeights, ...(config?.originalExhibitionWeights || {}) },
-    screeningWeights: { ...DEFAULT_SCORING_CONFIG.screeningWeights, ...(config?.screeningWeights || {}) },
-    stadiumNumber: finiteNumber(program.race_stadium_number, null)
+function buildCoefficientContributionByBoat(scoredBoats = [], featureScores = {}, scoringConfig = DEFAULT_SCORING_CONFIG) {
+  return scoredBoats.map((boat) => {
+    const scoreParts = boat.scoreParts || {};
+    const featureRow = featureScores.byBoat?.[String(boat.boat)] || {};
+    const headWeights = scoringConfig.scoringCoefficients?.headScore || {};
+    const residualWeights = scoringConfig.scoringCoefficients?.partnerResidualScore || {};
+    const headContribution = weightedAverageFromWeights(featureRow.scores || {}, headWeights, 0.5);
+    const residualContribution = weightedAverageFromWeights(featureRow.scores || {}, residualWeights, 0.5);
+    return {
+      boat: boat.boat,
+      totalScore: finiteNumber(boat.score, 0),
+      motorRankContribution: finiteNumber(scoreParts.motorRankBoost, 0),
+      motorRankScore: boat.professionalFactors?.motorRankScore ?? featureRow.scores?.motorRank ?? null,
+      motorStrengthLabel: boat.motorStrengthLabel ?? boat.professionalFactors?.motorStrengthLabel ?? null,
+      startReliabilityContribution: finiteNumber(scoreParts.startReliabilityBoost, 0),
+      startReliability: boat.professionalFactors?.startReliability || null,
+      venueBiasContribution: finiteNumber(scoreParts.venueBiasBoost, 0),
+      conditionContribution: finiteNumber(boat.raceFlowAdjustment, 0),
+      majorScoreParts: {
+        base: finiteNumber(scoreParts.base, 0),
+        roleFeatureBoost: finiteNumber(scoreParts.roleFeatureBoost, 0),
+        motorRankBoost: finiteNumber(scoreParts.motorRankBoost, 0),
+        startReliabilityBoost: finiteNumber(scoreParts.startReliabilityBoost, 0),
+        techniqueBoost: finiteNumber(scoreParts.techniqueBoost, 0),
+        venueBiasBoost: finiteNumber(scoreParts.venueBiasBoost, 0),
+        weakMotorHeadPenalty: finiteNumber(scoreParts.weakMotorHeadPenalty, 0),
+        lateRatePenalty: finiteNumber(scoreParts.lateRatePenalty, 0)
+      },
+      headCoefficientScore: headContribution.score,
+      residualCoefficientScore: residualContribution.score
+    };
+  });
+}
+
+function expectedHeadFromScenario(scenario = null) {
+  if (!scenario) return null;
+  const id = String(scenario.id || "");
+  if (id === "escape_1") return 1;
+  if (id === "sashi_2") return 2;
+  if (id === "makuri_3" || id === "makuri_sashi_3") return 3;
+  if (id === "makuriSashi_4" || id === "four_beneficiary" || id === "second_wave_4") return 4;
+  const firstPattern = Array.isArray(scenario.patterns) ? scenario.patterns[0] : null;
+  return Number.isInteger(firstPattern?.[0]) ? firstPattern[0] : null;
+}
+
+export function checkPredictionConsistency(prediction = {}) {
+  const issues = [];
+  const warnings = [];
+  const mainScenario =
+    prediction.mainScenarioGroup ||
+    prediction.raceFlowScenario?.mainScenarioGroup ||
+    prediction.raceFlowScenario?.mainScenario ||
+    null;
+  const derivedScenario =
+    prediction.derivedScenarioGroup ||
+    prediction.raceFlowScenario?.derivedScenarioGroup ||
+    null;
+  const mainTickets = Array.isArray(prediction.tickets?.trifecta)
+    ? prediction.tickets.trifecta.slice(0, 6)
+    : [];
+  const mainHeads = [...new Set(mainTickets.map((ticket) => Number(ticket?.boats?.[0])).filter(Number.isFinite))];
+  const expectedHead = expectedHeadFromScenario(mainScenario);
+  if (expectedHead && mainHeads.length > 0 && !mainHeads.includes(expectedHead)) {
+    issues.push(`mainScenario ${mainScenario.id} expects ${expectedHead}-head, but main tickets start with ${mainHeads.join("/")}`);
+  }
+  const fourHeadScore = finiteNumber(
+    prediction.raceFlowScenario?.scoreByBoat?.["4"]?.headScore ?? prediction.raceFlowScenario?.scoreByBoat?.[4]?.headScore,
+    0
+  );
+  const fourBenefitScore = finiteNumber(
+    prediction.raceFlowScenario?.scenarioFamilies?.find((row) => row.id === "four_beneficiary")?.score01,
+    0
+  );
+  const hasFourTicket = mainTickets.some((ticket) => Number(ticket?.boats?.[0]) === 4) ||
+    (Array.isArray(prediction.extraTickets) && prediction.extraTickets.some((ticket) => String(ticket?.combo || "").startsWith("4-")));
+  if ((fourHeadScore >= 0.52 || fourBenefitScore >= 0.54) && !hasFourTicket) {
+    warnings.push("4-head warning is high but 4-head tickets are not reflected in main or upset tickets");
+  }
+  const confidenceScore = finiteNumber(prediction.confidenceScore ?? prediction.confidence?.score, null);
+  if (confidenceScore !== null && confidenceScore < 45) {
+    warnings.push("見送り推奨: confidence is low, tickets should be treated as reference");
+  }
+  const topScenarioScore = finiteNumber(mainScenario?.score01, null);
+  const derivedScenarioScore = finiteNumber(derivedScenario?.score01, null);
+  if (topScenarioScore !== null && derivedScenarioScore !== null && Math.abs(topScenarioScore - derivedScenarioScore) < 0.04) {
+    warnings.push("見送り推奨: main and derived scenario scores are close");
+  }
+  return {
+    ok: issues.length === 0,
+    referenceOnly: warnings.some((warning) => warning.includes("見送り推奨")),
+    expectedHead,
+    mainHeads,
+    issues,
+    warnings
   };
-  const boats = normalizeProgramBoats(program);
+}
+
+export function buildRacePrediction(program = {}, preview = null, config = DEFAULT_SCORING_CONFIG) {
+  const stadiumNumber = finiteNumber(program.race_stadium_number, null);
+  const scoringConfig = getVenueScoringConfig(mergeScoringConfig({
+    ...config,
+    stadiumNumber
+  }), stadiumNumber);
+  const boats = enrichMotorRanking(normalizeProgramBoats(program));
   const raceConditions = normalizeRaceConditionsForPrediction(program, preview || {});
   const previewWithConditions = mergeRaceConditionsIntoPreview(preview || {}, raceConditions);
   const exhibition = enrichExhibitionFeaturesFromBoats(buildExhibitionFeatures(previewWithConditions), boats);
@@ -1369,7 +1547,8 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     featureScores,
     venueBias: venueBiasSource,
     stadiumNumber: scoringConfig.stadiumNumber,
-    raceConditions
+    raceConditions,
+    scoringConfig
   });
   const scoredBoats = applyRaceFlowScenarioAdjustments(baseScoredBoats, raceFlowScenario).sort((a, b) => a.boat - b.boat);
   const tendencySummary = buildTendencySummary(scoredBoats);
@@ -1391,6 +1570,22 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     featureScores,
     featureScorePreview: featureScores.preview,
     venueNormalizedExhibitionMetrics: featureScores.venueNormalizedMetrics,
+    currentScoringWeights: scoringConfig.scoringCoefficients,
+    venueOverrideApplied: scoringConfig.venueOverrideApplied || null,
+    coefficientContributionByBoat: buildCoefficientContributionByBoat(scoredBoats, featureScores, scoringConfig),
+    motorRankContribution: scoredBoats.map((boat) => ({
+      boat: boat.boat,
+      motorNo: boat.motorNo ?? null,
+      motorRankAtVenue: boat.motorRankAtVenue ?? null,
+      motorPercentileAtVenue: boat.motorPercentileAtVenue ?? null,
+      motorStrengthLabel: boat.motorStrengthLabel ?? null,
+      contribution: boat.scoreParts?.motorRankBoost ?? 0
+    })),
+    startReliabilityContribution: scoredBoats.map((boat) => ({
+      boat: boat.boat,
+      contribution: boat.scoreParts?.startReliabilityBoost ?? 0,
+      detail: boat.professionalFactors?.startReliability || null
+    })),
     raceFlowScenario,
     raceFlowScenarioPreview: raceFlowScenario.scenarioFamilies || raceFlowScenario.scenarios,
     scenarioFamilyPreview: raceFlowScenario.scenarioFamilies || [],
@@ -1403,6 +1598,8 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     ticketAdjustmentLog: raceFlowScenario.ticketAdjustmentLog,
     ticketDecisionCompatibilityPreview: decisionCompatibleTickets.preview,
     conditionAdjustmentLog: raceFlowScenario.conditionAdjustmentLog,
+    venueBiasContribution: scoredBoats.map((boat) => ({ boat: boat.boat, contribution: boat.scoreParts?.venueBiasBoost ?? 0 })),
+    conditionContribution: raceFlowScenario.conditionAdjustmentLog,
     tendencySummary,
     tendencyScorePreview: tendencySummary.preview,
     scoredBoats,
@@ -1433,7 +1630,7 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     extraTickets.push(ticket);
     if (extraTickets.length >= 6) break;
   }
-  return {
+  const finalPrediction = {
     ...prediction,
     scenario,
     developmentScenarios: development.scenarios,
@@ -1444,6 +1641,9 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     upsetReasons: development.upsetReasons,
     extraTickets
   };
+  finalPrediction.finalScenarioConsistencyCheck = checkPredictionConsistency(finalPrediction);
+  finalPrediction.coefficientWarning = finalPrediction.finalScenarioConsistencyCheck.warnings;
+  return finalPrediction;
 }
 
 export function buildConfidenceScore(prediction = {}) {
@@ -1555,9 +1755,26 @@ export function buildConfidenceScore(prediction = {}) {
   for (const warning of raceFlowDataWarnings) {
     if (warning && !warnings.includes(warning)) warnings.push(warning);
   }
+  const consistencyWarnings = Array.isArray(prediction.finalScenarioConsistencyCheck?.warnings)
+    ? prediction.finalScenarioConsistencyCheck.warnings
+    : [];
+  for (const warning of consistencyWarnings) {
+    if (warning && !warnings.includes(warning)) warnings.push(warning);
+  }
   if (prediction.exhibition?.status !== "exhibition_reflected") warnings.push("展示前の出走表ベース予想");
+  const roundedScore = Math.round(clamp(score, 0, 100));
+  const waterUnstable = prediction.conditionAdjustmentLog?.some((row) => row?.type === "wind" && row?.level === "strong" || row?.type === "wave" && row?.level === "strong");
+  if (
+    roundedScore < 45 ||
+    topScoreGap < 0.06 ||
+    waterUnstable && roundedScore < 58 ||
+    prediction.finalScenarioConsistencyCheck?.ok === false
+  ) {
+    const warning = "見送り推奨: 係数診断上、強い本線推薦ではなく参考買い目扱い";
+    if (!warnings.includes(warning)) warnings.push(warning);
+  }
   return {
-    score: Math.round(clamp(score, 0, 100)),
+    score: roundedScore,
     warnings,
     factors: {
       boat1First,
@@ -1583,7 +1800,9 @@ export function buildConfidenceScore(prediction = {}) {
       tendencyAvailable,
       tendencyComplete,
       tendencyQualityAdjustment,
-      raceFlowQualityAdjustment
+      raceFlowQualityAdjustment,
+      waterUnstable,
+      finalScenarioConsistencyCheck: prediction.finalScenarioConsistencyCheck || null
     }
   };
 }
@@ -1607,7 +1826,10 @@ function scoreByBoatFromRows(rows = [], boat, field, fallback = 0.5) {
 }
 
 function scenarioScore01(prediction = {}, scenarioId, fallback = 0.5) {
-  const scenario = (Array.isArray(prediction.raceFlowScenario?.scenarios) ? prediction.raceFlowScenario.scenarios : [])
+  const scenario = [
+    ...(Array.isArray(prediction.raceFlowScenario?.scenarioFamilies) ? prediction.raceFlowScenario.scenarioFamilies : []),
+    ...(Array.isArray(prediction.raceFlowScenario?.scenarios) ? prediction.raceFlowScenario.scenarios : [])
+  ]
     .find((row) => row?.id === scenarioId);
   return score01(scenario?.score, fallback);
 }
@@ -1742,6 +1964,8 @@ function buildBoat4RecommendedTickets({
 }
 
 function buildBoat4OpportunityRow(program = {}, prediction = {}, confidence = buildConfidenceScore(prediction), config = {}) {
+  const scoringConfig = mergeScoringConfig(config || {});
+  const opportunityWeights = scoringConfig.scoringCoefficients?.fourHeadOpportunity || {};
   const boat4 = (Array.isArray(prediction.scoredBoats) ? prediction.scoredBoats : []).find((row) => row.boat === 4) || {};
   const wallRows = Array.isArray(prediction.wallScorePreview) ? prediction.wallScorePreview : [];
   const splitRows = Array.isArray(prediction.headPartnerSplitPreview) ? prediction.headPartnerSplitPreview : [];
@@ -1773,6 +1997,7 @@ function buildBoat4OpportunityRow(program = {}, prediction = {}, confidence = bu
   const boat4TurnTimeScore = featureScore01(prediction, 4, "turnTime", 0.5);
   const boat4StraightTimeScore = featureScore01(prediction, 4, "straightTime", 0.5);
   const boat4LapTimeScore = featureScore01(prediction, 4, "lapTime", 0.5);
+  const boat4MotorRankScore = featureScore01(prediction, 4, "motorRank", 0.5);
   const boat4Motor2RateScore = featureScore01(prediction, 4, "motor2Rate", 0.5);
   const boat4MakuriSashiRateScore = boat4MakuriSashiReferenceScore(boat4);
   const venue4HeadComboBiasScore =
@@ -1783,20 +2008,23 @@ function buildBoat4OpportunityRow(program = {}, prediction = {}, confidence = bu
     boat4TurnTimeScore,
     boat4LapTimeScore
   });
-  const rawScore =
-    boat4HeadPotentialScore * 0.18 +
-    threeAttackFourBenefitScore * 0.18 +
-    twoSashiFailureScore * 0.1 +
-    boat2WallWeaknessScore * 0.1 +
-    boat3TriggerScore * 0.11 +
-    Math.max(0, 0.66 - boat3ResidualScore) * 0.05 +
-    boat4BeneficiaryScore * 0.14 +
-    venue4HeadComboBiasScore * 0.04 +
-    condition.score * 0.04 +
-    boat4TurnTimeScore * 0.06 +
-    boat4StraightTimeScore * 0.05 +
-    boat4Motor2RateScore * 0.03 +
-    boat4MakuriSashiRateScore * 0.04;
+  const coefficientScore = weightedAverageFromWeights({
+    boat3AttackTrigger: boat3TriggerScore,
+    boat2SashiFailure: twoSashiFailureScore,
+    boat1CollapseRisk: clamp(1 - scoreByBoatFromRows(splitRows, 1, "residualScore", 0.5)),
+    boat4TurnTime: boat4TurnTimeScore,
+    boat4StraightTime: boat4StraightTimeScore,
+    boat4MotorRank: boat4MotorRankScore,
+    boat4MakuriSashiTendency: boat4MakuriSashiRateScore,
+    venue4HeadBias: venue4HeadComboBiasScore,
+    conditionAdjustment: condition.score
+  }, opportunityWeights, 0.5);
+  const rawScore = clamp(
+    coefficientScore.score * 0.74 +
+    boat4HeadPotentialScore * 0.1 +
+    threeAttackFourBenefitScore * 0.1 +
+    boat4BeneficiaryScore * 0.06
+  );
   const boat4HeadOpportunityScore = roundNumber(clamp(rawScore) * 100, 1);
   const strengthLabel =
     boat4HeadOpportunityScore >= 60 ? "高" :
@@ -1843,8 +2071,10 @@ function buildBoat4OpportunityRow(program = {}, prediction = {}, confidence = bu
     boat4TurnTimeScore,
     boat4StraightTimeScore,
     boat4LapTimeScore,
+    boat4MotorRankScore,
     boat4Motor2RateScore,
-    boat4MakuriSashiRateScore
+    boat4MakuriSashiRateScore,
+    coefficientScore: coefficientScore.score
   };
 
   return {
@@ -1863,6 +2093,7 @@ function buildBoat4OpportunityRow(program = {}, prediction = {}, confidence = bu
       venue4HeadPartnerRanking: partnerRanking,
       ticketPromotionDemotionReasons: ticketModel.reasons,
       conditionNotes: condition.notes,
+      coefficientWeights: opportunityWeights,
       confidenceWarnings: confidence.warnings
     },
     prediction
@@ -1870,10 +2101,7 @@ function buildBoat4OpportunityRow(program = {}, prediction = {}, confidence = bu
 }
 
 export function buildBoat4OpportunityRanking(programs = [], previewsByRaceKey = {}, options = {}) {
-  const config = {
-    ...DEFAULT_SCORING_CONFIG,
-    ...(options.config || {})
-  };
+  const config = mergeScoringConfig(options.config || {});
   const rows = (Array.isArray(programs) ? programs : [])
     .map((program) => {
       try {
@@ -1899,10 +2127,7 @@ export function buildBoat4OpportunityRanking(programs = [], previewsByRaceKey = 
 }
 
 export function buildTodayRanking(programs = [], previewsByRaceKey = {}, options = {}) {
-  const config = {
-    ...DEFAULT_SCORING_CONFIG,
-    ...(options.config || {})
-  };
+  const config = mergeScoringConfig(options.config || {});
   const rows = (Array.isArray(programs) ? programs : [])
     .map((program) => {
       try {

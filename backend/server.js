@@ -3,9 +3,10 @@ import express from "express";
 import cors from "cors";
 import { raceRouter } from "./src/routes/race.js";
 import { fetchKyoteiBiyoriRaceData } from "./src/services/kyoteibiyori.js";
-import { runHistoryBackfill } from "./src/services/race-history-backfill.js";
+import { loadHistoryCache, runHistoryBackfill } from "./src/services/race-history-backfill.js";
 import { fetchRaceTendencies } from "./src/services/racer-tendencies.js";
 import { runPredictionFeatureLogMigrations } from "./prediction-feature-log.js";
+import { runPredictionBacktest } from "../src/lib/prediction-backtester.js";
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -33,6 +34,13 @@ function toNullableNumber(value) {
 function toPositiveInt(value, fallback = null) {
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+function addDays(date, days) {
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return date;
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 const originalExhibitionCache = new Map();
@@ -665,6 +673,53 @@ app.get("/api/race/tendencies", async (req, res) => {
       source: "error",
       error: String(error?.message || error),
       debug: { date, venueId, raceNo, months, backfill, allVenues }
+    });
+  }
+});
+
+app.get("/api/race/backtest", async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  const dateFrom = String(req.query?.dateFrom || "");
+  const dateTo = String(req.query?.dateTo || "");
+  const venueId = toPositiveInt(req.query?.venueId, null);
+  if (!dateFrom || !dateTo) {
+    return res.status(400).json({
+      ok: false,
+      error: "dateFrom and dateTo are required",
+      sampleRaceCount: 0,
+      hitRates: {},
+      calibration: { coefficientSuggestions: [] },
+      debug: { dateFrom, dateTo, venueId }
+    });
+  }
+  try {
+    const cache = loadHistoryCache({
+      periodStart: dateFrom,
+      periodEnd: addDays(dateTo, 1)
+    });
+    const result = runPredictionBacktest({
+      races: cache.races,
+      dateFrom,
+      dateTo,
+      venueId
+    });
+    return res.json({
+      ...result,
+      debug: {
+        ...(result.debug || {}),
+        historyCacheFileCount: cache.files.length,
+        historyCacheRaceCount: cache.races.length,
+        historyCacheErrors: cache.errors
+      }
+    });
+  } catch (error) {
+    return res.json({
+      ok: false,
+      error: String(error?.message || error),
+      sampleRaceCount: 0,
+      hitRates: {},
+      calibration: { coefficientSuggestions: [] },
+      debug: { dateFrom, dateTo, venueId }
     });
   }
 });

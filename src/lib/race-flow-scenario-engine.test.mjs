@@ -82,6 +82,49 @@ assert.ok(
   "weak 2 wall should raise the 3 makuri scenario"
 );
 
+const lateBoat2Wall = buildRaceFlowScenarioModel({
+  entries: entries({
+    2: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, lateStartRate: 0.34, avgStartTiming: 0.24 }
+  }),
+  featureScores: featureScores({
+    2: { exST: 0.75, straightTime: 0.72, turnTime: 0.7, motorRank: 0.7, motor2Rate: 0.7 }
+  })
+});
+const reliableBoat2Wall = buildRaceFlowScenarioModel({
+  entries: entries({
+    2: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, lateStartRate: 0.02, avgStartTiming: 0.08 }
+  }),
+  featureScores: featureScores({
+    2: { exST: 0.75, straightTime: 0.72, turnTime: 0.7, motorRank: 0.7, motor2Rate: 0.7 }
+  })
+});
+assert.ok(
+  reliableBoat2Wall.wallScores.find((row) => row.boat === 2).wallScore >
+    lateBoat2Wall.wallScores.find((row) => row.boat === 2).wallScore,
+  "lateStartRate should reduce boat2 wallScore"
+);
+
+const strongAvgStBoat3 = buildRaceFlowScenarioModel({
+  entries: entries({
+    3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, avgStartTiming: 0.08, makuriRate: 0.2 }
+  }),
+  featureScores: featureScores({
+    3: { exST: 0.7, straightTime: 0.72, motorRank: 0.7 }
+  })
+});
+const poorAvgStBoat3 = buildRaceFlowScenarioModel({
+  entries: entries({
+    3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 12, avgStartTiming: 0.24, makuriRate: 0.2 }
+  }),
+  featureScores: featureScores({
+    3: { exST: 0.7, straightTime: 0.72, motorRank: 0.7 }
+  })
+});
+assert.ok(
+  scenario(strongAvgStBoat3, "makuri_3").score > scenario(poorAvgStBoat3, "makuri_3").score,
+  "good avgST should improve boat3 attack scenario"
+);
+
 const boat4StrongAfter3Attack = buildRaceFlowScenarioModel({
   entries: entries({
     3: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 13, makuriRate: 0.3 },
