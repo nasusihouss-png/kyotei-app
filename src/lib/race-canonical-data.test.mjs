@@ -131,6 +131,8 @@ function tendencyRows() {
   const tablePreview = buildTableDisplayPreview(tableEntries);
   assert.deepEqual(tablePreview[0], {
     boat: 1,
+    exST: null,
+    exTime: null,
     lapTime: 18.22,
     straightTime: 7.43,
     turnTime: 4.45
@@ -150,6 +152,30 @@ function tendencyRows() {
   assert.equal(scoredBoat1.lapTime, canonical.entries[0].lapTime);
   assert.equal(scoredBoat1.straightTime, canonical.entries[0].straightTime);
   assert.equal(scoredBoat1.turnTime, canonical.entries[0].turnTime);
+}
+
+{
+  const canonical = buildCanonicalRaceData({
+    program: program({
+      1: { racer_start_timing: ".15", racer_exhibition_time: 0 },
+      2: { exhibitionST: "F.03", exhibitionTime: "6.76" }
+    }),
+    conditions: {
+      windDirection: "追い風",
+      windSpeed: 5,
+      waveHeight: 3,
+      weather: "晴"
+    }
+  });
+  const boat1 = canonical.entries.find((row) => row.boat === 1);
+  const boat2 = canonical.entries.find((row) => row.boat === 2);
+  assert.equal(boat1.exST, 0.15, "exST parsing should accept .15");
+  assert.equal(boat1.exTime, null, "missing/not-run exhibition time 0 must stay null");
+  assert.equal(boat2.exST, -0.03, "F.03 should normalize to a signed start timing");
+  assert.equal(boat2.exTime, 6.76, "exTime parsing should accept numeric strings");
+  assert.equal(canonical.conditions.windSpeed, 5);
+  assert.equal(canonical.debug.predictionInputProgram.race_wind, 5);
+  assert.equal(canonical.debug.canonicalPreview[0].exTime, null);
 }
 
 {

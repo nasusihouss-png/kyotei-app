@@ -23,22 +23,38 @@ function uniqueTopBoats(tickets, index, limit = 4) {
 }
 
 function boatLabelList(boats) {
-  return safeArray(boats).length > 0 ? boats.map((boat) => `${boat}号艇`).join(" / ") : "-";
+  const normalized = safeArray(boats)
+    .map((row) => typeof row === "object" ? row.boat : row)
+    .filter((boat) => Number.isInteger(Number(boat)));
+  return normalized.length > 0 ? normalized.map((boat) => `${boat}号艇`).join(" / ") : "-";
+}
+
+function scenarioLabel(scenario) {
+  if (!scenario) return "-";
+  const label = scenario.label || scenario.id || "-";
+  return scenario.score == null ? label : `${label} ${Number(scenario.score).toFixed(1)}`;
 }
 
 export default function PredictionSummary({
   prediction = null,
   predictionExplanation = {},
-  formatPercentDisplay,
-  formatMaybeNumber
+  formatPercentDisplay
 }) {
   if (!prediction) return null;
   const tickets = safeArray(prediction?.tickets?.trifecta);
-  const firstCandidates = safeArray(prediction?.firstPlaceProbabilities)
-    .slice(0, 3)
-    .map((row) => row.boat);
-  const secondCandidates = uniqueTopBoats(tickets.slice(0, 10), 1, 4);
-  const thirdCandidates = uniqueTopBoats(tickets.slice(0, 10), 2, 5);
+  const raceFlow = prediction?.raceFlowScenario || {};
+  const headCandidates = safeArray(raceFlow.headCandidates);
+  const partnerCandidates = safeArray(raceFlow.partnerCandidates);
+  const dangerousButNotHead = safeArray(raceFlow.dangerousButNotHead);
+  const firstCandidates = headCandidates.length > 0
+    ? headCandidates.slice(0, 3).map((row) => row.boat)
+    : safeArray(prediction?.firstPlaceProbabilities).slice(0, 3).map((row) => row.boat);
+  const secondCandidates = partnerCandidates.length > 0
+    ? partnerCandidates.slice(0, 4).map((row) => row.boat)
+    : uniqueTopBoats(tickets.slice(0, 10), 1, 4);
+  const thirdCandidates = partnerCandidates.length > 0
+    ? partnerCandidates.slice(0, 5).map((row) => row.boat)
+    : uniqueTopBoats(tickets.slice(0, 10), 2, 5);
   const confidence = predictionExplanation?.confidence_score ?? null;
   const confidenceLabel = confidence === null || confidence === undefined
     ? "-"
@@ -91,6 +107,22 @@ export default function PredictionSummary({
           <span>荒れ警報</span>
           <strong>{upsetText}</strong>
         </div>
+        <div className="betting-summary-item">
+          <span>本線展開</span>
+          <strong>{scenarioLabel(raceFlow.mainScenario)}</strong>
+        </div>
+        <div className="betting-summary-item">
+          <span>対抗展開</span>
+          <strong>{scenarioLabel(raceFlow.secondaryScenario)}</strong>
+        </div>
+        <div className="betting-summary-item">
+          <span>穴展開</span>
+          <strong>{scenarioLabel(raceFlow.upsetScenario)}</strong>
+        </div>
+        <div className="betting-summary-item">
+          <span>危険だが頭ではない</span>
+          <strong>{boatLabelList(dangerousButNotHead)}</strong>
+        </div>
       </div>
       {predictionExplanation?.skipRiskReason ? (
         <div className="warning-banner compact-warning" style={{ marginTop: 10 }}>
@@ -99,7 +131,7 @@ export default function PredictionSummary({
       ) : null}
       {confidence !== null && Number(confidence) < 0.3 ? (
         <div className="warning-banner compact-warning" style={{ marginTop: 10 }}>
-          信頼度が低いため、買い目は参考扱いです。
+          信頼度が低いため、買い目は参考程度です。見送りも検討してください。
         </div>
       ) : null}
     </section>

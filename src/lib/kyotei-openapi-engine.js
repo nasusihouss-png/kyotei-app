@@ -1,4 +1,10 @@
-﻿export const DEFAULT_SCORING_CONFIG = {
+﻿import {
+  applyRaceFlowScenarioAdjustments,
+  buildRaceFlowScenarioModel,
+  buildRaceFlowScenarioTickets
+} from "./race-flow-scenario-engine.js";
+
+export const DEFAULT_SCORING_CONFIG = {
   shrinkK: 24,
   baseWeights: {
     laneBias: 0.28,
@@ -122,8 +128,43 @@ function validExhibitionTime(value) {
 }
 
 function validStartTiming(value) {
-  const n = finiteNumber(value, null);
+  const n = parseStartTimingValue(value);
   return n !== null && n > -0.3 && n < 1;
+}
+
+function parseStartTimingValue(value) {
+  const direct = finiteNumber(value, null);
+  if (direct !== null) return direct;
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text || text === "-") return null;
+  const normalized = text
+    .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(/[．]/g, ".")
+    .replace(/\s+/g, "");
+  const match = normalized.match(/^([FL])?([+-]?(?:\d+(?:\.\d+)?|\.\d+))/i);
+  if (!match) return null;
+  const flag = String(match[1] || "").toUpperCase();
+  const numericText = match[2].startsWith(".") ? `0${match[2]}` : match[2];
+  const num = Number(numericText);
+  if (!Number.isFinite(num)) return null;
+  return flag === "F" && num > 0 ? -Math.abs(num) : num;
+}
+
+function firstStartTiming(...values) {
+  for (const value of values) {
+    const num = parseStartTimingValue(value);
+    if (num !== null) return num;
+  }
+  return null;
+}
+
+function firstExhibitionTime(...values) {
+  for (const value of values) {
+    const num = finiteNumber(value, null);
+    if (num !== null && num > 0) return num;
+  }
+  return null;
 }
 
 function getOpenApiPreviewField(row = {}, field) {
@@ -207,11 +248,33 @@ export function buildExhibitionFeatures(preview = {}) {
       perBoat: {}
     }
   };
+  const conditions = preview?.conditions || preview?.raceConditions || {};
+  const wind = finiteNumber(preview.race_wind ?? preview.windSpeed ?? conditions.windSpeed ?? conditions.wind, null);
+  const wave = finiteNumber(preview.race_wave ?? preview.waveHeight ?? conditions.waveHeight ?? conditions.wave, null);
+  const weather = preview.race_weather ?? conditions.weather ?? null;
+  const windDirection = preview.race_wind_direction ?? preview.race_wind_direction_number ?? conditions.windDirection ?? null;
+  if (wind !== null || wave !== null || weather != null || windDirection != null) {
+    feature.weather = {
+      wind,
+      windSpeed: wind,
+      wave,
+      waveHeight: wave,
+      weather,
+      weatherNumber: finiteNumber(preview.race_weather_number, null),
+      windDirection,
+      windDirectionNumber: finiteNumber(preview.race_wind_direction_number, null)
+    };
+    feature.usedFields.push("weather");
+  }
   if (feature.diagnostics.exhibitionStatus.exhibitionNotRun) {
     feature.diagnostics.reason = "preview_all_exhibition_time_zero_or_null_and_course_null";
+    if (feature.usedFields.length > 0) feature.status = "exhibition_reflected";
     return feature;
   }
-  if (rows.length < 6) return feature;
+  if (rows.length < 6) {
+    if (feature.usedFields.length > 0) feature.status = "exhibition_reflected";
+    return feature;
+  }
 
   const coursePairs = BOATS.map((boat) => {
     const row = getPreviewBoatByNumber(preview, boat) || map.get(boat);
@@ -226,7 +289,7 @@ export function buildExhibitionFeatures(preview = {}) {
   const stPairs = BOATS.map((boat) => {
     const row = getPreviewBoatByNumber(preview, boat) || map.get(boat);
     const value = getOpenApiPreviewField(row, "racer_start_timing");
-    return [boat, validStartTiming(value) ? finiteNumber(value) : null, row || null];
+    return [boat, validStartTiming(value) ? parseStartTimingValue(value) : null, row || null];
   });
   for (const boat of BOATS) {
     feature.diagnostics.perBoat[String(boat)] = {
@@ -250,19 +313,54 @@ export function buildExhibitionFeatures(preview = {}) {
     feature.usedFields.push("exhibition_st");
   }
 
-  const wind = finiteNumber(preview.race_wind ?? preview.windSpeed, null);
-  const wave = finiteNumber(preview.race_wave ?? preview.waveHeight, null);
-  if (feature.usedFields.length > 0 && (wind !== null || wave !== null || preview.race_weather_number != null)) {
-    feature.weather = {
-      wind,
-      wave,
-      weatherNumber: finiteNumber(preview.race_weather_number, null),
-      windDirectionNumber: finiteNumber(preview.race_wind_direction_number, null)
-    };
-    feature.usedFields.push("weather");
-  }
   if (feature.usedFields.length > 0) feature.status = "exhibition_reflected";
   return feature;
+}
+
+function normalizeRaceConditionsForPrediction(program = {}, preview = {}) {
+  const fromProgram = program?.conditions || program?.raceConditions || {};
+  const fromPreview = preview?.conditions || preview?.raceConditions || {};
+  return {
+    windDirection:
+      fromProgram.windDirection ??
+      fromPreview.windDirection ??
+      program?.windDirection ??
+      program?.race_wind_direction ??
+      preview?.race_wind_direction ??
+      preview?.race_wind_direction_number ??
+      null,
+    windSpeed: finiteNumber(
+      fromProgram.windSpeed ?? fromProgram.wind ?? fromPreview.windSpeed ?? fromPreview.wind ?? program?.windSpeed ?? program?.race_wind ?? preview?.windSpeed ?? preview?.race_wind,
+      null
+    ),
+    waveHeight: finiteNumber(
+      fromProgram.waveHeight ?? fromProgram.wave ?? fromPreview.waveHeight ?? fromPreview.wave ?? program?.waveHeight ?? program?.race_wave ?? preview?.waveHeight ?? preview?.race_wave,
+      null
+    ),
+    weather:
+      fromProgram.weather ??
+      fromPreview.weather ??
+      program?.weather ??
+      program?.race_weather ??
+      preview?.race_weather ??
+      preview?.race_weather_number ??
+      null,
+    temperature: finiteNumber(fromProgram.temperature ?? fromPreview.temperature ?? program?.temperature ?? preview?.temperature, null),
+    waterTemperature: finiteNumber(fromProgram.waterTemperature ?? fromPreview.waterTemperature ?? program?.waterTemperature ?? preview?.waterTemperature, null)
+  };
+}
+
+function mergeRaceConditionsIntoPreview(preview = null, conditions = {}) {
+  const base = preview && typeof preview === "object" ? preview : {};
+  return {
+    ...base,
+    conditions,
+    raceConditions: conditions,
+    race_wind: base.race_wind ?? conditions.windSpeed,
+    race_wave: base.race_wave ?? conditions.waveHeight,
+    race_weather: base.race_weather ?? conditions.weather,
+    race_wind_direction: base.race_wind_direction ?? conditions.windDirection
+  };
 }
 
 export function shrinkRate(localRate, sampleSize, priorRate, k = DEFAULT_SCORING_CONFIG.shrinkK) {
@@ -295,8 +393,8 @@ function normalizeProgramBoats(program = {}) {
         motor2Rate: finiteNumber(row.racer_assigned_motor_top_2_percent ?? row.motor2Rate ?? row.motor_2rate, null),
         boat2Rate: finiteNumber(row.racer_assigned_boat_top_2_percent, null),
         averageStartTiming: finiteNumber(row.racer_average_start_timing, null),
-        exST: finiteNumber(row.racer_start_timing ?? row.exST ?? row.exhibitionSt ?? row.exhibitionST, null),
-        exTime: finiteNumber(row.racer_exhibition_time ?? row.exTime ?? row.exhibitionTime, null),
+        exST: firstStartTiming(row.racer_start_timing, row.exST, row.exSt, row.startTiming, row.exhibitionStSignedValue, row.exhibitionStRaw, row.exhibitionSTRaw, row.exhibitionSt, row.exhibitionST),
+        exTime: firstExhibitionTime(row.racer_exhibition_time, row.exTime, row.exhibitionTime, row.exhibition_time),
         lapTime: finiteNumber(row.racer_lap_time ?? row.lapTime ?? row.lap_time ?? row.kyoteiBiyoriLapTime ?? row.kyoteibiyori_lap_time, null),
         straightTime: finiteNumber(row.racer_straight_time ?? row.straightTime ?? row.straight_time ?? row.kyoteiBiyoriStraightTime ?? row.kyoteibiyori_straight_time, null),
         turnTime: finiteNumber(row.racer_turn_time ?? row.turnTime ?? row.turn_time ?? row.kyoteiBiyoriTurnTime ?? row.kyoteibiyori_turn_time, null),
@@ -1146,9 +1244,20 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     stadiumNumber: finiteNumber(program.race_stadium_number, null)
   };
   const boats = normalizeProgramBoats(program);
-  const exhibition = enrichExhibitionFeaturesFromBoats(preview ? buildExhibitionFeatures(preview) : buildExhibitionFeatures(null), boats);
+  const raceConditions = normalizeRaceConditionsForPrediction(program, preview || {});
+  const previewWithConditions = mergeRaceConditionsIntoPreview(preview || {}, raceConditions);
+  const exhibition = enrichExhibitionFeaturesFromBoats(buildExhibitionFeatures(previewWithConditions), boats);
+  exhibition.conditions = raceConditions;
   const featureScores = buildOriginalExhibitionFeatureScores(boats, exhibition);
-  const scoredBoats = buildScores(boats, exhibition, scoringConfig, featureScores).sort((a, b) => a.boat - b.boat);
+  const baseScoredBoats = buildScores(boats, exhibition, scoringConfig, featureScores).sort((a, b) => a.boat - b.boat);
+  const raceFlowScenario = buildRaceFlowScenarioModel({
+    entries: baseScoredBoats,
+    featureScores,
+    venueBias: scoringConfig.venueLaneBias || scoringConfig.venueBias || null,
+    stadiumNumber: scoringConfig.stadiumNumber,
+    raceConditions
+  });
+  const scoredBoats = applyRaceFlowScenarioAdjustments(baseScoredBoats, raceFlowScenario).sort((a, b) => a.boat - b.boat);
   const tendencySummary = buildTendencySummary(scoredBoats);
   const firstPlaceProbabilities = softmax(scoredBoats)
     .map((row) => ({ boat: row.boat, course: row.course, probability: row.probability }))
@@ -1160,11 +1269,18 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
       date: program.race_date ?? null,
       stadiumNumber: finiteNumber(program.race_stadium_number, null),
       raceNumber: finiteNumber(program.race_number, null),
-      closedAt: program.race_closed_at ?? null
+      closedAt: program.race_closed_at ?? null,
+      conditions: raceConditions
     },
     exhibition,
     featureScores,
     featureScorePreview: featureScores.preview,
+    raceFlowScenario,
+    raceFlowScenarioPreview: raceFlowScenario.scenarios,
+    wallScorePreview: raceFlowScenario.wallScores,
+    headPartnerSplitPreview: raceFlowScenario.headPartnerSplit,
+    ticketAdjustmentLog: raceFlowScenario.ticketAdjustmentLog,
+    conditionAdjustmentLog: raceFlowScenario.conditionAdjustmentLog,
     tendencySummary,
     tendencyScorePreview: tendencySummary.preview,
     scoredBoats,
@@ -1186,15 +1302,25 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     upsetScore: row.upsetScore,
     reasons: row.reasons
   }));
+  const raceFlowExtraTickets = buildRaceFlowScenarioTickets(raceFlowScenario, tickets.trifecta.slice(0, 12), 6);
+  const extraTickets = [];
+  const seenExtraTickets = new Set();
+  for (const ticket of [...raceFlowExtraTickets, ...development.extraTickets]) {
+    if (!ticket?.combo || seenExtraTickets.has(ticket.combo)) continue;
+    seenExtraTickets.add(ticket.combo);
+    extraTickets.push(ticket);
+    if (extraTickets.length >= 6) break;
+  }
   return {
     ...prediction,
     scenario,
     developmentScenarios: development.scenarios,
     scenarioScorePreview,
+    raceFlowExtraTickets,
     upsetScenarios: development.upsetScenarios,
     upsetAlert: development.upsetAlert,
     upsetReasons: development.upsetReasons,
-    extraTickets: development.extraTickets
+    extraTickets
   };
 }
 
@@ -1256,6 +1382,10 @@ export function buildConfidenceScore(prediction = {}) {
   const tendencyComplete = prediction.tendencySummary?.complete === true;
   const tendencySparse = prediction.tendencySummary?.sparse === true;
   const tendencyQualityAdjustment = tendencyComplete ? 4 : tendencyAvailable && !tendencySparse ? 1 : tendencyAvailable ? 0 : -2;
+  const raceFlowDataWarnings = Array.isArray(prediction.raceFlowScenario?.dataWarnings)
+    ? prediction.raceFlowScenario.dataWarnings
+    : [];
+  const raceFlowQualityAdjustment = finiteNumber(prediction.raceFlowScenario?.quality?.confidenceAdjustment, 0);
   const motorScore = percent01(boat1.motor2Rate, 0.45);
   const score =
     (boat1First * 38) +
@@ -1275,7 +1405,8 @@ export function buildConfidenceScore(prediction = {}) {
     boat2WallLatePenalty -
     tooManyUpsetsPenalty +
     originalFeatureQualityAdjustment +
-    tendencyQualityAdjustment;
+    tendencyQualityAdjustment +
+    raceFlowQualityAdjustment;
   const warnings = [];
   if (entryUnconfirmed) warnings.push("進入未確定のため直前展示で再確認");
   if (outsideHead >= 0.18) warnings.push("5・6号艇の頭浮上余地あり");
@@ -1298,6 +1429,9 @@ export function buildConfidenceScore(prediction = {}) {
     warnings.push("直近6か月のコース別戦法データを予想に反映");
   } else {
     warnings.push("直近6か月の戦法データ未取得のため、展示・モーター中心で予想");
+  }
+  for (const warning of raceFlowDataWarnings) {
+    if (warning && !warnings.includes(warning)) warnings.push(warning);
   }
   if (prediction.exhibition?.status !== "exhibition_reflected") warnings.push("展示前の出走表ベース予想");
   return {
@@ -1326,7 +1460,8 @@ export function buildConfidenceScore(prediction = {}) {
       originalFeatureQualityAdjustment,
       tendencyAvailable,
       tendencyComplete,
-      tendencyQualityAdjustment
+      tendencyQualityAdjustment,
+      raceFlowQualityAdjustment
     }
   };
 }

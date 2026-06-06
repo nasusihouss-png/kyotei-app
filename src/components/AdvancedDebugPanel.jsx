@@ -35,6 +35,22 @@ export default function AdvancedDebugPanel({
             <div className="muted">prediction input preview</div>
             <pre className="json-preview">{safePrettyJson(debug.predictionInputPreview)}</pre>
           </div>
+          <div>
+            <div className="muted">race conditions</div>
+            <pre className="json-preview">{safePrettyJson({
+              ok: debug.raceConditionsOk,
+              error: debug.raceConditionsError,
+              source: debug.raceConditionsSource,
+              windDirection: debug.windDirection,
+              windSpeed: debug.windSpeed,
+              waveHeight: debug.waveHeight,
+              weather: debug.weather,
+              temperature: debug.temperature,
+              waterTemperature: debug.waterTemperature,
+              conditions: debug.raceConditions,
+              debug: debug.raceConditionsDebug
+            })}</pre>
+          </div>
         </div>
       </details>
       <details className="practical-details">
@@ -47,6 +63,26 @@ export default function AdvancedDebugPanel({
           <div>
             <div className="muted">scenario score preview</div>
             <pre className="json-preview">{safePrettyJson(debug.scenarioScorePreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">race flow scenario scores</div>
+            <pre className="json-preview">{safePrettyJson(debug.raceFlowScenarioPreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">wall scores</div>
+            <pre className="json-preview">{safePrettyJson(debug.wallScorePreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">head / partner split</div>
+            <pre className="json-preview">{safePrettyJson(debug.headPartnerSplitPreview)}</pre>
+          </div>
+          <div>
+            <div className="muted">ticket adjustment log</div>
+            <pre className="json-preview">{safePrettyJson(debug.ticketAdjustmentLog)}</pre>
+          </div>
+          <div>
+            <div className="muted">condition adjustment log</div>
+            <pre className="json-preview">{safePrettyJson(debug.conditionAdjustmentLog)}</pre>
           </div>
           <div>
             <div className="muted">tendency score preview</div>

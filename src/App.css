@@ -2456,6 +2456,13 @@
   gap: 7px;
 }
 
+.condition-summary-line {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
 .status-action-banner {
   display: flex;
   align-items: center;

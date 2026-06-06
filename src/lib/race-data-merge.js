@@ -2,7 +2,8 @@ import {
   buildCanonicalPreview,
   firstFinite,
   getBoatNo,
-  normalizeRaceEntries
+  normalizeRaceEntries,
+  toNullableNumber
 } from "./race-normalizer.js";
 import {
   buildTendencyPreview,
@@ -35,6 +36,11 @@ export function mergeOriginalExhibitionRows(baseEntries = [], originalExhibition
     return {
       ...base,
       boat,
+      exST: base?.exST ?? original?.exST ?? original?.exhibitionSt ?? null,
+      exhibitionSt: base?.exhibitionSt ?? base?.exST ?? original?.exST ?? original?.exhibitionSt ?? null,
+      exhibitionST: base?.exhibitionST ?? base?.exST ?? original?.exST ?? original?.exhibitionSt ?? null,
+      exTime: base?.exTime ?? original?.exTime ?? original?.exhibitionTime ?? null,
+      exhibitionTime: base?.exhibitionTime ?? base?.exTime ?? original?.exTime ?? original?.exhibitionTime ?? null,
       lapTime: base?.lapTime ?? original?.lapTime ?? null,
       straightTime: base?.straightTime ?? original?.straightTime ?? null,
       turnTime: base?.turnTime ?? original?.turnTime ?? null,
@@ -47,8 +53,25 @@ export function mergeOriginalExhibitionRows(baseEntries = [], originalExhibition
   return normalizeRaceEntries(originalExhibitionRows);
 }
 
-export function canonicalEntriesToProgram(program = {}, entries = []) {
+export function normalizeRaceConditions(source = null) {
+  const root = source && typeof source === "object" ? source : {};
+  const nested = root.conditions || root.raceConditions || root.weatherConditions || {};
+  const weatherValue = nested.weather ?? root.weather ?? root.race_weather ?? root.raceWeather ?? null;
+  const windDirection = nested.windDirection ?? root.windDirection ?? root.wind_direction ?? root.windDir ?? root.race_wind_direction ?? root.race_wind_direction_number ?? null;
+  const conditions = {
+    windDirection: windDirection === undefined ? null : windDirection,
+    windSpeed: toNullableNumber(nested.windSpeed ?? nested.wind ?? root.windSpeed ?? root.wind_speed ?? root.race_wind ?? root.wind),
+    waveHeight: toNullableNumber(nested.waveHeight ?? nested.wave ?? root.waveHeight ?? root.wave_height ?? root.race_wave ?? root.wave),
+    weather: weatherValue === undefined ? null : weatherValue,
+    temperature: toNullableNumber(nested.temperature ?? root.temperature ?? root.race_temperature),
+    waterTemperature: toNullableNumber(nested.waterTemperature ?? root.waterTemperature ?? root.water_temperature ?? root.race_water_temperature)
+  };
+  return conditions;
+}
+
+export function canonicalEntriesToProgram(program = {}, entries = [], conditions = null) {
   const byBoat = new Map(entries.map((entry) => [entry.boat, entry]));
+  const raceConditions = normalizeRaceConditions(conditions ?? program?.conditions ?? program?.raceConditions ?? program);
   const sourceRows = Array.isArray(program?.boats)
     ? program.boats
     : Array.isArray(program?.entries)
@@ -103,6 +126,13 @@ export function canonicalEntriesToProgram(program = {}, entries = []) {
         racer_number: row?.racer_number ?? entry.racerId,
         motor2Rate: firstFinite(entry.motor2Rate, row?.motor2Rate),
         motor2ren: firstFinite(entry.motor2Rate, row?.motor2ren),
+        exST: entry.exST ?? null,
+        exhibitionSt: entry.exST ?? null,
+        exhibitionST: entry.exST ?? null,
+        racer_start_timing: entry.exST ?? null,
+        exTime: entry.exTime ?? null,
+        exhibitionTime: entry.exTime ?? null,
+        racer_exhibition_time: entry.exTime ?? null,
         lapTime: entry.lapTime ?? null,
         lap_time: entry.lapTime ?? null,
         racer_lap_time: entry.lapTime ?? null,
@@ -144,6 +174,18 @@ export function canonicalEntriesToProgram(program = {}, entries = []) {
     .sort((a, b) => getBoatNo(a) - getBoatNo(b));
   return {
     ...program,
+    raceConditions,
+    conditions: raceConditions,
+    windDirection: raceConditions.windDirection,
+    windSpeed: raceConditions.windSpeed,
+    waveHeight: raceConditions.waveHeight,
+    weather: raceConditions.weather,
+    temperature: raceConditions.temperature,
+    waterTemperature: raceConditions.waterTemperature,
+    race_wind: raceConditions.windSpeed ?? program?.race_wind ?? null,
+    race_wave: raceConditions.waveHeight ?? program?.race_wave ?? null,
+    race_weather: raceConditions.weather ?? program?.race_weather ?? null,
+    race_wind_direction: raceConditions.windDirection ?? program?.race_wind_direction ?? null,
     boats,
     entries: boats
   };
@@ -160,6 +202,8 @@ export function buildCanonicalRaceData({
   originalExhibitionRows = null,
   tendency = null,
   tendencyRows = null,
+  conditions = null,
+  raceConditions = null,
   debug = {}
 } = {}) {
   const sourceProgram = baseProgram || program || {};
@@ -173,14 +217,31 @@ export function buildCanonicalRaceData({
     ? normalizeRacerTendencyRows(tendencyRows)
     : normalizeRacerTendencyRows(tendency?.rows);
   const entriesWithOriginal = mergeOriginalExhibitionRows(baseEntries, normalizedOriginalRows);
-  const entries = mergeRacerTendenciesIntoEntries(entriesWithOriginal, normalizedTendencyRows);
-  const predictionInputProgram = canonicalEntriesToProgram(sourceProgram, entries);
+  const normalizedConditions = normalizeRaceConditions(raceConditions ?? conditions ?? preview ?? sourceProgram);
+  const entries = mergeRacerTendenciesIntoEntries(entriesWithOriginal, normalizedTendencyRows)
+    .map((entry) => ({
+      ...entry,
+      raceConditions: normalizedConditions,
+      windDirection: normalizedConditions.windDirection,
+      windSpeed: normalizedConditions.windSpeed,
+      waveHeight: normalizedConditions.waveHeight,
+      weather: normalizedConditions.weather
+    }));
+  const predictionInputProgram = canonicalEntriesToProgram(sourceProgram, entries, normalizedConditions);
   const canonicalPreview = buildCanonicalPreview(entries);
   const predictionInputPreview = buildCanonicalPreview(normalizeRaceEntries(predictionInputProgram, preview));
   return {
     date,
     venueId: Number(venueId),
     raceNo: Number(raceNo),
+    conditions: normalizedConditions,
+    raceConditions: normalizedConditions,
+    windDirection: normalizedConditions.windDirection,
+    windSpeed: normalizedConditions.windSpeed,
+    waveHeight: normalizedConditions.waveHeight,
+    weather: normalizedConditions.weather,
+    temperature: normalizedConditions.temperature,
+    waterTemperature: normalizedConditions.waterTemperature,
     entries,
     debug: {
       ...debug,
@@ -188,6 +249,8 @@ export function buildCanonicalRaceData({
       originalExhibitionRows: normalizedOriginalRows,
       tendency,
       tendencyRows: normalizedTendencyRows,
+      conditions: normalizedConditions,
+      raceConditions: normalizedConditions,
       baseEntriesCount: baseEntries.length,
       originalExhibitionRowsPreview: buildCanonicalPreview(normalizeRaceEntries(normalizedOriginalRows)),
       tendencyPreview: buildTendencyPreview(normalizedTendencyRows),
@@ -215,6 +278,8 @@ export function buildTableDisplayPreview(rows = []) {
       if (boat === null) return null;
       return {
         boat,
+        exST: row?.exST ?? row?.exhibitionSt ?? null,
+        exTime: row?.exTime ?? row?.exhibitionTime ?? null,
         lapTime: row?.lapTime ?? null,
         straightTime: row?.straightTime ?? null,
         turnTime: row?.turnTime ?? null
@@ -237,6 +302,10 @@ export function mergeDisplayEntriesIntoRows(rows = [], displayEntries = [], orig
       boat,
       boatNumber: row?.boatNumber ?? boat,
       lane: row?.lane ?? boat,
+      exST: row?.exST ?? displayEntry?.exST ?? original?.exST ?? null,
+      exhibitionSt: row?.exhibitionSt ?? row?.exST ?? displayEntry?.exST ?? original?.exST ?? null,
+      exTime: row?.exTime ?? displayEntry?.exTime ?? original?.exTime ?? null,
+      exhibitionTime: row?.exhibitionTime ?? row?.exTime ?? displayEntry?.exTime ?? original?.exTime ?? null,
       lapTime: row?.lapTime ?? displayEntry?.lapTime ?? original?.lapTime ?? null,
       straightTime: row?.straightTime ?? displayEntry?.straightTime ?? original?.straightTime ?? null,
       turnTime: row?.turnTime ?? displayEntry?.turnTime ?? original?.turnTime ?? null

@@ -1,12 +1,60 @@
-export function toFiniteOrNull(value) {
-  if (value === null || value === undefined || value === "") return null;
+export function toNullableNumber(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || text === "-") return null;
+  }
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
 }
 
+export function toFiniteOrNull(value) {
+  return toNullableNumber(value);
+}
+
 export function firstFinite(...values) {
   for (const value of values) {
-    const num = toFiniteOrNull(value);
+    const num = toNullableNumber(value);
+    if (num !== null) return num;
+  }
+  return null;
+}
+
+function parseStartTimingValue(value) {
+  const direct = toNullableNumber(value);
+  if (direct !== null) return direct;
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text || text === "-") return null;
+  const normalized = text
+    .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(/[．]/g, ".")
+    .replace(/\s+/g, "");
+  const match = normalized.match(/^([FL])?([+-]?(?:\d+(?:\.\d+)?|\.\d+))/i);
+  if (!match) return null;
+  const flag = String(match[1] || "").toUpperCase();
+  const num = Number(match[2].startsWith(".") ? `0${match[2]}` : match[2]);
+  if (!Number.isFinite(num)) return null;
+  return flag === "F" && num > 0 ? -Math.abs(num) : num;
+}
+
+function firstStartTiming(...values) {
+  for (const value of values) {
+    const num = parseStartTimingValue(value);
+    if (num !== null) return num;
+  }
+  return null;
+}
+
+function toExhibitionTimeOrNull(value) {
+  const num = toNullableNumber(value);
+  if (num === null || num <= 0) return null;
+  return num;
+}
+
+function firstExhibitionTime(...values) {
+  for (const value of values) {
+    const num = toExhibitionTimeOrNull(value);
     if (num !== null) return num;
   }
   return null;
@@ -91,17 +139,23 @@ export function getRaceEntryRows(source = {}) {
 export function normalizeRaceEntry(row = {}, previewRow = null) {
   const boat = getBoatNo(row);
   if (boat === null) return null;
-  const exST = firstFinite(
+  const exST = firstStartTiming(
     row?.exST,
     row?.exSt,
+    row?.startTiming,
+    row?.exhibitionSTRaw,
+    row?.exhibitionStRaw,
+    row?.exhibitionStSignedValue,
     row?.exhibitionSt,
     row?.exhibitionST,
+    row?.exhibition_st,
     row?.racer_start_timing,
     previewRow?.racer_start_timing
   );
-  const exTime = firstFinite(
+  const exTime = firstExhibitionTime(
     row?.exTime,
     row?.exhibitionTime,
+    row?.exhibition_time,
     row?.racer_exhibition_time,
     previewRow?.racer_exhibition_time
   );
@@ -228,6 +282,8 @@ export function buildCanonicalPreview(entries = []) {
   return entries
     .map((row) => ({
       boat: row?.boat ?? null,
+      exST: row?.exST ?? null,
+      exTime: row?.exTime ?? null,
       lapTime: row?.lapTime ?? null,
       straightTime: row?.straightTime ?? null,
       turnTime: row?.turnTime ?? null

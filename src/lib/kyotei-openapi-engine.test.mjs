@@ -77,7 +77,7 @@ assert.ok(Math.abs(plRows.reduce((sum, row) => sum + row.probability, 0) - 1) < 
 
 const missingPreview = preview({ complete: false });
 assert.equal(isExhibitionAvailable(missingPreview), false);
-assert.deepEqual(buildExhibitionFeatures(missingPreview).usedFields, []);
+assert.deepEqual(buildExhibitionFeatures(missingPreview).usedFields, ["weather"]);
 assert.equal(inspectPreviewExhibitionStatus(missingPreview).exhibitionNotRun, true);
 
 const basePrediction = buildRacePrediction(program(), missingPreview);
@@ -430,6 +430,34 @@ assert.equal(nullTendencyPrediction.scoredBoats.length, 6);
 assert.equal(nullTendencyPrediction.tendencySummary.available, false);
 assert.ok(
   buildConfidenceScore(nullTendencyPrediction).warnings.includes("直近6か月の戦法データ未取得のため、展示・モーター中心で予想")
+);
+
+const raceFlowPrediction = buildRacePrediction(originalMetricProgram({
+  3: { exST: 0.06, straightTime: 6.7, turnTime: 4.3 },
+  4: { straightTime: 6.72, turnTime: 4.22 }
+}), null);
+assert.equal(raceFlowPrediction.raceFlowScenario.scenarios.length, 6);
+assert.ok(raceFlowPrediction.wallScorePreview.length >= 3);
+assert.ok(raceFlowPrediction.headPartnerSplitPreview.some((row) => row.boat === 4));
+assert.ok(Array.isArray(raceFlowPrediction.ticketAdjustmentLog));
+
+const calmConditionPrediction = buildRacePrediction({
+  ...originalMetricProgram(),
+  conditions: { windDirection: null, windSpeed: 1, waveHeight: 1, weather: "sunny" }
+}, null);
+const strongWindPrediction = buildRacePrediction({
+  ...originalMetricProgram(),
+  conditions: { windDirection: "crosswind", windSpeed: 7, waveHeight: 1, weather: "sunny" }
+}, null);
+const calmConfidence = buildConfidenceScore(calmConditionPrediction);
+const strongWindConfidence = buildConfidenceScore(strongWindPrediction);
+assert.ok(
+  strongWindConfidence.factors.raceFlowQualityAdjustment < calmConfidence.factors.raceFlowQualityAdjustment,
+  "strong wind should reduce confidence quality adjustment slightly"
+);
+assert.ok(
+  strongWindPrediction.conditionAdjustmentLog.some((row) => row.type === "wind" && row.level === "strong"),
+  "strong wind should be recorded in the condition adjustment log"
 );
 
 console.log("kyotei-openapi-engine ok");

@@ -21,7 +21,11 @@ app.get("/api/health", (_req, res) => {
 });
 
 function toNullableNumber(value) {
-  if (value === null || value === undefined || value === "") return null;
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || text === "-") return null;
+  }
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -34,9 +38,77 @@ function toPositiveInt(value, fallback = null) {
 const originalExhibitionCache = new Map();
 const originalExhibitionPendingRaceKeys = new Set();
 const ORIGINAL_EXHIBITION_CACHE_LIMIT = 200;
+const raceConditionsCache = new Map();
+const RACE_CONDITIONS_CACHE_LIMIT = 300;
 
 function buildOriginalExhibitionRaceKey({ date, venueId, raceNo }) {
   return `${String(date || "")}|${Number(venueId)}|${Number(raceNo)}`;
+}
+
+function buildOpenApiDatePath(date) {
+  const normalized = String(date || "").replace(/-/g, "");
+  if (/^\d{8}$/.test(normalized)) return `${normalized.slice(0, 4)}/${normalized}.json`;
+  return "today.json";
+}
+
+function getOpenApiRaceRows(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.races)) return payload.races;
+  if (Array.isArray(payload?.data)) return payload.data;
+  const found = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    if (value.race_stadium_number !== undefined && value.race_number !== undefined) {
+      found.push(value);
+      return;
+    }
+    Object.values(value).forEach(visit);
+  };
+  visit(payload);
+  return found;
+}
+
+function buildEmptyRaceConditions() {
+  return {
+    windDirection: null,
+    windSpeed: null,
+    waveHeight: null,
+    weather: null,
+    temperature: null,
+    waterTemperature: null
+  };
+}
+
+function normalizeRaceConditionsFromSource(source = {}) {
+  const root = source && typeof source === "object" ? source : {};
+  const nested = root.conditions || root.raceConditions || {};
+  return {
+    windDirection:
+      nested.windDirection ??
+      root.windDirection ??
+      root.wind_direction ??
+      root.windDir ??
+      root.race_wind_direction ??
+      root.race_wind_direction_number ??
+      null,
+    windSpeed: toNullableNumber(nested.windSpeed ?? nested.wind ?? root.windSpeed ?? root.wind_speed ?? root.race_wind ?? root.wind),
+    waveHeight: toNullableNumber(nested.waveHeight ?? nested.wave ?? root.waveHeight ?? root.wave_height ?? root.race_wave ?? root.wave),
+    weather: nested.weather ?? root.weather ?? root.race_weather ?? root.race_weather_number ?? null,
+    temperature: toNullableNumber(nested.temperature ?? root.temperature ?? root.race_temperature),
+    waterTemperature: toNullableNumber(nested.waterTemperature ?? root.waterTemperature ?? root.water_temperature ?? root.race_water_temperature)
+  };
+}
+
+function setRaceConditionsCache(raceKey, payload) {
+  raceConditionsCache.set(raceKey, cloneJson(payload));
+  while (raceConditionsCache.size > RACE_CONDITIONS_CACHE_LIMIT) {
+    const oldestKey = raceConditionsCache.keys().next().value;
+    raceConditionsCache.delete(oldestKey);
+  }
 }
 
 function cloneJson(value) {
@@ -56,6 +128,11 @@ function buildEmptyOriginalExhibitionRows() {
     boat: index + 1,
     lane: index + 1,
     boatNumber: index + 1,
+    exST: null,
+    exhibitionSt: null,
+    exhibitionST: null,
+    exTime: null,
+    exhibitionTime: null,
     lapTime: null,
     lapTimeRaw: null,
     lapSource: null,
@@ -77,6 +154,11 @@ function buildOriginalExhibitionRows(kyoteiBiyori = null) {
     const lapTimeRaw = toNullableNumber(row?.lapTimeRaw ?? row?.lapRaw ?? row?.lapTime);
     const straightTime = toNullableNumber(row?.straightTime ?? row?.nobiashi ?? row?.__nobiashi);
     const turnTime = toNullableNumber(row?.turnTime ?? row?.mawariashi ?? row?.__mawariashi);
+    const signedExST = toNullableNumber(row?.exhibitionStSignedValue);
+    const rawExST = toNullableNumber(row?.exST ?? row?.exhibitionSt ?? row?.exhibitionST);
+    const exST = signedExST ?? (String(row?.exhibitionStFlag || "").toUpperCase() === "F" && rawExST !== null && rawExST > 0 ? -Math.abs(rawExST) : rawExST);
+    const exTimeRaw = toNullableNumber(row?.exTime ?? row?.exhibitionTime);
+    const exTime = exTimeRaw !== null && exTimeRaw > 0 ? exTimeRaw : null;
     const lapSource = row?.lapSource || row?.lapTimeDetail?.source || laneSources?.lapTime || laneSources?.lapTimeRaw || null;
     const straightSource =
       row?.straightTimeDetail?.source ||
@@ -94,6 +176,14 @@ function buildOriginalExhibitionRows(kyoteiBiyori = null) {
       null;
     return {
       ...base,
+      exST,
+      exhibitionSt: exST,
+      exhibitionST: exST,
+      exTime,
+      exhibitionTime: exTime,
+      exhibitionStRaw: row?.exhibitionStRaw ?? null,
+      exhibitionStFlag: row?.exhibitionStFlag ?? null,
+      exhibitionStSignedValue: toNullableNumber(row?.exhibitionStSignedValue),
       lapTime,
       lapTimeRaw,
       lapSource,
@@ -102,6 +192,8 @@ function buildOriginalExhibitionRows(kyoteiBiyori = null) {
       turnTime,
       turnSource,
       measured: lapTime !== null || straightTime !== null || turnTime !== null,
+      exSTStatus: exST !== null ? "ok" : "not_measured",
+      exTimeStatus: exTime !== null ? "ok" : "not_measured",
       lapStatus: lapTime !== null ? "ok" : "not_measured",
       straightStatus: straightTime !== null ? "ok" : "not_measured",
       turnStatus: turnTime !== null ? "ok" : "not_measured"
@@ -320,6 +412,81 @@ async function handleRaceExhibitionRequest(req, res) {
 
 app.get("/api/race/exhibition", handleRaceExhibitionRequest);
 app.get("/api/race/original-exhibition", handleRaceExhibitionRequest);
+
+app.get("/api/race/conditions", async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  const date = String(req.query?.date || "");
+  const venueId = toPositiveInt(req.query?.venueId, null);
+  const raceNo = toPositiveInt(req.query?.raceNo, null);
+  const forceRaw = String(req.query?.force || "").toLowerCase();
+  const force = forceRaw === "1" || forceRaw === "true";
+  const raceKey = buildOriginalExhibitionRaceKey({ date, venueId, raceNo });
+  if (!date || !venueId || !raceNo) {
+    return res.status(400).json({
+      ok: false,
+      rows: [],
+      conditions: buildEmptyRaceConditions(),
+      error: "date, venueId, and raceNo are required",
+      debug: { date, venueId, raceNo, source: "none" }
+    });
+  }
+  if (!force && raceConditionsCache.has(raceKey)) {
+    const payload = cloneJson(raceConditionsCache.get(raceKey));
+    return res.json({
+      ...payload,
+      source: "cache",
+      fetchedAt: new Date().toISOString(),
+      debug: { ...(payload.debug || {}), cacheHit: true, source: "cache" }
+    });
+  }
+  const url = `https://boatraceopenapi.github.io/previews/v2/${buildOpenApiDatePath(date)}`;
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) {
+      throw new Error(`openapi preview fetch failed (${response.status})`);
+    }
+    const rows = getOpenApiRaceRows(payload);
+    const raceRow = rows.find((row) =>
+      Number(row?.race_stadium_number) === Number(venueId) &&
+      Number(row?.race_number) === Number(raceNo)
+    ) || null;
+    const conditions = normalizeRaceConditionsFromSource(raceRow || {});
+    const ok = !!raceRow;
+    const result = {
+      ok,
+      rows: raceRow ? [raceRow] : [],
+      conditions,
+      source: "openapi_previews",
+      fetchedAt: new Date().toISOString(),
+      debug: {
+        raceKey,
+        url,
+        rowsCount: rows.length,
+        matched: !!raceRow,
+        source: "openapi_previews"
+      },
+      error: raceRow ? null : "race conditions not found"
+    };
+    if (raceRow) setRaceConditionsCache(raceKey, result);
+    return res.json(result);
+  } catch (error) {
+    return res.json({
+      ok: false,
+      rows: [],
+      conditions: buildEmptyRaceConditions(),
+      source: "error",
+      fetchedAt: new Date().toISOString(),
+      debug: {
+        raceKey,
+        url,
+        source: "openapi_previews",
+        error: String(error?.message || error)
+      },
+      error: String(error?.message || error)
+    });
+  }
+});
 
 app.get("/api/race/history-backfill", async (req, res) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");

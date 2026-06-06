@@ -157,6 +157,31 @@ async function fetchRacerTendencies({
   };
 }
 
+async function fetchRaceConditions({ date, venueId, raceNo, force = false, signal = null }) {
+  const params = new URLSearchParams({
+    date: String(date || ""),
+    venueId: String(venueId || ""),
+    raceNo: String(raceNo || "")
+  });
+  if (force) params.set("force", "1");
+  const payload = await fetchJsonWithTimeout(`/api/race/conditions?${params.toString()}`, {
+    timeoutMs: 20000,
+    cache: "no-store",
+    signal
+  });
+  return {
+    ...payload,
+    conditions: payload?.conditions || {
+      windDirection: null,
+      windSpeed: null,
+      waveHeight: null,
+      weather: null,
+      temperature: null,
+      waterTemperature: null
+    }
+  };
+}
+
 async function fetchRaceHistoryBackfill({
   date,
   venueId,
@@ -364,6 +389,7 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
       original_exhibition_warning: originalMetricsWarning || null,
       racer_tendency: openApiModel.tendency || null,
       racer_tendency_warning: tendencyWarning || null,
+      race_conditions: openApiModel.raceConditions || openApiModel.canonicalRaceData?.conditions || null,
       display_entries: displayEntries,
       field_sources: prediction.exhibition.sourceByField || null
     },
@@ -373,7 +399,11 @@ function buildLegacyDataFromOpenApiPrediction(openApiModel, { date, venueId, rac
       venueName,
       raceNo: Number(raceNo),
       raceName: `${venueName} ${raceNo}R`,
-      closedAt: prediction.race.closedAt
+      closedAt: prediction.race.closedAt,
+      weather: openApiModel.canonicalRaceData?.conditions?.weather ?? null,
+      windSpeed: openApiModel.canonicalRaceData?.conditions?.windSpeed ?? null,
+      windDirection: openApiModel.canonicalRaceData?.conditions?.windDirection ?? null,
+      waveHeight: openApiModel.canonicalRaceData?.conditions?.waveHeight ?? null
     },
     displayEntries,
     racers,
@@ -858,6 +888,27 @@ function formatComparisonValue(value, digits = 2) {
   const num = Number(value);
   if (!Number.isFinite(num)) return "-";
   return num.toFixed(digits);
+}
+
+function formatRaceConditionSummary(conditionPayload = null) {
+  const conditions = conditionPayload?.conditions || conditionPayload || {};
+  const windSpeed = conditions?.windSpeed ?? conditions?.wind ?? null;
+  const waveHeight = conditions?.waveHeight ?? conditions?.wave ?? null;
+  const weather = conditions?.weather ?? null;
+  const windDirection = conditions?.windDirection ?? null;
+  const temperature = conditions?.temperature ?? null;
+  const waterTemperature = conditions?.waterTemperature ?? null;
+  const hasAny = [windSpeed, waveHeight, weather, windDirection, temperature, waterTemperature].some((value) => value !== null && value !== undefined && value !== "");
+  if (!hasAny) return "水面条件: 未取得";
+  const parts = [
+    `風向: ${windDirection || "-"}`,
+    windSpeed === null || windSpeed === undefined || windSpeed === "" ? "風速: -" : `風速: ${formatMaybeNumber(windSpeed, 0)}m`,
+    waveHeight === null || waveHeight === undefined || waveHeight === "" ? "波高: -" : `波高: ${formatMaybeNumber(waveHeight, 0)}cm`,
+    weather === null || weather === undefined || weather === "" ? "天候: -" : `天候: ${weather}`
+  ];
+  if (temperature !== null && temperature !== undefined && temperature !== "") parts.push(`気温: ${formatMaybeNumber(temperature, 0)}℃`);
+  if (waterTemperature !== null && waterTemperature !== undefined && waterTemperature !== "") parts.push(`水温: ${formatMaybeNumber(waterTemperature, 0)}℃`);
+  return `水面条件: ${parts.join(" / ")}`;
 }
 
 function safePrettyJson(value) {
@@ -4563,6 +4614,9 @@ export default function App() {
   const [tendencyData, setTendencyData] = useState(null);
   const [racerTendencyError, setRacerTendencyError] = useState("");
   const [racerTendencyLoading, setRacerTendencyLoading] = useState(false);
+  const [raceConditionsData, setRaceConditionsData] = useState(null);
+  const [raceConditionsError, setRaceConditionsError] = useState("");
+  const [raceConditionsLoading, setRaceConditionsLoading] = useState(false);
   const [historyBackfillData, setHistoryBackfillData] = useState(null);
   const [historyBackfillError, setHistoryBackfillError] = useState("");
   const [historyBackfillLoading, setHistoryBackfillLoading] = useState(false);
@@ -5235,6 +5289,12 @@ export default function App() {
     () => safeArray(currentRacerTendency?.rows || canonicalRaceData?.debug?.tendencyRows),
     [canonicalRaceData?.debug?.tendencyRows, currentRacerTendency?.rows]
   );
+  const currentRaceConditions =
+    raceConditionsData ||
+    canonicalRaceData?.debug?.raceConditions ||
+    openApiModel?.raceConditions ||
+    data?.source?.race_conditions ||
+    null;
   const displayRows = useMemo(
     () => canonicalRaceData
       ? safeArray(canonicalRaceData.entries)
@@ -5286,9 +5346,15 @@ export default function App() {
     const displayPreview = buildTableDisplayPreview(renderedMergedRows);
     const canonicalPreview = buildTableDisplayPreview(canonicalRaceData?.entries || renderedMergedRows);
     const tablePreview = buildTableDisplayPreview(displayRows);
+    const raceConditionsDebug = currentRaceConditions?.debug || canonicalRaceData?.debug?.raceConditions?.debug || {};
     const predictionInputPreview = canonicalRaceData?.debug?.predictionInputPreview || canonicalPreview;
     const featureScorePreview = openApiModel?.prediction?.featureScorePreview || [];
     const scenarioScorePreview = openApiModel?.prediction?.scenarioScorePreview || [];
+    const raceFlowScenarioPreview = openApiModel?.prediction?.raceFlowScenarioPreview || [];
+    const wallScorePreview = openApiModel?.prediction?.wallScorePreview || [];
+    const headPartnerSplitPreview = openApiModel?.prediction?.headPartnerSplitPreview || [];
+    const ticketAdjustmentLog = openApiModel?.prediction?.ticketAdjustmentLog || [];
+    const conditionAdjustmentLog = openApiModel?.prediction?.conditionAdjustmentLog || [];
     const tendencyScorePreview = openApiModel?.prediction?.tendencyScorePreview || [];
     const tendencyPreview = buildTendencyPreview(racerTendencyRows);
     const canonicalTendencyPreview = buildTendencyPreview(canonicalRaceData?.entries || renderedMergedRows);
@@ -5346,7 +5412,7 @@ export default function App() {
     ).length;
     return {
       currentRaceKey: selectedRaceKey,
-      isFetching: openApiLoading || originalExhibitionLoading || racerTendencyLoading || historyBackfillLoading,
+      isFetching: openApiLoading || originalExhibitionLoading || racerTendencyLoading || raceConditionsLoading || historyBackfillLoading,
       requestId: openApiRequestDebug.requestId || 0,
       backendConnected: originalBackendConnected,
       baseEntriesCount: canonicalRaceData?.debug?.baseEntriesCount ?? safeArray(playerComparisonRows).length,
@@ -5359,6 +5425,17 @@ export default function App() {
       tendencyRowsCount: racerTendencyRows.length,
       tendencySource: currentRacerTendency?.source || "none",
       tendencyActualStartTimingAvailable,
+      raceConditionsOk: currentRaceConditions?.ok === true,
+      raceConditionsError: raceConditionsError || currentRaceConditions?.error || null,
+      raceConditionsSource: currentRaceConditions?.source || raceConditionsDebug?.source || "none",
+      raceConditions: currentRaceConditions?.conditions || canonicalRaceData?.conditions || {},
+      windDirection: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.windDirection ?? null,
+      windSpeed: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.windSpeed ?? null,
+      waveHeight: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.waveHeight ?? null,
+      weather: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.weather ?? null,
+      temperature: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.temperature ?? null,
+      waterTemperature: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.waterTemperature ?? null,
+      raceConditionsDebug,
       historyBackfill: latestHistoryBackfill,
       historyBackfillAttempted: latestHistoryBackfill?.attempted === true,
       historyBackfillAllVenues: latestHistoryBackfill?.allVenues === true,
@@ -5425,9 +5502,13 @@ export default function App() {
       parsedStraightTimeCount: countField(parsedRows, "straightTime"),
       parsedTurnTimeCount: countField(parsedRows, "turnTime"),
       originalExhibitionRowsCount: countOriginalMeasuredRows(originalExhibitionRows),
+      canonicalExSTCount: countPresentField(canonicalPreview, "exST"),
+      canonicalExTimeCount: countPresentField(canonicalPreview, "exTime"),
       canonicalLapTimeCount: countPresentField(canonicalPreview, "lapTime"),
       canonicalStraightTimeCount: countPresentField(canonicalPreview, "straightTime"),
       canonicalTurnTimeCount: countPresentField(canonicalPreview, "turnTime"),
+      displayExSTCount: countPresentField(displayPreview, "exST"),
+      displayExTimeCount: countPresentField(displayPreview, "exTime"),
       displayLapTimeCount: countPresentField(displayPreview, "lapTime"),
       displayStraightTimeCount: countPresentField(displayPreview, "straightTime"),
       displayTurnTimeCount: countPresentField(displayPreview, "turnTime"),
@@ -5438,6 +5519,11 @@ export default function App() {
       predictionInputPreview,
       featureScorePreview,
       scenarioScorePreview,
+      raceFlowScenarioPreview,
+      wallScorePreview,
+      headPartnerSplitPreview,
+      ticketAdjustmentLog,
+      conditionAdjustmentLog,
       tendencyScorePreview,
       tendencyPreview,
       canonicalTendencyPreview,
@@ -5446,7 +5532,7 @@ export default function App() {
       canonicalTendencyCount,
       displayPreview
     };
-  }, [canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.entries, currentOriginalExhibition, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.tendencyScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
+  }, [canonicalRaceData?.conditions, canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.debug?.raceConditions, canonicalRaceData?.entries, currentOriginalExhibition, currentRaceConditions, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.conditionAdjustmentLog, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.headPartnerSplitPreview, openApiModel?.prediction?.raceFlowScenarioPreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.tendencyScorePreview, openApiModel?.prediction?.ticketAdjustmentLog, openApiModel?.prediction?.wallScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceConditionsError, raceConditionsLoading, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
   const originalExhibitionFetchError =
     originalExhibitionError ||
     currentOriginalExhibition?.error ||
@@ -5456,6 +5542,12 @@ export default function App() {
     racerTendencyError ||
     currentRacerTendency?.error ||
     openApiModel?.tendencyError ||
+    "";
+  const raceConditionsSourceForError = String(currentRaceConditions?.source || "");
+  const raceConditionsFetchError =
+    raceConditionsError ||
+    (["error", "fetch_failed"].includes(raceConditionsSourceForError) ? currentRaceConditions?.error : "") ||
+    openApiModel?.raceConditionsError ||
     "";
   const actualStartTimingUnavailable =
     (
@@ -6015,6 +6107,9 @@ export default function App() {
     setTendencyData(null);
     setRacerTendencyError("");
     setRacerTendencyLoading(true);
+    setRaceConditionsData(null);
+    setRaceConditionsError("");
+    setRaceConditionsLoading(true);
     if (!preserveHistoryBackfill) {
       setHistoryBackfillData(null);
       setHistoryBackfillError("");
@@ -6050,6 +6145,25 @@ export default function App() {
         error: err?.message || "racer tendency fetch failed",
         rows: []
       }));
+      const conditionsPromise = fetchRaceConditions({
+        date: targetDate,
+        venueId: targetVenueId,
+        raceNo: targetRaceNo,
+        signal: requestController.signal
+      }).catch((err) => ({
+        ok: false,
+        source: "fetch_failed",
+        error: err?.message || "race conditions fetch failed",
+        rows: [],
+        conditions: {
+          windDirection: null,
+          windSpeed: null,
+          waveHeight: null,
+          weather: null,
+          temperature: null,
+          waterTemperature: null
+        }
+      }));
       const programsPromise = fetchOpenApiDay(targetDate, "programs", { signal: requestController.signal })
         .then((value) => ({ ok: true, value }))
         .catch((err) => ({ ok: false, error: err }));
@@ -6059,7 +6173,7 @@ export default function App() {
           fetchedAt: new Date().toISOString(),
           error: err?.message || "previews fetch failed"
         }));
-      let [fetchedOriginalExhibition, fetchedTendency] = await Promise.all([originalExhibitionPromise, tendencyPromise]);
+      let [fetchedOriginalExhibition, fetchedTendency, fetchedConditions] = await Promise.all([originalExhibitionPromise, tendencyPromise, conditionsPromise]);
       if (!isCurrentRequest()) return;
       fetchedOriginalExhibition = {
         ...fetchedOriginalExhibition,
@@ -6079,6 +6193,22 @@ export default function App() {
       setTendencyData(fetchedTendency);
       setRacerTendencyError(fetchedTendency?.ok === false ? fetchedTendency?.error || "racer tendency fetch failed" : "");
       setRacerTendencyLoading(false);
+      fetchedConditions = {
+        ...fetchedConditions,
+        conditions: fetchedConditions?.conditions || {
+          windDirection: null,
+          windSpeed: null,
+          waveHeight: null,
+          weather: null,
+          temperature: null,
+          waterTemperature: null
+        }
+      };
+      setRaceConditionsData(fetchedConditions);
+      setRaceConditionsError(["error", "fetch_failed"].includes(String(fetchedConditions?.source || ""))
+        ? fetchedConditions?.error || "race conditions fetch failed"
+        : "");
+      setRaceConditionsLoading(false);
       const [programsSettled, previewsResult] = await Promise.all([programsPromise, previewsPromise]);
       if (!isCurrentRequest()) return;
       if (!programsSettled.ok) {
@@ -6109,9 +6239,13 @@ export default function App() {
         originalExhibitionRows,
         tendency: fetchedTendency,
         tendencyRows,
+        conditions: fetchedConditions.conditions,
+        raceConditions: fetchedConditions.conditions,
         debug: {
           originalExhibition: fetchedOriginalExhibition,
-          tendency: fetchedTendency
+          tendency: fetchedTendency,
+          raceConditions: fetchedConditions,
+          conditions: fetchedConditions.conditions
         }
       });
       const selectedProgramWithOriginal = canonicalRaceData.debug.predictionInputProgram;
@@ -6174,6 +6308,7 @@ export default function App() {
         screening,
         originalExhibition: fetchedOriginalExhibition,
         tendency: fetchedTendency,
+        raceConditions: fetchedConditions,
         canonicalRaceData,
         predictionInputProgram: selectedProgramWithOriginal,
         displayProgram: selectedProgramWithOriginal,
@@ -6186,16 +6321,21 @@ export default function App() {
         fetchedAt: {
           programs: programsResult.fetchedAt,
           previews: previewsResult.fetchedAt,
-          originalExhibition: fetchedOriginalExhibition?.fetchedAt || null
+          originalExhibition: fetchedOriginalExhibition?.fetchedAt || null,
+          raceConditions: fetchedConditions?.fetchedAt || null
         },
         previewError: previewsResult.error || null,
         originalExhibitionError: fetchedOriginalExhibition?.ok === false ? fetchedOriginalExhibition?.error || null : null,
         tendencyError: fetchedTendency?.ok === false ? fetchedTendency?.error || null : null,
+        raceConditionsError: ["error", "fetch_failed"].includes(String(fetchedConditions?.source || ""))
+          ? fetchedConditions?.error || null
+          : null,
         counts: {
           programs: programs.length,
           previews: previews.length,
           originalExhibitionMeasured: Number(fetchedOriginalExhibition?.measuredCount || 0),
-          tendencyRows: tendencyRows.length
+          tendencyRows: tendencyRows.length,
+          raceConditions: fetchedConditions?.conditions ? 1 : 0
         }
       };
       setOpenApiModel(nextOpenApiModel);
@@ -6233,6 +6373,7 @@ export default function App() {
         setOpenApiLoading(false);
         setOriginalExhibitionLoading(false);
         setRacerTendencyLoading(false);
+        setRaceConditionsLoading(false);
       }
     }
   };
@@ -7411,17 +7552,21 @@ export default function App() {
                   {openApiLoading ? "取得中..." : "予想を取得 / 更新"}
                 </button>
               </div>
-              {(openApiLoading || originalExhibitionLoading || racerTendencyLoading || historyBackfillLoading) ? (
+              {(openApiLoading || originalExhibitionLoading || racerTendencyLoading || raceConditionsLoading || historyBackfillLoading) ? (
                 <div className="status-chip-row" style={{ marginTop: 10 }}>
                   {openApiLoading ? <span className="status-pill">予想取得中</span> : null}
                   {originalExhibitionLoading ? <span className="status-pill">周回・直線取得中</span> : null}
                   {racerTendencyLoading ? <span className="status-pill">戦法データ取得中</span> : null}
+                  {raceConditionsLoading ? <span className="status-pill">水面条件取得中</span> : null}
                   {historyBackfillLoading ? <span className="status-pill">履歴取得中</span> : null}
                 </div>
               ) : null}
+              <div className="condition-summary-line">
+                {formatRaceConditionSummary(currentRaceConditions?.conditions || canonicalRaceData?.conditions || null)}
+              </div>
             </section>
 
-            {(openApiError || error || originalExhibitionFetchError || racerTendencyFetchError || historyBackfillError || openApiModel?.previewError || originalExhibitionMetricsUnavailable || tendencyHistorySparse || racerTendencyMetricsUnavailable) ? (
+            {(openApiError || error || originalExhibitionFetchError || racerTendencyFetchError || raceConditionsFetchError || historyBackfillError || openApiModel?.previewError || originalExhibitionMetricsUnavailable || tendencyHistorySparse || racerTendencyMetricsUnavailable) ? (
               <section className="important-status-stack">
                 {openApiError ? <div className="error-banner">backend connection error: {openApiError}</div> : null}
                 {error ? <div className="error-banner">{error}</div> : null}
@@ -7436,6 +7581,12 @@ export default function App() {
                   <div className="notice-banner">
                     戦法データ取得に失敗しました。展示データ中心で予想します。
                     <span className="muted" style={{ marginLeft: 8 }}>{racerTendencyFetchError}</span>
+                  </div>
+                ) : null}
+                {raceConditionsFetchError ? (
+                  <div className="notice-banner">
+                    水面条件は未取得です。風・波補正なしで予想します。
+                    <span className="muted" style={{ marginLeft: 8 }}>{raceConditionsFetchError}</span>
                   </div>
                 ) : null}
                 {historyBackfillError ? <div className="notice-banner">履歴取得失敗: {historyBackfillError}</div> : null}
