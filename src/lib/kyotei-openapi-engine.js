@@ -436,11 +436,29 @@ function normalizeProgramBoats(program = {}) {
         tiltLabel: firstText(row.tiltLabel, row.tilt_label),
         playerTendency,
         racerCourseStats: playerTendency,
+        courseWinRate: playerTendency.courseWinRate,
+        courseQuinellaRate: playerTendency.courseQuinellaRate,
+        courseTrifectaRate: playerTendency.courseTrifectaRate,
+        recentWinRate: playerTendency.recentWinRate,
+        recentQuinellaRate: playerTendency.recentQuinellaRate,
+        recentTrifectaRate: playerTendency.recentTrifectaRate,
+        localVenueWinRate: playerTendency.localVenueWinRate,
+        localVenueQuinellaRate: playerTendency.localVenueQuinellaRate,
+        localVenueTrifectaRate: playerTendency.localVenueTrifectaRate,
         techniqueStats: {
           last6mRaceCount: playerTendency.last6mRaceCount,
           courseSpecificLast6mRaceCount: playerTendency.courseSpecificLast6mRaceCount,
           allCourseLast6mRaceCount: playerTendency.allCourseLast6mRaceCount,
           sampleStatus: playerTendency.sampleStatus,
+          courseWinRate: playerTendency.courseWinRate,
+          courseQuinellaRate: playerTendency.courseQuinellaRate,
+          courseTrifectaRate: playerTendency.courseTrifectaRate,
+          recentWinRate: playerTendency.recentWinRate,
+          recentQuinellaRate: playerTendency.recentQuinellaRate,
+          recentTrifectaRate: playerTendency.recentTrifectaRate,
+          localVenueWinRate: playerTendency.localVenueWinRate,
+          localVenueQuinellaRate: playerTendency.localVenueQuinellaRate,
+          localVenueTrifectaRate: playerTendency.localVenueTrifectaRate,
           allCourseWinRate: playerTendency.allCourseWinRate,
           allCourseSashiRate: playerTendency.allCourseSashiRate,
           allCourseMakuriRate: playerTendency.allCourseMakuriRate,
@@ -862,6 +880,15 @@ function normalizePlayerTendency(row = {}, boat = null, course = null) {
     courseSpecificLast6mRaceCount: pickFiniteFrom(source, row, ["courseSpecificLast6mRaceCount", "course_specific_last_6m_race_count", "last6mRaceCount", "last_6m_race_count"]),
     allCourseLast6mRaceCount: pickFiniteFrom(source, row, ["allCourseLast6mRaceCount", "all_course_last_6m_race_count"]),
     sampleStatus: source.sampleStatus ?? source.sample_status ?? row.sampleStatus ?? row.sample_status ?? null,
+    courseWinRate: pickFiniteFrom(source, row, ["courseWinRate", "course_win_rate", "localCourseWinRate", "local_course_win_rate"]),
+    courseQuinellaRate: pickFiniteFrom(source, row, ["courseQuinellaRate", "course_quinella_rate", "course2Rate", "course_2rate", "localCourseQuinellaRate", "local_course_quinella_rate"]),
+    courseTrifectaRate: pickFiniteFrom(source, row, ["courseTrifectaRate", "course_trifecta_rate", "course3Rate", "course_3rate", "localCourseTrifectaRate", "local_course_trifecta_rate"]),
+    recentWinRate: pickFiniteFrom(source, row, ["recentWinRate", "recent_win_rate"]),
+    recentQuinellaRate: pickFiniteFrom(source, row, ["recentQuinellaRate", "recent_quinella_rate", "recent2Rate", "recent_2rate"]),
+    recentTrifectaRate: pickFiniteFrom(source, row, ["recentTrifectaRate", "recent_trifecta_rate", "recent3Rate", "recent_3rate"]),
+    localVenueWinRate: pickFiniteFrom(source, row, ["localVenueWinRate", "local_venue_win_rate", "venueWinRate", "venue_win_rate"]),
+    localVenueQuinellaRate: pickFiniteFrom(source, row, ["localVenueQuinellaRate", "local_venue_quinella_rate", "venueQuinellaRate", "venue_quinella_rate", "venue2Rate", "venue_2rate"]),
+    localVenueTrifectaRate: pickFiniteFrom(source, row, ["localVenueTrifectaRate", "local_venue_trifecta_rate", "venueTrifectaRate", "venue_trifecta_rate", "venue3Rate", "venue_3rate"]),
     allCourseWinRate: pickFiniteFrom(source, row, ["allCourseWinRate", "all_course_win_rate"]),
     allCourseSashiRate: pickFiniteFrom(source, row, ["allCourseSashiRate", "all_course_sashi_rate"]),
     allCourseMakuriRate: pickFiniteFrom(source, row, ["allCourseMakuriRate", "all_course_makuri_rate"]),
@@ -1560,6 +1587,7 @@ function buildCoefficientContributionByBoat(scoredBoats = [], featureScores = {}
       tiltAdjustment: boat.professionalFactors?.tiltAdjustment || null,
       startReliabilityContribution: finiteNumber(scoreParts.startReliabilityBoost, 0),
       startReliability: boat.professionalFactors?.startReliability || null,
+      reliabilityScore: boat.reliabilityScore ?? null,
       venueBiasContribution: finiteNumber(scoreParts.venueBiasBoost, 0),
       conditionContribution: finiteNumber(boat.raceFlowAdjustment, 0),
       majorScoreParts: {
@@ -1819,6 +1847,8 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   const roughWater = windSpeed >= 7 || waveHeight >= 5 || (venueProfile.hasTideInfluence && finiteNumber(conditions.tideLevel, 0) >= 80);
   const headMotorSupport = featureScore01(finalPrediction, head, "motorRank", featureScore01(finalPrediction, head, "motor2Rate", 0.5));
   const headLapTurnSupport = (featureScore01(finalPrediction, head, "lapTime", 0.5) + featureScore01(finalPrediction, head, "turnTime", 0.5)) / 2;
+  const headReliability = flowBoatScore(finalPrediction, head, "reliabilityScore", 0.5);
+  const headCourseTrifecta = flowBoatScore(finalPrediction, head, "courseTrifectaRate", 0.5);
   const headTiltAdjustment =
     finalPrediction.scoredBoats?.find((row) => row.boat === head)?.professionalFactors?.tiltAdjustment ||
     buildTiltAdjustment(finalPrediction.scoredBoats?.find((row) => row.boat === head) || {}, finalPrediction.featureScores?.byBoat?.[String(head)] || {});
@@ -1856,6 +1886,12 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
     gradeCaps.push("C");
     reasons.push("モーター根拠薄め");
   }
+  if (headReliability < 0.34 && headCourseTrifecta < 0.38 && headSupport < 0.64 && scenarioSupport < 0.62) {
+    rejectReasons.push("reliability gate failed: head finishing reliability is weak");
+  } else if (headReliability < 0.43 && scenarioSupport < 0.58) {
+    gradeCaps.push("C");
+    reasons.push("頭の信頼度薄め");
+  }
   if (roughWater && head >= 5 && headLapTurnSupport < 0.7) {
     rejectReasons.push("condition gate failed: rough water outside head needs strong lap/turn support");
   } else if (roughWater && head >= 3 && headLapTurnSupport < 0.52) {
@@ -1887,26 +1923,43 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
 
   const secondScore = flowBoatScore(finalPrediction, second, "secondScore", 0.42);
   const secondResidual = flowBoatScore(finalPrediction, second, "residualScore", 0.42);
+  const secondReliability = flowBoatScore(finalPrediction, second, "reliabilityScore", 0.5);
+  const secondCourseQuinella = flowBoatScore(finalPrediction, second, "courseQuinellaRate", 0.5);
+  const secondCourseTrifecta = flowBoatScore(finalPrediction, second, "courseTrifectaRate", 0.5);
   const secondLive = liveFeatureSupport(finalPrediction, canonicalRaceData, second, 0.5);
   const venue = partnerVenueSupport(finalPrediction, head, second, scenarioId);
   const partnerSupport = clamp(
-    secondScore * 0.42 +
-    secondResidual * 0.24 +
-    secondLive * 0.16 +
-    venue.score * 0.12 +
-    ticketPartnerScore01(finalPrediction, head, second) * 0.06
+    secondScore * 0.34 +
+    secondResidual * 0.2 +
+    secondReliability * 0.18 +
+    Math.max(secondCourseQuinella, secondCourseTrifecta) * 0.08 +
+    secondLive * 0.12 +
+    venue.score * 0.08
   );
   if (secondScore >= 0.56 || secondResidual >= 0.56) reasons.push(`${second}残り`);
+  if (secondReliability >= 0.6) reasons.push(`${second}信頼度`);
   if (venue.known && venue.score >= 0.56) reasons.push(`会場${head}-${second}`);
   if (secondLive >= 0.62) reasons.push(`${second}相手足`);
+  if (secondReliability < 0.32 && scenarioSupport < 0.64) rejectReasons.push("reliability gate failed: second boat reliability is very low");
+  else if (secondReliability < 0.42 && scenarioSupport < 0.58) {
+    gradeCaps.push("C");
+    reasons.push("2着信頼度薄め");
+  }
   if (partnerSupport < 0.38) rejectReasons.push("partner gate failed: second boat support is weak");
   else if (partnerSupport < 0.5) gradeCaps.push("C");
 
   const thirdScore = flowBoatScore(finalPrediction, third, "thirdScore", 0.4);
   const thirdResidual = flowBoatScore(finalPrediction, third, "residualScore", 0.4);
+  const thirdReliability = flowBoatScore(finalPrediction, third, "reliabilityScore", 0.5);
+  const thirdCourseTrifecta = flowBoatScore(finalPrediction, third, "courseTrifectaRate", 0.5);
   const thirdLive = liveFeatureSupport(finalPrediction, canonicalRaceData, third, 0.5);
-  const thirdSupport = clamp(thirdScore * 0.46 + thirdResidual * 0.28 + thirdLive * 0.26);
-  if (thirdScore >= 0.55 || thirdResidual >= 0.55 || thirdLive >= 0.62) reasons.push(`${third}三着根拠`);
+  const thirdSupport = clamp(thirdScore * 0.34 + thirdResidual * 0.22 + thirdReliability * 0.22 + thirdCourseTrifecta * 0.08 + thirdLive * 0.14);
+  if (thirdScore >= 0.55 || thirdResidual >= 0.55 || thirdLive >= 0.62 || thirdReliability >= 0.6) reasons.push(`${third}三着根拠`);
+  if (thirdReliability < 0.3 && thirdCourseTrifecta < 0.38 && scenarioSupport < 0.62) rejectReasons.push("reliability gate failed: third boat trifecta support is weak");
+  else if (thirdReliability < 0.4 && thirdCourseTrifecta < 0.44) {
+    gradeCaps.push("C");
+    reasons.push("3着信頼度薄め");
+  }
   if (thirdSupport < 0.34) rejectReasons.push("third gate failed: third boat support is weak");
   else if (thirdSupport < 0.47) gradeCaps.push("C");
 
@@ -1915,6 +1968,7 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   const boat3Residual = score01(residualScores.boat3ResidualScore, flowBoatScore(finalPrediction, 3, "residualScore", 0.5));
   const boat5Follow = score01(residualScores.boat5LinkedFollowScore, flowBoatScore(finalPrediction, 5, "residualScore", 0.5));
   const boat6Follow = score01(residualScores.boat6LinkedFollowScore, flowBoatScore(finalPrediction, 6, "residualScore", 0.5));
+  const boat4ObstructionRiskFromBoat3 = score01(residualScores.boat4ObstructionRiskFromBoat3, 0);
   const insideCollapse = score01(residualScores.insideCollapseScore, clamp(1 - boat1Residual));
   const boat1KeepSupport = (boat1Residual * 0.46) +
     (featureScore01(finalPrediction, 1, "lapTime", 0.5) * 0.18) +
@@ -1933,6 +1987,11 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   let specialScoreBoost = 0;
 
   if (head === 4) {
+    if (boat4ObstructionRiskFromBoat3 >= 0.62 && second !== 3 && scenarioSupport < 0.68) {
+      gradeCaps.push("C");
+      reasons.push("3号艇の壁で4頭は条件付き");
+      if (scenarioSupport < 0.54) rejectReasons.push("4-head obstruction gate failed: boat3 blocks the race flow");
+    }
     if (scenarioId !== "four_beneficiary" && scenarioId !== "makuriSashi_4" && scenarioSupport < 0.58) {
       gradeCaps.push("C");
       reasons.push("4頭は条件付き");
@@ -2068,6 +2127,10 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
       decisionSupport: roundNumber(decisionSupport * 100, 1),
       liveHeadSupport: roundNumber(liveHeadSupport * 100, 1),
       motorSupport: roundNumber(headMotorSupport * 100, 1),
+      headReliability: roundNumber(headReliability * 100, 1),
+      secondReliability: roundNumber(secondReliability * 100, 1),
+      thirdReliability: roundNumber(thirdReliability * 100, 1),
+      boat4ObstructionRiskFromBoat3: roundNumber(boat4ObstructionRiskFromBoat3 * 100, 1),
       conditionRisk: roundNumber((roughWater ? 1 : 0) * 100, 1),
       headLapTurnSupport: roundNumber(headLapTurnSupport * 100, 1)
     },
@@ -2295,6 +2358,8 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
     const motorRank = featureScore01(prediction, boat, "motorRank", featureScore01(prediction, boat, "motor2Rate", 0.5));
     const lapTurn = (featureScore01(prediction, boat, "lapTime", 0.5) + featureScore01(prediction, boat, "turnTime", 0.5)) / 2;
     const straight = featureScore01(prediction, boat, "straightTime", 0.5);
+    const reliability = flowBoatScore(prediction, boat, "reliabilityScore", 0.5);
+    const courseTrifecta = flowBoatScore(prediction, boat, "courseTrifectaRate", 0.5);
     const featureRow = prediction.featureScores?.byBoat?.[String(boat)] || {};
     const tiltAdjustment = boatRow?.professionalFactors?.tiltAdjustment || buildTiltAdjustment(boatRow, featureRow);
     const tendency = boatRow?.playerTendency || {};
@@ -2305,6 +2370,7 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       { ok: Math.max(attackTriggerScore, attackerScore, beneficiaryScore) >= 0.58, reason: "attack/benefit" },
       { ok: motorRank >= 0.62, reason: "motor" },
       { ok: startReliability >= 0.62, reason: "start" },
+      { ok: reliability >= 0.6 || courseTrifecta >= 0.58, reason: "finishing reliability" },
       { ok: lapTurn >= 0.62 || straight >= 0.66, reason: "exhibition balance" },
       { ok: tiltAdjustment.attackSupport >= 0.025 || tiltAdjustment.residualSupport >= 0.02, reason: "tilt support" },
       { ok: tendencySupported, reason: "tendency sample" }
@@ -2315,7 +2381,8 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       Math.max(attackerScore, beneficiaryScore) * 0.16 +
       motorRank * 0.12 +
       startReliability * 0.1 +
-      lapTurn * 0.1 +
+      reliability * 0.12 +
+      lapTurn * 0.08 +
       straight * 0.04 +
       finiteNumber(tiltAdjustment.headBoost, 0)
     );
@@ -2349,6 +2416,10 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       status = status === "main" ? "upset" : status;
       rejectReasons.push("3 is attack trigger, but residual/turn support is weak for head");
     }
+    if (reliability < 0.38 && motorRank < 0.5 && status === "main") {
+      status = "upset";
+      rejectReasons.push("good exhibition alone is not enough without finishing reliability");
+    }
     if (dataQuality.overall === "low" && status === "main" && validationScore < 0.66) {
       status = "upset";
       rejectReasons.push("data quality is low, so head confidence is capped");
@@ -2368,6 +2439,8 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       residualScore: roundNumber(residualScore * 100, 1),
       startReliability: roundNumber(startReliability * 100, 1),
       motorRank: roundNumber(motorRank * 100, 1),
+      reliabilityScore: roundNumber(reliability * 100, 1),
+      courseTrifectaRate: roundNumber(courseTrifecta * 100, 1),
       lapTurn: roundNumber(lapTurn * 100, 1),
       tiltAdjustment
     };
@@ -2645,6 +2718,25 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     mainScenarioGroup: raceFlowScenario.mainScenarioGroup || null,
     derivedScenarioGroup: raceFlowScenario.derivedScenarioGroup || null,
     wallScorePreview: raceFlowScenario.wallScores,
+    reliabilityScorePreview: raceFlowScenario.headPartnerSplit?.map((row) => ({
+      boat: row.boat,
+      reliabilityScore: row.reliabilityScore,
+      reliabilitySource: row.reliabilityProfile?.source ?? null,
+      reliabilityUsedRates: row.reliabilityProfile?.usedRates ?? {},
+      courseQuinellaRate: row.courseQuinellaRate,
+      courseTrifectaRate: row.courseTrifectaRate,
+      recentQuinellaRate: row.recentQuinellaRate,
+      recentTrifectaRate: row.recentTrifectaRate,
+      localVenueQuinellaRate: row.localVenueQuinellaRate,
+      localVenueTrifectaRate: row.localVenueTrifectaRate
+    })) || [],
+    blockingScorePreview: raceFlowScenario.wallScores?.map((row) => ({
+      boat: row.boat,
+      wallScore: row.wallScore,
+      blockingScore: row.blockingScore,
+      reliabilityScore: row.reliabilityScore
+    })) || [],
+    boat4ObstructionRiskFromBoat3: raceFlowScenario.decisionResidualScores?.boat4ObstructionRiskFromBoat3 ?? null,
     headPartnerSplitPreview: raceFlowScenario.headPartnerSplit,
     fourHeadPartnerDecision: raceFlowScenario.fourHeadPartnerDecision || null,
     venueBiasTable: raceFlowScenario.venueBiasTable || null,

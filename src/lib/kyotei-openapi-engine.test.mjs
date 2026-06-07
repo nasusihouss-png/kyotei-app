@@ -602,6 +602,96 @@ const outsideExhibitionOnlyPrediction = buildRacePrediction(originalMetricProgra
 assert.equal(outsideExhibitionOnlyPrediction.finalPrediction.debug.headValidation.byBoat["5"].status, "partner_only");
 assert.equal(outsideExhibitionOnlyPrediction.finalPrediction.debug.headValidation.byBoat["6"].status, "partner_only");
 
+const highBoat3BlockingPrediction = buildRacePrediction(originalMetricProgram({
+  3: {
+    exST: 0.04,
+    straightTime: 6.68,
+    turnTime: 4.24,
+    courseQuinellaRate: 0.78,
+    courseTrifectaRate: 0.88,
+    recentTrifectaRate: 0.8,
+    playerTendency: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 18, makuriRate: 0.28 }
+  },
+  4: {
+    straightTime: 6.66,
+    turnTime: 4.2,
+    motorPercentileAtVenue: 0.95,
+    courseTrifectaRate: 0.62,
+    playerTendency: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 16, makuriSashiRate: 0.4 }
+  }
+}), null);
+const lowBoat3BlockingPrediction = buildRacePrediction(originalMetricProgram({
+  3: {
+    exST: 0.04,
+    straightTime: 6.68,
+    turnTime: 4.24,
+    courseQuinellaRate: 0.08,
+    courseTrifectaRate: 0.12,
+    recentTrifectaRate: 0.1,
+    playerTendency: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 18, makuriRate: 0.28 }
+  },
+  4: {
+    straightTime: 6.66,
+    turnTime: 4.2,
+    motorPercentileAtVenue: 0.95,
+    courseTrifectaRate: 0.62,
+    playerTendency: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 16, makuriSashiRate: 0.4 }
+  }
+}), null);
+assert.ok(
+  highBoat3BlockingPrediction.boat4ObstructionRiskFromBoat3 >
+    lowBoat3BlockingPrediction.boat4ObstructionRiskFromBoat3,
+  "boat3 reliability/blocking should raise boat4 obstruction risk"
+);
+assert.ok(
+  highBoat3BlockingPrediction.raceFlowScenario.scoreByBoat["4"].beneficiaryScore <
+    lowBoat3BlockingPrediction.raceFlowScenario.scoreByBoat["4"].beneficiaryScore,
+  "strong boat3 wall should reduce boat4 beneficiary head scoring"
+);
+assert.notEqual(
+  lowBoat3BlockingPrediction.finalPrediction.debug.headValidation.byBoat["4"].status,
+  "partner_only",
+  "boat4 can still be promoted when boat3 obstruction is weaker and boat4 scenario support is strong"
+);
+
+const exhibitionOnlyBoat3Prediction = buildRacePrediction(originalMetricProgram({
+  3: {
+    exST: 0.03,
+    exTime: 6.62,
+    straightTime: 6.62,
+    lapTime: 18.02,
+    turnTime: 4.16,
+    motorPercentileAtVenue: 0.1,
+    racer_assigned_motor_top_2_percent: 12,
+    courseQuinellaRate: 0.04,
+    courseTrifectaRate: 0.06,
+    recentTrifectaRate: 0.05,
+    playerTendency: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 14, makuriRate: 0.22 }
+  }
+}), null);
+assert.notEqual(
+  exhibitionOnlyBoat3Prediction.finalPrediction.debug.headValidation.byBoat["3"].status,
+  "main",
+  "good exhibition alone should not promote a low-reliability low-motor boat to main head"
+);
+
+const highBoat5TrifectaPrediction = buildRacePrediction(originalMetricProgram({
+  5: { courseQuinellaRate: 0.72, courseTrifectaRate: 0.9, recentTrifectaRate: 0.86, playerTendency: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 16 } }
+}), null);
+const lowBoat5TrifectaPrediction = buildRacePrediction(originalMetricProgram({
+  5: { courseQuinellaRate: 0.08, courseTrifectaRate: 0.12, recentTrifectaRate: 0.1, playerTendency: { sampleStatus: "ok", courseSpecificLast6mRaceCount: 16 } }
+}), null);
+assert.ok(
+  highBoat5TrifectaPrediction.raceFlowScenario.scoreByBoat["5"].thirdScore >
+    lowBoat5TrifectaPrediction.raceFlowScenario.scoreByBoat["5"].thirdScore,
+  "course trifecta reliability should improve 2nd/3rd partner evaluation"
+);
+
+const missingReliabilityPrediction = buildRacePrediction(originalMetricProgram(), null);
+assert.ok(Number.isFinite(missingReliabilityPrediction.raceFlowScenario.scoreByBoat["1"].reliabilityScore));
+assert.ok(Array.isArray(missingReliabilityPrediction.reliabilityScorePreview));
+assert.ok(Array.isArray(missingReliabilityPrediction.blockingScorePreview));
+
 assert.equal(
   missingOriginalPrediction.finalPrediction.buyDecision,
   "pass",
@@ -704,6 +794,29 @@ assert.ok(promoted41.reasons.some((reason) => reason.includes("1残り")));
 const demoted31 = evaluateTicketPlausibility({ combo: "3-1-4", boats: [3, 1, 4], probability: 0.08, decisionCompatibilityScore: 52 }, plausibilityFixture());
 assert.notEqual(demoted31.grade, "A", "3-1 should be demoted when venue makuri boat1SecondRate is low");
 assert.ok(demoted31.reasons.some((reason) => reason.includes("3-1")));
+
+const lowSecondReliabilityFixture = plausibilityFixture({
+  raceFlowScenario: {
+    ...plausibilityFixture().raceFlowScenario,
+    scoreByBoat: {
+      ...plausibilityFixture().raceFlowScenario.scoreByBoat,
+      2: {
+        ...plausibilityFixture().raceFlowScenario.scoreByBoat[2],
+        reliabilityScore: 0.2,
+        courseQuinellaRate: 0.12,
+        courseTrifectaRate: 0.14
+      }
+    },
+    scenarioFamilies: plausibilityFixture().raceFlowScenario.scenarioFamilies.map((row) =>
+      row.id === "four_beneficiary" ? { ...row, score: 56 } : row
+    ),
+    mainScenarioGroup: { id: "four_beneficiary", score: 56 }
+  },
+  mainScenarioGroup: { id: "four_beneficiary", score: 56 }
+});
+const lowSecondReliabilityGate = evaluateTicketPlausibility({ combo: "4-2-5", boats: [4, 2, 5], probability: 0.08, decisionCompatibilityScore: 68 }, lowSecondReliabilityFixture);
+assert.equal(lowSecondReliabilityGate.grade, "reject", "low 2nd-boat reliability should reject a weakly supported ticket");
+assert.ok(lowSecondReliabilityGate.rejectReasons.some((reason) => reason.includes("second boat reliability")));
 
 const groupedTickets = buildTicketPlausibilityGroups(plausibilityFixture());
 assert.ok(groupedTickets.mainTickets.length < 6, "ticket gate must not force exactly 6 main tickets");

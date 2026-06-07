@@ -125,6 +125,14 @@ export default function AdvancedDebugPanel({
             <pre className="json-preview">{safePrettyJson(debug.wallScorePreview)}</pre>
           </div>
           <div>
+            <div className="muted">reliability / blocking scores</div>
+            <pre className="json-preview">{safePrettyJson({
+              reliabilityScorePreview: debug.reliabilityScorePreview,
+              blockingScorePreview: debug.blockingScorePreview,
+              boat4ObstructionRiskFromBoat3: debug.boat4ObstructionRiskFromBoat3
+            })}</pre>
+          </div>
+          <div>
             <div className="muted">head / partner split</div>
             <pre className="json-preview">{safePrettyJson(debug.headPartnerSplitPreview)}</pre>
           </div>
