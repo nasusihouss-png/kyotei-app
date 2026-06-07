@@ -135,6 +135,7 @@ function buildCalibrationSummary(factorRows = [], raceRows = []) {
   if (factorRows.length < 20) {
     coefficientSuggestions.push({
       factor: "sampleSize",
+      target: "all",
       currentWeight: null,
       suggestion: "hold",
       reason: "Sample size is small; keep coefficient changes manual and conservative."
@@ -143,6 +144,7 @@ function buildCalibrationSummary(factorRows = [], raceRows = []) {
   if ((correlations.turnTimeScore?.fourHead ?? 0) > (correlations.exSTScore?.fourHead ?? 0) + 0.08) {
     coefficientSuggestions.push({
       factor: "turnTime",
+      target: "fourHeadOpportunity/residualScore",
       currentWeight: DEFAULT_SCORING_CONFIG.scoringCoefficients?.fourHeadOpportunity?.boat4TurnTime ?? null,
       suggestion: "increase for fourHeadOpportunity/residualScore",
       reason: "turnTime correlates with 4-head beneficiary cases more than exST in this sample."
@@ -151,6 +153,7 @@ function buildCalibrationSummary(factorRows = [], raceRows = []) {
   if ((correlations.exSTScore?.head ?? 0) < 0 && falsePositiveCases.length > 0) {
     coefficientSuggestions.push({
       factor: "exST",
+      target: "headScore",
       currentWeight: DEFAULT_SCORING_CONFIG.scoringCoefficients?.headScore?.exST ?? null,
       suggestion: "decrease",
       reason: "High false positives for head prediction when exST correlation is weak or negative."
@@ -159,6 +162,7 @@ function buildCalibrationSummary(factorRows = [], raceRows = []) {
   if ((correlations.motorRankScore?.involvement ?? 0) > 0.12) {
     coefficientSuggestions.push({
       factor: "motorRank",
+      target: "partnerResidualScore",
       currentWeight: DEFAULT_SCORING_CONFIG.scoringCoefficients?.partnerResidualScore?.motorRank ?? null,
       suggestion: "increase for residualScore",
       reason: "Strong motorRank correlates with 2nd/3rd involvement."
@@ -195,12 +199,15 @@ export function runPredictionBacktest({
   let trifectaMain = 0;
   let trifectaMainPlusUpset = 0;
   let secondPartnerHit = 0;
+  let partnerTop2Hit = 0;
   let fourHeadActual = 0;
   let fourHeadDetected = 0;
   let fourHeadPredicted = 0;
   let fourHeadTruePositive = 0;
   let falseThreeHead = 0;
   let falseOutsideHead = 0;
+  let missed1Residual = 0;
+  let missed4Beneficiary = 0;
   let passDecisionCorrect = 0;
   let avoidBadRaceCorrect = 0;
   let scenarioDecisionMatches = 0;
@@ -226,6 +233,7 @@ export function runPredictionBacktest({
         ? []
         : safeArray(prediction.tickets?.trifecta).slice(0, 6);
     const mainTickets = mainTicketRows.map((ticket) => ticket.combo);
+    const partnerTop2 = safeArray(prediction.finalPrediction?.partnerCandidates || prediction.partnerCandidates).slice(0, 2).map((row) => Number(row.boat));
     const allTickets = new Set([
       ...mainTickets,
       ...safeArray(prediction.ticketGroups?.secondaryTickets).map((ticket) => ticket.combo),
@@ -251,6 +259,7 @@ export function runPredictionBacktest({
     if (actual.secondBoat && mainTicketRows.some((ticket) => Number(ticket.boats?.[0]) === actual.winnerBoat && Number(ticket.boats?.[1]) === actual.secondBoat)) {
       secondPartnerHit += 1;
     }
+    if (actual.secondBoat && partnerTop2.includes(Number(actual.secondBoat))) partnerTop2Hit += 1;
     if (actual.trifecta && mainTickets.includes(actual.trifecta)) trifectaMain += 1;
     if (actual.trifecta && allTickets.has(actual.trifecta)) trifectaMainPlusUpset += 1;
     const predictedFourHead = boat4OpportunityScore >= 48 || safeArray(prediction.finalPrediction?.headCandidates).some((row) => row.boat === 4);
@@ -261,9 +270,11 @@ export function runPredictionBacktest({
         fourHeadDetected += 1;
         fourHeadTruePositive += 1;
       }
+      if (!predictedFourHead) missed4Beneficiary += 1;
     }
     if (predictedHead === 3 && actual.winnerBoat !== 3) falseThreeHead += 1;
     if (predictedHead >= 5 && actual.winnerBoat !== predictedHead) falseOutsideHead += 1;
+    if (actual.boat1InTop3 && ![predictedHead, ...partnerTop2].includes(1)) missed1Residual += 1;
     const avoidRecommended = finalDecision === "pass" || confidence.score < 45 || consistency.referenceOnly;
     const badRace = actual.trifecta ? !mainTickets.includes(actual.trifecta) : predictedHead !== actual.winnerBoat;
     if (avoidRecommended === badRace) avoidBadRaceCorrect += 1;
@@ -281,6 +292,9 @@ export function runPredictionBacktest({
       confidenceScore: confidence.score,
       buyDecision: finalDecision,
       boat4OpportunityScore,
+      partnerTop2,
+      boat1InTop3: actual.boat1InTop3,
+      predictedFourHead,
       mainScenarioId: topScenario?.id ?? null,
       actualDecision: actual.winnerDecision,
       predictedDecision: expectedDecision
@@ -312,6 +326,7 @@ export function runPredictionBacktest({
       hitRates: {
       headTop1: hitRate(headTop1, sampleRaceCount),
       headTop2: hitRate(headTop2, sampleRaceCount),
+      partnerTop2: hitRate(partnerTop2Hit, sampleRaceCount),
       secondPartner: hitRate(secondPartnerHit, sampleRaceCount),
       trifectaMain: hitRate(trifectaMain, sampleRaceCount),
       trifectaMainPlusUpset: hitRate(trifectaMainPlusUpset, sampleRaceCount),
@@ -320,6 +335,8 @@ export function runPredictionBacktest({
       fourHeadRecall: hitRate(fourHeadTruePositive, fourHeadActual),
       falseThreeHeadRate: hitRate(falseThreeHead, sampleRaceCount),
       falseOutsideHeadRate: hitRate(falseOutsideHead, sampleRaceCount),
+      missed1ResidualRate: hitRate(missed1Residual, sampleRaceCount),
+      missed4BeneficiaryRate: hitRate(missed4Beneficiary, fourHeadActual),
       avoidBadRaceAccuracy: hitRate(avoidBadRaceCorrect, sampleRaceCount),
       passDecisionAccuracy: hitRate(passDecisionCorrect, sampleRaceCount),
       scenarioDecision: hitRate(scenarioDecisionMatches, scenarioDecisionCount)
@@ -330,6 +347,8 @@ export function runPredictionBacktest({
       dateTo,
       venueId: targetVenue,
       fourHeadActualCount: fourHeadActual,
+      missed1ResidualCount: missed1Residual,
+      missed4BeneficiaryCount: missed4Beneficiary,
       scenarioDecisionCount,
       raceRows: raceRows.slice(0, 50),
       factorRows: factorRows.slice(0, 50)

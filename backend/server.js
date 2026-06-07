@@ -48,6 +48,8 @@ const originalExhibitionPendingRaceKeys = new Set();
 const ORIGINAL_EXHIBITION_CACHE_LIMIT = 200;
 const raceConditionsCache = new Map();
 const RACE_CONDITIONS_CACHE_LIMIT = 300;
+const motorRankingCache = new Map();
+const MOTOR_RANKING_CACHE_LIMIT = 120;
 
 function buildOriginalExhibitionRaceKey({ date, venueId, raceNo }) {
   return `${String(date || "")}|${Number(venueId)}|${Number(raceNo)}`;
@@ -87,7 +89,11 @@ function buildEmptyRaceConditions() {
     waveHeight: null,
     weather: null,
     temperature: null,
-    waterTemperature: null
+    waterTemperature: null,
+    tideLevel: null,
+    tideDirection: null,
+    tidePhase: null,
+    waterType: null
   };
 }
 
@@ -107,7 +113,11 @@ function normalizeRaceConditionsFromSource(source = {}) {
     waveHeight: toNullableNumber(nested.waveHeight ?? nested.wave ?? root.waveHeight ?? root.wave_height ?? root.race_wave ?? root.wave),
     weather: nested.weather ?? root.weather ?? root.race_weather ?? root.race_weather_number ?? null,
     temperature: toNullableNumber(nested.temperature ?? root.temperature ?? root.race_temperature),
-    waterTemperature: toNullableNumber(nested.waterTemperature ?? root.waterTemperature ?? root.water_temperature ?? root.race_water_temperature)
+    waterTemperature: toNullableNumber(nested.waterTemperature ?? root.waterTemperature ?? root.water_temperature ?? root.race_water_temperature),
+    tideLevel: toNullableNumber(nested.tideLevel ?? nested.tide ?? root.tideLevel ?? root.tide_level ?? root.race_tide_level),
+    tideDirection: nested.tideDirection ?? root.tideDirection ?? root.tide_direction ?? root.race_tide_direction ?? null,
+    tidePhase: nested.tidePhase ?? root.tidePhase ?? root.tide_phase ?? root.race_tide_phase ?? null,
+    waterType: nested.waterType ?? root.waterType ?? root.water_type ?? root.race_water_type ?? null
   };
 }
 
@@ -564,6 +574,119 @@ app.get("/api/race/conditions", async (req, res) => {
         error: String(error?.message || error)
       },
       error: String(error?.message || error)
+    });
+  }
+});
+
+app.get("/api/race/motor-ranking", async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  const date = String(req.query?.date || "");
+  const venueId = toPositiveInt(req.query?.venueId, null);
+  const forceRaw = String(req.query?.force || "").toLowerCase();
+  const force = forceRaw === "1" || forceRaw === "true";
+  const cacheKey = `${date}|${venueId}`;
+  if (!date || !venueId) {
+    return res.status(400).json({
+      ok: false,
+      rows: [],
+      source: "none",
+      error: "date and venueId are required",
+      debug: { date, venueId }
+    });
+  }
+  if (!force && motorRankingCache.has(cacheKey)) {
+    return res.json({
+      ...cloneJson(motorRankingCache.get(cacheKey)),
+      source: "cache",
+      fetchedAt: new Date().toISOString()
+    });
+  }
+  const url = `https://boatraceopenapi.github.io/programs/v2/${buildOpenApiDatePath(date)}`;
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) throw new Error(`openapi programs fetch failed (${response.status})`);
+    const raceRows = getOpenApiRaceRows(payload).filter((row) => Number(row?.race_stadium_number) === Number(venueId));
+    const motorMap = new Map();
+    for (const race of raceRows) {
+      const boats = Array.isArray(race?.boats) ? race.boats : [];
+      for (const row of boats) {
+        const motorNo = row?.racer_assigned_motor_number ?? row?.motorNo ?? row?.motor_number ?? row?.motor_no ?? null;
+        if (motorNo === null || motorNo === undefined || motorNo === "") continue;
+        const key = String(motorNo);
+        const current = motorMap.get(key) || {
+          motorNo: key,
+          seenCount: 0,
+          motor2Values: [],
+          motor3Values: [],
+          partChanges: new Set()
+        };
+        const motor2 = toNullableNumber(row?.racer_assigned_motor_top_2_percent ?? row?.motor2Rate ?? row?.motor_2rate);
+        const motor3 = toNullableNumber(row?.racer_assigned_motor_top_3_percent ?? row?.motor3Rate ?? row?.motor_3rate);
+        current.seenCount += 1;
+        if (motor2 !== null) current.motor2Values.push(motor2);
+        if (motor3 !== null) current.motor3Values.push(motor3);
+        const partChange = row?.motorPartChange ?? row?.motor_part_change ?? null;
+        if (partChange) current.partChanges.add(String(partChange));
+        motorMap.set(key, current);
+      }
+    }
+    const avg = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+    const rows = [...motorMap.values()].map((row) => ({
+      motorNo: row.motorNo,
+      seenCount: row.seenCount,
+      motor2Rate: avg(row.motor2Values),
+      motor3Rate: avg(row.motor3Values),
+      motorPartChange: row.partChanges.size ? [...row.partChanges].join(", ") : null,
+      motorRecentForm: null,
+      motorCompatibilityScore: null,
+      racerMotorCompatibilityScore: null
+    })).sort((a, b) => (toNullableNumber(b.motor2Rate) ?? -1) - (toNullableNumber(a.motor2Rate) ?? -1));
+    const ranked = rows.map((row, index) => ({
+      ...row,
+      motorRankAtVenue: row.motor2Rate === null ? null : index + 1,
+      motorPercentileAtVenue: row.motor2Rate === null || rows.length <= 1 ? null : (rows.length - index - 1) / (rows.length - 1),
+      motorStrengthLabel: row.motor2Rate === null
+        ? null
+        : index / Math.max(rows.length - 1, 1) <= 0.18
+          ? "top"
+          : index / Math.max(rows.length - 1, 1) <= 0.38
+            ? "above_average"
+            : index / Math.max(rows.length - 1, 1) <= 0.62
+              ? "average"
+              : index / Math.max(rows.length - 1, 1) <= 0.82
+                ? "below_average"
+                : "weak"
+    }));
+    const result = {
+      ok: true,
+      rows: ranked,
+      source: ranked.length ? "openapi_programs_race_day" : "race_only_fallback_empty",
+      fetchedAt: new Date().toISOString(),
+      error: null,
+      debug: {
+        url,
+        date,
+        venueId,
+        raceCount: raceRows.length,
+        motorCount: ranked.length,
+        confidence: ranked.length >= 10 ? "medium" : "low",
+        note: "Compatibility fields remain null unless supplied by source data."
+      }
+    };
+    motorRankingCache.set(cacheKey, cloneJson(result));
+    while (motorRankingCache.size > MOTOR_RANKING_CACHE_LIMIT) {
+      motorRankingCache.delete(motorRankingCache.keys().next().value);
+    }
+    return res.json(result);
+  } catch (error) {
+    return res.json({
+      ok: false,
+      rows: [],
+      source: "error",
+      fetchedAt: new Date().toISOString(),
+      error: String(error?.message || error),
+      debug: { url, date, venueId, confidence: "low" }
     });
   }
 });

@@ -734,4 +734,56 @@ const noBuyGroups = buildTicketPlausibilityGroups(plausibilityFixture({
 assert.equal(noBuyGroups.noBuyRecommended, true, "low confidence / inconsistent tickets should return no-buy recommendation");
 assert.equal(noBuyGroups.mainTickets.length, 0, "no-buy mode should not expose main tickets");
 
+const tideAwarePrediction = buildRacePrediction({
+  ...originalMetricProgram(),
+  race_stadium_number: 24,
+  conditions: {
+    windDirection: "headwind",
+    windSpeed: 4,
+    waveHeight: 3,
+    tideLevel: 120,
+    tideDirection: "in",
+    tidePhase: "rising",
+    waterType: "seawater"
+  }
+}, null);
+assert.equal(tideAwarePrediction.venueProfile.hasTideInfluence, true);
+assert.equal(tideAwarePrediction.race.conditions.tideLevel, 120);
+assert.ok(
+  tideAwarePrediction.conditionAdjustmentLog.some((row) => row.type === "tide"),
+  "tide-aware venues should add a condition adjustment log entry"
+);
+assert.equal(tideAwarePrediction.raceFlowScenario.normalizedConditions.waterType, "seawater");
+
+const tiltAwarePrediction = buildRacePrediction(originalMetricProgram({
+  3: { tilt: 1, straightTime: 6.7, turnTime: 5.1 },
+  4: { tilt: -0.5, lapTime: 36.7, turnTime: 5.18 }
+}), null);
+assert.ok(tiltAwarePrediction.tiltAdjustmentPreview.find((row) => row.boat === 3)?.adjustment?.gateWarning);
+assert.ok(
+  tiltAwarePrediction.coefficientContributionByBoat.find((row) => row.boat === 3)?.tiltAdjustment,
+  "tilt adjustment should be visible in coefficient debug"
+);
+
+const weakMotorGate = evaluateTicketPlausibility({ combo: "3-1-4", boats: [3, 1, 4], probability: 0.08, decisionCompatibilityScore: 68 }, plausibilityFixture({
+  featureScores: {
+    ...plausibilityFixture().featureScores,
+    byBoat: {
+      ...plausibilityFixture().featureScores.byBoat,
+      3: {
+        ...plausibilityFixture().featureScores.byBoat[3],
+        scores: { ...plausibilityFixture().featureScores.byBoat[3].scores, motorRank: 0.12, motor2Rate: 0.18 }
+      }
+    }
+  }
+}));
+assert.equal(weakMotorGate.grade, "reject", "weak motor head should be rejected unless other support is exceptional");
+assert.ok(weakMotorGate.rejectReasons.some((reason) => reason.includes("motor gate failed")));
+
+const roughOutsideGate = evaluateTicketPlausibility({ combo: "5-1-2", boats: [5, 1, 2], probability: 0.06, decisionCompatibilityScore: 52 }, plausibilityFixture({
+  race: { stadiumNumber: 24, conditions: { windSpeed: 8, waveHeight: 6, waterType: "seawater" } }
+}));
+assert.equal(roughOutsideGate.grade, "reject", "rough water should reject outside head without strong lap/turn support");
+assert.ok(roughOutsideGate.rejectReasons.some((reason) => reason.includes("condition gate failed")));
+
 console.log("kyotei-openapi-engine ok");

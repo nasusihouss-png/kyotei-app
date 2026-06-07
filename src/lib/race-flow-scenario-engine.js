@@ -6,6 +6,7 @@ import {
   weightedDecisionRate
 } from "./venue-bias-engine.js";
 import { DEFAULT_SCORING_CONFIG, mergeScoringConfig } from "./scoring-config.js";
+import { getVenueProfile } from "./venue-profile.js";
 
 const BOATS = [1, 2, 3, 4, 5, 6];
 
@@ -241,23 +242,35 @@ function normalizeRaceConditions(source = {}) {
   const text = String(root.windDirection ?? root.wind_direction ?? root.windDir ?? "");
   const windSpeed = finiteNumber(root.windSpeed ?? root.wind ?? root.race_wind, null);
   const waveHeight = finiteNumber(root.waveHeight ?? root.wave ?? root.race_wave, null);
+  const tideLevel = finiteNumber(root.tideLevel ?? root.tide ?? root.tide_level ?? root.race_tide_level, null);
+  const tideDirection = root.tideDirection ?? root.tide_direction ?? root.race_tide_direction ?? null;
+  const tidePhase = root.tidePhase ?? root.tide_phase ?? root.race_tide_phase ?? null;
+  const waterType = root.waterType ?? root.water_type ?? root.race_water_type ?? null;
   const directionLower = text.toLowerCase();
   const isTailwind = /tail|追/.test(directionLower);
   const isHeadwind = /head|向/.test(directionLower);
   const isCrosswind = /cross|横/.test(directionLower);
   const windLevel = windSpeed === null ? 0 : windSpeed >= 7 ? 1 : windSpeed >= 5 ? 0.58 : 0;
   const waveLevel = waveHeight === null ? 0 : waveHeight >= 8 ? 1 : waveHeight >= 5 ? 0.58 : 0;
+  const tideLevelRisk = tideLevel === null ? 0 : tideLevel >= 120 ? 0.8 : tideLevel >= 80 ? 0.45 : 0;
   return {
     windDirection: root.windDirection ?? root.wind_direction ?? root.windDir ?? null,
     windSpeed,
     waveHeight,
     weather: root.weather ?? null,
+    temperature: finiteNumber(root.temperature ?? root.race_temperature, null),
+    waterTemperature: finiteNumber(root.waterTemperature ?? root.water_temperature ?? root.race_water_temperature, null),
+    tideLevel,
+    tideDirection,
+    tidePhase,
+    waterType,
+    tideLevelRisk,
     windLevel,
     waveLevel,
     isTailwind,
     isHeadwind,
     isCrosswind,
-    available: windSpeed !== null || waveHeight !== null || root.weather !== null || root.windDirection !== null
+    available: windSpeed !== null || waveHeight !== null || root.weather !== null || root.windDirection !== null || tideLevel !== null || tideDirection !== null || tidePhase !== null || waterType !== null
   };
 }
 
@@ -401,6 +414,7 @@ export function buildRaceFlowScenarioModel({
   venueBias = null,
   stadiumNumber = null,
   raceConditions = null,
+  venueProfile = null,
   scoringConfig = DEFAULT_SCORING_CONFIG
 } = {}) {
   const config = mergeScoringConfig(scoringConfig || {});
@@ -417,6 +431,17 @@ export function buildRaceFlowScenarioModel({
   if (!tendencyAvailable) dataWarnings.push("戦法データが不足しているため、展開シナリオは展示・足色中心で評価");
   if (!venueAvailable) dataWarnings.push("会場バイアスが未取得のため、全国共通の展開評価で補正");
   const conditions = normalizeRaceConditions(raceConditions || {});
+  const resolvedVenueProfile = venueProfile || getVenueProfile(stadiumNumber, conditions);
+  const roughWaterSensitivity = finiteNumber(resolvedVenueProfile.roughWaterSensitivity, 0.5);
+  const tideInstabilityLevel = resolvedVenueProfile.hasTideInfluence ? finiteNumber(conditions.tideLevelRisk, 0) : 0;
+  const roughWaterLevel = clamp(
+    (conditions.waveLevel * 0.75) +
+    (conditions.windLevel * 0.18) +
+    (tideInstabilityLevel * 0.18) +
+    Math.max(0, roughWaterSensitivity - 0.5) * 0.16,
+    0,
+    1
+  );
 
   const walls = {
     2: wallScore(metrics[2], config),
@@ -465,13 +490,13 @@ export function buildRaceFlowScenarioModel({
   const weakBoat2Wall = 1 - walls[2];
   const weakBoat3Wall = 1 - walls[3];
   const boat1WeakFoot = Math.max(0, 0.52 - b1.lapTime) + Math.max(0, 0.52 - b1.turnTime);
-  const roughWaterStability1 = conditions.waveLevel * Math.max(0, ((b1.lapTime + b1.turnTime) / 2) - 0.55) * 0.12;
+  const roughWaterStability1 = roughWaterLevel * Math.max(0, ((b1.lapTime + b1.turnTime) / 2) - 0.55) * 0.12;
   const headwindEscapeDrag = conditions.isHeadwind
     ? conditions.windLevel * (Math.max(0, 0.56 - b1.exST) + Math.max(0, 0.56 - b1.turnTime)) * 0.09
     : 0;
   const tailwindCenterAttack = conditions.isTailwind ? conditions.windLevel * 0.08 : 0;
   const crosswindStability = conditions.isCrosswind ? conditions.windLevel * 0.04 : 0;
-  const waveAggressionPenalty = conditions.waveLevel * 0.08;
+  const waveAggressionPenalty = roughWaterLevel * 0.08;
   const conditionAdjustmentLog = [];
   const venueBoat1Residual = residualVenueBlend(
     venueMakuriBoat1Second,
@@ -487,7 +512,7 @@ export function buildRaceFlowScenarioModel({
     b1.motor2Rate * 0.1 +
     b1Escape * 0.42 +
     venueBoat1Residual * 0.2 +
-    conditions.waveLevel * Math.max(0, ((b1.lapTime + b1.turnTime) / 2) - 0.55) * 0.08 +
+    roughWaterLevel * Math.max(0, ((b1.lapTime + b1.turnTime) / 2) - 0.55) * 0.08 +
     conditions.isHeadwind * conditions.windLevel * Math.max(0, b1.turnTime - 0.55) * 0.05 -
     b1BeatenByMakuri * 0.28 -
     b1BeatenByMakuriSashi * 0.24 -
@@ -532,7 +557,7 @@ export function buildRaceFlowScenarioModel({
     b1BeatenBySashi * 0.72 +
     Math.max(0, 0.55 - b1.turnTime) * 0.14 +
     conditions.isHeadwind * conditions.windLevel * b2.turnTime * 0.05 +
-    conditions.waveLevel * Math.max(0, b2.turnTime - 0.55) * 0.07 +
+    roughWaterLevel * Math.max(0, b2.turnTime - 0.55) * 0.07 +
     (vSashi2 - 0.5) * 0.16 -
     Math.max(0, b2.lateRate - 0.12) * b2.sampleWeight * 0.18
   );
@@ -557,7 +582,7 @@ export function buildRaceFlowScenarioModel({
     weakBoat2Wall * 0.22 +
     weakBoat3Wall * 0.08 +
     tailwindCenterAttack * ((b3.exST + b3.straightTime) / 2) -
-    conditions.waveLevel * Math.max(0, 0.58 - b3.turnTime) * 0.09 -
+    roughWaterLevel * Math.max(0, 0.58 - b3.turnTime) * 0.09 -
     (conditions.isCrosswind ? conditions.windLevel * Math.max(0, 0.58 - b3.turnTime) * 0.06 : 0) -
     (vMakuri3 - 0.5) * 0.16 -
     Math.max(0, 0.45 - b3.turnTime) * 0.06
@@ -579,7 +604,7 @@ export function buildRaceFlowScenarioModel({
     positiveRate(b3.tendency, "makuriSashiRate", 0.07) * 0.92 +
     b1BeatenByMakuriSashi * 0.72 +
     weakBoat2Wall * 0.13 +
-    conditions.waveLevel * Math.max(0, b3.turnTime - 0.55) * 0.07 +
+    roughWaterLevel * Math.max(0, b3.turnTime - 0.55) * 0.07 +
     (conditions.isCrosswind ? conditions.windLevel * Math.max(0, b3.turnTime - 0.55) * 0.05 : 0) +
     (vMakuriSashi3 - 0.5) * 0.16
   );
@@ -596,7 +621,7 @@ export function buildRaceFlowScenarioModel({
     venue4Second3 * 0.12 +
     venue4Exacta3 * 0.16 -
     Math.max(0, attack3 - 0.56) * 0.08 +
-    conditions.waveLevel * Math.max(0, b3.turnTime - 0.55) * 0.06
+    roughWaterLevel * Math.max(0, b3.turnTime - 0.55) * 0.06
   );
   const boat2ResidualAfterFlowScore = clamp(
     0.18 +
@@ -659,7 +684,7 @@ export function buildRaceFlowScenarioModel({
     (1 - boat1ResidualAfterAttackScore) * 0.16 +
     weakBoat3Wall * 0.08 +
     b1BeatenByMakuriSashi * 0.42 +
-    conditions.waveLevel * Math.max(0, b4.turnTime - 0.55) * 0.1 +
+    roughWaterLevel * Math.max(0, b4.turnTime - 0.55) * 0.1 +
     conditions.isTailwind * conditions.windLevel * Math.max(0, b4.straightTime - 0.55) * 0.04 +
     (vMakuriSashi4 - 0.5) * 0.15 * (venueFeatureWeights.fourBeneficiary ?? 1)
   );
@@ -686,6 +711,18 @@ export function buildRaceFlowScenarioModel({
       level: conditions.waveLevel >= 1 ? "strong" : "medium",
       waveHeight: conditions.waveHeight,
       note: "波高あり。外の一撃頭を少し抑え、周回・まわり足の安定を重視"
+    });
+  }
+
+  if (tideInstabilityLevel > 0 || resolvedVenueProfile.hasTideInfluence) {
+    conditionAdjustmentLog.push({
+      type: "tide",
+      level: tideInstabilityLevel >= 0.7 ? "strong" : tideInstabilityLevel > 0 ? "medium" : "reference",
+      tideLevel: conditions.tideLevel,
+      tideDirection: conditions.tideDirection,
+      tidePhase: conditions.tidePhase,
+      waterType: conditions.waterType ?? resolvedVenueProfile.waterType,
+      note: "潮の影響がある水面では、外の一撃よりも周回・まわり足と残り足を軽く重視"
     });
   }
 
@@ -1220,13 +1257,18 @@ export function buildRaceFlowScenarioModel({
     decisionConditionedStats,
     headDecisionComboStats,
     decisionResidualScores,
+    venueProfile: resolvedVenueProfile,
+    normalizedConditions: {
+      ...conditions,
+      roughWaterLevel: round(roughWaterLevel, 3)
+    },
     conditionAdjustmentLog,
     explanations: [...explanations, ...decisionBiasExplanations],
     quality: {
       tendencyAvailable,
       venueAvailable,
       conditionAvailable: conditions.available,
-      confidenceAdjustment: dataWarnings.length * -1.5 - (conditions.windLevel > 0 || conditions.waveLevel > 0 ? 0.8 : 0)
+      confidenceAdjustment: dataWarnings.length * -1.5 - (conditions.windLevel > 0 || conditions.waveLevel > 0 || tideInstabilityLevel > 0 ? 0.8 : 0)
     }
   };
 }

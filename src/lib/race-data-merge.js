@@ -64,7 +64,11 @@ export function normalizeRaceConditions(source = null) {
     waveHeight: toNullableNumber(nested.waveHeight ?? nested.wave ?? root.waveHeight ?? root.wave_height ?? root.race_wave ?? root.wave),
     weather: weatherValue === undefined ? null : weatherValue,
     temperature: toNullableNumber(nested.temperature ?? root.temperature ?? root.race_temperature),
-    waterTemperature: toNullableNumber(nested.waterTemperature ?? root.waterTemperature ?? root.water_temperature ?? root.race_water_temperature)
+    waterTemperature: toNullableNumber(nested.waterTemperature ?? root.waterTemperature ?? root.water_temperature ?? root.race_water_temperature),
+    tideLevel: toNullableNumber(nested.tideLevel ?? nested.tide ?? root.tideLevel ?? root.tide_level ?? root.race_tide_level),
+    tideDirection: nested.tideDirection ?? root.tideDirection ?? root.tide_direction ?? root.race_tide_direction ?? null,
+    tidePhase: nested.tidePhase ?? root.tidePhase ?? root.tide_phase ?? root.race_tide_phase ?? null,
+    waterType: nested.waterType ?? root.waterType ?? root.water_type ?? root.race_water_type ?? null
   };
   return conditions;
 }
@@ -126,6 +130,19 @@ export function canonicalEntriesToProgram(program = {}, entries = [], conditions
         racer_number: row?.racer_number ?? entry.racerId,
         motor2Rate: firstFinite(entry.motor2Rate, row?.motor2Rate),
         motor2ren: firstFinite(entry.motor2Rate, row?.motor2ren),
+        motor3Rate: firstFinite(entry.motor3Rate, row?.motor3Rate),
+        motor3ren: firstFinite(entry.motor3Rate, row?.motor3ren),
+        motorNo: row?.motorNo ?? row?.motorNumber ?? entry.motorNo ?? null,
+        motorRankAtVenue: firstFinite(entry.motorRankAtVenue, row?.motorRankAtVenue),
+        motorPercentileAtVenue: firstFinite(entry.motorPercentileAtVenue, row?.motorPercentileAtVenue),
+        motorStrengthLabel: entry.motorStrengthLabel ?? row?.motorStrengthLabel ?? null,
+        motorRecentForm: entry.motorRecentForm ?? row?.motorRecentForm ?? null,
+        motorPartChange: entry.motorPartChange ?? row?.motorPartChange ?? null,
+        motorCompatibilityScore: firstFinite(entry.motorCompatibilityScore, row?.motorCompatibilityScore),
+        racerMotorCompatibilityScore: firstFinite(entry.racerMotorCompatibilityScore, row?.racerMotorCompatibilityScore),
+        tilt: firstFinite(entry.tilt, row?.tilt),
+        tiltChange: firstFinite(entry.tiltChange, row?.tiltChange),
+        tiltLabel: entry.tiltLabel ?? row?.tiltLabel ?? null,
         exST: entry.exST ?? null,
         exhibitionSt: entry.exST ?? null,
         exhibitionST: entry.exST ?? null,
@@ -182,10 +199,18 @@ export function canonicalEntriesToProgram(program = {}, entries = [], conditions
     weather: raceConditions.weather,
     temperature: raceConditions.temperature,
     waterTemperature: raceConditions.waterTemperature,
+    tideLevel: raceConditions.tideLevel,
+    tideDirection: raceConditions.tideDirection,
+    tidePhase: raceConditions.tidePhase,
+    waterType: raceConditions.waterType,
     race_wind: raceConditions.windSpeed ?? program?.race_wind ?? null,
     race_wave: raceConditions.waveHeight ?? program?.race_wave ?? null,
     race_weather: raceConditions.weather ?? program?.race_weather ?? null,
     race_wind_direction: raceConditions.windDirection ?? program?.race_wind_direction ?? null,
+    race_tide_level: raceConditions.tideLevel ?? program?.race_tide_level ?? null,
+    race_tide_direction: raceConditions.tideDirection ?? program?.race_tide_direction ?? null,
+    race_tide_phase: raceConditions.tidePhase ?? program?.race_tide_phase ?? null,
+    race_water_type: raceConditions.waterType ?? program?.race_water_type ?? null,
     boats,
     entries: boats
   };
@@ -225,7 +250,13 @@ export function buildCanonicalRaceData({
       windDirection: normalizedConditions.windDirection,
       windSpeed: normalizedConditions.windSpeed,
       waveHeight: normalizedConditions.waveHeight,
-      weather: normalizedConditions.weather
+      weather: normalizedConditions.weather,
+      temperature: normalizedConditions.temperature,
+      waterTemperature: normalizedConditions.waterTemperature,
+      tideLevel: normalizedConditions.tideLevel,
+      tideDirection: normalizedConditions.tideDirection,
+      tidePhase: normalizedConditions.tidePhase,
+      waterType: normalizedConditions.waterType
     }));
   const predictionInputProgram = canonicalEntriesToProgram(sourceProgram, entries, normalizedConditions);
   const canonicalPreview = buildCanonicalPreview(entries);
@@ -242,6 +273,10 @@ export function buildCanonicalRaceData({
     weather: normalizedConditions.weather,
     temperature: normalizedConditions.temperature,
     waterTemperature: normalizedConditions.waterTemperature,
+    tideLevel: normalizedConditions.tideLevel,
+    tideDirection: normalizedConditions.tideDirection,
+    tidePhase: normalizedConditions.tidePhase,
+    waterType: normalizedConditions.waterType,
     entries,
     debug: {
       ...debug,

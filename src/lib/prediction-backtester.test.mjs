@@ -31,14 +31,20 @@ const result = runPredictionBacktest({ races, dateFrom: "2026-05-01", dateTo: "2
 assert.equal(result.ok, true);
 assert.equal(result.sampleRaceCount, 2);
 assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "headTop1"));
+assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "partnerTop2"));
 assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "secondPartner"));
 assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "fourHeadPrecision"));
 assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "fourHeadRecall"));
 assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "falseThreeHeadRate"));
 assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "falseOutsideHeadRate"));
+assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "missed1ResidualRate"));
+assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "missed4BeneficiaryRate"));
 assert.ok(Object.prototype.hasOwnProperty.call(result.hitRates, "passDecisionAccuracy"));
 assert.ok(Array.isArray(result.calibration.coefficientSuggestions));
 assert.ok(result.calibration.coefficientSuggestions.every((row) => typeof row === "object" && Object.prototype.hasOwnProperty.call(row, "factor")));
+assert.ok(result.calibration.coefficientSuggestions.every((row) => typeof row === "object" && Object.prototype.hasOwnProperty.call(row, "target")));
 assert.ok(result.debug.raceRows.length > 0);
+assert.ok(Object.prototype.hasOwnProperty.call(result.debug, "missed1ResidualCount"));
+assert.ok(Object.prototype.hasOwnProperty.call(result.debug, "missed4BeneficiaryCount"));
 
 console.log("prediction-backtester ok");

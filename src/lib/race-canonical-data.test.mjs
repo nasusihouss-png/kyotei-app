@@ -232,4 +232,55 @@ function tendencyRows() {
   assert.equal(boat6.sashiRate, null, "boat fallback must not merge a different racerId");
 }
 
+{
+  const canonical = buildCanonicalRaceData({
+    program: program(),
+    conditions: {
+      windDirection: "tailwind",
+      windSpeed: 5,
+      waveHeight: 3,
+      weather: "sunny",
+      temperature: 28,
+      waterTemperature: 24,
+      tideLevel: 92,
+      tideDirection: "in",
+      tidePhase: "rising",
+      waterType: "seawater"
+    }
+  });
+  assert.equal(canonical.conditions.tideLevel, 92);
+  assert.equal(canonical.conditions.tideDirection, "in");
+  assert.equal(canonical.conditions.tidePhase, "rising");
+  assert.equal(canonical.conditions.waterType, "seawater");
+  assert.equal(canonical.debug.predictionInputProgram.race_tide_level, 92);
+  assert.equal(canonical.debug.predictionInputProgram.race_water_type, "seawater");
+}
+
+{
+  const canonical = buildCanonicalRaceData({
+    program: program({
+      4: {
+        motorNo: "44",
+        motor3Rate: 58,
+        motorRankAtVenue: 2,
+        motorPercentileAtVenue: 0.82,
+        motorRecentForm: "up",
+        motorPartChange: "ring",
+        motorCompatibilityScore: 0.7,
+        tilt: 0.5,
+        tiltChange: 0.5,
+        tiltLabel: "attack"
+      }
+    })
+  });
+  const boat4 = canonical.entries.find((row) => row.boat === 4);
+  const inputBoat4 = canonical.debug.predictionInputProgram.boats.find((row) => Number(row.boat) === 4);
+  assert.equal(boat4.motor3Rate, 58);
+  assert.equal(boat4.tilt, 0.5);
+  assert.equal(inputBoat4.motor3Rate, 58);
+  assert.equal(inputBoat4.motorRankAtVenue, 2);
+  assert.equal(inputBoat4.motorCompatibilityScore, 0.7);
+  assert.equal(inputBoat4.tiltLabel, "attack");
+}
+
 console.log("race-canonical-data ok");

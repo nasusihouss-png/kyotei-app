@@ -179,7 +179,11 @@ async function fetchRaceConditions({ date, venueId, raceNo, force = false, signa
       waveHeight: null,
       weather: null,
       temperature: null,
-      waterTemperature: null
+      waterTemperature: null,
+      tideLevel: null,
+      tideDirection: null,
+      tidePhase: null,
+      waterType: null
     }
   };
 }
@@ -905,7 +909,11 @@ function formatRaceConditionSummary(conditionPayload = null) {
   const windDirection = conditions?.windDirection ?? null;
   const temperature = conditions?.temperature ?? null;
   const waterTemperature = conditions?.waterTemperature ?? null;
-  const hasAny = [windSpeed, waveHeight, weather, windDirection, temperature, waterTemperature].some((value) => value !== null && value !== undefined && value !== "");
+  const tideLevel = conditions?.tideLevel ?? null;
+  const tideDirection = conditions?.tideDirection ?? null;
+  const tidePhase = conditions?.tidePhase ?? null;
+  const waterType = conditions?.waterType ?? null;
+  const hasAny = [windSpeed, waveHeight, weather, windDirection, temperature, waterTemperature, tideLevel, tideDirection, tidePhase, waterType].some((value) => value !== null && value !== undefined && value !== "");
   if (!hasAny) return "水面条件: 未取得";
   const parts = [
     `風向: ${windDirection || "-"}`,
@@ -915,6 +923,10 @@ function formatRaceConditionSummary(conditionPayload = null) {
   ];
   if (temperature !== null && temperature !== undefined && temperature !== "") parts.push(`気温: ${formatMaybeNumber(temperature, 0)}℃`);
   if (waterTemperature !== null && waterTemperature !== undefined && waterTemperature !== "") parts.push(`水温: ${formatMaybeNumber(waterTemperature, 0)}℃`);
+  if (tideLevel !== null && tideLevel !== undefined && tideLevel !== "") parts.push(`潮位: ${formatMaybeNumber(tideLevel, 0)}cm`);
+  if (tideDirection !== null && tideDirection !== undefined && tideDirection !== "") parts.push(`潮向: ${tideDirection}`);
+  if (tidePhase !== null && tidePhase !== undefined && tidePhase !== "") parts.push(`潮回り: ${tidePhase}`);
+  if (waterType !== null && waterType !== undefined && waterType !== "") parts.push(`水質: ${waterType}`);
   return `水面条件: ${parts.join(" / ")}`;
 }
 
@@ -5497,6 +5509,10 @@ export default function App() {
       weather: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.weather ?? null,
       temperature: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.temperature ?? null,
       waterTemperature: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.waterTemperature ?? null,
+      tideLevel: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.tideLevel ?? null,
+      tideDirection: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.tideDirection ?? null,
+      tidePhase: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.tidePhase ?? null,
+      waterType: (currentRaceConditions?.conditions || canonicalRaceData?.conditions || {})?.waterType ?? null,
       raceConditionsDebug,
       historyBackfill: latestHistoryBackfill,
       historyBackfillAttempted: latestHistoryBackfill?.attempted === true,
@@ -5607,6 +5623,9 @@ export default function App() {
       startReliabilityContribution,
       venueBiasContribution,
       conditionContribution,
+      normalizedConditions: openApiModel?.prediction?.raceFlowScenario?.normalizedConditions || null,
+      venueProfile: openApiModel?.prediction?.venueProfile || openApiModel?.prediction?.raceFlowScenario?.venueProfile || null,
+      tiltAdjustmentPreview: openApiModel?.prediction?.tiltAdjustmentPreview || [],
       finalScenarioConsistencyCheck,
       ticketPlausibilitySummary,
       ticketPlausibilityPreview,
@@ -5627,7 +5646,7 @@ export default function App() {
       canonicalTendencyCount,
       displayPreview
     };
-  }, [canonicalRaceData?.conditions, canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.debug?.raceConditions, canonicalRaceData?.entries, currentOriginalExhibition, currentRaceConditions, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.backtestCalibrationSummary, openApiModel?.prediction?.buyDecision, openApiModel?.prediction?.coefficientContributionByBoat, openApiModel?.prediction?.conditionAdjustmentLog, openApiModel?.prediction?.conditionContribution, openApiModel?.prediction?.currentScoringWeights, openApiModel?.prediction?.dataQuality, openApiModel?.prediction?.derivedScenarioGroup, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.finalPrediction, openApiModel?.prediction?.finalScenarioConsistencyCheck, openApiModel?.prediction?.fourHeadPartnerDecision, openApiModel?.prediction?.headPartnerSplitPreview, openApiModel?.prediction?.headValidation, openApiModel?.prediction?.mainScenarioGroup, openApiModel?.prediction?.motorRankContribution, openApiModel?.prediction?.partnerValidation, openApiModel?.prediction?.raceFlowScenario?.decisionConditionedStats, openApiModel?.prediction?.raceFlowScenario?.decisionResidualScores, openApiModel?.prediction?.raceFlowScenario?.derivedScenarioGroup, openApiModel?.prediction?.raceFlowScenario?.fourHeadPartnerDecision, openApiModel?.prediction?.raceFlowScenario?.headDecisionComboStats, openApiModel?.prediction?.raceFlowScenario?.mainScenarioGroup, openApiModel?.prediction?.raceFlowScenario?.scenarioFamilies, openApiModel?.prediction?.raceFlowScenario?.venueBiasTable, openApiModel?.prediction?.raceFlowScenarioPreview, openApiModel?.prediction?.rejectedTickets, openApiModel?.prediction?.scenarioFamilyPreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.startReliabilityContribution, openApiModel?.prediction?.tendencyScorePreview, openApiModel?.prediction?.ticketAdjustmentLog, openApiModel?.prediction?.ticketDecisionCompatibilityPreview, openApiModel?.prediction?.ticketGroups, openApiModel?.prediction?.ticketPlausibilityPreview, openApiModel?.prediction?.ticketPlausibilitySummary, openApiModel?.prediction?.venueBiasContribution, openApiModel?.prediction?.venueBiasTable, openApiModel?.prediction?.venueNormalizedExhibitionMetrics, openApiModel?.prediction?.wallScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceConditionsError, raceConditionsLoading, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
+  }, [canonicalRaceData?.conditions, canonicalRaceData?.debug?.baseEntriesCount, canonicalRaceData?.debug?.predictionInputPreview, canonicalRaceData?.debug?.predictionInputProgram?.boats, canonicalRaceData?.debug?.raceConditions, canonicalRaceData?.entries, currentOriginalExhibition, currentRaceConditions, currentRacerTendency, date, displayRows, historyBackfillData, historyBackfillError, historyBackfillLoading, kyoteiBiyoriFrontendDebug, openApiLoading, openApiModel?.prediction?.backtestCalibrationSummary, openApiModel?.prediction?.buyDecision, openApiModel?.prediction?.coefficientContributionByBoat, openApiModel?.prediction?.conditionAdjustmentLog, openApiModel?.prediction?.conditionContribution, openApiModel?.prediction?.currentScoringWeights, openApiModel?.prediction?.dataQuality, openApiModel?.prediction?.derivedScenarioGroup, openApiModel?.prediction?.featureScorePreview, openApiModel?.prediction?.finalPrediction, openApiModel?.prediction?.finalScenarioConsistencyCheck, openApiModel?.prediction?.fourHeadPartnerDecision, openApiModel?.prediction?.headPartnerSplitPreview, openApiModel?.prediction?.headValidation, openApiModel?.prediction?.mainScenarioGroup, openApiModel?.prediction?.motorRankContribution, openApiModel?.prediction?.partnerValidation, openApiModel?.prediction?.raceFlowScenario?.decisionConditionedStats, openApiModel?.prediction?.raceFlowScenario?.decisionResidualScores, openApiModel?.prediction?.raceFlowScenario?.derivedScenarioGroup, openApiModel?.prediction?.raceFlowScenario?.fourHeadPartnerDecision, openApiModel?.prediction?.raceFlowScenario?.headDecisionComboStats, openApiModel?.prediction?.raceFlowScenario?.mainScenarioGroup, openApiModel?.prediction?.raceFlowScenario?.normalizedConditions, openApiModel?.prediction?.raceFlowScenario?.scenarioFamilies, openApiModel?.prediction?.raceFlowScenario?.venueBiasTable, openApiModel?.prediction?.raceFlowScenario?.venueProfile, openApiModel?.prediction?.raceFlowScenarioPreview, openApiModel?.prediction?.rejectedTickets, openApiModel?.prediction?.scenarioFamilyPreview, openApiModel?.prediction?.scenarioScorePreview, openApiModel?.prediction?.startReliabilityContribution, openApiModel?.prediction?.tendencyScorePreview, openApiModel?.prediction?.ticketAdjustmentLog, openApiModel?.prediction?.ticketDecisionCompatibilityPreview, openApiModel?.prediction?.ticketGroups, openApiModel?.prediction?.ticketPlausibilityPreview, openApiModel?.prediction?.ticketPlausibilitySummary, openApiModel?.prediction?.tiltAdjustmentPreview, openApiModel?.prediction?.venueBiasContribution, openApiModel?.prediction?.venueBiasTable, openApiModel?.prediction?.venueNormalizedExhibitionMetrics, openApiModel?.prediction?.venueProfile, openApiModel?.prediction?.wallScorePreview, openApiRequestDebug.requestId, originalExhibitionError, originalExhibitionLoading, originalExhibitionRows, playerComparisonRows, raceConditionsError, raceConditionsLoading, raceNo, racerTendencyError, racerTendencyLoading, racerTendencyRows, venueId]);
   const originalExhibitionFetchError =
     originalExhibitionError ||
     currentOriginalExhibition?.error ||
@@ -6274,7 +6293,11 @@ export default function App() {
           waveHeight: null,
           weather: null,
           temperature: null,
-          waterTemperature: null
+          waterTemperature: null,
+          tideLevel: null,
+          tideDirection: null,
+          tidePhase: null,
+          waterType: null
         }
       }));
       const programsPromise = fetchOpenApiDay(targetDate, "programs", { signal: requestController.signal })
@@ -6314,7 +6337,11 @@ export default function App() {
           waveHeight: null,
           weather: null,
           temperature: null,
-          waterTemperature: null
+          waterTemperature: null,
+          tideLevel: null,
+          tideDirection: null,
+          tidePhase: null,
+          waterType: null
         }
       };
       setRaceConditionsData(fetchedConditions);

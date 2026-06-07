@@ -55,6 +55,11 @@ export default function AdvancedDebugPanel({
               weather: debug.weather,
               temperature: debug.temperature,
               waterTemperature: debug.waterTemperature,
+              tideLevel: debug.tideLevel,
+              tideDirection: debug.tideDirection,
+              tidePhase: debug.tidePhase,
+              waterType: debug.waterType,
+              normalizedConditions: debug.normalizedConditions,
               conditions: debug.raceConditions,
               debug: debug.raceConditionsDebug
             })}</pre>
@@ -80,8 +85,13 @@ export default function AdvancedDebugPanel({
             <div className="muted">venue / condition contribution</div>
             <pre className="json-preview">{safePrettyJson({
               venueBiasContribution: debug.venueBiasContribution,
-              conditionContribution: debug.conditionContribution
+              conditionContribution: debug.conditionContribution,
+              venueProfile: debug.venueProfile
             })}</pre>
+          </div>
+          <div>
+            <div className="muted">tilt adjustment preview</div>
+            <pre className="json-preview">{safePrettyJson(debug.tiltAdjustmentPreview)}</pre>
           </div>
           <div>
             <div className="muted">feature score preview</div>

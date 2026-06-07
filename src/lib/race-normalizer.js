@@ -60,6 +60,14 @@ function firstExhibitionTime(...values) {
   return null;
 }
 
+function firstTilt(...values) {
+  for (const value of values) {
+    const num = firstFinite(value);
+    if (num !== null) return num;
+  }
+  return null;
+}
+
 export function firstText(...values) {
   for (const value of values) {
     if (value === null || value === undefined) continue;
@@ -166,6 +174,15 @@ export function normalizeRaceEntry(row = {}, previewRow = null) {
     row?.racer_assigned_motor_top_2_percent,
     row?.kyoteiBiyoriMotor2Rate
   );
+  const motor3Rate = firstFinite(
+    row?.motor3Rate,
+    row?.motor3ren,
+    row?.motor_3rate,
+    row?.racer_assigned_motor_top_3_percent,
+    row?.kyoteiBiyoriMotor3Rate
+  );
+  const tilt = firstTilt(row?.tilt, row?.tiltAngle, row?.tilt_angle, row?.racer_tilt, row?.racer_tilt_angle);
+  const tiltChange = firstTilt(row?.tiltChange, row?.tilt_change, row?.racer_tilt_change);
   const tendency = normalizeTendency(row);
   const course = firstFinite(row?.course, row?.entryCourse, row?.entry, row?.entryLane, row?.racer_course_number, previewRow?.racer_course_number) ?? boat;
   return {
@@ -191,6 +208,19 @@ export function normalizeRaceEntry(row = {}, previewRow = null) {
     turnTime: firstFinite(row?.turnTime, row?.turn_time, row?.racer_turn_time, row?.kyoteiBiyoriTurnTime, row?.kyoteibiyori_turn_time),
     motor2Rate,
     motor2ren: motor2Rate,
+    motor3Rate,
+    motor3ren: motor3Rate,
+    motorNo: firstText(row?.motorNo, row?.motorNumber, row?.motor_no, row?.racer_assigned_motor_number) || null,
+    motorRankAtVenue: firstFinite(row?.motorRankAtVenue, row?.motor_rank_at_venue, row?.motorRank, row?.motor_rank),
+    motorPercentileAtVenue: firstFinite(row?.motorPercentileAtVenue, row?.motor_percentile_at_venue, row?.motorPercentile, row?.motor_percentile),
+    motorStrengthLabel: firstText(row?.motorStrengthLabel, row?.motor_strength_label) || null,
+    motorRecentForm: firstText(row?.motorRecentForm, row?.motor_recent_form) || null,
+    motorPartChange: firstText(row?.motorPartChange, row?.motor_part_change) || null,
+    motorCompatibilityScore: firstFinite(row?.motorCompatibilityScore, row?.motor_compatibility_score),
+    racerMotorCompatibilityScore: firstFinite(row?.racerMotorCompatibilityScore, row?.racer_motor_compatibility_score),
+    tilt,
+    tiltChange,
+    tiltLabel: firstText(row?.tiltLabel, row?.tilt_label) || null,
     last6mRaceCount: tendency.last6mRaceCount,
     allCourseLast6mRaceCount: tendency.allCourseLast6mRaceCount,
     courseSpecificLast6mRaceCount: tendency.courseSpecificLast6mRaceCount,
@@ -286,7 +316,10 @@ export function buildCanonicalPreview(entries = []) {
       exTime: row?.exTime ?? null,
       lapTime: row?.lapTime ?? null,
       straightTime: row?.straightTime ?? null,
-      turnTime: row?.turnTime ?? null
+      turnTime: row?.turnTime ?? null,
+      tilt: row?.tilt ?? null,
+      motorRankAtVenue: row?.motorRankAtVenue ?? null,
+      motorPercentileAtVenue: row?.motorPercentileAtVenue ?? null
     }))
     .filter((row) => row.boat !== null)
     .sort((a, b) => a.boat - b.boat);

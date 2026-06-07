@@ -11,6 +11,7 @@ import {
   motorStrengthLabel,
   weightedAverageFromWeights
 } from "./scoring-config.js";
+import { getVenueProfile } from "./venue-profile.js";
 
 export const DEFAULT_SCORING_CONFIG = BASE_DEFAULT_SCORING_CONFIG;
 
@@ -140,6 +141,23 @@ function firstExhibitionTime(...values) {
   for (const value of values) {
     const num = finiteNumber(value, null);
     if (num !== null && num > 0) return num;
+  }
+  return null;
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const num = finiteNumber(value, null);
+    if (num !== null) return num;
+  }
+  return null;
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text) return text;
   }
   return null;
 }
@@ -323,7 +341,32 @@ function normalizeRaceConditionsForPrediction(program = {}, preview = {}) {
       preview?.race_weather_number ??
       null,
     temperature: finiteNumber(fromProgram.temperature ?? fromPreview.temperature ?? program?.temperature ?? preview?.temperature, null),
-    waterTemperature: finiteNumber(fromProgram.waterTemperature ?? fromPreview.waterTemperature ?? program?.waterTemperature ?? preview?.waterTemperature, null)
+    waterTemperature: finiteNumber(fromProgram.waterTemperature ?? fromPreview.waterTemperature ?? program?.waterTemperature ?? preview?.waterTemperature, null),
+    tideLevel: finiteNumber(fromProgram.tideLevel ?? fromProgram.tide ?? fromPreview.tideLevel ?? fromPreview.tide ?? program?.tideLevel ?? program?.race_tide_level ?? preview?.tideLevel ?? preview?.race_tide_level, null),
+    tideDirection:
+      fromProgram.tideDirection ??
+      fromPreview.tideDirection ??
+      program?.tideDirection ??
+      program?.race_tide_direction ??
+      preview?.tideDirection ??
+      preview?.race_tide_direction ??
+      null,
+    tidePhase:
+      fromProgram.tidePhase ??
+      fromPreview.tidePhase ??
+      program?.tidePhase ??
+      program?.race_tide_phase ??
+      preview?.tidePhase ??
+      preview?.race_tide_phase ??
+      null,
+    waterType:
+      fromProgram.waterType ??
+      fromPreview.waterType ??
+      program?.waterType ??
+      program?.race_water_type ??
+      preview?.waterType ??
+      preview?.race_water_type ??
+      null
   };
 }
 
@@ -336,7 +379,11 @@ function mergeRaceConditionsIntoPreview(preview = null, conditions = {}) {
     race_wind: base.race_wind ?? conditions.windSpeed,
     race_wave: base.race_wave ?? conditions.waveHeight,
     race_weather: base.race_weather ?? conditions.weather,
-    race_wind_direction: base.race_wind_direction ?? conditions.windDirection
+    race_wind_direction: base.race_wind_direction ?? conditions.windDirection,
+    race_tide_level: base.race_tide_level ?? conditions.tideLevel,
+    race_tide_direction: base.race_tide_direction ?? conditions.tideDirection,
+    race_tide_phase: base.race_tide_phase ?? conditions.tidePhase,
+    race_water_type: base.race_water_type ?? conditions.waterType
   };
 }
 
@@ -369,9 +416,14 @@ function normalizeProgramBoats(program = {}) {
         local2Rate: finiteNumber(row.racer_local_top_2_percent, null),
         motorNo: row.racer_assigned_motor_number ?? row.motorNo ?? row.motor_no ?? row.motorNumber ?? null,
         motor2Rate: finiteNumber(row.racer_assigned_motor_top_2_percent ?? row.motor2Rate ?? row.motor_2rate, null),
+        motor3Rate: finiteNumber(row.racer_assigned_motor_top_3_percent ?? row.motor3Rate ?? row.motor_3rate ?? row.motor3ren, null),
         motorRankAtVenue: finiteNumber(row.motorRankAtVenue ?? row.motor_rank_at_venue ?? row.motorRank ?? row.motor_rank, null),
         motorPercentileAtVenue: finiteNumber(row.motorPercentileAtVenue ?? row.motor_percentile_at_venue ?? row.motorPercentile ?? row.motor_percentile, null),
         motorStrengthLabel: row.motorStrengthLabel ?? row.motor_strength_label ?? null,
+        motorRecentForm: firstText(row.motorRecentForm, row.motor_recent_form),
+        motorPartChange: firstText(row.motorPartChange, row.motor_part_change),
+        motorCompatibilityScore: firstFiniteNumber(row.motorCompatibilityScore, row.motor_compatibility_score),
+        racerMotorCompatibilityScore: firstFiniteNumber(row.racerMotorCompatibilityScore, row.racer_motor_compatibility_score),
         boat2Rate: finiteNumber(row.racer_assigned_boat_top_2_percent, null),
         averageStartTiming: finiteNumber(row.racer_average_start_timing, null),
         exST: firstStartTiming(row.racer_start_timing, row.exST, row.exSt, row.startTiming, row.exhibitionStSignedValue, row.exhibitionStRaw, row.exhibitionSTRaw, row.exhibitionSt, row.exhibitionST),
@@ -379,6 +431,9 @@ function normalizeProgramBoats(program = {}) {
         lapTime: finiteNumber(row.racer_lap_time ?? row.lapTime ?? row.lap_time ?? row.kyoteiBiyoriLapTime ?? row.kyoteibiyori_lap_time, null),
         straightTime: finiteNumber(row.racer_straight_time ?? row.straightTime ?? row.straight_time ?? row.kyoteiBiyoriStraightTime ?? row.kyoteibiyori_straight_time, null),
         turnTime: finiteNumber(row.racer_turn_time ?? row.turnTime ?? row.turn_time ?? row.kyoteiBiyoriTurnTime ?? row.kyoteibiyori_turn_time, null),
+        tilt: firstFiniteNumber(row.tilt, row.tiltAngle, row.tilt_angle, row.racer_tilt, row.racer_tilt_angle),
+        tiltChange: firstFiniteNumber(row.tiltChange, row.tilt_change, row.racer_tilt_change),
+        tiltLabel: firstText(row.tiltLabel, row.tilt_label),
         playerTendency,
         racerCourseStats: playerTendency,
         techniqueStats: {
@@ -430,13 +485,24 @@ function enrichMotorRanking(boats = []) {
     const fallbackRank = fallbackRankByBoat.get(boat.boat) ?? null;
     const rank = explicitRank ?? fallbackRank;
     const explicitPercentile = normalizePercentile(boat.motorPercentileAtVenue);
-    const fallbackPercentile = rank !== null && count > 1 ? clamp((count - rank) / (count - 1), 0, 1) : normalizePercentile(boat.motor2Rate);
+    const motor2Percentile = normalizePercentile(boat.motor2Rate);
+    const motor3Percentile = normalizePercentile(boat.motor3Rate);
+    const raceOnlyMotorPercentile = motor2Percentile !== null && motor3Percentile !== null
+      ? clamp((motor2Percentile * 0.68) + (motor3Percentile * 0.32), 0, 1)
+      : motor2Percentile ?? motor3Percentile;
+    const fallbackPercentile = rank !== null && count > 1 ? clamp((count - rank) / (count - 1), 0, 1) : raceOnlyMotorPercentile;
     const percentile = explicitPercentile ?? fallbackPercentile ?? 0.5;
+    const motorCompatibilityScore = normalizePercentile(boat.motorCompatibilityScore);
+    const racerMotorCompatibilityScore = normalizePercentile(boat.racerMotorCompatibilityScore);
+    const compatibilityScore = motorCompatibilityScore ?? racerMotorCompatibilityScore;
     return {
       ...boat,
       motorRankAtVenue: rank,
       motorPercentileAtVenue: percentile,
       motorStrengthLabel: boat.motorStrengthLabel || motorStrengthLabel(percentile),
+      motorCompatibilityScore,
+      racerMotorCompatibilityScore,
+      motorCompatibilityNormalizedScore: compatibilityScore,
       motorRankSource: explicitRank !== null || explicitPercentile !== null ? "entry_motor_rank" : fallbackRank !== null ? "race_motor2Rate_rank" : "missing"
     };
   });
@@ -601,6 +667,40 @@ function roleFeatureWeights(boat, venueId = null) {
   if (boat === 3) return applyVenueWeightMultipliers({ exST: 22, straightTime: 22, exTime: 8, turnTime: 14, motorRank: 16, motor2Rate: 8 }, venueId, "head");
   if (boat === 4) return applyVenueWeightMultipliers({ exST: 16, straightTime: 18, turnTime: 20, motorRank: 18, motor2Rate: 8, lapTime: 8 }, venueId, "fourBeneficiary");
   return { straightTime: 12, lapTime: 12, turnTime: 12, motorRank: 18, motor2Rate: 8 };
+}
+
+function buildTiltAdjustment(boat = {}, featureRow = {}) {
+  const tilt = finiteNumber(boat.tilt, null);
+  if (tilt === null) {
+    return {
+      tilt: null,
+      label: boat.tiltLabel ?? null,
+      headBoost: 0,
+      attackSupport: 0,
+      residualSupport: 0,
+      gateWarning: null
+    };
+  }
+  const straight = finiteNumber(featureRow?.scores?.straightTime, 0.5);
+  const turn = finiteNumber(featureRow?.scores?.turnTime, 0.5);
+  const lap = finiteNumber(featureRow?.scores?.lapTime, 0.5);
+  const highTilt = tilt >= 0.5;
+  const veryHighTilt = tilt >= 1;
+  const negativeTilt = tilt <= -0.5;
+  const attackSupport = highTilt ? Math.max(0, straight - 0.5) * (veryHighTilt ? 0.08 : 0.045) : 0;
+  const turnRisk = highTilt ? Math.max(0, 0.52 - turn) * (veryHighTilt ? 0.09 : 0.045) : 0;
+  const residualSupport = negativeTilt || tilt <= 0
+    ? Math.max(0, ((turn + lap) / 2) - 0.5) * 0.045
+    : Math.max(0, turn - 0.55) * 0.025;
+  const outsideDampening = boat.boat >= 5 ? 0.45 : 1;
+  return {
+    tilt,
+    label: boat.tiltLabel ?? (highTilt ? "straight_attack" : negativeTilt ? "turn_stability" : "neutral"),
+    headBoost: clamp((attackSupport - turnRisk) * outsideDampening, -0.05, 0.055),
+    attackSupport,
+    residualSupport,
+    gateWarning: veryHighTilt && turn < 0.48 ? "high tilt with weak turn support" : null
+  };
 }
 
 function buildOriginalExhibitionFeatureScores(boats = [], exhibition = {}, options = {}) {
@@ -947,6 +1047,11 @@ function buildScores(boats, exhibition, config, featureScores = buildOriginalExh
       : (roleScore - 0.5) * finiteNumber(config.originalExhibitionWeights?.roleFeatureBoost, 0.26) * firstPlaceDampening;
     const motorRankScore = finiteNumber(featureRow?.scores?.motorRank, normalizePercentile(boat.motorPercentileAtVenue) ?? 0.5);
     const motorRankBoost = (motorRankScore - 0.5) * finiteNumber(config.professionalFactorWeights?.motorRankHead, 0.18) * firstPlaceDampening;
+    const compatibilityScore = normalizePercentile(boat.motorCompatibilityNormalizedScore ?? boat.motorCompatibilityScore ?? boat.racerMotorCompatibilityScore);
+    const motorCompatibilityBoost = compatibilityScore === null
+      ? 0
+      : (compatibilityScore - 0.5) * 0.055 * firstPlaceDampening;
+    const tiltAdjustment = buildTiltAdjustment(boat, featureRow);
     const exhibitionExcellent = (
       finiteNumber(featureRow?.scores?.exST, 0.5) >= 0.72 ||
       finiteNumber(featureRow?.scores?.exTime, 0.5) >= 0.72
@@ -983,13 +1088,19 @@ function buildScores(boats, exhibition, config, featureScores = buildOriginalExh
       ...boat,
       course,
       featureScores: featureRow,
-      score: base + exhibitionTimeBoost + exhibitionStBoost + entryBoost + makuriBoost + lapBoost + straightBoost + turnBoost + roleFeatureBoost + motorRankBoost + startReliabilityBoost + techniqueBoost + allCourseReferenceBoost + startTendencyBoost + venueBiasBoost - lateRatePenalty - weakMotorHeadPenalty,
-      scoreParts: { base, exhibitionTimeBoost, exhibitionStBoost, entryBoost, makuriBoost, lapBoost, straightBoost, turnBoost, roleFeatureBoost, motorRankBoost, startReliabilityBoost, weakMotorHeadPenalty, techniqueBoost, allCourseReferenceBoost, startTendencyBoost, lateRatePenalty, venueBiasBoost },
+      score: base + exhibitionTimeBoost + exhibitionStBoost + entryBoost + makuriBoost + lapBoost + straightBoost + turnBoost + roleFeatureBoost + motorRankBoost + motorCompatibilityBoost + tiltAdjustment.headBoost + startReliabilityBoost + techniqueBoost + allCourseReferenceBoost + startTendencyBoost + venueBiasBoost - lateRatePenalty - weakMotorHeadPenalty,
+      scoreParts: { base, exhibitionTimeBoost, exhibitionStBoost, entryBoost, makuriBoost, lapBoost, straightBoost, turnBoost, roleFeatureBoost, motorRankBoost, motorCompatibilityBoost, tiltAdjustment: tiltAdjustment.headBoost, startReliabilityBoost, weakMotorHeadPenalty, techniqueBoost, allCourseReferenceBoost, startTendencyBoost, lateRatePenalty, venueBiasBoost },
       professionalFactors: {
         motorRankScore,
         motorRankBoost,
         motorRankSource: boat.motorRankSource,
         motorStrengthLabel: boat.motorStrengthLabel,
+        motor3Rate: boat.motor3Rate ?? null,
+        motorRecentForm: boat.motorRecentForm ?? null,
+        motorPartChange: boat.motorPartChange ?? null,
+        motorCompatibilityScore: compatibilityScore,
+        motorCompatibilityBoost,
+        tiltAdjustment,
         startReliability,
         weakMotorHeadPenalty
       }
@@ -1441,6 +1552,12 @@ function buildCoefficientContributionByBoat(scoredBoats = [], featureScores = {}
       motorRankContribution: finiteNumber(scoreParts.motorRankBoost, 0),
       motorRankScore: boat.professionalFactors?.motorRankScore ?? featureRow.scores?.motorRank ?? null,
       motorStrengthLabel: boat.motorStrengthLabel ?? boat.professionalFactors?.motorStrengthLabel ?? null,
+      motor3Rate: boat.professionalFactors?.motor3Rate ?? boat.motor3Rate ?? null,
+      motorRecentForm: boat.professionalFactors?.motorRecentForm ?? boat.motorRecentForm ?? null,
+      motorPartChange: boat.professionalFactors?.motorPartChange ?? boat.motorPartChange ?? null,
+      motorCompatibilityScore: boat.professionalFactors?.motorCompatibilityScore ?? null,
+      motorCompatibilityContribution: finiteNumber(scoreParts.motorCompatibilityBoost, 0),
+      tiltAdjustment: boat.professionalFactors?.tiltAdjustment || null,
       startReliabilityContribution: finiteNumber(scoreParts.startReliabilityBoost, 0),
       startReliability: boat.professionalFactors?.startReliability || null,
       venueBiasContribution: finiteNumber(scoreParts.venueBiasBoost, 0),
@@ -1449,6 +1566,8 @@ function buildCoefficientContributionByBoat(scoredBoats = [], featureScores = {}
         base: finiteNumber(scoreParts.base, 0),
         roleFeatureBoost: finiteNumber(scoreParts.roleFeatureBoost, 0),
         motorRankBoost: finiteNumber(scoreParts.motorRankBoost, 0),
+        motorCompatibilityBoost: finiteNumber(scoreParts.motorCompatibilityBoost, 0),
+        tiltAdjustment: finiteNumber(scoreParts.tiltAdjustment, 0),
         startReliabilityBoost: finiteNumber(scoreParts.startReliabilityBoost, 0),
         techniqueBoost: finiteNumber(scoreParts.techniqueBoost, 0),
         venueBiasBoost: finiteNumber(scoreParts.venueBiasBoost, 0),
@@ -1693,6 +1812,16 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   const headTriggerScore = flowBoatScore(finalPrediction, head, "scenarioTriggerScore", 0.35);
   const firstProbability = firstPlaceProbability01(finalPrediction, head, 0.03);
   const liveHeadSupport = liveFeatureSupport(finalPrediction, canonicalRaceData, head, 0.5);
+  const conditions = finalPrediction.race?.conditions || finalPrediction.exhibition?.conditions || canonicalRaceData?.conditions || {};
+  const venueProfile = finalPrediction.venueProfile || getVenueProfile(finalPrediction.race?.stadiumNumber ?? canonicalRaceData?.venueId, conditions);
+  const windSpeed = finiteNumber(conditions.windSpeed, 0);
+  const waveHeight = finiteNumber(conditions.waveHeight, 0);
+  const roughWater = windSpeed >= 7 || waveHeight >= 5 || (venueProfile.hasTideInfluence && finiteNumber(conditions.tideLevel, 0) >= 80);
+  const headMotorSupport = featureScore01(finalPrediction, head, "motorRank", featureScore01(finalPrediction, head, "motor2Rate", 0.5));
+  const headLapTurnSupport = (featureScore01(finalPrediction, head, "lapTime", 0.5) + featureScore01(finalPrediction, head, "turnTime", 0.5)) / 2;
+  const headTiltAdjustment =
+    finalPrediction.scoredBoats?.find((row) => row.boat === head)?.professionalFactors?.tiltAdjustment ||
+    buildTiltAdjustment(finalPrediction.scoredBoats?.find((row) => row.boat === head) || {}, finalPrediction.featureScores?.byBoat?.[String(head)] || {});
   const headSupport = clamp(Math.max(
     headScore,
     scenarioSupport,
@@ -1719,6 +1848,23 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
       gradeCaps.push("C");
       reasons.push("頭検証は条件付き");
     }
+  }
+
+  if (headMotorSupport < 0.28 && headSupport < 0.66) {
+    rejectReasons.push("motor gate failed: head motor support is weak");
+  } else if (headMotorSupport < 0.38 && headSupport < 0.58) {
+    gradeCaps.push("C");
+    reasons.push("モーター根拠薄め");
+  }
+  if (roughWater && head >= 5 && headLapTurnSupport < 0.7) {
+    rejectReasons.push("condition gate failed: rough water outside head needs strong lap/turn support");
+  } else if (roughWater && head >= 3 && headLapTurnSupport < 0.52) {
+    gradeCaps.push("C");
+    reasons.push("荒れ水面でターン安定不足");
+  }
+  if (headTiltAdjustment?.gateWarning && headSupport < 0.68) {
+    gradeCaps.push("C");
+    reasons.push("チルトとターンの整合注意");
   }
 
   if (head >= 5 && headSupport < 0.66) {
@@ -1920,7 +2066,10 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
       partnerSupport: roundNumber(partnerSupport * 100, 1),
       thirdSupport: roundNumber(thirdSupport * 100, 1),
       decisionSupport: roundNumber(decisionSupport * 100, 1),
-      liveHeadSupport: roundNumber(liveHeadSupport * 100, 1)
+      liveHeadSupport: roundNumber(liveHeadSupport * 100, 1),
+      motorSupport: roundNumber(headMotorSupport * 100, 1),
+      conditionRisk: roundNumber((roughWater ? 1 : 0) * 100, 1),
+      headLapTurnSupport: roundNumber(headLapTurnSupport * 100, 1)
     },
     reasons: reasons.filter(Boolean).filter((reason, index, arr) => arr.indexOf(reason) === index),
     rejectReasons,
@@ -2057,6 +2206,8 @@ function buildDataQualityReport(prediction = {}) {
   const straightTimeCount = countField("straightTime");
   const turnTimeCount = countField("turnTime");
   const motor2RateCount = countField("motor2Rate");
+  const motor3RateCount = countField("motor3Rate");
+  const tiltCount = countField("tilt");
   const motorRankCount = boats.filter((boat) =>
     finiteNumber(boat?.motorRankAtVenue, null) !== null ||
     finiteNumber(boat?.motorPercentileAtVenue, null) !== null ||
@@ -2070,7 +2221,7 @@ function buildDataQualityReport(prediction = {}) {
   const venueAvailable = prediction.raceFlowScenario?.quality?.venueAvailable === true || venueSampleCount > 0;
   const conditions = prediction.race?.conditions || prediction.exhibition?.conditions || {};
   const conditionAvailable = conditions?.available === true ||
-    ["windDirection", "windSpeed", "waveHeight", "weather", "temperature", "waterTemperature"].some((field) =>
+    ["windDirection", "windSpeed", "waveHeight", "weather", "temperature", "waterTemperature", "tideLevel", "tideDirection", "tidePhase", "waterType"].some((field) =>
       conditions?.[field] !== null && conditions?.[field] !== undefined
     );
   const exhibitionQuality = combineQuality([
@@ -2084,7 +2235,8 @@ function buildDataQualityReport(prediction = {}) {
   const venueBiasQuality = venueAvailable && venueSampleCount >= 2 ? "high" : venueAvailable ? "medium" : "low";
   const motorQuality = combineQuality([
     qualityLabelFromCount(motor2RateCount, total),
-    qualityLabelFromCount(motorRankCount, total)
+    qualityLabelFromCount(motorRankCount, total),
+    qualityLabelFromCount(motor3RateCount, total)
   ]);
   const conditionQuality = conditionAvailable ? "medium" : "low";
   const overall = combineQuality([exhibitionQuality, tendencyQuality, venueBiasQuality, motorQuality, conditionQuality]);
@@ -2109,7 +2261,9 @@ function buildDataQualityReport(prediction = {}) {
       straightTimeCount,
       turnTimeCount,
       motor2RateCount,
+      motor3RateCount,
       motorRankCount,
+      tiltCount,
       tendencyOkOrSmallCount,
       tendencyAnyCount,
       venueSampleCount,
@@ -2126,7 +2280,10 @@ function strongSupportList(items = []) {
 
 function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = DEFAULT_SCORING_CONFIG) {
   const thresholds = scoringConfig.ticketGateThresholds || {};
+  const conditions = prediction.race?.conditions || prediction.exhibition?.conditions || {};
+  const roughWater = finiteNumber(conditions.windSpeed, 0) >= 7 || finiteNumber(conditions.waveHeight, 0) >= 5;
   const rows = BOATS.map((boat) => {
+    const boatRow = prediction.scoredBoats?.find((row) => row.boat === boat) || {};
     const scenario = bestScenarioForHead(prediction, boat);
     const scenarioSupport = score01(scenario?.score, 0);
     const headScore = flowBoatScore(prediction, boat, "headScore", 0.35);
@@ -2134,11 +2291,13 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
     const attackerScore = flowBoatScore(prediction, boat, "attackerScore", 0.35);
     const beneficiaryScore = flowBoatScore(prediction, boat, "beneficiaryScore", 0.35);
     const residualScore = flowBoatScore(prediction, boat, "residualScore", 0.35);
-    const startReliability = score01(prediction.scoredBoats?.find((row) => row.boat === boat)?.professionalFactors?.startReliability?.avgSTScore, featureScore01(prediction, boat, "exST", 0.5));
+    const startReliability = score01(boatRow?.professionalFactors?.startReliability?.avgSTScore, featureScore01(prediction, boat, "exST", 0.5));
     const motorRank = featureScore01(prediction, boat, "motorRank", featureScore01(prediction, boat, "motor2Rate", 0.5));
     const lapTurn = (featureScore01(prediction, boat, "lapTime", 0.5) + featureScore01(prediction, boat, "turnTime", 0.5)) / 2;
     const straight = featureScore01(prediction, boat, "straightTime", 0.5);
-    const tendency = prediction.scoredBoats?.find((row) => row.boat === boat)?.playerTendency || {};
+    const featureRow = prediction.featureScores?.byBoat?.[String(boat)] || {};
+    const tiltAdjustment = boatRow?.professionalFactors?.tiltAdjustment || buildTiltAdjustment(boatRow, featureRow);
+    const tendency = boatRow?.playerTendency || {};
     const tendencySupported = ["ok", "small_sample"].includes(tendencySampleStatus(tendency));
     const supports = strongSupportList([
       { ok: headScore >= 0.58, reason: "headScore" },
@@ -2147,6 +2306,7 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       { ok: motorRank >= 0.62, reason: "motor" },
       { ok: startReliability >= 0.62, reason: "start" },
       { ok: lapTurn >= 0.62 || straight >= 0.66, reason: "exhibition balance" },
+      { ok: tiltAdjustment.attackSupport >= 0.025 || tiltAdjustment.residualSupport >= 0.02, reason: "tilt support" },
       { ok: tendencySupported, reason: "tendency sample" }
     ]);
     let validationScore = clamp(
@@ -2156,7 +2316,8 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       motorRank * 0.12 +
       startReliability * 0.1 +
       lapTurn * 0.1 +
-      straight * 0.04
+      straight * 0.04 +
+      finiteNumber(tiltAdjustment.headBoost, 0)
     );
     const rejectReasons = [];
     let status = "upset";
@@ -2171,6 +2332,18 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
         status = "partner_only";
         rejectReasons.push("outside head requires strong outside scenario, inside collapse, and live support");
       }
+    }
+    if (roughWater && boat >= 5 && lapTurn < 0.68) {
+      status = "partner_only";
+      rejectReasons.push("rough water caps outside head unless lap/turn support is strong");
+    }
+    if (roughWater && boat >= 3 && lapTurn < 0.5 && status === "main") {
+      status = "upset";
+      rejectReasons.push("rough water requires turn/lap stability for aggressive head");
+    }
+    if (tiltAdjustment.gateWarning) {
+      status = status === "main" ? "upset" : status;
+      rejectReasons.push(tiltAdjustment.gateWarning);
     }
     if (boat === 3 && attackTriggerScore >= 0.62 && residualScore < 0.48 && featureScore01(prediction, 3, "turnTime", 0.5) < 0.56) {
       status = status === "main" ? "upset" : status;
@@ -2195,7 +2368,8 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       residualScore: roundNumber(residualScore * 100, 1),
       startReliability: roundNumber(startReliability * 100, 1),
       motorRank: roundNumber(motorRank * 100, 1),
-      lapTurn: roundNumber(lapTurn * 100, 1)
+      lapTurn: roundNumber(lapTurn * 100, 1),
+      tiltAdjustment
     };
   }).sort((a, b) => b.validationScore - a.validationScore);
   return {
@@ -2392,6 +2566,7 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
   }), stadiumNumber);
   const boats = enrichMotorRanking(normalizeProgramBoats(program));
   const raceConditions = normalizeRaceConditionsForPrediction(program, preview || {});
+  const venueProfile = getVenueProfile(stadiumNumber, raceConditions);
   const previewWithConditions = mergeRaceConditionsIntoPreview(preview || {}, raceConditions);
   const exhibition = enrichExhibitionFeaturesFromBoats(buildExhibitionFeatures(previewWithConditions), boats);
   exhibition.conditions = raceConditions;
@@ -2412,6 +2587,7 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     venueBias: venueBiasSource,
     stadiumNumber: scoringConfig.stadiumNumber,
     raceConditions,
+    venueProfile,
     scoringConfig
   });
   const scoredBoats = applyRaceFlowScenarioAdjustments(baseScoredBoats, raceFlowScenario).sort((a, b) => a.boat - b.boat);
@@ -2430,6 +2606,7 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
       closedAt: program.race_closed_at ?? null,
       conditions: raceConditions
     },
+    venueProfile,
     exhibition,
     featureScores,
     featureScorePreview: featureScores.preview,
@@ -2441,10 +2618,21 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
     motorRankContribution: scoredBoats.map((boat) => ({
       boat: boat.boat,
       motorNo: boat.motorNo ?? null,
+      motor3Rate: boat.motor3Rate ?? null,
       motorRankAtVenue: boat.motorRankAtVenue ?? null,
       motorPercentileAtVenue: boat.motorPercentileAtVenue ?? null,
       motorStrengthLabel: boat.motorStrengthLabel ?? null,
+      motorRecentForm: boat.motorRecentForm ?? null,
+      motorPartChange: boat.motorPartChange ?? null,
+      motorCompatibilityScore: boat.professionalFactors?.motorCompatibilityScore ?? null,
       contribution: boat.scoreParts?.motorRankBoost ?? 0
+    })),
+    tiltAdjustmentPreview: scoredBoats.map((boat) => ({
+      boat: boat.boat,
+      tilt: boat.tilt ?? null,
+      tiltChange: boat.tiltChange ?? null,
+      tiltLabel: boat.tiltLabel ?? null,
+      adjustment: boat.professionalFactors?.tiltAdjustment || null
     })),
     startReliabilityContribution: scoredBoats.map((boat) => ({
       boat: boat.boat,
@@ -2694,7 +2882,11 @@ export function buildConfidenceScore(prediction = {}) {
   }
   if (prediction.exhibition?.status !== "exhibition_reflected") warnings.push("展示前の出走表ベース予想");
   const roundedScore = Math.round(clamp(score, 0, 100));
-  const waterUnstable = prediction.conditionAdjustmentLog?.some((row) => row?.type === "wind" && row?.level === "strong" || row?.type === "wave" && row?.level === "strong");
+  const waterUnstable = prediction.conditionAdjustmentLog?.some((row) =>
+    row?.type === "wind" && row?.level === "strong" ||
+    row?.type === "wave" && row?.level === "strong" ||
+    row?.type === "tide" && row?.level === "strong"
+  );
   if (
     roundedScore < 45 ||
     topScoreGap < 0.06 ||
