@@ -7,6 +7,7 @@ import {
 } from "./venue-bias-engine.js";
 import { DEFAULT_SCORING_CONFIG, mergeScoringConfig } from "./scoring-config.js";
 import { getVenueProfile } from "./venue-profile.js";
+import { buildSlitFormation, buildSlitFormationDebug } from "./slit-formation-engine.js";
 
 const BOATS = [1, 2, 3, 4, 5, 6];
 
@@ -109,7 +110,13 @@ function tendencyHasSignal(tendency = {}) {
     "recentTrifectaRate",
     "localVenueWinRate",
     "localVenueQuinellaRate",
-    "localVenueTrifectaRate"
+    "localVenueTrifectaRate",
+    "currentSeasonAvgST",
+    "currentSeasonStartCount",
+    "currentSeasonLateStartRate",
+    "currentSeasonEarlyStartRate",
+    "currentSeasonStartStabilityRate",
+    "startStabilityRate"
   ];
   const count = finiteNumber(
     tendency.courseSpecificLast6mRaceCount ?? tendency.last6mRaceCount ?? tendency.allCourseLast6mRaceCount,
@@ -130,6 +137,12 @@ function mergeTendency(row = {}) {
     "makuriSashiRate",
     "avgST",
     "avgStartTiming",
+    "currentSeasonAvgST",
+    "currentSeasonStartCount",
+    "currentSeasonLateStartRate",
+    "currentSeasonEarlyStartRate",
+    "currentSeasonStartStabilityRate",
+    "startStabilityRate",
     "lateStartRate",
     "earlyStartRate",
     "sampleStatus",
@@ -346,9 +359,9 @@ function normalizeRaceConditions(source = {}) {
 
 function boatMetrics(row = {}, featureScores = {}) {
   const tendency = mergeTendency(row);
-  const tendencyStart = tendency.avgStartTiming ?? tendency.avgST ?? tendency.allCourseAvgST;
-  const lateRate = optionalRate01(tendency.lateStartRate);
-  const earlyRate = optionalRate01(tendency.earlyStartRate);
+  const tendencyStart = tendency.currentSeasonAvgST ?? tendency.avgStartTiming ?? tendency.avgST ?? tendency.allCourseAvgST;
+  const lateRate = optionalRate01(tendency.currentSeasonLateStartRate ?? tendency.lateStartRate);
+  const earlyRate = optionalRate01(tendency.currentSeasonEarlyStartRate ?? tendency.earlyStartRate);
   const fCount = Math.max(0, finiteNumber(row.flyingCount ?? row.fCount ?? row.F, 0));
   const fStatusText = String(row.fStatus ?? row.F ?? "").toUpperCase();
   const lapTime = featureScore(row, featureScores, "lapTime", 0.5);
@@ -521,7 +534,8 @@ export function buildRaceFlowScenarioModel({
   stadiumNumber = null,
   raceConditions = null,
   venueProfile = null,
-  scoringConfig = DEFAULT_SCORING_CONFIG
+  scoringConfig = DEFAULT_SCORING_CONFIG,
+  slitFormation: providedSlitFormation = null
 } = {}) {
   const config = mergeScoringConfig(scoringConfig || {});
   const effectiveVenueBias = venueBias || getEstimatedVenueBias(stadiumNumber);
@@ -530,6 +544,9 @@ export function buildRaceFlowScenarioModel({
   for (const boat of BOATS) {
     metrics[boat] = boatMetrics(map.get(boat) || { boat }, featureScores);
   }
+  const slitFormation = providedSlitFormation || buildSlitFormation(entries, { featureScores });
+  const slitByBoat = slitFormation.byBoat || {};
+  const slit = (boat) => slitByBoat[String(boat)] || slitByBoat[boat] || {};
 
   const tendencyAvailable = Object.values(metrics).some((row) => tendencyHasSignal(row.tendency));
   const venueAvailable = !!effectiveVenueBias || BOATS.some((boat) => venueCourseBias(effectiveVenueBias, stadiumNumber, boat));
@@ -593,13 +610,21 @@ export function buildRaceFlowScenarioModel({
   const b4 = metrics[4];
   const b5 = metrics[5];
   const b6 = metrics[6];
+  const s1 = slit(1);
+  const s2 = slit(2);
+  const s3 = slit(3);
+  const s4 = slit(4);
+  const s5 = slit(5);
+  const s6 = slit(6);
 
   const b1Escape = positiveRate(b1.tendency, "escapeRate", 0.42);
   const b1BeatenBySashi = positiveRate(b1.tendency, "beatenBySashiRate", 0.08);
   const b1BeatenByMakuri = positiveRate(b1.tendency, "beatenByMakuriRate", 0.06);
   const b1BeatenByMakuriSashi = positiveRate(b1.tendency, "beatenByMakuriSashiRate", 0.05);
-  const weakBoat2Wall = 1 - Math.max(walls[2], blockings[2] * 0.92);
-  const weakBoat3Wall = 1 - Math.max(walls[3], blockings[3] * 0.96);
+  const slitBoat2Wall = clamp((s2.wallFormationScore ?? 0.5) - (s2.lateRiskScore ?? 0.08) * 0.22);
+  const slitBoat3Wall = clamp((s3.wallFormationScore ?? 0.5) - (s3.lateRiskScore ?? 0.08) * 0.18);
+  const weakBoat2Wall = 1 - Math.max(walls[2], blockings[2] * 0.92, slitBoat2Wall);
+  const weakBoat3Wall = 1 - Math.max(walls[3], blockings[3] * 0.96, slitBoat3Wall);
   const boat1WeakFoot = Math.max(0, 0.52 - b1.lapTime) + Math.max(0, 0.52 - b1.turnTime);
   const roughWaterStability1 = roughWaterLevel * Math.max(0, ((b1.lapTime + b1.turnTime) / 2) - 0.55) * 0.12;
   const headwindEscapeDrag = conditions.isHeadwind
@@ -641,10 +666,14 @@ export function buildRaceFlowScenarioModel({
     b1.motor2Rate * 0.08 +
     b1Escape * 0.55 +
     walls[2] * 0.12 +
+    (s1.startReliabilityScore ?? 0.5) * 0.07 +
+    (s2.wallFormationScore ?? 0.5) * 0.08 +
     (vEscape - 0.5) * 0.12 -
     b1BeatenBySashi * 0.65 -
     b1BeatenByMakuri * 0.65 -
     b1BeatenByMakuriSashi * 0.62 -
+    (s1.lateRiskScore ?? 0.08) * 0.12 -
+    Math.max(0, (s3.outsidePressureScore ?? 0.5) - 0.58, (s4.outsidePressureScore ?? 0.5) - 0.6) * 0.1 -
     weakBoat2Wall * 0.08 -
     boat1WeakFoot * 0.12 +
     roughWaterStability1 -
@@ -665,12 +694,15 @@ export function buildRaceFlowScenarioModel({
     b2.exST * 0.17 +
     b2.turnTime * 0.24 +
     b2.lapTime * 0.08 +
+    (s2.startReliabilityScore ?? 0.5) * 0.08 +
+    (s2.attackStartScore ?? 0.5) * 0.06 +
     positiveRate(b2.tendency, "sashiRate", 0.08) * 0.95 +
     b1BeatenBySashi * 0.72 +
     Math.max(0, 0.55 - b1.turnTime) * 0.14 +
     conditions.isHeadwind * conditions.windLevel * b2.turnTime * 0.05 +
     roughWaterLevel * Math.max(0, b2.turnTime - 0.55) * 0.07 +
     (vSashi2 - 0.5) * 0.16 -
+    (s2.lateRiskScore ?? 0.08) * 0.12 -
     Math.max(0, b2.lateRate - 0.12) * b2.sampleWeight * 0.18
   );
 
@@ -687,6 +719,8 @@ export function buildRaceFlowScenarioModel({
     b3.exST * 0.2 +
     b3.straightTime * 0.24 +
     b3.motorRank * 0.12 +
+    (s3.attackStartScore ?? 0.5) * 0.12 +
+    (s3.outsidePressureScore ?? 0.5) * 0.08 +
     boat3AttackWall * 0.1 +
     b3.startHistoryScore * 0.08 +
     positiveRate(b3.tendency, "makuriRate", 0.08) * 0.9 +
@@ -696,9 +730,10 @@ export function buildRaceFlowScenarioModel({
     tailwindCenterAttack * ((b3.exST + b3.straightTime) / 2) -
     roughWaterLevel * Math.max(0, 0.58 - b3.turnTime) * 0.09 -
     (conditions.isCrosswind ? conditions.windLevel * Math.max(0, 0.58 - b3.turnTime) * 0.06 : 0) -
+    ((s3.hasFRisk && (s3.earlyRiskScore ?? 0) >= 0.45) ? 0.08 : 0) -
     (vMakuri3 - 0.5) * 0.16 -
     Math.max(0, 0.45 - b3.turnTime) * 0.06
-  ) * 0.86);
+  ) * 0.72);
 
   const makuriSashi3Support = supportCount([
     b3.turnTime >= 0.62,
@@ -713,12 +748,15 @@ export function buildRaceFlowScenarioModel({
     b3.exST * 0.13 +
     b3.straightTime * 0.12 +
     b3.turnTime * 0.27 +
+    (s3.attackStartScore ?? 0.5) * 0.07 +
+    (s3.startReliabilityScore ?? 0.5) * 0.06 +
     positiveRate(b3.tendency, "makuriSashiRate", 0.07) * 0.92 +
     b1BeatenByMakuriSashi * 0.72 +
     weakBoat2Wall * 0.13 +
     roughWaterLevel * Math.max(0, b3.turnTime - 0.55) * 0.07 +
     (conditions.isCrosswind ? conditions.windLevel * Math.max(0, b3.turnTime - 0.55) * 0.05 : 0) +
-    (vMakuriSashi3 - 0.5) * 0.16
+    (vMakuriSashi3 - 0.5) * 0.16 -
+    ((s3.hasFRisk && (s3.earlyRiskScore ?? 0) >= 0.5) ? 0.05 : 0)
   );
 
   const attack3 = Math.max(makuri3, makuriSashi3);
@@ -734,7 +772,8 @@ export function buildRaceFlowScenarioModel({
     venue4Second3 * 0.12 +
     venue4Exacta3 * 0.16 -
     Math.max(0, attack3 - 0.56) * 0.08 +
-    roughWaterLevel * Math.max(0, b3.turnTime - 0.55) * 0.06
+    roughWaterLevel * Math.max(0, b3.turnTime - 0.55) * 0.06 -
+    (s3.flowWideRisk ?? 0) * 0.12
   );
   const boat2ResidualAfterFlowScore = clamp(
     0.18 +
@@ -770,11 +809,14 @@ export function buildRaceFlowScenarioModel({
   const boat4ObstructionRiskFromBoat3 = clamp(
     blockings[3] * 0.26 +
     walls[3] * 0.16 +
+    (s3.wallFormationScore ?? 0.5) * 0.12 +
+    (s3.startReliabilityScore ?? 0.5) * 0.08 +
     b3.reliabilityScore * 0.22 +
     b3.exST * 0.08 +
     b3.straightTime * 0.08 +
     b3.turnTime * 0.08 +
     (b3.courseTrifectaRate ?? 0.5) * 0.16 -
+    (s3.flowWideRisk ?? 0) * 0.1 -
     weakBoat3Wall * 0.16 -
     Math.max(0, attack3 - 0.62) * 0.08
   );
@@ -811,17 +853,21 @@ export function buildRaceFlowScenarioModel({
     b4.reliabilityScore * 0.12 +
     positiveRate(b4.tendency, "makuriSashiRate", 0.07) * 0.78 +
     attack3 * 0.28 +
+    (s3.flowWideRisk ?? 0) * 0.12 +
+    (s4.startPressureScore ?? 0.5) * 0.08 +
     (1 - boat1ResidualAfterAttackScore) * 0.16 +
     weakBoat3Wall * 0.08 +
     b1BeatenByMakuriSashi * 0.42 +
     roughWaterLevel * Math.max(0, b4.turnTime - 0.55) * 0.1 +
     conditions.isTailwind * conditions.windLevel * Math.max(0, b4.straightTime - 0.55) * 0.04 +
     (vMakuriSashi4 - 0.5) * 0.15 * (venueFeatureWeights.fourBeneficiary ?? 1) -
+    (s3.wallFormationScore ?? 0.5) * 0.06 -
     boat4ObstructionRiskFromBoat3 * 0.16
   );
 
-  const outside5 = clamp(0.1 + b5.lapTime * 0.17 + b5.straightTime * 0.16 + b5.turnTime * 0.11 + b5.motorRank * 0.12 + b5.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.18 - waveAggressionPenalty * 0.35);
-  const outside6 = clamp(0.08 + b6.lapTime * 0.15 + b6.straightTime * 0.15 + b6.turnTime * 0.1 + b6.motorRank * 0.12 + b6.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.15 - waveAggressionPenalty * 0.42);
+  const slitCollapseSignal = clamp(Math.max(weakBoat2Wall, s2.lateRiskScore ?? 0, s3.flowWideRisk ?? 0));
+  const outside5 = clamp(0.1 + b5.lapTime * 0.17 + b5.straightTime * 0.16 + b5.turnTime * 0.11 + b5.motorRank * 0.12 + b5.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.18 + (s5.outsidePressureScore ?? 0.5) * slitCollapseSignal * 0.08 - waveAggressionPenalty * 0.35);
+  const outside6 = clamp(0.08 + b6.lapTime * 0.15 + b6.straightTime * 0.15 + b6.turnTime * 0.1 + b6.motorRank * 0.12 + b6.motor2Rate * 0.08 + Math.max(sashi2, attack3, secondWave4) * 0.15 + (s6.outsidePressureScore ?? 0.5) * slitCollapseSignal * 0.06 - waveAggressionPenalty * 0.42);
   const outsideFollow = Math.max(outside5, outside6);
   if (conditions.windLevel > 0) {
     conditionAdjustmentLog.push({
@@ -859,10 +905,15 @@ export function buildRaceFlowScenarioModel({
 
   const scoreByBoat = {};
   const headScore1 = escape1;
-  const headScore2 = sashi2 * (sashi2Support >= 2 ? 0.95 : 0.62);
-  const headScore3 = Math.max(makuri3 * (makuri3Support >= 2 ? 0.94 : 0.62), makuriSashi3 * (makuriSashi3Support >= 2 ? 0.9 : 0.62));
+  const headScore2 = sashi2 * (sashi2Support >= 2 ? 0.95 : 0.62) * (1 - (s2.lateRiskScore ?? 0.08) * 0.16);
+  const headScore3 = Math.max(
+    makuri3 * (makuri3Support >= 2 ? 0.94 : 0.62),
+    makuriSashi3 * (makuriSashi3Support >= 2 ? 0.9 : 0.62)
+  ) * (0.9 + (s3.attackStartScore ?? 0.5) * 0.12 - (s3.flowWideRisk ?? 0) * 0.08);
   const headScore4Raw = Math.max(makuriSashi4 * 0.86, secondWave4 * (b4DirectSupport >= 3 ? 0.84 : b4DirectSupport >= 2 ? 0.66 : 0.44));
-  const headScore4 = b4DirectSupport >= 2 ? headScore4Raw : Math.min(headScore4Raw, 0.42);
+  const headScore4 = b4DirectSupport >= 2
+    ? clamp(headScore4Raw * (0.9 + (s4.startPressureScore ?? 0.5) * 0.1 + (s3.flowWideRisk ?? 0) * 0.08 - (s3.wallFormationScore ?? 0.5) * 0.05))
+    : Math.min(headScore4Raw, 0.42);
   const outsideHeadCap = 0.31;
   const headScore5 = Math.min(outside5 * 0.35, outsideHeadCap);
   const headScore6 = Math.min(outside6 * 0.32, outsideHeadCap - 0.02);
@@ -870,6 +921,8 @@ export function buildRaceFlowScenarioModel({
   const beneficiary4 = clamp(
     0.08 +
     attack3 * 0.3 +
+    (s3.flowWideRisk ?? 0) * 0.1 +
+    (s4.startPressureScore ?? 0.5) * 0.08 +
     b4.turnTime * 0.17 +
     b4.straightTime * 0.13 +
     b4.motorRank * 0.11 +
@@ -1029,11 +1082,23 @@ export function buildRaceFlowScenarioModel({
 
   for (const row of rows) {
     const metric = metrics[row.boat] || {};
+    const slitRow = slit(row.boat);
     Object.assign(row, {
       reliabilityScore: metric.reliabilityScore,
       reliabilityProfile: metric.reliabilityProfile,
       wallScore: row.boat === 2 || row.boat === 3 || row.boat === 4 ? walls[row.boat] : null,
       blockingScore: row.boat === 2 || row.boat === 3 || row.boat === 4 ? blockings[row.boat] : null,
+      slitScore: slitRow.slitScore ?? null,
+      startReliabilityScore: slitRow.startReliabilityScore ?? null,
+      startPressureScore: slitRow.startPressureScore ?? null,
+      lateRiskScore: slitRow.lateRiskScore ?? null,
+      earlyRiskScore: slitRow.earlyRiskScore ?? null,
+      wallFormationScore: slitRow.wallFormationScore ?? null,
+      attackStartScore: slitRow.attackStartScore ?? null,
+      insideProtectionScore: slitRow.insideProtectionScore ?? null,
+      outsidePressureScore: slitRow.outsidePressureScore ?? null,
+      flowWideRisk: slitRow.flowWideRisk ?? null,
+      exhibitionGoodHistoryPoor: slitRow.exhibitionGoodHistoryPoor ?? false,
       courseWinRate: metric.courseWinRate,
       courseQuinellaRate: metric.courseQuinellaRate,
       courseTrifectaRate: metric.courseTrifectaRate,
@@ -1229,6 +1294,7 @@ export function buildRaceFlowScenarioModel({
     topScenario ? `本線展開は「${topScenario.label}」。${topScenario.reasons[0] || "展示足と進入のバランスから評価しています。"}` : null,
     secondaryScenario ? `対抗展開は「${secondaryScenario.label}」。${secondaryScenario.reasons[0] || "相手候補の連動を見ます。"}` : null,
     upsetScenario && upsetScenario.id !== topScenario?.id ? `穴展開は「${upsetScenario.label}」。${upsetScenario.reasons[0] || "隊形が崩れた時だけ押さえます。"}` : null,
+    ...safeArray(slitFormation.notes).slice(0, 2),
     dangerousButNotHead.length > 0 ? `危険だが頭ではない艇: ${dangerousButNotHead.map((row) => `${row.boat}号艇`).join("、")}。相手穴中心で扱います。` : null,
     ...reliabilityExplanations,
     ...conditionAdjustmentLog.map((row) => row.note),
@@ -1240,6 +1306,8 @@ export function buildRaceFlowScenarioModel({
     wallScore: roundScore(walls[boat]),
     blockingScore: roundScore(blockings[boat]),
     reliabilityScore: roundScore(metrics[boat].reliabilityScore),
+    slitWallFormationScore: roundScore(slit(boat).wallFormationScore ?? 0.5),
+    slitLateRiskScore: roundScore(slit(boat).lateRiskScore ?? 0.08),
     wallAttackScore: boat === 3 ? roundScore(boat3AttackWall) : null,
     sampleStatus: metrics[boat].sampleStatus,
     lateStartRate: metrics[boat].lateRate,
@@ -1261,6 +1329,10 @@ export function buildRaceFlowScenarioModel({
       reliabilityScore: roundScore(row.reliabilityScore),
       wallScore: row.wallScore === null ? null : roundScore(row.wallScore),
       blockingScore: row.blockingScore === null ? null : roundScore(row.blockingScore),
+      slitScore: row.slitScore === null ? null : roundScore(row.slitScore),
+      startReliabilityScore: row.startReliabilityScore === null ? null : roundScore(row.startReliabilityScore),
+      lateRiskScore: row.lateRiskScore === null ? null : roundScore(row.lateRiskScore),
+      attackStartScore: row.attackStartScore === null ? null : roundScore(row.attackStartScore),
       courseQuinellaRate: row.courseQuinellaRate,
       courseTrifectaRate: row.courseTrifectaRate,
       supportFactors: row.supportFactors,
@@ -1294,6 +1366,7 @@ export function buildRaceFlowScenarioModel({
     boat5LinkedFollowScore: roundScore(boat5LinkedFollowScore),
     boat6LinkedFollowScore: roundScore(boat6LinkedFollowScore),
     insideCollapseScore: roundScore(insideCollapseScore),
+    slitCollapseSignal: roundScore(slitCollapseSignal),
     boat4ObstructionRiskFromBoat3: roundScore(boat4ObstructionRiskFromBoat3),
     fourHeadPartnerDecision,
     venueMakuriBoat1SecondRate: roundScore(venueMakuriBoat1Second),
@@ -1409,6 +1482,8 @@ export function buildRaceFlowScenarioModel({
     partnerCandidates,
     dangerousButNotHead,
     headPartnerSplit,
+    slitFormation,
+    slitFormationDebug: buildSlitFormationDebug(slitFormation),
     scoreByBoat: Object.fromEntries(
       Object.entries(scoreByBoat).map(([boat, row]) => [boat, {
         boat: row.boat,
@@ -1422,6 +1497,17 @@ export function buildRaceFlowScenarioModel({
         reliabilityScore: row.reliabilityScore,
         wallScore: row.wallScore,
         blockingScore: row.blockingScore,
+        slitScore: row.slitScore,
+        startReliabilityScore: row.startReliabilityScore,
+        startPressureScore: row.startPressureScore,
+        lateRiskScore: row.lateRiskScore,
+        earlyRiskScore: row.earlyRiskScore,
+        wallFormationScore: row.wallFormationScore,
+        attackStartScore: row.attackStartScore,
+        insideProtectionScore: row.insideProtectionScore,
+        outsidePressureScore: row.outsidePressureScore,
+        flowWideRisk: row.flowWideRisk,
+        exhibitionGoodHistoryPoor: row.exhibitionGoodHistoryPoor,
         courseWinRate: row.courseWinRate,
         courseQuinellaRate: row.courseQuinellaRate,
         courseTrifectaRate: row.courseTrifectaRate,
@@ -1498,6 +1584,16 @@ export function applyRaceFlowScenarioAdjustments(entries = [], model = {}) {
       raceFlowReliabilityScore: roundScore(finiteNumber(scores.reliabilityScore, 0.5)),
       raceFlowWallScore: scores.wallScore === null ? null : roundScore(finiteNumber(scores.wallScore, 0.5)),
       raceFlowBlockingScore: scores.blockingScore === null ? null : roundScore(finiteNumber(scores.blockingScore, 0.5)),
+      raceFlowSlitScore: scores.slitScore === null ? null : roundScore(finiteNumber(scores.slitScore, 0.5)),
+      startReliabilityScore: scores.startReliabilityScore ?? row.startReliabilityScore ?? null,
+      startPressureScore: scores.startPressureScore ?? row.startPressureScore ?? null,
+      lateRiskScore: scores.lateRiskScore ?? row.lateRiskScore ?? null,
+      earlyRiskScore: scores.earlyRiskScore ?? row.earlyRiskScore ?? null,
+      wallFormationScore: scores.wallFormationScore ?? row.wallFormationScore ?? null,
+      attackStartScore: scores.attackStartScore ?? row.attackStartScore ?? null,
+      insideProtectionScore: scores.insideProtectionScore ?? row.insideProtectionScore ?? null,
+      outsidePressureScore: scores.outsidePressureScore ?? row.outsidePressureScore ?? null,
+      flowWideRisk: scores.flowWideRisk ?? row.flowWideRisk ?? null,
       reliabilityScore: finiteNumber(scores.reliabilityScore, row.reliabilityScore ?? null),
       wallScore: scores.wallScore ?? row.wallScore ?? null,
       blockingScore: scores.blockingScore ?? row.blockingScore ?? null,
@@ -1573,6 +1669,14 @@ export function scoreRaceFlowTicketDecisionCompatibility(ticket = {}, model = {}
   const boat2Residual = residualScore01(model, "boat2ResidualAfterFlowScore", 0.5);
   const boat5Follow = residualScore01(model, "boat5LinkedFollowScore", 0.5);
   const boat6Follow = residualScore01(model, "boat6LinkedFollowScore", 0.5);
+  const scoreByBoat = model?.scoreByBoat || {};
+  const headScoreRow = scoreByBoat[String(head)] || scoreByBoat[head] || {};
+  const secondScoreRow = scoreByBoat[String(second)] || scoreByBoat[second] || {};
+  const headSlitSupport = optionalRate01(headScoreRow.attackStartScore ?? headScoreRow.startPressureScore ?? headScoreRow.slitScore) ?? 0.5;
+  const secondLateRisk = optionalRate01(secondScoreRow.lateRiskScore) ?? 0;
+  const secondResidualSupport = optionalRate01(secondScoreRow.residualScore) ?? 0.5;
+  const slitCollapse = residualScore01(model, "slitCollapseSignal", 0.35);
+  const slitPattern = model?.slitFormation?.slitPattern || null;
 
   if (head === 3 && second === 1) {
     const stats = decisionStat(model, scenario.decision || "makuri");
@@ -1649,6 +1753,30 @@ export function scoreRaceFlowTicketDecisionCompatibility(ticket = {}, model = {}
     if (support > 0.58) reasons.push("4頭時の内崩れと6号艇の追走評価があり4-6を加点");
   }
 
+  if (headSlitSupport < 0.38 && support < 0.6) {
+    support -= 0.08;
+    reasons.push("head slit support is weak; ticket demoted");
+  }
+  if (secondLateRisk >= 0.55 && secondResidualSupport < 0.58) {
+    support -= 0.1;
+    reasons.push("second boat has slit late risk without residual support");
+  }
+  if (head === 1 && (model?.slitFormation?.pressureBoats || []).some((boat) => [3, 4].includes(Number(boat))) && boat1Residual < 0.54) {
+    support -= 0.07;
+    reasons.push("center slit pressure weakens 1 remaining pattern");
+  }
+  if (head === 4 && (model?.decisionResidualScores?.boat4ObstructionRiskFromBoat3 ?? 0) >= 62 && scenario.scenarioId !== "four_beneficiary") {
+    support -= 0.08;
+    reasons.push("boat3 blocking risk makes 4-head ticket conditional");
+  }
+  if (head >= 5 && slitCollapse < 0.55) {
+    support -= 0.12;
+    reasons.push("outside head needs collapse chain; slit formation does not support it");
+  }
+  if (slitPattern === "inside_stable" && head >= 3 && support < 0.62) {
+    support -= 0.05;
+    reasons.push("inside-stable slit demotes aggressive head ticket");
+  }
   const multiplier = decisionCompatibilityMultiplier(support, floor, ceiling);
   return {
     combo: ticket?.combo || boats.join("-"),

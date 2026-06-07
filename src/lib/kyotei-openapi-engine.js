@@ -445,6 +445,12 @@ function normalizeProgramBoats(program = {}) {
         localVenueWinRate: playerTendency.localVenueWinRate,
         localVenueQuinellaRate: playerTendency.localVenueQuinellaRate,
         localVenueTrifectaRate: playerTendency.localVenueTrifectaRate,
+        currentSeasonAvgST: playerTendency.currentSeasonAvgST,
+        currentSeasonStartCount: playerTendency.currentSeasonStartCount,
+        currentSeasonLateStartRate: playerTendency.currentSeasonLateStartRate,
+        currentSeasonEarlyStartRate: playerTendency.currentSeasonEarlyStartRate,
+        currentSeasonStartStabilityRate: playerTendency.currentSeasonStartStabilityRate,
+        startStabilityRate: playerTendency.startStabilityRate,
         techniqueStats: {
           last6mRaceCount: playerTendency.last6mRaceCount,
           courseSpecificLast6mRaceCount: playerTendency.courseSpecificLast6mRaceCount,
@@ -459,6 +465,12 @@ function normalizeProgramBoats(program = {}) {
           localVenueWinRate: playerTendency.localVenueWinRate,
           localVenueQuinellaRate: playerTendency.localVenueQuinellaRate,
           localVenueTrifectaRate: playerTendency.localVenueTrifectaRate,
+          currentSeasonAvgST: playerTendency.currentSeasonAvgST,
+          currentSeasonStartCount: playerTendency.currentSeasonStartCount,
+          currentSeasonLateStartRate: playerTendency.currentSeasonLateStartRate,
+          currentSeasonEarlyStartRate: playerTendency.currentSeasonEarlyStartRate,
+          currentSeasonStartStabilityRate: playerTendency.currentSeasonStartStabilityRate,
+          startStabilityRate: playerTendency.startStabilityRate,
           allCourseWinRate: playerTendency.allCourseWinRate,
           allCourseSashiRate: playerTendency.allCourseSashiRate,
           allCourseMakuriRate: playerTendency.allCourseMakuriRate,
@@ -473,6 +485,12 @@ function normalizeProgramBoats(program = {}) {
           makuriRate: playerTendency.makuriRate,
           makuriSashiRate: playerTendency.makuriSashiRate,
           avgStartTiming: playerTendency.avgStartTiming,
+          currentSeasonAvgST: playerTendency.currentSeasonAvgST,
+          currentSeasonStartCount: playerTendency.currentSeasonStartCount,
+          currentSeasonLateStartRate: playerTendency.currentSeasonLateStartRate,
+          currentSeasonEarlyStartRate: playerTendency.currentSeasonEarlyStartRate,
+          currentSeasonStartStabilityRate: playerTendency.currentSeasonStartStabilityRate,
+          startStabilityRate: playerTendency.startStabilityRate,
           lateStartRate: playerTendency.lateStartRate,
           earlyStartRate: playerTendency.earlyStartRate,
           course6TrifectaRate: playerTendency.course6TrifectaRate
@@ -904,6 +922,12 @@ function normalizePlayerTendency(row = {}, boat = null, course = null) {
     makuriSashiRate: pickFiniteFrom(source, row, ["makuriSashiRate", "makuri_sashi_rate", "makurisashiRate", "makurisashi_rate"]),
     course6TrifectaRate: pickFiniteFrom(source, row, ["course6TrifectaRate", "course6_trifecta_rate"]),
     avgStartTiming: pickFiniteFrom(source, row, ["avgST", "avg_st", "avgStartTiming", "avg_start_timing"]),
+    currentSeasonAvgST: pickFiniteFrom(source, row, ["currentSeasonAvgST", "current_season_avg_st", "seasonAvgST", "season_avg_st"]),
+    currentSeasonStartCount: pickFiniteFrom(source, row, ["currentSeasonStartCount", "current_season_start_count", "seasonStartCount", "season_start_count"]),
+    currentSeasonLateStartRate: pickFiniteFrom(source, row, ["currentSeasonLateStartRate", "current_season_late_start_rate", "seasonLateStartRate", "season_late_start_rate"]),
+    currentSeasonEarlyStartRate: pickFiniteFrom(source, row, ["currentSeasonEarlyStartRate", "current_season_early_start_rate", "seasonEarlyStartRate", "season_early_start_rate"]),
+    currentSeasonStartStabilityRate: pickFiniteFrom(source, row, ["currentSeasonStartStabilityRate", "current_season_start_stability_rate", "seasonStartStabilityRate", "season_start_stability_rate"]),
+    startStabilityRate: pickFiniteFrom(source, row, ["startStabilityRate", "start_stability_rate"]),
     lateStartRate: pickFiniteFrom(source, row, ["lateStartRate", "late_start_rate", "delayRate", "delay_rate"]),
     earlyStartRate: pickFiniteFrom(source, row, ["earlyStartRate", "early_start_rate"]),
     exhibitionToRealStartGap: pickFiniteFrom(source, row, ["exhibitionToRealStartGap", "exhibition_to_real_start_gap"]),
@@ -967,10 +991,11 @@ function allCourseReferenceWeight(tendency = {}) {
 }
 
 function buildStartReliabilityContribution({ boat = {}, tendency = {}, featureRow = {}, course = null, config = {} } = {}) {
-  const avgStart = tendency.avgStartTiming ?? tendency.allCourseAvgST ?? boat.averageStartTiming;
+  const avgStart = tendency.currentSeasonAvgST ?? tendency.avgStartTiming ?? tendency.allCourseAvgST ?? boat.averageStartTiming;
   const avgSTScore = avgStart !== null && avgStart !== undefined ? startTimingScore(avgStart, 0.5) : 0.5;
-  const lateStartRate = optionalRate01(tendency.lateStartRate) ?? 0;
-  const earlyStartRate = optionalRate01(tendency.earlyStartRate) ?? 0;
+  const lateStartRate = optionalRate01(tendency.currentSeasonLateStartRate ?? tendency.lateStartRate) ?? 0;
+  const earlyStartRate = optionalRate01(tendency.currentSeasonEarlyStartRate ?? tendency.earlyStartRate) ?? 0;
+  const startStabilityRate = optionalRate01(tendency.currentSeasonStartStabilityRate ?? tendency.startStabilityRate);
   const fCount = Math.max(0, finiteNumber(boat.flyingCount ?? tendency.fCount, 0));
   const fStatusText = String(boat.fStatus ?? "").toUpperCase();
   const hasFRisk = fCount > 0 || /\bF|Ｆ/.test(fStatusText);
@@ -989,7 +1014,8 @@ function buildStartReliabilityContribution({ boat = {}, tendency = {}, featureRo
   const wallAdjustment =
     (avgSTScore - 0.5) * 0.1 -
     Math.max(0, lateStartRate - 0.12) * 0.16 -
-    (hasFRisk ? 0.05 : 0);
+    (hasFRisk ? 0.05 : 0) +
+    (startStabilityRate !== null ? Math.max(0, startStabilityRate - 0.55) * 0.06 : 0);
   const warning =
     exhibitionGoodButHistoryPoor
       ? "展示STは良いが平均ST/出遅れ率に不安があり、過信を抑制"
@@ -1000,6 +1026,7 @@ function buildStartReliabilityContribution({ boat = {}, tendency = {}, featureRo
     avgSTScore,
     lateStartRate,
     earlyStartRate,
+    startStabilityRate,
     fCount,
     hasFRisk,
     exhibitionGoodButHistoryPoor,
@@ -1849,6 +1876,10 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   const headLapTurnSupport = (featureScore01(finalPrediction, head, "lapTime", 0.5) + featureScore01(finalPrediction, head, "turnTime", 0.5)) / 2;
   const headReliability = flowBoatScore(finalPrediction, head, "reliabilityScore", 0.5);
   const headCourseTrifecta = flowBoatScore(finalPrediction, head, "courseTrifectaRate", 0.5);
+  const headAttackStart = flowBoatScore(finalPrediction, head, "attackStartScore", 0.5);
+  const headStartReliability = flowBoatScore(finalPrediction, head, "startReliabilityScore", 0.5);
+  const headLateRisk = flowBoatScore(finalPrediction, head, "lateRiskScore", 0.08);
+  const headSlitSupport = Math.max(headAttackStart, headStartReliability, flowBoatScore(finalPrediction, head, "slitScore", 0.5));
   const headTiltAdjustment =
     finalPrediction.scoredBoats?.find((row) => row.boat === head)?.professionalFactors?.tiltAdjustment ||
     buildTiltAdjustment(finalPrediction.scoredBoats?.find((row) => row.boat === head) || {}, finalPrediction.featureScores?.byBoat?.[String(head)] || {});
@@ -1892,6 +1923,12 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
     gradeCaps.push("C");
     reasons.push("頭の信頼度薄め");
   }
+  if (headSlitSupport < 0.38 && scenarioSupport < 0.6) {
+    rejectReasons.push("slit gate failed: head boat has no slit/scenario support");
+  } else if (headLateRisk >= 0.55 && headSupport < 0.66) {
+    gradeCaps.push("C");
+    reasons.push("頭のスリット遅れリスク");
+  }
   if (roughWater && head >= 5 && headLapTurnSupport < 0.7) {
     rejectReasons.push("condition gate failed: rough water outside head needs strong lap/turn support");
   } else if (roughWater && head >= 3 && headLapTurnSupport < 0.52) {
@@ -1924,6 +1961,7 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   const secondScore = flowBoatScore(finalPrediction, second, "secondScore", 0.42);
   const secondResidual = flowBoatScore(finalPrediction, second, "residualScore", 0.42);
   const secondReliability = flowBoatScore(finalPrediction, second, "reliabilityScore", 0.5);
+  const secondLateRisk = flowBoatScore(finalPrediction, second, "lateRiskScore", 0.08);
   const secondCourseQuinella = flowBoatScore(finalPrediction, second, "courseQuinellaRate", 0.5);
   const secondCourseTrifecta = flowBoatScore(finalPrediction, second, "courseTrifectaRate", 0.5);
   const secondLive = liveFeatureSupport(finalPrediction, canonicalRaceData, second, 0.5);
@@ -1944,6 +1982,12 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   else if (secondReliability < 0.42 && scenarioSupport < 0.58) {
     gradeCaps.push("C");
     reasons.push("2着信頼度薄め");
+  }
+  if (secondLateRisk >= 0.55 && secondResidual < 0.58 && scenarioSupport < 0.66) {
+    rejectReasons.push("slit gate failed: second boat late risk is high");
+  } else if (secondLateRisk >= 0.45 && secondResidual < 0.54) {
+    gradeCaps.push("C");
+    reasons.push("2着のスリット遅れ注意");
   }
   if (partnerSupport < 0.38) rejectReasons.push("partner gate failed: second boat support is weak");
   else if (partnerSupport < 0.5) gradeCaps.push("C");
@@ -1969,6 +2013,7 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   const boat5Follow = score01(residualScores.boat5LinkedFollowScore, flowBoatScore(finalPrediction, 5, "residualScore", 0.5));
   const boat6Follow = score01(residualScores.boat6LinkedFollowScore, flowBoatScore(finalPrediction, 6, "residualScore", 0.5));
   const boat4ObstructionRiskFromBoat3 = score01(residualScores.boat4ObstructionRiskFromBoat3, 0);
+  const slitCollapseSignal = score01(residualScores.slitCollapseSignal, 0.35);
   const insideCollapse = score01(residualScores.insideCollapseScore, clamp(1 - boat1Residual));
   const boat1KeepSupport = (boat1Residual * 0.46) +
     (featureScore01(finalPrediction, 1, "lapTime", 0.5) * 0.18) +
@@ -1987,7 +2032,7 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
   let specialScoreBoost = 0;
 
   if (head === 4) {
-    if (boat4ObstructionRiskFromBoat3 >= 0.62 && second !== 3 && scenarioSupport < 0.68) {
+    if (boat4ObstructionRiskFromBoat3 >= 0.62 && second !== 3 && scenarioSupport < 0.68 && slitCollapseSignal < 0.58) {
       gradeCaps.push("C");
       reasons.push("3号艇の壁で4頭は条件付き");
       if (scenarioSupport < 0.54) rejectReasons.push("4-head obstruction gate failed: boat3 blocks the race flow");
@@ -2046,6 +2091,17 @@ export function evaluateTicketPlausibility(ticket = {}, finalPrediction = {}, ca
     } else {
       reasons.push("3攻め後の1残り");
     }
+  }
+  if (second === 1 && head !== 1 && flowBoatScore(finalPrediction, 1, "lateRiskScore", 0.08) >= 0.5 && boat1Residual < 0.52) {
+    gradeCaps.push("C");
+    reasons.push("1残りはスリット遅れ注意");
+  }
+  if (head >= 5 && slitCollapseSignal < 0.58) {
+    rejectReasons.push("slit gate failed: outside head needs collapse chain");
+  }
+  if (headSlitSupport >= 0.64 && scenarioSupport >= 0.56) {
+    specialScoreBoost += 0.03;
+    reasons.push("slit scenario match");
   }
 
   if (head === 2) {
@@ -2360,6 +2416,17 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
     const straight = featureScore01(prediction, boat, "straightTime", 0.5);
     const reliability = flowBoatScore(prediction, boat, "reliabilityScore", 0.5);
     const courseTrifecta = flowBoatScore(prediction, boat, "courseTrifectaRate", 0.5);
+    const slitRow = prediction.raceFlowScenario?.scoreByBoat?.[String(boat)] || prediction.raceFlowScenario?.scoreByBoat?.[boat] || {};
+    const slitPattern = prediction.raceFlowScenario?.slitFormation?.slitPattern || null;
+    const attackStartScore = score01(slitRow.attackStartScore, 0.5);
+    const startReliabilityScore = score01(slitRow.startReliabilityScore, startReliability);
+    const lateRiskScore = score01(slitRow.lateRiskScore, 0.08);
+    const wallFormationScore = score01(slitRow.wallFormationScore, boat === 2 || boat === 3 ? 0.5 : 0.35);
+    const flowWideRisk = score01(slitRow.flowWideRisk, 0);
+    const exhibitionGoodHistoryPoor = slitRow.exhibitionGoodHistoryPoor === true;
+    const outsidePressureScore = score01(slitRow.outsidePressureScore, 0.5);
+    const slitCollapse = score01(prediction.raceFlowScenario?.decisionResidualScores?.slitCollapseSignal, 0.35);
+    const boat4Obstruction = score01(prediction.raceFlowScenario?.decisionResidualScores?.boat4ObstructionRiskFromBoat3, 0);
     const featureRow = prediction.featureScores?.byBoat?.[String(boat)] || {};
     const tiltAdjustment = boatRow?.professionalFactors?.tiltAdjustment || buildTiltAdjustment(boatRow, featureRow);
     const tendency = boatRow?.playerTendency || {};
@@ -2370,6 +2437,7 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       { ok: Math.max(attackTriggerScore, attackerScore, beneficiaryScore) >= 0.58, reason: "attack/benefit" },
       { ok: motorRank >= 0.62, reason: "motor" },
       { ok: startReliability >= 0.62, reason: "start" },
+      { ok: startReliabilityScore >= 0.6 || attackStartScore >= 0.62, reason: "slit support" },
       { ok: reliability >= 0.6 || courseTrifecta >= 0.58, reason: "finishing reliability" },
       { ok: lapTurn >= 0.62 || straight >= 0.66, reason: "exhibition balance" },
       { ok: tiltAdjustment.attackSupport >= 0.025 || tiltAdjustment.residualSupport >= 0.02, reason: "tilt support" },
@@ -2381,6 +2449,8 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       Math.max(attackerScore, beneficiaryScore) * 0.16 +
       motorRank * 0.12 +
       startReliability * 0.1 +
+      startReliabilityScore * 0.06 +
+      attackStartScore * (boat >= 3 ? 0.06 : 0.03) +
       reliability * 0.12 +
       lapTurn * 0.08 +
       straight * 0.04 +
@@ -2398,6 +2468,59 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       if (outsideScenario < 0.58 || insideCollapse < 0.58 || live < outsideMin) {
         status = "partner_only";
         rejectReasons.push("outside head requires strong outside scenario, inside collapse, and live support");
+      }
+      if (slitCollapse < 0.58 || outsidePressureScore < 0.62) {
+        status = "partner_only";
+        rejectReasons.push("outside head requires slit-supported collapse chain");
+      }
+    }
+    if (boat === 1) {
+      const centerPressure = Math.max(
+        score01(prediction.raceFlowScenario?.scoreByBoat?.["3"]?.outsidePressureScore, 0.5),
+        score01(prediction.raceFlowScenario?.scoreByBoat?.["4"]?.outsidePressureScore, 0.5)
+      );
+      const rescueByResidual = residualScore >= 0.62 || motorRank >= 0.66 || lapTurn >= 0.64;
+      if ((lateRiskScore >= 0.5 || wallFormationScore < 0.42 || centerPressure >= 0.68) && !rescueByResidual) {
+        status = status === "main" ? "upset" : status;
+        rejectReasons.push("1 head needs reliable slit or strong residual/motor/turn support");
+      }
+    }
+    if (boat === 2) {
+      const boat3Pressure = score01(prediction.raceFlowScenario?.scoreByBoat?.["3"]?.outsidePressureScore, 0.5);
+      const sashiSupport = positiveRateLift(tendency.sashiRate, 0.1) > 0 || featureScore01(prediction, 2, "turnTime", 0.5) >= 0.62;
+      if (lateRiskScore >= 0.5 || startReliabilityScore < 0.46 || !sashiSupport || boat3Pressure >= 0.7) {
+        status = status === "main" ? "upset" : status;
+        rejectReasons.push("2 head requires slit reliability, sashi/turn support, and limited 3 pressure");
+      }
+    }
+    if (boat === 3) {
+      if (attackStartScore < 0.56 || straight < 0.58) {
+        status = status === "main" ? "upset" : status;
+        rejectReasons.push("3 head requires attackStartScore and straight support");
+      }
+      if (flowWideRisk >= 0.48 && residualScore < 0.54) {
+        status = status === "main" ? "upset" : status;
+        rejectReasons.push("3 can trigger the flow, but residual support is weak for head");
+      }
+      if (exhibitionGoodHistoryPoor && status === "main") {
+        status = "upset";
+        rejectReasons.push("good exhibition ST is contradicted by avg/current-season ST");
+      }
+    }
+    if (boat === 4) {
+      const disruption = slitCollapse >= 0.52 ||
+        scenarioSupport >= 0.7 ||
+        score01(prediction.raceFlowScenario?.decisionResidualScores?.insideCollapseScore, 0.45) >= 0.62 ||
+        score01(prediction.raceFlowScenario?.scoreByBoat?.["3"]?.attackStartScore, 0.5) >= 0.62 ||
+        score01(prediction.raceFlowScenario?.scoreByBoat?.["2"]?.lateRiskScore, 0.08) >= 0.5 ||
+        attackStartScore >= 0.62;
+      const obstructionBlocksHead = boat4Obstruction >= 0.72 &&
+        beneficiaryScore < 0.68 &&
+        slitCollapse < 0.5 &&
+        scenarioSupport < 0.74;
+      if (!disruption || beneficiaryScore < 0.56 || lapTurn < 0.56 || obstructionBlocksHead) {
+        status = status === "main" ? "upset" : status;
+        rejectReasons.push("4 head requires disruption, beneficiary support, and limited boat3 blocking");
       }
     }
     if (roughWater && boat >= 5 && lapTurn < 0.68) {
@@ -2441,6 +2564,13 @@ function buildHeadValidation(prediction = {}, dataQuality = {}, scoringConfig = 
       motorRank: roundNumber(motorRank * 100, 1),
       reliabilityScore: roundNumber(reliability * 100, 1),
       courseTrifectaRate: roundNumber(courseTrifecta * 100, 1),
+      slitPattern,
+      attackStartScore: roundNumber(attackStartScore * 100, 1),
+      startReliabilityScore: roundNumber(startReliabilityScore * 100, 1),
+      lateRiskScore: roundNumber(lateRiskScore * 100, 1),
+      wallFormationScore: roundNumber(wallFormationScore * 100, 1),
+      flowWideRisk: roundNumber(flowWideRisk * 100, 1),
+      exhibitionGoodHistoryPoor,
       lapTurn: roundNumber(lapTurn * 100, 1),
       tiltAdjustment
     };
@@ -2624,6 +2754,7 @@ function buildFinalPredictionView(prediction = {}, confidence = null, scoringCon
       partnerValidation,
       ticketPlausibility: prediction.ticketGroups || null,
       factorContributionByBoat: prediction.coefficientContributionByBoat || [],
+      slitFormationDebug: prediction.slitFormationDebug || prediction.raceFlowScenario?.slitFormationDebug || null,
       consistencyCheck: consistency
     }
   };
@@ -2713,6 +2844,9 @@ export function buildRacePrediction(program = {}, preview = null, config = DEFAU
       detail: boat.professionalFactors?.startReliability || null
     })),
     raceFlowScenario,
+    slitFormation: raceFlowScenario.slitFormation || null,
+    slitFormationDebug: raceFlowScenario.slitFormationDebug || null,
+    slitFormationPreview: raceFlowScenario.slitFormationDebug?.rows || [],
     raceFlowScenarioPreview: raceFlowScenario.scenarioFamilies || raceFlowScenario.scenarios,
     scenarioFamilyPreview: raceFlowScenario.scenarioFamilies || [],
     mainScenarioGroup: raceFlowScenario.mainScenarioGroup || null,

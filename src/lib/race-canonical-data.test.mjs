@@ -59,6 +59,12 @@ function tendencyRows() {
       localVenueWinRate: 0.24,
       localVenueQuinellaRate: 0.46,
       localVenueTrifectaRate: 0.58,
+      currentSeasonAvgST: 0.13,
+      currentSeasonStartCount: 24,
+      currentSeasonLateStartRate: 0.08,
+      currentSeasonEarlyStartRate: 0.12,
+      currentSeasonStartStabilityRate: 0.74,
+      startStabilityRate: 0.7,
       allCourseWinRate: 0.27,
       allCourseSashiRate: 0.08,
       allCourseAvgST: 0.16,
@@ -215,6 +221,12 @@ function tendencyRows() {
   assert.equal(boat1.recentTrifectaRate, 0.61);
   assert.equal(boat1.localVenueQuinellaRate, 0.46);
   assert.equal(boat1.localVenueTrifectaRate, 0.58);
+  assert.equal(boat1.currentSeasonAvgST, 0.13);
+  assert.equal(boat1.currentSeasonStartCount, 24);
+  assert.equal(boat1.currentSeasonLateStartRate, 0.08);
+  assert.equal(boat1.currentSeasonEarlyStartRate, 0.12);
+  assert.equal(boat1.currentSeasonStartStabilityRate, 0.74);
+  assert.equal(boat1.startStabilityRate, 0.7);
   assert.equal(boat1.allCourseWinRate, 0.27);
   assert.equal(boat1.allCourseSashiRate, 0.08);
   assert.equal(boat1.allCourseAvgST, 0.16);
@@ -226,9 +238,12 @@ function tendencyRows() {
   assert.equal(predictionBoat1.playerTendency.sampleStatus, "ok");
   assert.equal(predictionBoat1.playerTendency.courseTrifectaRate, 0.64);
   assert.equal(predictionBoat1.courseTrifectaRate, 0.64);
+  assert.equal(predictionBoat1.playerTendency.currentSeasonAvgST, 0.13);
+  assert.equal(predictionBoat1.currentSeasonAvgST, 0.13);
   assert.equal(predictionBoat1.playerTendency.allCourseWinRate, 0.27);
   assert.equal(canonical.debug.canonicalTendencyCounts.escapeRate, 1);
   assert.equal(canonical.debug.canonicalTendencyCounts.courseTrifectaRate, 1);
+  assert.equal(canonical.debug.canonicalTendencyCounts.currentSeasonAvgST, 1);
   assert.equal(canonical.debug.tendencyPreview[0].last6mRaceCount, 30);
 }
 

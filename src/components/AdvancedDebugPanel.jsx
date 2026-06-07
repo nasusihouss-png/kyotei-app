@@ -133,6 +133,13 @@ export default function AdvancedDebugPanel({
             })}</pre>
           </div>
           <div>
+            <div className="muted">slitFormationDebug</div>
+            <pre className="json-preview">{safePrettyJson({
+              slitFormationDebug: debug.slitFormationDebug,
+              slitFormationPreview: debug.slitFormationPreview
+            })}</pre>
+          </div>
+          <div>
             <div className="muted">head / partner split</div>
             <pre className="json-preview">{safePrettyJson(debug.headPartnerSplitPreview)}</pre>
           </div>

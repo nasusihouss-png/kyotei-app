@@ -26,6 +26,12 @@ export const RACER_TENDENCY_FIELDS = [
   "makuriRate",
   "makuriSashiRate",
   "avgST",
+  "currentSeasonAvgST",
+  "currentSeasonStartCount",
+  "currentSeasonLateStartRate",
+  "currentSeasonEarlyStartRate",
+  "currentSeasonStartStabilityRate",
+  "startStabilityRate",
   "lateStartRate",
   "earlyStartRate"
 ];
@@ -84,6 +90,12 @@ export function normalizeRacerTendencyRow(row = {}) {
     makuriRate: rate(row?.makuriRate, row?.makuri_rate, playerTendency?.makuriRate),
     makuriSashiRate: rate(row?.makuriSashiRate, row?.makuri_sashi_rate, row?.makurisashi_rate, playerTendency?.makuriSashiRate),
     avgST: firstFinite(row?.avgST, row?.avg_st, row?.avgStartTiming, playerTendency?.avgST, playerTendency?.avgStartTiming),
+    currentSeasonAvgST: firstFinite(row?.currentSeasonAvgST, row?.current_season_avg_st, row?.seasonAvgST, row?.season_avg_st, playerTendency?.currentSeasonAvgST),
+    currentSeasonStartCount: firstFinite(row?.currentSeasonStartCount, row?.current_season_start_count, row?.seasonStartCount, row?.season_start_count, playerTendency?.currentSeasonStartCount),
+    currentSeasonLateStartRate: rate(row?.currentSeasonLateStartRate, row?.current_season_late_start_rate, row?.seasonLateStartRate, row?.season_late_start_rate, playerTendency?.currentSeasonLateStartRate),
+    currentSeasonEarlyStartRate: rate(row?.currentSeasonEarlyStartRate, row?.current_season_early_start_rate, row?.seasonEarlyStartRate, row?.season_early_start_rate, playerTendency?.currentSeasonEarlyStartRate),
+    currentSeasonStartStabilityRate: rate(row?.currentSeasonStartStabilityRate, row?.current_season_start_stability_rate, row?.seasonStartStabilityRate, row?.season_start_stability_rate, playerTendency?.currentSeasonStartStabilityRate),
+    startStabilityRate: rate(row?.startStabilityRate, row?.start_stability_rate, playerTendency?.startStabilityRate),
     lateStartRate: rate(row?.lateStartRate, row?.late_start_rate, playerTendency?.lateStartRate),
     earlyStartRate: rate(row?.earlyStartRate, row?.early_start_rate, playerTendency?.earlyStartRate)
   };
@@ -202,6 +214,12 @@ export function buildTendencyPreview(rows = []) {
     makuriRate: row.makuriRate,
     makuriSashiRate: row.makuriSashiRate,
     avgST: row.avgST,
+    currentSeasonAvgST: row.currentSeasonAvgST,
+    currentSeasonStartCount: row.currentSeasonStartCount,
+    currentSeasonLateStartRate: row.currentSeasonLateStartRate,
+    currentSeasonEarlyStartRate: row.currentSeasonEarlyStartRate,
+    currentSeasonStartStabilityRate: row.currentSeasonStartStabilityRate,
+    startStabilityRate: row.startStabilityRate,
     lateStartRate: row.lateStartRate,
     earlyStartRate: row.earlyStartRate
   }));
@@ -231,6 +249,12 @@ export function countCanonicalTendencyFields(entries = []) {
     "localVenueWinRate",
     "localVenueQuinellaRate",
     "localVenueTrifectaRate",
+    "currentSeasonAvgST",
+    "currentSeasonStartCount",
+    "currentSeasonLateStartRate",
+    "currentSeasonEarlyStartRate",
+    "currentSeasonStartStabilityRate",
+    "startStabilityRate",
     "lateStartRate",
     "earlyStartRate"
   ];

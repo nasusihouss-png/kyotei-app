@@ -692,6 +692,85 @@ assert.ok(Number.isFinite(missingReliabilityPrediction.raceFlowScenario.scoreByB
 assert.ok(Array.isArray(missingReliabilityPrediction.reliabilityScorePreview));
 assert.ok(Array.isArray(missingReliabilityPrediction.blockingScorePreview));
 
+const poorAvgSlitPrediction = buildRacePrediction(originalMetricProgram({
+  3: {
+    exST: 0.03,
+    straightTime: 6.64,
+    turnTime: 4.22,
+    playerTendency: {
+      currentSeasonAvgST: 0.29,
+      avgST: 0.28,
+      lateStartRate: 0.26,
+      makuriRate: 0.36,
+      sampleStatus: "ok",
+      courseSpecificLast6mRaceCount: 16
+    }
+  }
+}), null);
+const goodAvgSlitPrediction = buildRacePrediction(originalMetricProgram({
+  3: {
+    exST: 0.03,
+    straightTime: 6.64,
+    turnTime: 4.22,
+    playerTendency: {
+      currentSeasonAvgST: 0.08,
+      avgST: 0.09,
+      lateStartRate: 0.02,
+      makuriRate: 0.36,
+      sampleStatus: "ok",
+      courseSpecificLast6mRaceCount: 16
+    }
+  }
+}), null);
+assert.equal(poorAvgSlitPrediction.slitFormation.byBoat["3"].exhibitionGoodHistoryPoor, true);
+assert.ok(
+  goodAvgSlitPrediction.raceFlowScenario.scoreByBoat["3"].attackStartScore >
+    poorAvgSlitPrediction.raceFlowScenario.scoreByBoat["3"].attackStartScore,
+  "good exST + good avgST should promote attackStartScore more than exhibition ST alone"
+);
+assert.notEqual(
+  poorAvgSlitPrediction.finalPrediction.debug.headValidation.byBoat["3"].status,
+  "main",
+  "good exhibition ST with poor avgST/current-season ST must not overpromote 3-head"
+);
+
+const boat2LateSlitPrediction = buildRacePrediction(originalMetricProgram({
+  2: { playerTendency: { currentSeasonAvgST: 0.27, lateStartRate: 0.34, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  3: { exST: 0.05, straightTime: 6.7, playerTendency: { currentSeasonAvgST: 0.09, makuriRate: 0.3, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  4: { turnTime: 4.22, straightTime: 6.74 }
+}), null);
+const boat2StableSlitPrediction = buildRacePrediction(originalMetricProgram({
+  2: { playerTendency: { currentSeasonAvgST: 0.08, lateStartRate: 0.02, startStabilityRate: 0.86, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  3: { exST: 0.05, straightTime: 6.7, playerTendency: { currentSeasonAvgST: 0.09, makuriRate: 0.3, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  4: { turnTime: 4.22, straightTime: 6.74 }
+}), null);
+assert.ok(
+  boat2LateSlitPrediction.raceFlowScenario.scenarioFamilies.find((row) => row.id === "makuri_3").score >
+    boat2StableSlitPrediction.raceFlowScenario.scenarioFamilies.find((row) => row.id === "makuri_3").score,
+  "boat2 late risk should increase 3/4 attack scenario"
+);
+
+const boat3PressureWeakResidualPrediction = buildRacePrediction(originalMetricProgram({
+  1: { lapTime: 18.78, turnTime: 4.82 },
+  2: { playerTendency: { lateStartRate: 0.26, currentSeasonAvgST: 0.25, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  3: { exST: 0.04, straightTime: 6.66, lapTime: 18.8, turnTime: 4.9, playerTendency: { currentSeasonAvgST: 0.08, makuriRate: 0.34, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  4: { exST: 0.06, straightTime: 6.68, turnTime: 4.18, motorPercentileAtVenue: 0.92, playerTendency: { makuriSashiRate: 0.38, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } }
+}), null);
+assert.ok(
+  boat3PressureWeakResidualPrediction.raceFlowScenario.scoreByBoat["4"].beneficiaryScore >
+    boat3PressureWeakResidualPrediction.raceFlowScenario.scoreByBoat["3"].residualScore,
+  "boat3 pressure with weak residual should promote boat4 beneficiary evaluation"
+);
+
+const outsideFastNoCollapsePrediction = buildRacePrediction(originalMetricProgram({
+  1: { lapTime: 18.05, turnTime: 4.2, playerTendency: { currentSeasonAvgST: 0.08, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  2: { playerTendency: { currentSeasonAvgST: 0.08, lateStartRate: 0.02, startStabilityRate: 0.86, sampleStatus: "ok", courseSpecificLast6mRaceCount: 12 } },
+  5: { exST: 0.03, currentSeasonAvgST: 0.08, straightTime: 6.65, lapTime: 18.05, turnTime: 4.2, motorPercentileAtVenue: 0.99 },
+  6: { exST: 0.04, currentSeasonAvgST: 0.08, straightTime: 6.66, lapTime: 18.06, turnTime: 4.21, motorPercentileAtVenue: 0.98 }
+}), null);
+assert.equal(outsideFastNoCollapsePrediction.finalPrediction.debug.headValidation.byBoat["5"].status, "partner_only");
+assert.equal(outsideFastNoCollapsePrediction.finalPrediction.debug.headValidation.byBoat["6"].status, "partner_only");
+
 assert.equal(
   missingOriginalPrediction.finalPrediction.buyDecision,
   "pass",
@@ -817,6 +896,30 @@ const lowSecondReliabilityFixture = plausibilityFixture({
 const lowSecondReliabilityGate = evaluateTicketPlausibility({ combo: "4-2-5", boats: [4, 2, 5], probability: 0.08, decisionCompatibilityScore: 68 }, lowSecondReliabilityFixture);
 assert.equal(lowSecondReliabilityGate.grade, "reject", "low 2nd-boat reliability should reject a weakly supported ticket");
 assert.ok(lowSecondReliabilityGate.rejectReasons.some((reason) => reason.includes("second boat reliability")));
+
+const slitLateSecondFixture = plausibilityFixture({
+  raceFlowScenario: {
+    ...plausibilityFixture().raceFlowScenario,
+    scoreByBoat: {
+      ...plausibilityFixture().raceFlowScenario.scoreByBoat,
+      2: {
+        ...plausibilityFixture().raceFlowScenario.scoreByBoat[2],
+        residualScore: 0.42,
+        lateRiskScore: 0.72,
+        startReliabilityScore: 0.26
+      }
+    },
+    decisionResidualScores: {
+      ...plausibilityFixture().raceFlowScenario.decisionResidualScores,
+      slitCollapseSignal: 0.42
+    }
+  }
+});
+const slitLateSecondGate = evaluateTicketPlausibility({ combo: "4-2-5", boats: [4, 2, 5], probability: 0.08, decisionCompatibilityScore: 68 }, slitLateSecondFixture);
+assert.ok(["C", "reject"].includes(slitLateSecondGate.grade), "slit late risk should affect ticket plausibility");
+assert.ok(
+  [...slitLateSecondGate.rejectReasons, ...slitLateSecondGate.reasons].some((reason) => reason.includes("スリット遅れ") || reason.includes("second boat late risk"))
+);
 
 const groupedTickets = buildTicketPlausibilityGroups(plausibilityFixture());
 assert.ok(groupedTickets.mainTickets.length < 6, "ticket gate must not force exactly 6 main tickets");
