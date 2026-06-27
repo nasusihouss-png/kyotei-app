@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: kyotei-app
+    runtime: node
+    buildCommand: npm install && npx playwright install chromium && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production

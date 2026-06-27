@@ -1,4 +1,5 @@
 import "./db.js";
+import { existsSync } from "node:fs";
 import express from "express";
 import cors from "cors";
 import { raceRouter } from "./src/routes/race.js";
@@ -10,15 +11,156 @@ import { runPredictionBacktest } from "../src/lib/prediction-backtester.js";
 
 const app = express();
 const port = process.env.PORT || 3001;
-const host = process.env.HOST || "0.0.0.0";
+const version = process.env.APP_VERSION || "1.0.0";
+const commit =
+  process.env.RENDER_GIT_COMMIT ||
+  process.env.GIT_COMMIT ||
+  "unknown";
+const availableRoutes = [
+  "/api/health",
+  "/api/diagnostics",
+  "/api/race/exhibition",
+  "/api/race/tendencies",
+  "/api/race/history-backfill",
+  "/api/race/conditions",
+  "/api/race/motor-ranking",
+  "/api/race/backtest",
+  "/api/muu/backtest",
+  "/api/muu/formula-report"
+];
+const allowedOrigins = new Set([
+  "https://kyotei-app.vercel.app",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173"
+]);
+const localDevelopmentOrigin =
+  /^https?:\/\/(?:localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?::\d+)?$/;
 
 runPredictionFeatureLogMigrations();
 
-app.use(cors());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+    const allowDevelopmentNetwork =
+      process.env.NODE_ENV !== "production" &&
+      localDevelopmentOrigin.test(origin);
+    callback(null, allowDevelopmentNetwork);
+  },
+  optionsSuccessStatus: 204
+}));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+app.get("/api/diagnostics", async (_req, res) => {
+  let playwrightAvailable = false;
+  let chromiumPath = null;
+  try {
+    const playwright = await import("playwright");
+    chromiumPath =
+      process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ||
+      playwright?.chromium?.executablePath?.() ||
+      null;
+    playwrightAvailable = Boolean(playwright?.chromium && chromiumPath && existsSync(chromiumPath));
+  } catch {
+    playwrightAvailable = false;
+  }
+
+  res.json({
+    ok: true,
+    version,
+    commit,
+    availableRoutes,
+    environment: {
+      nodeEnv: process.env.NODE_ENV || "development",
+      port,
+      playwrightAvailable,
+      chromiumPath
+    }
+  });
+});
+
+function countSelfCheckRows(payload) {
+  const candidates = [
+    payload?.rows,
+    payload?.data?.rows,
+    payload?.originalExhibition?.rows
+  ];
+  const rows = candidates.find(Array.isArray);
+  return rows?.length || 0;
+}
+
+async function runSelfCheckRequest(path, { rowsCount = false, timeoutMs = 90000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let status = null;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      cache: "no-store",
+      signal: controller.signal
+    });
+    status = response.status;
+    const payload = await response.json().catch(() => ({}));
+    const result = {
+      ok: response.ok && payload?.ok !== false,
+      status,
+      error: payload?.error || payload?.message || null
+    };
+    if (rowsCount) result.rowsCount = countSelfCheckRows(payload);
+    return result;
+  } catch (error) {
+    const result = {
+      ok: false,
+      status,
+      error: error?.name === "AbortError"
+        ? `self-check request timed out after ${timeoutMs}ms`
+        : String(error?.message || error)
+    };
+    if (rowsCount) result.rowsCount = 0;
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.get("/api/race/self-check", async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  const date = String(req.query?.date || "");
+  const venueId = toPositiveInt(req.query?.venueId, null);
+  const raceNo = toPositiveInt(req.query?.raceNo, null);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !venueId || !raceNo) {
+    return res.status(400).json({
+      ok: false,
+      error: "date (YYYY-MM-DD), venueId, and raceNo are required"
+    });
+  }
+
+  const raceParams = new URLSearchParams({
+    date,
+    venueId: String(venueId),
+    raceNo: String(raceNo)
+  });
+  const motorParams = new URLSearchParams({
+    date,
+    venueId: String(venueId)
+  });
+  const [health, exhibition, tendencies, conditions, motorRanking] = await Promise.all([
+    runSelfCheckRequest("/api/health"),
+    runSelfCheckRequest(`/api/race/exhibition?${raceParams}`, { rowsCount: true }),
+    runSelfCheckRequest(`/api/race/tendencies?${raceParams}`, { rowsCount: true }),
+    runSelfCheckRequest(`/api/race/conditions?${raceParams}`),
+    runSelfCheckRequest(`/api/race/motor-ranking?${motorParams}`, { rowsCount: true })
+  ]);
+  const checks = { exhibition, tendencies, conditions, motorRanking };
+  return res.json({
+    ok: health.ok && Object.values(checks).every((check) => check.ok),
+    checks
+  });
 });
 
 function toNullableNumber(value) {
@@ -901,7 +1043,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json(payload);
 });
 
-app.listen(port, host, () => {
-  console.log(`Backend API running on http://localhost:${port}`);
-  console.log(`Backend listening on http://${host}:${port}`);
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Backend API running on port ${port}`);
 });

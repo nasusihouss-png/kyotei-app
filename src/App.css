@@ -41,6 +41,21 @@
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34);
 }
 
+.connection-diagnostics > summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.connection-diagnostics-body {
+  margin-top: 12px;
+}
+
+.connection-diagnostics-body strong {
+  max-width: 70%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .summary-card {
   padding: 14px;
 }

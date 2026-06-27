@@ -33,6 +33,7 @@ import {
   buildTendencyPreview,
   countCanonicalTendencyFields
 } from "./lib/racer-tendency-normalizer.js";
+import { API_BASE_URL, apiUrl } from "./lib/api-client.js";
 import PlayerBoatTable from "./components/PlayerBoatTable.jsx";
 import KyoteibiyoriDebugPanel from "./components/KyoteibiyoriDebugPanel.jsx";
 import PredictionSummary from "./components/PredictionSummary.jsx";
@@ -44,9 +45,24 @@ import RacerReliabilityTable from "./components/RacerReliabilityTable.jsx";
 import AdvancedDebugPanel from "./components/AdvancedDebugPanel.jsx";
 import ScoringDiagnosticsPanel from "./components/ScoringDiagnosticsPanel.jsx";
 
-const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
-const API_BASE = API_BASE_URL ? `${API_BASE_URL}/api` : "/api";
 const todayRankingCache = new Map();
+let apiDiagnosticListener = null;
+
+function isBackendApiUrl(url) {
+  const value = String(url || "");
+  return value.startsWith("/api/") || value === "/api" ||
+    (API_BASE_URL && (value.startsWith(`${API_BASE_URL}/api/`) || value === `${API_BASE_URL}/api`));
+}
+
+function buildApiUrl(path, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return apiUrl(`${path}${query ? `?${query}` : ""}`);
+}
 
 function localDateKey(base = new Date()) {
   const yyyy = base.getFullYear();
@@ -71,17 +87,40 @@ async function fetchJsonWithTimeout(url, options = {}) {
   }
   externalSignal?.addEventListener?.("abort", onExternalAbort, { once: true });
   const { timeoutMs: _timeoutMs, signal: _signal, ...fetchOptions } = options;
+  let responseStatus = null;
   try {
     const response = await fetch(url, {
       ...fetchOptions,
       signal: controller.signal
     });
+    responseStatus = response.status;
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(body?.message || `Request failed (${response.status})`);
+      const responseError = new Error(body?.message || body?.error || `Request failed (${response.status})`);
+      responseError.status = response.status;
+      throw responseError;
+    }
+    if (isBackendApiUrl(url)) {
+      apiDiagnosticListener?.({ url: String(url), status: response.status, error: "", corsLikely: false });
     }
     return body;
   } catch (err) {
+    if (isBackendApiUrl(url)) {
+      let corsLikely = false;
+      if (responseStatus === null && API_BASE_URL && typeof window !== "undefined") {
+        try {
+          corsLikely = new URL(API_BASE_URL, window.location.origin).origin !== window.location.origin;
+        } catch {
+          corsLikely = true;
+        }
+      }
+      apiDiagnosticListener?.({
+        url: String(url),
+        status: responseStatus,
+        error: err?.message || String(err),
+        corsLikely
+      });
+    }
     if (err?.name === "AbortError") {
       throw new Error(timedOut ? "Request timeout. Please retry." : "Request aborted.");
     }
@@ -114,7 +153,7 @@ async function fetchOriginalExhibitionData({ date, venueId, raceNo, force = fals
     raceNo: String(raceNo || "")
   });
   if (force) params.set("force", "1");
-  const payload = await fetchJsonWithTimeout(`/api/race/exhibition?${params.toString()}`, {
+  const payload = await fetchJsonWithTimeout(apiUrl(`/api/race/exhibition?${params.toString()}`), {
     timeoutMs: 60000,
     cache: "no-store",
     signal
@@ -150,7 +189,7 @@ async function fetchRacerTendencies({
   if (force) params.set("force", "1");
   if (backfill) params.set("backfill", "1");
   if (allVenues) params.set("allVenues", "1");
-  const payload = await fetchJsonWithTimeout(`/api/race/tendencies?${params.toString()}`, {
+  const payload = await fetchJsonWithTimeout(apiUrl(`/api/race/tendencies?${params.toString()}`), {
     timeoutMs: backfill ? 300000 : 30000,
     cache: "no-store",
     signal
@@ -168,7 +207,7 @@ async function fetchRaceConditions({ date, venueId, raceNo, force = false, signa
     raceNo: String(raceNo || "")
   });
   if (force) params.set("force", "1");
-  const payload = await fetchJsonWithTimeout(`/api/race/conditions?${params.toString()}`, {
+  const payload = await fetchJsonWithTimeout(apiUrl(`/api/race/conditions?${params.toString()}`), {
     timeoutMs: 20000,
     cache: "no-store",
     signal
@@ -207,7 +246,7 @@ async function fetchRaceHistoryBackfill({
   if (raceNo !== null && raceNo !== undefined) params.set("raceNo", String(raceNo || ""));
   if (force) params.set("force", "1");
   if (allVenues) params.set("allVenues", "1");
-  return fetchJsonWithTimeout(`/api/race/history-backfill?${params.toString()}`, {
+  return fetchJsonWithTimeout(apiUrl(`/api/race/history-backfill?${params.toString()}`), {
     timeoutMs: 300000,
     cache: "no-store",
     signal
@@ -609,22 +648,22 @@ async function fetchHardRacePredictionData(date, venueId) {
 }
 
 async function fetchStatsData(filters = {}) {
-  const url = new URL(`${API_BASE}/stats`);
+  const params = {};
   Object.entries(filters || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === "" || value === "all") return;
     if (Number.isFinite(Number(value)) && Number(value) === 0) return;
-    url.searchParams.set(key, String(value));
+    params[key] = value;
   });
-  const response = await fetch(url.toString());
+  const response = await fetch(buildApiUrl("/api/stats", params));
   if (!response.ok) throw new Error("Failed to fetch stats");
   return response.json();
 }
 
 async function fetchHistoryData({ includeInvalidated = false } = {}) {
-  const url = new URL(`${API_BASE}/results-history`);
-  url.searchParams.set("limit", "500");
-  if (includeInvalidated) url.searchParams.set("include_invalidated", "1");
-  const response = await fetch(url.toString());
+  const response = await fetch(buildApiUrl("/api/results-history", {
+    limit: 500,
+    include_invalidated: includeInvalidated ? 1 : null
+  }));
   if (!response.ok) throw new Error("Failed to fetch results history");
   return response.json();
 }
@@ -634,7 +673,7 @@ async function verifyRaceResultApi(raceId, predictionSnapshotId = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${API_BASE}/results/verify`, {
+    const response = await fetch(apiUrl("/api/results/verify"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -668,7 +707,7 @@ async function invalidateVerificationApi({
   predictionSnapshotId,
   invalidReason = ""
 }) {
-  return fetchJsonWithTimeout(`${API_BASE}/results/invalidate`, {
+  return fetchJsonWithTimeout(apiUrl("/api/results/invalidate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -685,7 +724,7 @@ async function invalidateVerificationApi({
 }
 
 async function restoreVerificationApi({ verificationLogId }) {
-  return fetchJsonWithTimeout(`${API_BASE}/results/restore`, {
+  return fetchJsonWithTimeout(apiUrl("/api/results/restore"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -696,7 +735,7 @@ async function restoreVerificationApi({ verificationLogId }) {
 }
 
 async function updateVerificationNoteApi({ verificationLogId, verificationReason = "" }) {
-  return fetchJsonWithTimeout(`${API_BASE}/results/verification-note`, {
+  return fetchJsonWithTimeout(apiUrl("/api/results/verification-note"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -714,7 +753,7 @@ async function editResultRecordApi({
   verificationReason = "",
   invalidReason = ""
 }) {
-  return fetchJsonWithTimeout(`${API_BASE}/results/edit`, {
+  return fetchJsonWithTimeout(apiUrl("/api/results/edit"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -729,21 +768,19 @@ async function editResultRecordApi({
 }
 
 async function fetchAnalyticsData(date) {
-  const url = new URL(`${API_BASE}/analytics`);
-  if (date) url.searchParams.set("date", date);
-  const response = await fetch(url.toString());
+  const response = await fetch(buildApiUrl("/api/analytics", { date }));
   if (!response.ok) throw new Error("Failed to fetch analytics");
   return response.json();
 }
 
 async function fetchSelfLearningData() {
-  const response = await fetch(`${API_BASE}/self-learning?mode=proposal_only&save=1`);
+  const response = await fetch(apiUrl("/api/self-learning?mode=proposal_only&save=1"));
   if (!response.ok) throw new Error("Failed to fetch self-learning");
   return response.json();
 }
 
 async function fetchLearningLatestData() {
-  const response = await fetch(`${API_BASE}/learning/latest?auto=0`);
+  const response = await fetch(apiUrl("/api/learning/latest?auto=0"));
   if (!response.ok) throw new Error("Failed to fetch learning latest");
   return response.json();
 }
@@ -757,7 +794,7 @@ function sortEvaluationSegments(rows = []) {
 }
 
 async function runLearningBatchApi({ apply = true, dryRun = false } = {}) {
-  return fetchJsonWithTimeout(`${API_BASE}/learning/batch`, {
+  return fetchJsonWithTimeout(apiUrl("/api/learning/batch"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ apply, dryRun }),
@@ -766,26 +803,21 @@ async function runLearningBatchApi({ apply = true, dryRun = false } = {}) {
 }
 
 async function fetchStartEntryAnalysisData() {
-  const response = await fetch(`${API_BASE}/start-entry-analysis`);
+  const response = await fetch(apiUrl("/api/start-entry-analysis"));
   if (!response.ok) throw new Error("Failed to fetch start/entry analysis");
   return response.json();
 }
 
 async function fetchManualLapEvaluation({ raceId, date, venueId, raceNo }) {
-  const url = new URL(`${API_BASE}/manual-lap-evaluation`);
-  if (raceId) url.searchParams.set("raceId", raceId);
-  if (!raceId) {
-    url.searchParams.set("date", date);
-    url.searchParams.set("venueId", String(venueId));
-    url.searchParams.set("raceNo", String(raceNo));
-  }
-  const response = await fetch(url.toString());
+  const response = await fetch(buildApiUrl("/api/manual-lap-evaluation", raceId
+    ? { raceId }
+    : { date, venueId, raceNo }));
   if (!response.ok) throw new Error("Failed to fetch manual lap evaluation");
   return response.json();
 }
 
 async function saveManualLapEvaluationApi(payload) {
-  const response = await fetch(`${API_BASE}/manual-lap-evaluation`, {
+  const response = await fetch(apiUrl("/api/manual-lap-evaluation"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -798,7 +830,7 @@ async function saveManualLapEvaluationApi(payload) {
 }
 
 async function submitRaceResult(payload) {
-  const response = await fetch(`${API_BASE}/race/result`, {
+  const response = await fetch(apiUrl("/api/race/result"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -813,19 +845,19 @@ async function submitRaceResult(payload) {
 }
 
 async function fetchPlacedBets() {
-  const response = await fetch(`${API_BASE}/placed-bets`);
+  const response = await fetch(apiUrl("/api/placed-bets"));
   if (!response.ok) throw new Error("Failed to fetch placed bets");
   return response.json();
 }
 
 async function fetchPlacedBetSummaries() {
-  const response = await fetch(`${API_BASE}/placed-bets/summaries`);
+  const response = await fetch(apiUrl("/api/placed-bets/summaries"));
   if (!response.ok) throw new Error("Failed to fetch bet summaries");
   return response.json();
 }
 
 async function createPlacedBet(payload) {
-  const response = await fetch(`${API_BASE}/placed-bets`, {
+  const response = await fetch(apiUrl("/api/placed-bets"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -838,7 +870,7 @@ async function createPlacedBet(payload) {
 }
 
 async function createPlacedBetsBulk(items) {
-  const response = await fetch(`${API_BASE}/placed-bets`, {
+  const response = await fetch(apiUrl("/api/placed-bets"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items })
@@ -851,7 +883,7 @@ async function createPlacedBetsBulk(items) {
 }
 
 async function updatePlacedBetApi(id, payload) {
-  const response = await fetch(`${API_BASE}/placed-bets/${id}`, {
+  const response = await fetch(apiUrl(`/api/placed-bets/${id}`), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -864,7 +896,7 @@ async function updatePlacedBetApi(id, payload) {
 }
 
 async function deletePlacedBetApi(id) {
-  const response = await fetch(`${API_BASE}/placed-bets/${id}`, {
+  const response = await fetch(apiUrl(`/api/placed-bets/${id}`), {
     method: "DELETE"
   });
   if (!response.ok) {
@@ -875,7 +907,7 @@ async function deletePlacedBetApi(id) {
 }
 
 async function settlePlacedBets(payload) {
-  const response = await fetch(`${API_BASE}/placed-bets/settle`, {
+  const response = await fetch(apiUrl("/api/placed-bets/settle"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -4625,6 +4657,12 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [errorDetails, setErrorDetails] = useState(null);
+  const [connectionDiagnostics, setConnectionDiagnostics] = useState({
+    backendConnected: false,
+    lastApiStatusCode: null,
+    lastApiError: "",
+    corsLikely: false
+  });
   const [data, setData] = useState(null);
   const [openApiLoading, setOpenApiLoading] = useState(false);
   const [openApiError, setOpenApiError] = useState("");
@@ -4664,6 +4702,44 @@ export default function App() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("kyotei-show-debug-panels", showDebugPanels ? "1" : "0");
   }, [showDebugPanels]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    apiDiagnosticListener = ({ status, error: apiError, corsLikely }) => {
+      setConnectionDiagnostics((previous) => ({
+        backendConnected: status !== null ? true : previous.backendConnected,
+        lastApiStatusCode: status,
+        lastApiError: apiError || "",
+        corsLikely: corsLikely === true
+      }));
+    };
+
+    fetchJsonWithTimeout(apiUrl("/api/health"), {
+      timeoutMs: 20000,
+      cache: "no-store",
+      signal: controller.signal
+    })
+      .then((payload) => {
+        setConnectionDiagnostics((previous) => ({
+          ...previous,
+          backendConnected: payload?.ok === true,
+          lastApiError: payload?.ok === true ? "" : "Health check returned ok=false."
+        }));
+      })
+      .catch((healthError) => {
+        if (healthError?.message === "Request aborted.") return;
+        setConnectionDiagnostics((previous) => ({
+          ...previous,
+          backendConnected: false,
+          lastApiError: healthError?.message || String(healthError)
+        }));
+      });
+
+    return () => {
+      controller.abort();
+      apiDiagnosticListener = null;
+    };
+  }, []);
 
   const [statsLoading, setStatsLoading] = useState(false);
   const [stats, setStats] = useState(null);
@@ -7674,6 +7750,23 @@ export default function App() {
     if (boat4TargetFilter === "HIGH_MEDIUM") return rows.filter((row) => row?.strengthLabel === "高" || row?.strengthLabel === "中");
     return rows;
   }, [boat4TargetRows, boat4TargetFilter]);
+  const frontendOrigin = typeof window !== "undefined" ? window.location.origin : "";
+  const productionApiEnvMissing =
+    typeof window !== "undefined" &&
+    window.location.hostname === "kyotei-app.vercel.app" &&
+    !API_BASE_URL;
+  const connectionUrls = {
+    health: apiUrl("/api/health"),
+    exhibition: buildApiUrl("/api/race/exhibition", { date, venueId, raceNo }),
+    tendencies: buildApiUrl("/api/race/tendencies", { date, venueId, raceNo, months: 6 }),
+    conditions: buildApiUrl("/api/race/conditions", { date, venueId, raceNo }),
+    motorRanking: buildApiUrl("/api/race/motor-ranking", { date, venueId })
+  };
+  const raceDataEndpointFailed = Boolean(
+    originalExhibitionFetchError ||
+    racerTendencyFetchError ||
+    raceConditionsFetchError
+  );
 
   return (
     <div className="app-shell">
@@ -7692,6 +7785,38 @@ export default function App() {
             <button className={screen === "settings" ? "tab on" : "tab"} onClick={() => setScreen("settings")}>Settings</button>
           </div>
         </section>
+
+        {productionApiEnvMissing ? (
+          <div className="error-banner">
+            本番環境で VITE_API_BASE_URL が未設定です。Vercelの環境変数を確認してください。
+          </div>
+        ) : null}
+        {connectionDiagnostics.corsLikely && !connectionDiagnostics.backendConnected ? (
+          <div className="error-banner">
+            VercelからRender APIへの接続がCORSで拒否されています。Render側のCORS設定を確認してください。
+          </div>
+        ) : null}
+        {connectionDiagnostics.backendConnected && raceDataEndpointFailed ? (
+          <div className="error-banner">
+            Backend APIは接続済みですが、レースデータ取得に失敗しました。Render側の該当APIまたはPlaywright処理を確認してください。
+          </div>
+        ) : null}
+
+        <details className="card connection-diagnostics">
+          <summary>接続診断</summary>
+          <div className="kv-list connection-diagnostics-body">
+            <div className="kv-row"><span>frontend origin</span><strong>{frontendOrigin || "-"}</strong></div>
+            <div className="kv-row"><span>VITE_API_BASE_URL</span><strong>{API_BASE_URL || "(empty)"}</strong></div>
+            <div className="kv-row"><span>health URL used</span><strong>{connectionUrls.health}</strong></div>
+            <div className="kv-row"><span>exhibition URL used</span><strong>{connectionUrls.exhibition}</strong></div>
+            <div className="kv-row"><span>tendencies URL used</span><strong>{connectionUrls.tendencies}</strong></div>
+            <div className="kv-row"><span>conditions URL used</span><strong>{connectionUrls.conditions}</strong></div>
+            <div className="kv-row"><span>motor-ranking URL used</span><strong>{connectionUrls.motorRanking}</strong></div>
+            <div className="kv-row"><span>backendConnected</span><strong>{String(connectionDiagnostics.backendConnected)}</strong></div>
+            <div className="kv-row"><span>last API status code</span><strong>{connectionDiagnostics.lastApiStatusCode ?? "-"}</strong></div>
+            <div className="kv-row"><span>last API error</span><strong>{connectionDiagnostics.lastApiError || "-"}</strong></div>
+          </div>
+        </details>
 
         {screen === "prediction" && (
           <>
@@ -10680,7 +10805,7 @@ export default function App() {
                   </label>
                 </strong>
               </div>
-              <div className="kv-row"><span>API base</span><strong>{API_BASE}</strong></div>
+              <div className="kv-row"><span>API base</span><strong>{API_BASE_URL || "/api (Vite proxy)"}</strong></div>
               <div className="kv-row"><span>minimal QuickInput</span><strong>date / venue / raceNo / 6 racers</strong></div>
               <div className="kv-row"><span>production build</span><strong>npm run build</strong></div>
               <div className="kv-row"><span>backend start</span><strong>Set-Location backend; npm start</strong></div>

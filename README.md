@@ -85,21 +85,21 @@ npm run dev -- --host
 5. Set frontend environment variable in Vercel:
 
 ```env
-VITE_API_BASE_URL=https://<YOUR_RENDER_BACKEND_DOMAIN>
+VITE_API_BASE_URL=https://kyotei-app.onrender.com
 ```
 
 Example:
 
 ```env
-VITE_API_BASE_URL=https://boat-race-backend.onrender.com
+VITE_API_BASE_URL=https://kyotei-app.onrender.com
 ```
 
 ### Backend (Render)
 
 1. Create a new Web Service from this repo.
-2. Root directory: `backend`.
-3. Build command: `npm install`.
-4. Start command: `npm run start`.
+2. Root directory: leave empty (repository root).
+3. Build command: `npm install && npx playwright install chromium && npm run build`.
+4. Start command: `npm start`.
 5. Required/optional backend env vars:
    - `PORT` (provided by Render automatically)
    - `HOST` (optional, default `0.0.0.0`)
@@ -107,7 +107,14 @@ VITE_API_BASE_URL=https://boat-race-backend.onrender.com
 Backend health check endpoint:
 
 ```text
-https://<YOUR_RENDER_BACKEND_DOMAIN>/api/health
+https://kyotei-app.onrender.com/api/health
+```
+
+Runtime/browser diagnostics and deployed route checks:
+
+```text
+https://kyotei-app.onrender.com/api/diagnostics
+https://kyotei-app.onrender.com/api/race/self-check?date=YYYY-MM-DD&venueId=24&raceNo=1
 ```
 
 ### Environment variable summary
